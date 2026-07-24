@@ -27,10 +27,15 @@ template $CineWindow: Adw.ApplicationWindow {
           child: Box {
             orientation: vertical;
             Adw.HeaderBar library_header {
-              [title]
+              [start]
               Adw.ViewSwitcher {
                 stack: library_stack;
                 policy: wide;
+              }
+
+              [title]
+              Adw.WindowTitle {
+                title: _("PopcornBox");
               }
 
               [end]
@@ -74,37 +79,59 @@ template $CineWindow: Adw.ApplicationWindow {
                   }
                 };
               }
-              Adw.ViewStackPage {
-                name: "addons";
-                title: _("Addons");
-                icon-name: "system-component-addon-symbolic";
-                child: ScrolledWindow {
-                  vexpand: true;
-                  child: Box {
-                    orientation: vertical;
-                    margin-top: 24; margin-start: 24; margin-end: 24;
-                    spacing: 12;
-                    Box {
-                      spacing: 8;
-                      halign: center;
-                      Entry addon_url_entry {
-                        placeholder-text: "https://.../manifest.json";
-                        width-request: 400;
-                      }
-                      Button add_addon_btn {
-                        label: _("Add Addon");
-                        styles ["suggested-action"]
-                        action-name: "win.add-addon";
-                      }
-                    }
-                    ListBox addons_listbox {
-                      margin-top: 24;
-                      selection-mode: none;
-                      styles ["boxed-list"]
-                    }
-                  };
-                };
+            }
+          };
+        }
+
+        Adw.ViewStackPage page_addons {
+          name: "addons";
+          child: Box {
+            orientation: vertical;
+            Adw.HeaderBar {
+              [start]
+              Button {
+                icon-name: "go-previous-symbolic";
+                action-name: "win.back-to-library";
+                tooltip-text: _("Back to Library");
               }
+              [title]
+              Adw.WindowTitle {
+                title: _("Addons");
+              }
+            }
+            ScrolledWindow {
+              vexpand: true;
+              child: Box {
+                orientation: vertical;
+                margin-top: 24; margin-start: 24; margin-end: 24;
+                spacing: 12;
+                Box {
+                  spacing: 8;
+                  halign: center;
+                  Entry addon_url_entry {
+                    placeholder-text: "Search or paste Stremio addon manifest URL...";
+                    width-request: 400;
+                  }
+                  Button add_addon_btn {
+                    label: _("Install");
+                    styles ["suggested-action"]
+                    action-name: "win.add-addon";
+                  }
+                  Button import_addon_btn {
+                    label: _("Import");
+                    action-name: "win.import-addons";
+                  }
+                  Button export_addon_btn {
+                    label: _("Export");
+                    action-name: "win.export-addons";
+                  }
+                }
+                ListBox addons_listbox {
+                  margin-top: 24;
+                  selection-mode: none;
+                  styles ["boxed-list"]
+                }
+              };
             }
           };
         }
@@ -227,6 +254,7 @@ template $CineWindow: Adw.ApplicationWindow {
 
                 menu-model: menu primary_menu {
                   section {
+                    item (_("Addons"), "win.open-addons")
                     item (_("New Window"), "app.new-window")
                     item (_("Preferences"), "app.preferences")
                     item (_("Keyboard Shortcuts"), "win.custom-shortcuts")

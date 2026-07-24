@@ -844,6 +844,10 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action("open-audio-menu", self._on_open_audio_menu)
         self._create_action("open-chapters-menu", self._on_open_chapters_menu)
         self._create_action("save-session", self._on_save_session)
+        self._create_action("open-addons", self._open_addons)
+        self._create_action("back-to-library", self._back_to_library)
+        self._create_action("import-addons", self._import_addons)
+        self._create_action("export-addons", self._export_addons)
         self._create_action(
             "save-session-close", lambda *a: self._on_save_session(close=True)
         )
@@ -902,6 +906,9 @@ class CineWindow(Adw.ApplicationWindow):
             self.time_elapsed_label,
         ]:
             widget.set_direction(Gtk.TextDirection.LTR)
+
+        self.addons_listbox.set_filter_func(self._addon_filter_func)
+        self.addon_url_entry.connect("changed", lambda *a: self.addons_listbox.invalidate_filter())
 
         max_vol = cast(int, self.mpv.volume_max)
         self.volume_scale_adj.set_upper(max_vol)
@@ -2100,6 +2107,10 @@ class CineWindow(Adw.ApplicationWindow):
                     pass
 
     def _on_key_event(self, _controller, keyval, _keycode, state, event_type):
+        focused = self.get_focus()
+        if isinstance(focused, (Gtk.Editable, Gtk.TextView)):
+            return False
+
         key_name = Gdk.keyval_name(keyval)
 
         if self.space_holding and event_type == "keyup":
@@ -2950,17 +2961,78 @@ class CineWindow(Adw.ApplicationWindow):
             self.addons_listbox.remove(self.addons_listbox.get_first_child())
             
         from . import database
+        import urllib.request
         addons = database.get_addons()
         for addon in addons:
             name_str = GLib.markup_escape_text(addon.get("name", "Unknown") or "Unknown")
             desc_str = GLib.markup_escape_text(addon.get("description", "") or "")
             row = Adw.ActionRow(title=name_str, subtitle=desc_str)
             
-            remove_btn = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER)
-            remove_btn.add_css_class("destructive-action")
-            remove_btn.connect("clicked", lambda btn, a=addon: self._remove_addon(a))
+            status_label = Gtk.Label(label="⚪", valign=Gtk.Align.CENTER)
+            row.add_prefix(status_label)
             
-            row.add_suffix(remove_btn)
+            manifest_url = addon.get("manifest_url", "")
+            
+            def check_online(url, lbl):
+                try:
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=3) as resp:
+                        if resp.status == 200:
+                            GLib.idle_add(lbl.set_label, "🟢")
+                            return
+                except Exception:
+                    pass
+                GLib.idle_add(lbl.set_label, "🔴")
+                
+            if manifest_url:
+                threading.Thread(target=check_online, args=(manifest_url, status_label), daemon=True).start()
+            else:
+                status_label.set_label("🔴")
+            
+            box = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
+            
+            enable_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+            enable_switch.set_active(addon.get("enabled", True))
+            enable_switch.connect("notify::active", lambda sw, pspec, a=addon: database.set_addon_enabled(a.get("id"), sw.get_active()))
+            box.append(enable_switch)
+            
+            menu_btn = Gtk.MenuButton(icon_name="view-more-symbolic", valign=Gtk.Align.CENTER)
+            menu_btn.add_css_class("flat")
+            
+            popover = Gtk.Popover()
+            popover_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            popover.set_child(popover_box)
+            menu_btn.set_popover(popover)
+            
+            if addon.get("behaviorHints", {}).get("configurable", False) or "/configure" in manifest_url:
+                config_btn = Gtk.Button(label=_("Configure"))
+                config_btn.add_css_class("flat")
+                def on_config(btn, m_url=manifest_url, pop=popover):
+                    pop.popdown()
+                    c_url = m_url.replace("/manifest.json", "/configure") if m_url.endswith("/manifest.json") else m_url
+                    from gi.repository import Gio
+                    Gio.AppInfo.launch_default_for_uri(c_url, None)
+                config_btn.connect("clicked", on_config)
+                popover_box.append(config_btn)
+            
+            copy_btn = Gtk.Button(label=_("Copy URL"))
+            copy_btn.add_css_class("flat")
+            def on_copy(btn, m_url=manifest_url, pop=popover):
+                pop.popdown()
+                self.get_clipboard().set(m_url)
+                self._show_toast(_("Copied URL to clipboard"))
+            copy_btn.connect("clicked", on_copy)
+            popover_box.append(copy_btn)
+            
+            remove_btn = Gtk.Button(label=_("Delete"))
+            remove_btn.add_css_class("flat")
+            remove_btn.add_css_class("destructive-action")
+            remove_btn.connect("clicked", lambda btn, a=addon, pop=popover: (pop.popdown(), self._remove_addon(a)))
+            popover_box.append(remove_btn)
+            
+            box.append(menu_btn)
+            
+            row.add_suffix(box)
             self.addons_listbox.append(row)
             
     def _add_addon(self, *args):
@@ -2989,3 +3061,49 @@ class CineWindow(Adw.ApplicationWindow):
         if addon_id:
             database.remove_addon(addon_id)
             self._populate_addons()
+
+    def _addon_filter_func(self, row):
+        search_text = self.addon_url_entry.get_text().lower().strip()
+        if not search_text or search_text.startswith("http"):
+            return True
+        title = row.get_title().lower()
+        subtitle = row.get_subtitle().lower() if row.get_subtitle() else ""
+        return search_text in title or search_text in subtitle
+
+    def _open_addons(self, *args):
+        self.main_stack.set_visible_child_name("addons")
+
+    def _back_to_library(self, *args):
+        self.main_stack.set_visible_child_name("library")
+
+    def _import_addons(self, *args):
+        dialog = Gtk.FileDialog(title=_("Import Addons"))
+        def on_open_response(dialog, result):
+            try:
+                file = dialog.open_finish(result)
+                if not file: return
+                import json
+                with open(file.get_path(), "r") as f:
+                    addons = json.load(f)
+                from . import database
+                for a in addons:
+                    database.add_addon(a)
+                self._populate_addons()
+            except Exception as e:
+                logger.error(f"Failed to import addons: {e}")
+        dialog.open(self, None, on_open_response)
+
+    def _export_addons(self, *args):
+        dialog = Gtk.FileDialog(title=_("Export Addons"), initial_name="addons.json")
+        def on_save_response(dialog, result):
+            try:
+                file = dialog.save_finish(result)
+                if not file: return
+                from . import database
+                import json
+                addons = database.get_addons()
+                with open(file.get_path(), "w") as f:
+                    json.dump(addons, f, indent=4)
+            except Exception as e:
+                logger.error(f"Failed to export addons: {e}")
+        dialog.save(self, None, on_save_response)
