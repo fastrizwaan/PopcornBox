@@ -47,7 +47,7 @@ try:
 
     BASE_CONFIG = GLib.get_user_config_dir()
 
-    CONFIG_DIR = join(BASE_CONFIG, "cine")
+    CONFIG_DIR = join(BASE_CONFIG, "popcorn-box")
     INPUT_CONF = join(CONFIG_DIR, "input.conf")
     MPV_CONF = join(CONFIG_DIR, "mpv.conf")
     WATCH_HISTORY_JSONL = join(CONFIG_DIR, "watch_history.jsonl")
@@ -63,6 +63,7 @@ try:
         INPUT_CONF,
         MPV_CONF,
         WATCH_HISTORY_JSONL,
+        LAST_PLAYLIST_FILE,
     ]:
         if not os.path.exists(file):
             open(file, "w").close()

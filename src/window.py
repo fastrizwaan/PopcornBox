@@ -634,8 +634,22 @@ class CineWindow(Adw.ApplicationWindow):
     main_stack: Adw.ViewStack = Gtk.Template.Child()
     details_box: Gtk.Box = Gtk.Template.Child()
     library_stack: Adw.ViewStack = Gtk.Template.Child()
+    header_stack: Gtk.Stack = Gtk.Template.Child()
+    category_btn_stack: Gtk.Stack = Gtk.Template.Child()
+    library_header: Adw.HeaderBar = Gtk.Template.Child()
+    search_header: Adw.HeaderBar = Gtk.Template.Child()
+    search_entry: Gtk.SearchEntry = Gtk.Template.Child()
+    catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
     movies_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     series_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    search_movies_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    search_series_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    favorites_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    history_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    watched_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    downloads_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    movies_genre_menu: Gio.Menu = Gtk.Template.Child()
+    series_genre_menu: Gio.Menu = Gtk.Template.Child()
     addon_url_entry: Gtk.Entry = Gtk.Template.Child()
     addons_listbox: Gtk.ListBox = Gtk.Template.Child()
     video_overlay: Gtk.Overlay = Gtk.Template.Child()
@@ -837,7 +851,8 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action("close-player", self._close_player)
         self._create_action("add-addon", self._add_addon)
         self._create_action("add-url", self._on_add_url)
-        self._create_action("open-history", self._present_history)
+        self._create_action("open-history", lambda *a: self._open_local_page("history"))
+        self._create_action("open-watch-history", self._present_history)
         self._create_action("add-playlist-folder", self._on_open_folder_dialog)
         self._create_action("open-playlist-dialog", self._on_open_playlist)
         self._create_action("open-sub-menu", self._on_open_sub_menu)
@@ -852,11 +867,19 @@ class CineWindow(Adw.ApplicationWindow):
             "save-session-close", lambda *a: self._on_save_session(close=True)
         )
         self._create_action("search-addons", self._on_search_addons)
+        self._create_action("switch-to-movies", lambda *a: self.library_stack.set_visible_child_name("movies"))
+        self._create_action("switch-to-series", lambda *a: self.library_stack.set_visible_child_name("series"))
+        self._create_action("open-search", self._open_search)
+        self._create_action("close-search", self._close_search)
+        self._create_action("open-favorites", lambda *a: self._open_local_page("favorites"))
+        self._create_action("open-downloads", lambda *a: self._open_local_page("downloads"))
+        self._create_action("open-watched", lambda *a: self._open_local_page("watched"))
+        self._create_action("open-player", lambda *a: self.main_stack.set_visible_child_name("player"))
 
         self.app.set_accels_for_action("win.open-folder", ["<primary>i"])
         self.app.set_accels_for_action("win.open-url", ["<primary>u"])
         self.app.set_accels_for_action("win.add-url", ["<shift><primary>u"])
-        self.app.set_accels_for_action("win.open-history", ["<primary>h"])
+        self.app.set_accels_for_action("win.open-watch-history", ["<primary>h"])
         self.app.set_accels_for_action("win.add-playlist-folder", ["<shift><primary>i"])
         self.app.set_accels_for_action("win.open-playlist-dialog", ["<primary>p"])
         self.app.set_accels_for_action("win.clear-and-add", ["<primary>o"])
@@ -909,6 +932,9 @@ class CineWindow(Adw.ApplicationWindow):
 
         self.addons_listbox.set_filter_func(self._addon_filter_func)
         self.addon_url_entry.connect("changed", lambda *a: self.addons_listbox.invalidate_filter())
+
+        self.library_stack.connect("notify::visible-child-name", self._on_library_stack_changed)
+        self._on_library_stack_changed()
 
         max_vol = cast(int, self.mpv.volume_max)
         self.volume_scale_adj.set_upper(max_vol)
@@ -2873,6 +2899,23 @@ class CineWindow(Adw.ApplicationWindow):
 
         threading.Thread(target=fetch_movies, daemon=True).start()
         threading.Thread(target=fetch_series, daemon=True).start()
+        
+        movie_genres = ["All", "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "History", "Horror", "Music", "Musical", "Mystery", "Romance", "Sci-Fi", "Short", "Sport", "Thriller", "War", "Western"]
+        series_genres = ["All", "Action & Adventure", "Animation", "Family", "Kids", "Comedy", "Drama", "Crime", "Mystery", "Sci-Fi & Fantasy", "Western", "War & Politics", "Reality", "Documentary", "Talk", "News", "Soap", "Romance", "Music", "Musical", "History"]
+        for g in movie_genres:
+            self.movies_genre_menu.append(g, f"win.movies-genre-selected::{g}")
+        for g in series_genres:
+            self.series_genre_menu.append(g, f"win.series-genre-selected::{g}")
+            
+        self.search_entry.connect("search-changed", self._on_search_changed)
+        search_key_ctrl = Gtk.EventControllerKey()
+        def on_search_key_pressed(controller, keyval, keycode, state):
+            if keyval == Gdk.KEY_Escape:
+                self._close_search()
+                return True
+            return False
+        search_key_ctrl.connect("key-pressed", on_search_key_pressed)
+        self.search_entry.add_controller(search_key_ctrl)
 
     def _on_movies_scroll(self, adj):
         if self.is_fetching_movies:
@@ -3107,3 +3150,70 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception as e:
                 logger.error(f"Failed to export addons: {e}")
         dialog.save(self, None, on_save_response)
+
+    def _open_search(self, *args):
+        self.header_stack.set_visible_child_name("search_header")
+        self.search_entry.grab_focus()
+
+    def _close_search(self, *args):
+        self.search_entry.set_text("")
+        self.header_stack.set_visible_child_name("library_header")
+        self.library_stack.set_visible_child_name("movies")
+
+    def _on_search_changed(self, entry):
+        query = entry.get_text().strip()
+        if not query:
+            self.library_stack.set_visible_child_name("movies")
+            return
+            
+        self.library_stack.set_visible_child_name("search_results")
+        
+        while self.search_movies_flowbox.get_first_child() is not None:
+            self.search_movies_flowbox.remove(self.search_movies_flowbox.get_first_child())
+        while self.search_series_flowbox.get_first_child() is not None:
+            self.search_series_flowbox.remove(self.search_series_flowbox.get_first_child())
+            
+        def do_search():
+            try:
+                movies = fetch_items(media_type="movie", query=query)
+                if movies:
+                    GLib.idle_add(self._append_flowbox, self.search_movies_flowbox, movies, None)
+                
+                series = fetch_items(media_type="series", query=query)
+                if series:
+                    GLib.idle_add(self._append_flowbox, self.search_series_flowbox, series, None)
+            except Exception as e:
+                logger.error(f"Search error: {e}")
+                
+        threading.Thread(target=do_search, daemon=True).start()
+
+    def switch_to_library_page(self, page_name: str):
+        self.library_stack.set_visible_child_name(page_name)
+
+    def _on_library_stack_changed(self, *args):
+        child_name = self.library_stack.get_visible_child_name()
+        if child_name == "movies":
+            self.category_btn_stack.set_visible_child_name("movies")
+        elif child_name == "series":
+            self.category_btn_stack.set_visible_child_name("series")
+
+    def _open_local_page(self, page_name):
+        self.main_stack.set_visible_child_name("library")
+        self.library_stack.set_visible_child_name(page_name)
+        self._populate_local_db_page(page_name)
+        
+    def _populate_local_db_page(self, page_name):
+        from . import database
+        items = []
+        if page_name == "favorites":
+            items = database.get_favorites()
+        elif page_name == "history":
+            items = database.get_history()
+        elif page_name == "watched":
+            items = database.get_watched()
+        elif page_name == "downloads":
+            items = database.get_downloads()
+            
+        flowbox = getattr(self, f"{page_name}_flowbox", None)
+        if flowbox:
+            self._populate_flowbox(flowbox, items)

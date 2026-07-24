@@ -26,26 +26,107 @@ template $CineWindow: Adw.ApplicationWindow {
           name: "library";
           child: Box {
             orientation: vertical;
-            Adw.HeaderBar library_header {
-              [start]
-              Adw.ViewSwitcher {
-                stack: library_stack;
-                policy: wide;
-              }
+            Stack header_stack {
+              transition-type: crossfade;
 
-              [title]
-              Adw.WindowTitle {
-                title: _("PopcornBox");
-              }
+              StackPage {
+                name: "library_header";
+                child: Adw.HeaderBar library_header {
+                [start]
+                  Stack category_btn_stack {
+                    transition-type: crossfade;
+                    StackPage {
+                      name: "movies";
+                      child: Box {
+                        styles ["linked"]
+                        MenuButton movies_active_btn {
+                          always-show-arrow: true;
+                          menu-model: movies_genre_menu;
+                          child: Adw.ButtonContent {
+                            icon-name: "video-x-generic-symbolic";
+                            label: _("Movies");
+                          };
+                        }
+                        Button series_inactive_btn {
+                          action-name: "win.switch-to-series";
+                          icon-name: "tv-symbolic";
+                        }
+                      };
+                    }
+                    StackPage {
+                      name: "series";
+                      child: Box {
+                        styles ["linked"]
+                        Button movies_inactive_btn {
+                          action-name: "win.switch-to-movies";
+                          icon-name: "video-x-generic-symbolic";
+                        }
+                        MenuButton series_active_btn {
+                          always-show-arrow: true;
+                          menu-model: series_genre_menu;
+                          child: Adw.ButtonContent {
+                            icon-name: "tv-symbolic";
+                            label: _("Series");
+                          };
+                        }
+                      };
+                    }
+                  }
 
-              [end]
-              MenuButton library_primary_menu_btn {
-                valign: center;
-                primary: true;
-                icon-name: "open-menu-symbolic";
-                tooltip-text: _("Main Menu");
+                [title]
+                Adw.WindowTitle {
+                  title: _("PopcornBox");
+                }
 
-                menu-model: primary_menu;
+                [end]
+                Button search_btn {
+                  icon-name: "system-search-symbolic";
+                  tooltip-text: _("Search");
+                  action-name: "win.open-search";
+                  styles ["flat", "circular"]
+                }
+                
+                [end]
+                Button favorites_btn {
+                  icon-name: "starred-symbolic";
+                  tooltip-text: _("Favorites");
+                  action-name: "win.open-favorites";
+                  styles ["flat", "circular"]
+                }
+
+                [end]
+                MenuButton library_primary_menu_btn {
+                  valign: center;
+                  primary: true;
+                  icon-name: "open-menu-symbolic";
+                  tooltip-text: _("Main Menu");
+
+                  menu-model: primary_menu;
+                }
+              };
+            }
+
+              StackPage {
+                name: "search_header";
+                child: Adw.HeaderBar search_header {
+                [start]
+                Button back_from_search_btn {
+                  icon-name: "go-previous-symbolic";
+                  tooltip-text: _("Back");
+                  action-name: "win.close-search";
+                }
+
+                [title]
+                SearchEntry search_entry {
+                  placeholder-text: _("Search PopcornBox...");
+                  width-request: 400;
+                }
+
+                [end]
+                DropDown catalog_dropdown {
+                  valign: center;
+                }
+                };
               }
             }
             Adw.ViewStack library_stack {
@@ -76,6 +157,79 @@ template $CineWindow: Adw.ApplicationWindow {
                     min-children-per-line: 2;
                     selection-mode: none;
                     halign: center;
+                  }
+                };
+              }
+              Adw.ViewStackPage {
+                name: "search_results";
+                child: ScrolledWindow search_scrolled {
+                  vexpand: true;
+                  Box {
+                    orientation: vertical;
+                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                    Label {
+                      label: _("Movies");
+                      styles ["title-2"]
+                      halign: start;
+                      margin-bottom: 8;
+                      margin-start: 12;
+                    }
+                    Separator { margin-bottom: 12; }
+                    FlowBox search_movies_flowbox {
+                      max-children-per-line: 10; min-children-per-line: 2;
+                      selection-mode: none; halign: center;
+                    }
+                    Label {
+                      label: _("Series");
+                      styles ["title-2"]
+                      halign: start;
+                      margin-top: 24; margin-bottom: 8; margin-start: 12;
+                    }
+                    Separator { margin-bottom: 12; }
+                    FlowBox search_series_flowbox {
+                      max-children-per-line: 10; min-children-per-line: 2;
+                      selection-mode: none; halign: center;
+                    }
+                  }
+                };
+              }
+              Adw.ViewStackPage {
+                name: "favorites";
+                child: ScrolledWindow favorites_scrolled {
+                  vexpand: true;
+                  FlowBox favorites_flowbox {
+                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                    max-children-per-line: 10; min-children-per-line: 2; selection-mode: none; halign: center;
+                  }
+                };
+              }
+              Adw.ViewStackPage {
+                name: "history";
+                child: ScrolledWindow history_scrolled {
+                  vexpand: true;
+                  FlowBox history_flowbox {
+                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                    max-children-per-line: 10; min-children-per-line: 2; selection-mode: none; halign: center;
+                  }
+                };
+              }
+              Adw.ViewStackPage {
+                name: "watched";
+                child: ScrolledWindow watched_scrolled {
+                  vexpand: true;
+                  FlowBox watched_flowbox {
+                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                    max-children-per-line: 10; min-children-per-line: 2; selection-mode: none; halign: center;
+                  }
+                };
+              }
+              Adw.ViewStackPage {
+                name: "downloads";
+                child: ScrolledWindow downloads_scrolled {
+                  vexpand: true;
+                  FlowBox downloads_flowbox {
+                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                    max-children-per-line: 10; min-children-per-line: 2; selection-mode: none; halign: center;
                   }
                 };
               }
@@ -254,7 +408,15 @@ template $CineWindow: Adw.ApplicationWindow {
 
                 menu-model: menu primary_menu {
                   section {
+                    item (_("History"), "win.open-history")
+                    item (_("Downloads"), "win.open-downloads")
+                    item (_("Watched"), "win.open-watched")
+                    item (_("Player"), "win.open-player")
                     item (_("Addons"), "win.open-addons")
+                  }
+                  
+                  section {
+                    item (_("Watch History"), "win.open-watch-history")
                     item (_("New Window"), "app.new-window")
                     item (_("Preferences"), "app.preferences")
                     item (_("Keyboard Shortcuts"), "win.custom-shortcuts")
@@ -709,3 +871,6 @@ template $CineWindow: Adw.ApplicationWindow {
     }
   };
 }
+
+menu movies_genre_menu {}
+menu series_genre_menu {}
