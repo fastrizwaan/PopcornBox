@@ -1,0 +1,779 @@
+using Gtk 4.0;
+
+template $OptionsMenuButton: MenuButton {
+  name: "options";
+
+  styles [
+    "circular",
+    "flat",
+  ]
+
+  direction: up;
+  halign: center;
+  icon-name: "cine-options-symbolic";
+  tooltip-text: _("Options");
+
+  popover: Popover popover {
+    ScrolledWindow {
+      propagate-natural-height: true;
+      propagate-natural-width: true;
+
+      Box {
+        orientation: vertical;
+        spacing: 8;
+
+        Box {
+          Button {
+            hexpand: true;
+            label: _("Reset All");
+            clicked => $_on_reset_all_options();
+          }
+        }
+
+        // --- ASPECT RATIO ---
+        Box {
+          Box {
+            halign: start;
+
+            Button aspect_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Aspect Ratio");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_aspect_reset();
+            }
+
+            Label {
+              label: _("Aspect Ratio");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          Gtk.DropDown aspect_dropdown {
+            halign: end;
+            width-request: 108;
+            focus-on-click: false;
+
+            model: Gtk.StringList aspect_list {
+              strings [
+                _("Original"),
+                "16:9",
+                "4:3",
+                "1:1",
+                "16:10",
+                "2.00:1",
+                "2.21:1",
+                "2.35:1",
+                "2.39:1",
+                "5:4",
+              ]
+            };
+
+            notify::selected => $_on_aspect_changed();
+          }
+        }
+
+        Box {
+          Box {
+            halign: start;
+
+            Button crop_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Crop");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_crop_reset();
+            }
+
+            Label {
+              label: _("Crop");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          Gtk.DropDown crop_dropdown {
+            halign: end;
+            width-request: 108;
+            focus-on-click: false;
+
+            model: Gtk.StringList crop_list {
+              strings [
+                _("Original"),
+                "16:9",
+                "4:3",
+                "1:1",
+                "16:10",
+                "2.00:1",
+                "2.21:1",
+                "2.35:1",
+                "2.39:1",
+                "5:4",
+              ]
+            };
+
+            notify::selected => $_on_crop_changed();
+          }
+        }
+
+        // --- ROTATE ---
+        Box {
+          Box {
+            halign: start;
+
+            Button rotate_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Rotation");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_rotate_reset();
+            }
+
+            Label {
+              label: _("Rotate");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          Box {
+            halign: end;
+            spacing: 8;
+
+            Button {
+              valign: center;
+              width-request: 50;
+              icon-name: "object-rotate-left-symbolic";
+              tooltip-text: _("Rotate Left");
+              clicked => $_on_rotate_left();
+            }
+
+            Button {
+              valign: center;
+              width-request: 50;
+              icon-name: "object-rotate-right-symbolic";
+              tooltip-text: _("Rotate Right");
+              clicked => $_on_rotate_right();
+            }
+          }
+        }
+
+        // --- FLIP ---
+        Box flip_box {
+          Box {
+            halign: start;
+
+            Button flip_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Flip");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_flip_reset();
+            }
+
+            Label {
+              label: _("Flip");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          Box {
+            halign: end;
+            spacing: 8;
+
+            Button {
+              valign: center;
+              width-request: 50;
+              icon-name: "object-flip-horizontal-symbolic";
+              tooltip-text: _("Flip Horizontally");
+              clicked => $_on_flip_horiz();
+            }
+
+            Button {
+              valign: center;
+              width-request: 50;
+              icon-name: "object-flip-vertical-symbolic";
+              tooltip-text: _("Flip Vertically");
+              clicked => $_on_flip_vert();
+            }
+          }
+        }
+
+        // --- ZOOM ---
+        Box {
+          Box {
+            halign: start;
+
+            Button zoom_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Zoom");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_zoom_reset();
+            }
+
+            Label {
+              label: _("Zoom");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          SpinButton zoom_spin {
+            css-name: "cine-spinbutton";
+            halign: end;
+            climb-rate: 1;
+            digits: 2;
+
+            accessibility {
+              label: _("Zoom");
+            }
+
+            adjustment: Adjustment {
+              lower: -3;
+              upper: 3;
+              step-increment: 0.05;
+              value: 0;
+            };
+
+            value-changed => $_on_zoom_changed();
+          }
+        }
+
+        // --- CONTRAST ---
+        Box {
+          Box {
+            halign: start;
+
+            Button contrast_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Contrast");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_contrast_reset();
+            }
+
+            Label {
+              label: _("Contrast");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          SpinButton contrast_spin {
+            css-name: "cine-spinbutton";
+            halign: end;
+            climb-rate: 1;
+
+            accessibility {
+              label: _("Contrast");
+            }
+
+            adjustment: Adjustment {
+              lower: -100;
+              upper: 100;
+              step-increment: 1;
+              value: 0;
+            };
+
+            value-changed => $_on_contrast_changed();
+          }
+        }
+
+        // --- BRIGHTNESS ---
+        Box {
+          Box {
+            halign: start;
+
+            Button brightness_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Brightness");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_brightness_reset();
+            }
+
+            Label {
+              label: _("Brightness");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          SpinButton brightness_spin {
+            css-name: "cine-spinbutton";
+            halign: end;
+            climb-rate: 1;
+
+            accessibility {
+              label: _("Brightness");
+            }
+
+            adjustment: Adjustment {
+              lower: -100;
+              upper: 100;
+              step-increment: 1;
+              value: 0;
+            };
+
+            value-changed => $_on_brightness_changed();
+          }
+        }
+
+        // --- GAMMA ---
+        Box {
+          Box {
+            halign: start;
+
+            Button gamma_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Gamma");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_gamma_reset();
+            }
+
+            Label {
+              label: _("Gamma");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          SpinButton gamma_spin {
+            css-name: "cine-spinbutton";
+            halign: end;
+            climb-rate: 1;
+
+            accessibility {
+              label: _("Gamma");
+            }
+
+            adjustment: Adjustment {
+              lower: -100;
+              upper: 100;
+              step-increment: 1;
+              value: 0;
+            };
+
+            value-changed => $_on_gamma_changed();
+          }
+        }
+
+        // --- SATURATION ---
+        Box {
+          Box {
+            halign: start;
+
+            Button saturation_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Saturation");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_saturation_reset();
+            }
+
+            Label {
+              label: _("Saturation");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          SpinButton saturation_spin {
+            css-name: "cine-spinbutton";
+            halign: end;
+            climb-rate: 1;
+
+            accessibility {
+              label: _("Saturation");
+            }
+
+            adjustment: Adjustment {
+              lower: -100;
+              upper: 100;
+              step-increment: 1;
+              value: 0;
+            };
+
+            value-changed => $_on_saturation_changed();
+          }
+        }
+
+        // --- HUE ---
+        Box {
+          Box {
+            halign: start;
+
+            Button hue_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Hue");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_hue_reset();
+            }
+
+            Label {
+              // TRANSLATORS: Do not use "Color" or "Temperature", those are different things
+              label: _("Hue");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              xalign: 0.0;
+              margin-start: 8;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          SpinButton hue_spin {
+            css-name: "cine-spinbutton";
+            halign: end;
+            climb-rate: 1;
+
+            accessibility {
+              label: _("Hue");
+            }
+
+            adjustment: Adjustment {
+              lower: -100;
+              upper: 100;
+              step-increment: 1;
+              value: 0;
+            };
+
+            value-changed => $_on_hue_changed();
+          }
+        }
+
+        // --- SUBTITLE DELAY ---
+        Box {
+          Box {
+            halign: start;
+
+            Button sub_delay_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Subtitle Delay");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_sub_delay_reset();
+            }
+
+            Label {
+              label: _("Subtitle Delay");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          SpinButton sub_delay_spin {
+            css-name: "cine-spinbutton";
+            halign: end;
+            climb-rate: 1;
+            digits: 1;
+
+            accessibility {
+              label: _("Subtitle Delay");
+            }
+
+            adjustment: Adjustment {
+              lower: -999.9;
+              upper: 999.9;
+              step-increment: 0.1;
+              value: 0;
+            };
+
+            value-changed => $_on_sub_delay_changed();
+          }
+        }
+
+        // --- AUDIO DELAY ---
+        Box {
+          Box {
+            halign: start;
+
+            Button audio_delay_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Audio Delay");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_audio_delay_reset();
+            }
+
+            Label {
+              label: _("Audio Delay");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          SpinButton audio_delay_spin {
+            css-name: "cine-spinbutton";
+            halign: end;
+            climb-rate: 1;
+            digits: 1;
+
+            accessibility {
+              label: _("Audio Delay");
+            }
+
+            adjustment: Adjustment {
+              lower: -999.9;
+              upper: 999.9;
+              step-increment: 0.1;
+              value: 0;
+            };
+
+            value-changed => $_on_audio_delay_changed();
+          }
+        }
+
+        // --- PLAYBACK SPEED ---
+        Box {
+          Box {
+            halign: start;
+
+            Button speed_reset_btn {
+              icon-name: "edit-undo-symbolic";
+              tooltip-text: _("Reset Playback Speed");
+
+              styles [
+                "flat",
+              ]
+
+              clicked => $_on_speed_reset();
+            }
+
+            Label {
+              label: _("Playback Speed");
+              wrap: true;
+              natural-wrap-mode: none;
+              halign: start;
+              margin-start: 8;
+              xalign: 0.0;
+
+              styles [
+                "heading",
+              ]
+            }
+          }
+
+          Separator {
+            hexpand: true;
+            opacity: 0;
+            margin-end: 2;
+          }
+
+          SpinButton speed_spin {
+            css-name: "cine-spinbutton";
+            halign: end;
+            climb-rate: 1;
+            digits: 2;
+
+            accessibility {
+              label: _("Playback Speed");
+            }
+
+            adjustment: Adjustment {
+              lower: 0.25;
+              upper: 10;
+              step-increment: 0.25;
+              value: 1;
+            };
+
+            value-changed => $_on_speed_changed();
+          }
+        }
+      }
+    }
+  };
+}

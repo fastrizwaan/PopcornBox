@@ -1,0 +1,912 @@
+# Cine
+# Copyright (C) 2025 Diego Povliuk
+# This file is distributed under the same license as the io.github.diegopvlk.Cine package.
+# Mimolet <theMimolet@proton.me>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: io.github.diegopvlk.Cine\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-16 18:07-0300\n"
+"PO-Revision-Date: 2026-06-28 15:00+0000\n"
+"Last-Translator: Mimolet <themimolet@proton.me>\n"
+"Language-Team: French <https://hosted.weblate.org/projects/cine/app/fr/>\n"
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=n > 1;\n"
+"X-Generator: Weblate 2026.7.dev0\n"
+
+#: data/io.github.diegopvlk.Cine.desktop.in:2 src/main.py:230 src/mpris.py:140
+#: src/mpris.py:358 src/window.py:208 src/window.py:2096 src/window.blp:6
+#: src/window.blp:81 src/window.blp:438
+msgid "Cine"
+msgstr "Cine"
+
+#: data/io.github.diegopvlk.Cine.desktop.in:3
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:23
+msgid "Play your videos"
+msgstr "Visionnez vos vidéos"
+
+#. TRANSLATORS: Search terms to find this application. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
+#: data/io.github.diegopvlk.Cine.desktop.in:10
+msgid "Audio;Video;Movie;TV;Film;Clip;Player;Cine;mpv;"
+msgstr "Audio;Video;Movie;TV;Film;Clip;Player;Cine;mpv;Vidéo;Lecteur;Media;mpv;"
+
+#: data/io.github.diegopvlk.Cine.desktop.in:18 src/shortcuts-dialog.blp:11
+#: src/window.blp:122
+msgid "New Window"
+msgstr "Nouvelle fenêtre"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:25
+msgid ""
+"Cine combines a clean interface with a high-performance engine to deliver a "
+"seamless viewing experience."
+msgstr ""
+"Cine combine une interface épurée et un moteur haute performance pour offrir "
+"une expérience visuelle fluide."
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:27
+msgid "Simple Design: A refined, distraction-free interface"
+msgstr "Design simple : une interface raffinée, sans distraction"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:28
+msgid ""
+"MPV-Based: Leverages the robust power of MPV for great playback and format "
+"support"
+msgstr ""
+"Basé sur MPV : Cine exploite la puissance de MPV pour une lecture et une "
+"prise en charge exceptionnelle des différents formats"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:29
+msgid ""
+"Audio and Subtitles: Control track selection and synchronization for both"
+msgstr ""
+"Audio et sous-titres : Contrôlez la sélection et la synchronisation des "
+"pistes pour les deux"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:30
+msgid ""
+"Video Controls: Easily adjust brightness, contrast, zoom, aspect ratio, etc."
+msgstr ""
+"Commandes vidéo : réglez facilement la luminosité, le contraste, le zoom, le "
+"format d'image, etc."
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:42
+msgid "Video Playing"
+msgstr "Lecture vidéo"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:46
+msgid "Video Options"
+msgstr "Options vidéo"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:50 src/preferences.blp:5
+#: src/preferences.blp:77 src/window.blp:123 src/window.blp:554
+msgid "Preferences"
+msgstr "Préférences"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:54
+msgid "Main Window"
+msgstr "Fenêtre principale"
+
+#: src/history.py:54 src/history.py:58
+msgid "Load All"
+msgstr "Tout charger"
+
+#: src/history.py:136
+msgid "Remove from History"
+msgstr "Supprimer de l'historique"
+
+#: src/history.py:206 src/playlist.py:421
+msgid "Open Item Location"
+msgstr "Ouvrir l'emplacement de l'élément"
+
+#: src/history.py:295
+msgid "Clear Watch History?"
+msgstr "Effacer l'historique de lecture ?"
+
+#: src/history.py:296
+msgid "Cancel"
+msgstr "Annuler"
+
+#: src/history.py:297 src/history.blp:16
+msgid "Clear All"
+msgstr "Tout effacer"
+
+#. Translators: Replace "translator-credits" with your name/username, and optionally an email or URL.
+#: src/main.py:240
+msgid "translator-credits"
+msgstr "Mimolet <theMimolet@proton.me>, 2026"
+
+#: src/playlist.py:118 src/playlist.blp:45
+msgid "Search"
+msgstr "Rechercher"
+
+#: src/playlist.py:181 src/playlist.py:189 src/playlist.py:461
+#: src/preferences.py:331 src/playlist.blp:52
+msgid "Save Playlist"
+msgstr "Enregistrer la liste de lecture"
+
+#: src/playlist.py:184 src/preferences.blp:115 src/preferences.blp:150
+msgid ""
+"Requires flatpak permission to read the folder where the video is stored"
+msgstr ""
+"Nécessite l'autorisation Flatpak pour lire le dossier dans lequel la vidéo "
+"est stockée"
+
+#: src/playlist.py:316 src/window.py:1369 src/window.py:1903
+msgid "File Error"
+msgstr "Erreur de fichier"
+
+#: src/playlist.py:422
+msgid "Remove from Playlist"
+msgstr "Supprimer de la liste de lecture"
+
+#: src/playlist.py:462 src/playlist.blp:16 src/window.blp:343
+#: src/window.blp:556
+msgid "Playlist"
+msgstr "Liste de lecture"
+
+#: src/playlist.py:482
+#, python-brace-format
+msgid "{n} item"
+msgid_plural "{n} items"
+msgstr[0] "{n} élément"
+msgstr[1] "{n} éléments"
+
+#: src/preferences.py:113 src/preferences.blp:170
+msgid "Subtitle Color"
+msgstr "Couleur des sous-titres"
+
+#: src/preferences.py:127 src/preferences.blp:250
+msgid "Subtitle Background"
+msgstr "Arrière-plan des sous-titres"
+
+#: src/preferences.py:328
+msgid "Some features require extra permission to work properly:"
+msgstr ""
+"Certaines fonctionnalités nécessitent des autorisations supplémentaires pour "
+"fonctionner correctement :"
+
+#: src/preferences.py:329
+msgid "Auto load subtitle file"
+msgstr "Charger automatiquement le fichier de sous-titres"
+
+#: src/preferences.py:330
+msgid "Auto add files from the same folder to playlist"
+msgstr ""
+"Ajouter automatiquement les fichiers du même dossier à la liste de lecture"
+
+#: src/preferences.py:332 src/preferences.blp:98
+msgid "Restore Saved Session"
+msgstr "Restaurer la session enregistrée"
+
+#: src/preferences.py:333 src/preferences.blp:133
+msgid "Save Video Position on Close"
+msgstr "Enregistrer la position de la vidéo à la fermeture"
+
+#: src/preferences.py:334 src/history.blp:5 src/shortcuts-dialog.blp:61
+#: src/window.blp:108 src/window.blp:470 src/window.blp:555
+msgid "Watch History"
+msgstr "Historique de lecture"
+
+#: src/preferences.py:338
+msgid ""
+"If you wish to use those features, install Flatseal for granular folder "
+"control, or run this command to grant access to all folders in the system:"
+msgstr ""
+"Si vous souhaitez utiliser ces fonctionnalités, installez Flatseal pour un "
+"contrôle granulaire des dossiers, ou exécutez cette commande pour accorder "
+"l'accès à tous les dossiers du système :"
+
+#: src/preferences.py:344
+msgid "Extra permission enabled."
+msgstr "Permission supplémentaire activée."
+
+#: src/preferences.py:360
+msgid "Copied"
+msgstr "Copié"
+
+#: src/preferences.py:366 src/preferences.blp:58
+msgid "Copy"
+msgstr "Copier"
+
+#: src/save_session.py:66
+msgid "Restoring Session…"
+msgstr "Restauration de la session…"
+
+#: src/shortcuts.py:31 src/shortcuts.py:32 src/shortcuts.py:33
+#: src/shortcuts.py:34 src/window.py:2028 src/window.blp:201
+msgid "Volume"
+msgstr "Volume"
+
+#: src/shortcuts.py:31
+msgid "Volume Increase"
+msgstr "Augmentation du volume"
+
+#: src/shortcuts.py:32
+msgid "Volume Decrease"
+msgstr "Baisse du volume"
+
+#: src/shortcuts.py:35 src/shortcuts.py:36 src/shortcuts.py:37
+#: src/preferences.blp:273 src/preferences.blp:285 src/window.blp:180
+#: src/window.blp:542
+msgid "Play/Pause"
+msgstr "Lecture/Pause"
+
+#: src/shortcuts.py:38
+msgid "Show/Hide Subtitles"
+msgstr "Afficher/Masquer les sous-titres"
+
+#: src/shortcuts.py:39 src/shortcuts.py:40 src/shortcuts.py:169
+#: src/shortcuts.py:233 src/window.py:779 src/window.blp:244
+msgid "Subtitles"
+msgstr "Sous-titres"
+
+#: src/shortcuts.py:39
+msgid "Next Subtitle Track"
+msgstr "Piste de sous-titres suivante"
+
+#: src/shortcuts.py:40
+msgid "Previous Subtitle Track"
+msgstr "Piste de sous-titres précédente"
+
+#: src/shortcuts.py:41 src/shortcuts.py:42
+msgid "Secondary Subtitles"
+msgstr "Sous-titres secondaires"
+
+#: src/shortcuts.py:41
+msgid "Next Secondary Subtitle Track"
+msgstr "Piste de sous-titres secondaires suivante"
+
+#: src/shortcuts.py:42
+msgid "Previous Secondary Subtitle Track"
+msgstr "Piste de sous-titres secondaires précédente"
+
+#: src/shortcuts.py:43 src/shortcuts.py:44 src/window.py:784 src/window.blp:259
+msgid "Audio"
+msgstr "Audio"
+
+#: src/shortcuts.py:43
+msgid "Next Audio Track"
+msgstr "Piste audio suivante"
+
+#: src/shortcuts.py:44
+msgid "Previous Audio Track"
+msgstr "Piste audio précédente"
+
+#: src/shortcuts.py:45
+msgid "Seek 10s Backward"
+msgstr "Reculer de 10 secondes"
+
+#: src/shortcuts.py:46
+msgid "Seek 10s Forward"
+msgstr "Avancer de 10 secondes"
+
+#: src/shortcuts.py:47
+msgid "Seek 5s Backward"
+msgstr "Reculer de 5 secondes"
+
+#: src/shortcuts.py:48
+msgid "Seek 5s Forward"
+msgstr "Avancer de 5 secondes"
+
+#: src/shortcuts.py:49 src/shortcuts.py:50 src/window.py:1972
+#: src/window.blp:359
+msgid "Fullscreen"
+msgstr "Plein écran"
+
+#: src/shortcuts.py:51 src/window.py:1972
+msgid "Exit Fullscreen"
+msgstr "Quitter le plein écran"
+
+#: src/shortcuts.py:61 src/shortcuts.py:62 src/shortcuts.py:63
+#: src/options.blp:285 src/options.blp:311
+msgid "Zoom"
+msgstr "Zoom"
+
+#: src/shortcuts.py:61 src/shortcuts.py:62
+msgid "Zoom In"
+msgstr "Zoom avant"
+
+#: src/shortcuts.py:63
+msgid "Zoom Out"
+msgstr "Zoom arrière"
+
+#: src/shortcuts.py:66 src/shortcuts.py:67 src/options.blp:623
+#: src/options.blp:649
+msgid "Subtitle Delay"
+msgstr "Délai des sous-titres"
+
+#: src/shortcuts.py:66
+msgid "Decrease Subtitle Delay"
+msgstr "Réduire le délai des sous-titres"
+
+#: src/shortcuts.py:67
+msgid "Increase Subtitle Delay"
+msgstr "Augmenter le délai des sous-titres"
+
+#: src/shortcuts.py:68 src/shortcuts.py:69
+msgid "Subtitle Position"
+msgstr "Position du sous-titre"
+
+#: src/shortcuts.py:68
+msgid "Move Subtitles Up"
+msgstr "Déplacer les sous-titres vers le haut"
+
+#: src/shortcuts.py:69
+msgid "Move Subtitles Down"
+msgstr "Déplacer les sous-titres vers le bas"
+
+#: src/shortcuts.py:70 src/shortcuts.py:71 src/preferences.blp:239
+msgid "Subtitle Scale"
+msgstr "Taille des sous-titres"
+
+#: src/shortcuts.py:70
+msgid "Increase Subtitle Scale"
+msgstr "Augmenter la taille des sous-titres"
+
+#: src/shortcuts.py:71
+msgid "Decrease Subtitle Scale"
+msgstr "Diminuer la taille des sous-titres"
+
+#: src/shortcuts.py:72 src/window.blp:212
+msgid "Mute/Unmute"
+msgstr "Activer/Désactiver le son"
+
+#: src/shortcuts.py:73 src/shortcuts.py:74 src/shortcuts.py:75
+#: src/options.blp:680 src/options.blp:706
+msgid "Audio Delay"
+msgstr "Délai de l'audio"
+
+#: src/shortcuts.py:73
+msgid "Decrease Audio Delay"
+msgstr "Réduire le délai de l'audio"
+
+#: src/shortcuts.py:74 src/shortcuts.py:75
+msgid "Increase Audio Delay"
+msgstr "Augmenter le délai de l'audio"
+
+#: src/shortcuts.py:76
+msgid "Go Back One Frame"
+msgstr "Recule d'une image"
+
+#: src/shortcuts.py:77
+msgid "Advance One Frame"
+msgstr "Avance d'une image"
+
+#: src/shortcuts.py:78
+msgid "Seek to the Previous Chapter"
+msgstr "Atteindre le Chapitre Précédent"
+
+#: src/shortcuts.py:79
+msgid "Seek to the Next Chapter"
+msgstr "Atteindre le Chapitre Suivant"
+
+#: src/shortcuts.py:80
+msgid "Take Screenshot With Subtitles"
+msgstr "Prendre une capture d'écran avec sous-titres"
+
+#: src/shortcuts.py:81
+msgid "Take Screenshot Without Subtitles"
+msgstr "Prendre une capture d'écran sans sous-titres"
+
+#: src/shortcuts.py:82
+msgid "Statistics"
+msgstr "Statistiques"
+
+#: src/shortcuts.py:83
+msgid "Statistics Overlay"
+msgstr "Interface des statistiques"
+
+#: src/shortcuts.py:84
+msgid "Set/Clear A-B Loop Points"
+msgstr "Définir/effacer les points de boucle A-B"
+
+#: src/shortcuts.py:85
+msgid "Loop"
+msgstr "Boucle"
+
+#: src/shortcuts.py:85 src/window.blp:331
+msgid "Loop File"
+msgstr "Faire boucler le fichier"
+
+#: src/shortcuts.py:86 src/shortcuts.py:87 src/options.blp:342
+#: src/options.blp:367
+msgid "Contrast"
+msgstr "Contraste"
+
+#: src/shortcuts.py:86
+msgid "Decrease Contrast"
+msgstr "Réduire le contraste"
+
+#: src/shortcuts.py:87
+msgid "Increase Contrast"
+msgstr "Augmenter le contraste"
+
+#: src/shortcuts.py:88 src/shortcuts.py:89 src/options.blp:398
+#: src/options.blp:423
+msgid "Brightness"
+msgstr "Luminosité"
+
+#: src/shortcuts.py:88
+msgid "Decrease Brightness"
+msgstr "Réduire la luminosité"
+
+#: src/shortcuts.py:89
+msgid "Increase Brightness"
+msgstr "Augmenter la luminosité"
+
+#: src/shortcuts.py:90 src/shortcuts.py:91 src/options.blp:454
+#: src/options.blp:479
+msgid "Gamma"
+msgstr "Gamma"
+
+#: src/shortcuts.py:90
+msgid "Decrease Gamma"
+msgstr "Diminuer le gamma"
+
+#: src/shortcuts.py:91
+msgid "Increase Gamma"
+msgstr "Augmenter le gamma"
+
+#: src/shortcuts.py:92 src/shortcuts.py:93 src/options.blp:510
+#: src/options.blp:535
+msgid "Saturation"
+msgstr "Saturation"
+
+#: src/shortcuts.py:92
+msgid "Decrease Saturation"
+msgstr "Réduire la saturation"
+
+#: src/shortcuts.py:93
+msgid "Increase Saturation"
+msgstr "Augmenter la saturation"
+
+#: src/shortcuts.py:94 src/shortcuts.py:95 src/shortcuts.py:96
+msgid "Speed"
+msgstr "Vitesse"
+
+#: src/shortcuts.py:94
+msgid "Decrease Playback Speed"
+msgstr "Réduire la vitesse de lecture"
+
+#: src/shortcuts.py:95
+msgid "Increase Playback Speed"
+msgstr "Augmenter la vitesse de lecture"
+
+#: src/shortcuts.py:96 src/options.blp:727
+msgid "Reset Playback Speed"
+msgstr "Réinitialiser la vitesse de lecture"
+
+#: src/shortcuts.py:153 src/shortcuts.py:236
+msgid "Display & Video"
+msgstr "Affichage & Vidéo"
+
+#: src/shortcuts.py:170 src/shortcuts.py:234
+msgid "Audio & Volume"
+msgstr "Audio & Volume"
+
+#: src/shortcuts.py:171 src/shortcuts.py:235
+msgid "Navigation"
+msgstr "Navigation"
+
+#: src/shortcuts.py:172 src/shortcuts.py:237
+msgid "Playback"
+msgstr "Relecture"
+
+#: src/shortcuts.py:176 src/shortcuts.py:182 src/shortcuts.py:238
+#: src/shortcuts.py:242
+msgid "Miscellaneous"
+msgstr "Divers"
+
+#: src/window.py:635 src/window.py:1361 src/window.blp:104
+msgid "Add Subtitle Track"
+msgstr "Ajouter une piste de sous-titres"
+
+#: src/window.py:637 src/window.py:646
+msgid "None"
+msgstr "Aucun"
+
+#: src/window.py:644 src/window.blp:105
+msgid "Add Audio Track"
+msgstr "Ajouter une piste audio"
+
+#: src/window.py:683
+msgid "Track"
+msgstr "Piste"
+
+#: src/window.py:726 src/playlist.blp:31 src/window.blp:102
+msgid "Add Folder"
+msgstr "Ajouter un dossier"
+
+#: src/window.py:726 src/shortcuts-dialog.blp:21 src/window.blp:99
+#: src/window.blp:483 src/window.blp:549
+msgid "Open Folder"
+msgstr "Ouvrir un dossier"
+
+#: src/window.py:753 src/shortcuts-dialog.blp:16 src/window.blp:98
+#: src/window.blp:548
+msgid "Open Files"
+msgstr "Ouvrir des fichiers"
+
+#: src/window.py:756 src/playlist.blp:26 src/window.blp:101
+msgid "Add Files"
+msgstr "Ajouter des fichiers"
+
+#: src/window.py:760
+msgid "Add Subtitle"
+msgstr "Ajouter un sous-titre"
+
+#: src/window.py:763
+msgid "Add Audio"
+msgstr "Ajouter un fichier audio"
+
+#: src/window.py:788
+msgid "Media"
+msgstr "Media"
+
+#: src/window.py:847
+msgid "Session Saved"
+msgstr "Session enregistrée"
+
+#: src/window.py:853 src/playlist.blp:36 src/window.blp:103
+msgid "Add URL"
+msgstr "Ajouter une URL"
+
+#: src/window.py:853 src/shortcuts-dialog.blp:26 src/window.blp:100
+#: src/window.blp:492 src/window.blp:550
+msgid "Open URL"
+msgstr "Ouvrir l'URL"
+
+#: src/window.py:866
+msgid "URL"
+msgstr "URL"
+
+#: src/window.py:874 src/playlist.blp:22
+msgid "Add"
+msgstr "Ajouter"
+
+#: src/window.py:874 src/window.blp:93
+msgid "Open"
+msgstr "Ouvrir"
+
+#: src/window.py:1067 src/window.py:1191
+msgid "Chapter"
+msgstr "Chapitre"
+
+#: src/window.py:1246 src/window.py:1365
+msgid "Play"
+msgstr "Lecture"
+
+#: src/window.py:1246
+msgid "Pause"
+msgstr "Pause"
+
+#: src/options.blp:14
+msgid "Options"
+msgstr "Options"
+
+#: src/options.blp:28
+msgid "Reset All"
+msgstr "Tout réinitialiser"
+
+#: src/options.blp:40
+msgid "Reset Aspect Ratio"
+msgstr "Réinitialiser le format de l'image"
+
+#: src/options.blp:50
+msgid "Aspect Ratio"
+msgstr "Format de l'image"
+
+#: src/options.blp:76 src/options.blp:135
+msgid "Original"
+msgstr "Original"
+
+#: src/options.blp:99
+msgid "Reset Crop"
+msgstr "Réinitialiser le recadrage"
+
+#: src/options.blp:109
+msgid "Crop"
+msgstr "Recadrer"
+
+#: src/options.blp:159
+msgid "Reset Rotation"
+msgstr "Réinitialiser la rotation"
+
+#: src/options.blp:169
+msgid "Rotate"
+msgstr "Pivoter"
+
+#: src/options.blp:196
+msgid "Rotate Left"
+msgstr "Pivoter sur la gauche"
+
+#: src/options.blp:204
+msgid "Rotate Right"
+msgstr "Pivoter sur la droite"
+
+#: src/options.blp:217
+msgid "Reset Flip"
+msgstr "Réinitialiser le retournement"
+
+#: src/options.blp:227
+msgid "Flip"
+msgstr "Retourner"
+
+#: src/options.blp:254
+msgid "Flip Horizontally"
+msgstr "Retourner horizontalement"
+
+#: src/options.blp:262
+msgid "Flip Vertically"
+msgstr "Retourner verticalement"
+
+#: src/options.blp:275
+msgid "Reset Zoom"
+msgstr "Réinitialiser le zoom"
+
+#: src/options.blp:332
+msgid "Reset Contrast"
+msgstr "Réinitialiser le contraste"
+
+#: src/options.blp:388
+msgid "Reset Brightness"
+msgstr "Réinitialiser la luminosité"
+
+#: src/options.blp:444
+msgid "Reset Gamma"
+msgstr "Réinitialiser le gamma"
+
+#: src/options.blp:500
+msgid "Reset Saturation"
+msgstr "Réinitialiser la saturation"
+
+#: src/options.blp:556
+msgid "Reset Hue"
+msgstr "Réinitialiser la Teinte"
+
+#. TRANSLATORS: Do not use "Color" or "Temperature", those are different things
+#: src/options.blp:567 src/options.blp:592
+msgid "Hue"
+msgstr "Teinte"
+
+#: src/options.blp:613
+msgid "Reset Subtitle Delay"
+msgstr "Réinitialiser le délai des sous-titres"
+
+#: src/options.blp:670
+msgid "Reset Audio Delay"
+msgstr "Réinitialiser le délai de l'audio"
+
+#: src/options.blp:737 src/options.blp:763
+msgid "Playback Speed"
+msgstr "Vitesse de lecture"
+
+#: src/playlist.blp:94
+msgid "No Results Found"
+msgstr "Aucun résultat trouvé"
+
+#: src/playlist.blp:128
+msgid "Add to Playlist"
+msgstr "Ajouter à la liste de lecture"
+
+#: src/preferences.blp:15
+msgid "About Permissions"
+msgstr "À propos des autorisations"
+
+#: src/preferences.blp:81
+msgid "Open New Window for New Files"
+msgstr "Ouvrir une nouvelle fenêtre pour les nouveaux fichiers"
+
+#: src/preferences.blp:85
+msgid "Progress Bar Thumbnail"
+msgstr "Miniature de la barre de progression"
+
+#: src/preferences.blp:89
+msgid "Normalize Volume"
+msgstr "Normaliser le volume"
+
+#: src/preferences.blp:93
+msgid "Hardware Acceleration"
+msgstr "Accélération matérielle"
+
+#: src/preferences.blp:94
+msgid "Use GPU for video decoding when available"
+msgstr "Utiliser le GPU pour le décodage vidéo si disponible"
+
+#: src/preferences.blp:99
+msgid "Pick up where you left off after saving from the menu"
+msgstr ""
+"Reprenez là où vous vous étiez arrêté après avoir enregistré via le menu"
+
+#: src/preferences.blp:134
+msgid "Also save options like brightness, subtitle delay, etc."
+msgstr ""
+"Enregistre également les options telles que la luminosité, le délai des sous-"
+"titres, etc."
+
+#: src/preferences.blp:183 src/preferences.blp:229
+msgid "Reset"
+msgstr "Réinitialiser"
+
+#: src/preferences.blp:193
+msgid "Subtitle Font"
+msgstr "Police des sous-titres"
+
+#: src/preferences.blp:206
+msgid "Some fonts may not work"
+msgstr "Certaines polices pourraient ne pas fonctionner"
+
+#: src/preferences.blp:269
+msgid "Primary Click"
+msgstr "Clic principal"
+
+#: src/preferences.blp:274
+msgid "Focus/Play/Pause"
+msgstr "Focus/Lecture/Pause"
+
+#: src/preferences.blp:275 src/preferences.blp:287
+msgid "Bypass"
+msgstr "Ignorer"
+
+#: src/preferences.blp:281
+msgid "Secondary Click"
+msgstr "Clic secondaire"
+
+#: src/preferences.blp:286
+msgid "Context Menu"
+msgstr "Menu contextuel"
+
+#: src/preferences.blp:295
+msgid "Preferred Subtitle Languages"
+msgstr "Langues préférées pour les sous-titres"
+
+#: src/preferences.blp:296 src/preferences.blp:301
+msgid "Example: en,es,pt"
+msgstr "Par exemple : fr,es,en"
+
+#: src/preferences.blp:300
+msgid "Preferred Audio Languages"
+msgstr "Langues audio préférées"
+
+#: src/preferences.blp:307
+msgid "Open Config Folder"
+msgstr "Ouvrir le dossier de configuration"
+
+#: src/shortcuts-dialog.blp:8
+msgid "General"
+msgstr "Général"
+
+#: src/shortcuts-dialog.blp:31
+msgid "Add Files to Playlist"
+msgstr "Ajouter des fichiers à la liste de lecture"
+
+#: src/shortcuts-dialog.blp:36
+msgid "Add Folder to Playlist"
+msgstr "Ajouter le dossier à la playlist"
+
+#: src/shortcuts-dialog.blp:41
+msgid "Add URL to Playlist"
+msgstr "Ajouter l'URL à la playlist"
+
+#: src/shortcuts-dialog.blp:46
+msgid "Open Subtitles Menu"
+msgstr "Ouvrir le menu -titres"
+
+#: src/shortcuts-dialog.blp:51
+msgid "Open Audio Menu"
+msgstr "Ouvrir le menu Audio"
+
+#: src/shortcuts-dialog.blp:56
+msgid "Open Chapters Menu"
+msgstr "Ouvrir le menu des chapitres"
+
+#: src/shortcuts-dialog.blp:66
+msgid "Show Shortcuts"
+msgstr "Afficher les raccourcis"
+
+#: src/shortcuts-dialog.blp:71
+msgid "Close Window"
+msgstr "Fermer la fenêtre"
+
+#: src/shortcuts-dialog.blp:76 src/window.blp:129
+msgid "Save Session"
+msgstr "Enregistrer la session"
+
+#: src/shortcuts-dialog.blp:81 src/window.blp:130
+msgid "Save Session and Close"
+msgstr "Enregistrer la session et fermer"
+
+#: src/shortcuts-dialog.blp:86
+msgid "Quit"
+msgstr "Quitter"
+
+#: src/window.blp:118
+msgid "Main Menu"
+msgstr "Menu principal"
+
+#: src/window.blp:124
+msgid "Keyboard Shortcuts"
+msgstr "Raccourcis clavier"
+
+#: src/window.blp:125
+msgid "About Cine"
+msgstr "À propos de Cine"
+
+#: src/window.blp:169 src/window.blp:543
+msgid "Previous"
+msgstr "Précédent"
+
+#: src/window.blp:192 src/window.blp:544
+msgid "Next"
+msgstr "Suivant"
+
+#: src/window.blp:273
+msgid "Video"
+msgstr "Vidéo"
+
+#: src/window.blp:288
+msgid "Chapters"
+msgstr "Chapitres"
+
+#: src/window.blp:305
+msgid "Shuffle Playlist"
+msgstr "Lecture aléatoire de la liste de lecture"
+
+#: src/window.blp:318
+msgid "Loop Playlist"
+msgstr "Faire boucler la liste de lecture"
+
+#: src/window.blp:392
+msgid "Toggle Elapsed/Remaining"
+msgstr "Basculer écoulé/restant"
+
+#: src/window.blp:439
+msgid "Drag and drop files here"
+msgstr "Glissez-déposez les fichiers ici"
+
+#: src/window.blp:459
+msgid "Open…"
+msgstr "Ouvrir…"
+
+#~ msgid "Left Click"
+#~ msgstr "Clic gauche"
+
+#~ msgid "Disabled"
+#~ msgstr "Désactivé"
+
+#~ msgid "Right Click"
+#~ msgstr "Clic droit"
+
+#~ msgid "Window Menu"
+#~ msgstr "Menu de la fenêtre"
+
+#~ msgid "Subtitle"
+#~ msgstr "Sous-titre"
+
+#~ msgid "Unknown title"
+#~ msgstr "Titre inconnu"
+
+#~ msgid "Shortcuts"
+#~ msgstr "Raccourcis"
+
+#~ msgid "Switch to Next Subtitle Track"
+#~ msgstr "Sous-titres suivants"
+
+#~ msgid "Switch to Next Audio Track"
+#~ msgstr "Piste audio suivante"
+
+#~ msgid "Restore files and auto-play on startup"
+#~ msgstr "Restaurer les fichiers et lecture automatique au démarrage"
+
+#~ msgid "Muted"
+#~ msgstr "Muet"
+
+#~ msgid "Mute"
+#~ msgstr "Muet"
+
+#~ msgid "File Loop"
+#~ msgstr "Boucle de fichiers"

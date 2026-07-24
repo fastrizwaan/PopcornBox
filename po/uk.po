@@ -1,0 +1,881 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the io.github.diegopvlk.Cine package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: io.github.diegopvlk.Cine\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-16 18:07-0300\n"
+"PO-Revision-Date: 2026-07-07 20:07+0000\n"
+"Last-Translator: Димко <Dymkovych@proton.me>\n"
+"Language-Team: Ukrainian <https://hosted.weblate.org/projects/cine/app/uk/>\n"
+"Language: uk\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
+"n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+"X-Generator: Weblate 2026.7.1.dev0\n"
+
+#: data/io.github.diegopvlk.Cine.desktop.in:2 src/main.py:230 src/mpris.py:140
+#: src/mpris.py:358 src/window.py:208 src/window.py:2096 src/window.blp:6
+#: src/window.blp:81 src/window.blp:438
+msgid "Cine"
+msgstr "Кіно"
+
+#: data/io.github.diegopvlk.Cine.desktop.in:3
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:23
+msgid "Play your videos"
+msgstr "Відтворити ваші видива"
+
+#. TRANSLATORS: Search terms to find this application. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
+#: data/io.github.diegopvlk.Cine.desktop.in:10
+msgid "Audio;Video;Movie;TV;Film;Clip;Player;Cine;mpv;"
+msgstr "Аудіо;Відео;Фільм;Кіно;ТБ;Телебачення;Кліп;Ролик;Програвач;Плеєр;mpv;"
+
+#: data/io.github.diegopvlk.Cine.desktop.in:18 src/shortcuts-dialog.blp:11
+#: src/window.blp:122
+msgid "New Window"
+msgstr "Нове Вікно"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:25
+msgid ""
+"Cine combines a clean interface with a high-performance engine to deliver a "
+"seamless viewing experience."
+msgstr ""
+"Cine поєднує зрозумілий інтерфейс із високопродуктивним движком, "
+"забезпечуючи безперебійний перегляд."
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:27
+msgid "Simple Design: A refined, distraction-free interface"
+msgstr "Простий дизайн: вишуканий інтерфейс без факторів що відволікають"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:28
+msgid ""
+"MPV-Based: Leverages the robust power of MPV for great playback and format "
+"support"
+msgstr ""
+"Базується на MPV: Використовуйте міцну потужність MPV для чудового "
+"відтворення та підтримки форматів"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:29
+msgid ""
+"Audio and Subtitles: Control track selection and synchronization for both"
+msgstr ""
+"Аудіо та субтитри: Керуйте вибором доріжок та синхронізацією для всього"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:30
+msgid ""
+"Video Controls: Easily adjust brightness, contrast, zoom, aspect ratio, etc."
+msgstr ""
+"Елементи керування відео: Легко налаштуйте яскравість, контрастність, "
+"масштабування, співвідношення сторін тощо."
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:42
+msgid "Video Playing"
+msgstr "Відтворення Відео"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:46
+msgid "Video Options"
+msgstr "Налаштування Відео"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:50 src/preferences.blp:5
+#: src/preferences.blp:77 src/window.blp:123 src/window.blp:554
+msgid "Preferences"
+msgstr "Налаштування"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:54
+msgid "Main Window"
+msgstr "Головне вікно"
+
+#: src/history.py:54 src/history.py:58
+msgid "Load All"
+msgstr "Завантажити все"
+
+#: src/history.py:136
+msgid "Remove from History"
+msgstr "Видалити з історії"
+
+#: src/history.py:206 src/playlist.py:421
+msgid "Open Item Location"
+msgstr "Відкрити місце розташування"
+
+#: src/history.py:295
+msgid "Clear Watch History?"
+msgstr "Очистити історію переглядів?"
+
+#: src/history.py:296
+msgid "Cancel"
+msgstr "Скасувати"
+
+#: src/history.py:297 src/history.blp:16
+msgid "Clear All"
+msgstr "Очистити все"
+
+#. Translators: Replace "translator-credits" with your name/username, and optionally an email or URL.
+#: src/main.py:240
+msgid "translator-credits"
+msgstr "Victor Butko https://social.net.ua/users/vicbutko"
+
+#: src/playlist.py:118 src/playlist.blp:45
+msgid "Search"
+msgstr "Пошук"
+
+#: src/playlist.py:181 src/playlist.py:189 src/playlist.py:461
+#: src/preferences.py:331 src/playlist.blp:52
+msgid "Save Playlist"
+msgstr "Зберегти Список відтворення"
+
+#: src/playlist.py:184 src/preferences.blp:115 src/preferences.blp:150
+msgid ""
+"Requires flatpak permission to read the folder where the video is stored"
+msgstr "Потрібен дозвіл flatpak для читання теки, в якій зберігається відео"
+
+#: src/playlist.py:316 src/window.py:1369 src/window.py:1903
+msgid "File Error"
+msgstr "Помилка файла"
+
+#: src/playlist.py:422
+msgid "Remove from Playlist"
+msgstr "Видалити зі списку відтворення"
+
+#: src/playlist.py:462 src/playlist.blp:16 src/window.blp:343
+#: src/window.blp:556
+msgid "Playlist"
+msgstr "Список відтворення"
+
+#: src/playlist.py:482
+#, python-brace-format
+msgid "{n} item"
+msgid_plural "{n} items"
+msgstr[0] "{n} елемент"
+msgstr[1] "{n} елементи"
+msgstr[2] "{n} елементів"
+
+#: src/preferences.py:113 src/preferences.blp:170
+msgid "Subtitle Color"
+msgstr "Колір субтитрів"
+
+#: src/preferences.py:127 src/preferences.blp:250
+msgid "Subtitle Background"
+msgstr "Тло субтитрів"
+
+#: src/preferences.py:328
+msgid "Some features require extra permission to work properly:"
+msgstr "Для правильної роботи деяких функцій потрібні додаткові дозволи:"
+
+#: src/preferences.py:329
+msgid "Auto load subtitle file"
+msgstr "Автозавантаження файлу субтитрів"
+
+#: src/preferences.py:330
+msgid "Auto add files from the same folder to playlist"
+msgstr "Автоматичне додавання файлів з тієї ж теки до списку відтворення"
+
+#: src/preferences.py:332 src/preferences.blp:98
+msgid "Restore Saved Session"
+msgstr "Відновити збережену сесію"
+
+#: src/preferences.py:333 src/preferences.blp:133
+msgid "Save Video Position on Close"
+msgstr "Зберегти позицію відео при закритті"
+
+#: src/preferences.py:334 src/history.blp:5 src/shortcuts-dialog.blp:61
+#: src/window.blp:108 src/window.blp:470 src/window.blp:555
+msgid "Watch History"
+msgstr "Історія переглядів"
+
+#: src/preferences.py:338
+msgid ""
+"If you wish to use those features, install Flatseal for granular folder "
+"control, or run this command to grant access to all folders in the system:"
+msgstr ""
+"Якщо ви хочете скористатися цими функціями, встановіть Flatseal для гнучкого "
+"керування доступами до тек або виконайте цю команду, щоб надати доступ до "
+"всіх тек у системі:"
+
+#: src/preferences.py:344
+msgid "Extra permission enabled."
+msgstr "Додатковий дозвіл увімкнено."
+
+#: src/preferences.py:360
+msgid "Copied"
+msgstr "Скопійовано"
+
+#: src/preferences.py:366 src/preferences.blp:58
+msgid "Copy"
+msgstr "Копіювати"
+
+#: src/save_session.py:66
+msgid "Restoring Session…"
+msgstr "Відновлення сеансу…"
+
+#: src/shortcuts.py:31 src/shortcuts.py:32 src/shortcuts.py:33
+#: src/shortcuts.py:34 src/window.py:2028 src/window.blp:201
+msgid "Volume"
+msgstr "Гучність"
+
+#: src/shortcuts.py:31
+msgid "Volume Increase"
+msgstr "Гучніше"
+
+#: src/shortcuts.py:32
+msgid "Volume Decrease"
+msgstr "Тихіше"
+
+#: src/shortcuts.py:35 src/shortcuts.py:36 src/shortcuts.py:37
+#: src/preferences.blp:273 src/preferences.blp:285 src/window.blp:180
+#: src/window.blp:542
+msgid "Play/Pause"
+msgstr "Відтворювати/Призупинити"
+
+#: src/shortcuts.py:38
+msgid "Show/Hide Subtitles"
+msgstr "Показати/Сховати субтитри"
+
+#: src/shortcuts.py:39 src/shortcuts.py:40 src/shortcuts.py:169
+#: src/shortcuts.py:233 src/window.py:779 src/window.blp:244
+msgid "Subtitles"
+msgstr "Субтитри"
+
+#: src/shortcuts.py:39
+msgid "Next Subtitle Track"
+msgstr "Наступна доріжка субтитрів"
+
+#: src/shortcuts.py:40
+msgid "Previous Subtitle Track"
+msgstr "Попередня доріжка субтитрів"
+
+#: src/shortcuts.py:41 src/shortcuts.py:42
+msgid "Secondary Subtitles"
+msgstr "Вторинні субтитри"
+
+#: src/shortcuts.py:41
+msgid "Next Secondary Subtitle Track"
+msgstr "Наступна доріжка вторинних субтитрів"
+
+#: src/shortcuts.py:42
+msgid "Previous Secondary Subtitle Track"
+msgstr "Попередня доріжка вторинних субтитрів"
+
+#: src/shortcuts.py:43 src/shortcuts.py:44 src/window.py:784 src/window.blp:259
+msgid "Audio"
+msgstr "Звук"
+
+#: src/shortcuts.py:43
+msgid "Next Audio Track"
+msgstr "Наступна звукова доріжка"
+
+#: src/shortcuts.py:44
+msgid "Previous Audio Track"
+msgstr "Попередня звукова доріжка"
+
+#: src/shortcuts.py:45
+msgid "Seek 10s Backward"
+msgstr "Назад на 10с"
+
+#: src/shortcuts.py:46
+msgid "Seek 10s Forward"
+msgstr "Вперед на 10с"
+
+#: src/shortcuts.py:47
+msgid "Seek 5s Backward"
+msgstr "Назад на 5с"
+
+#: src/shortcuts.py:48
+msgid "Seek 5s Forward"
+msgstr "Вперед на 5с"
+
+#: src/shortcuts.py:49 src/shortcuts.py:50 src/window.py:1972
+#: src/window.blp:359
+msgid "Fullscreen"
+msgstr "На повний екран"
+
+#: src/shortcuts.py:51 src/window.py:1972
+msgid "Exit Fullscreen"
+msgstr "Вихід з повного екрану"
+
+#: src/shortcuts.py:61 src/shortcuts.py:62 src/shortcuts.py:63
+#: src/options.blp:285 src/options.blp:311
+msgid "Zoom"
+msgstr "Масштабувати"
+
+#: src/shortcuts.py:61 src/shortcuts.py:62
+msgid "Zoom In"
+msgstr "Збільшити"
+
+#: src/shortcuts.py:63
+msgid "Zoom Out"
+msgstr "Зменшити"
+
+#: src/shortcuts.py:66 src/shortcuts.py:67 src/options.blp:623
+#: src/options.blp:649
+msgid "Subtitle Delay"
+msgstr "Затримка субтитрів"
+
+#: src/shortcuts.py:66
+msgid "Decrease Subtitle Delay"
+msgstr "Зменшити затримку субтитрів"
+
+#: src/shortcuts.py:67
+msgid "Increase Subtitle Delay"
+msgstr "Збільшити затримку субтитрів"
+
+#: src/shortcuts.py:68 src/shortcuts.py:69
+msgid "Subtitle Position"
+msgstr "Позиція субтитрів"
+
+#: src/shortcuts.py:68
+msgid "Move Subtitles Up"
+msgstr "Підняти субтитри"
+
+#: src/shortcuts.py:69
+msgid "Move Subtitles Down"
+msgstr "Опустити субтитри"
+
+#: src/shortcuts.py:70 src/shortcuts.py:71 src/preferences.blp:239
+msgid "Subtitle Scale"
+msgstr "Масштабувати субтитри"
+
+#: src/shortcuts.py:70
+msgid "Increase Subtitle Scale"
+msgstr "Збільшити масштаб субтитрів"
+
+#: src/shortcuts.py:71
+msgid "Decrease Subtitle Scale"
+msgstr "Зменшити масштаб субтитрів"
+
+#: src/shortcuts.py:72 src/window.blp:212
+msgid "Mute/Unmute"
+msgstr "Вимкнути/увімкнути звук"
+
+#: src/shortcuts.py:73 src/shortcuts.py:74 src/shortcuts.py:75
+#: src/options.blp:680 src/options.blp:706
+msgid "Audio Delay"
+msgstr "Затримка звуку"
+
+#: src/shortcuts.py:73
+msgid "Decrease Audio Delay"
+msgstr "Зменшити затримку звуку"
+
+#: src/shortcuts.py:74 src/shortcuts.py:75
+msgid "Increase Audio Delay"
+msgstr "Збільшити затримку звуку"
+
+#: src/shortcuts.py:76
+msgid "Go Back One Frame"
+msgstr "Назад на 1 кадр"
+
+#: src/shortcuts.py:77
+msgid "Advance One Frame"
+msgstr "Вперед на 1 кадр"
+
+#: src/shortcuts.py:78
+msgid "Seek to the Previous Chapter"
+msgstr "Перейти до попереднього розділу"
+
+#: src/shortcuts.py:79
+msgid "Seek to the Next Chapter"
+msgstr "Перейти до наступного розділу"
+
+#: src/shortcuts.py:80
+msgid "Take Screenshot With Subtitles"
+msgstr "Зробити знімок екрану з субтитрами"
+
+#: src/shortcuts.py:81
+msgid "Take Screenshot Without Subtitles"
+msgstr "Зробити знімок екрану без субтитрів"
+
+#: src/shortcuts.py:82
+msgid "Statistics"
+msgstr "Статистика"
+
+#: src/shortcuts.py:83
+msgid "Statistics Overlay"
+msgstr "Оверлей статистики"
+
+#: src/shortcuts.py:84
+msgid "Set/Clear A-B Loop Points"
+msgstr "Встановити/Очистити точки циклу A-B"
+
+#: src/shortcuts.py:85
+msgid "Loop"
+msgstr "Повторити"
+
+#: src/shortcuts.py:85 src/window.blp:331
+msgid "Loop File"
+msgstr "Повторити файл"
+
+#: src/shortcuts.py:86 src/shortcuts.py:87 src/options.blp:342
+#: src/options.blp:367
+msgid "Contrast"
+msgstr "Контрастність"
+
+#: src/shortcuts.py:86
+msgid "Decrease Contrast"
+msgstr "Зменшити контрастність"
+
+#: src/shortcuts.py:87
+msgid "Increase Contrast"
+msgstr "Збільшити контрастність"
+
+#: src/shortcuts.py:88 src/shortcuts.py:89 src/options.blp:398
+#: src/options.blp:423
+msgid "Brightness"
+msgstr "Яскравість"
+
+#: src/shortcuts.py:88
+msgid "Decrease Brightness"
+msgstr "Зменшити яскравість"
+
+#: src/shortcuts.py:89
+msgid "Increase Brightness"
+msgstr "Збільшити яскравість"
+
+#: src/shortcuts.py:90 src/shortcuts.py:91 src/options.blp:454
+#: src/options.blp:479
+msgid "Gamma"
+msgstr "Гамма"
+
+#: src/shortcuts.py:90
+msgid "Decrease Gamma"
+msgstr "Зменшити гамму"
+
+#: src/shortcuts.py:91
+msgid "Increase Gamma"
+msgstr "Збільшити гамму"
+
+#: src/shortcuts.py:92 src/shortcuts.py:93 src/options.blp:510
+#: src/options.blp:535
+msgid "Saturation"
+msgstr "Насиченість"
+
+#: src/shortcuts.py:92
+msgid "Decrease Saturation"
+msgstr "Зменшити насиченість"
+
+#: src/shortcuts.py:93
+msgid "Increase Saturation"
+msgstr "Збільшити насиченість"
+
+#: src/shortcuts.py:94 src/shortcuts.py:95 src/shortcuts.py:96
+msgid "Speed"
+msgstr "Швидкість"
+
+#: src/shortcuts.py:94
+msgid "Decrease Playback Speed"
+msgstr "Зменшити швидкість відтворення"
+
+#: src/shortcuts.py:95
+msgid "Increase Playback Speed"
+msgstr "Збільшити швидкість відтворення"
+
+#: src/shortcuts.py:96 src/options.blp:727
+msgid "Reset Playback Speed"
+msgstr "Скинути швидкість відтворення"
+
+#: src/shortcuts.py:153 src/shortcuts.py:236
+msgid "Display & Video"
+msgstr "Екран та Відео"
+
+#: src/shortcuts.py:170 src/shortcuts.py:234
+msgid "Audio & Volume"
+msgstr "Звук та Гучність"
+
+#: src/shortcuts.py:171 src/shortcuts.py:235
+msgid "Navigation"
+msgstr "Навігація"
+
+#: src/shortcuts.py:172 src/shortcuts.py:237
+msgid "Playback"
+msgstr "Відтворення"
+
+#: src/shortcuts.py:176 src/shortcuts.py:182 src/shortcuts.py:238
+#: src/shortcuts.py:242
+msgid "Miscellaneous"
+msgstr "Різне"
+
+#: src/window.py:635 src/window.py:1361 src/window.blp:104
+msgid "Add Subtitle Track"
+msgstr "Додати доріжку субтитрів"
+
+#: src/window.py:637 src/window.py:646
+msgid "None"
+msgstr "Нічого"
+
+#: src/window.py:644 src/window.blp:105
+msgid "Add Audio Track"
+msgstr "Додати звукову доріжку"
+
+#: src/window.py:683
+msgid "Track"
+msgstr "Доріжка"
+
+#: src/window.py:726 src/playlist.blp:31 src/window.blp:102
+msgid "Add Folder"
+msgstr "Додати теку"
+
+#: src/window.py:726 src/shortcuts-dialog.blp:21 src/window.blp:99
+#: src/window.blp:483 src/window.blp:549
+msgid "Open Folder"
+msgstr "Відкрити теку"
+
+#: src/window.py:753 src/shortcuts-dialog.blp:16 src/window.blp:98
+#: src/window.blp:548
+msgid "Open Files"
+msgstr "Відкрити файли"
+
+#: src/window.py:756 src/playlist.blp:26 src/window.blp:101
+msgid "Add Files"
+msgstr "Додати файли"
+
+#: src/window.py:760
+msgid "Add Subtitle"
+msgstr "Додати субтитри"
+
+#: src/window.py:763
+msgid "Add Audio"
+msgstr "Додати звук"
+
+#: src/window.py:788
+msgid "Media"
+msgstr "Медіа"
+
+#: src/window.py:847
+msgid "Session Saved"
+msgstr "Сесія збережена"
+
+#: src/window.py:853 src/playlist.blp:36 src/window.blp:103
+msgid "Add URL"
+msgstr "Додати посилання"
+
+#: src/window.py:853 src/shortcuts-dialog.blp:26 src/window.blp:100
+#: src/window.blp:492 src/window.blp:550
+msgid "Open URL"
+msgstr "Відкрити посилання"
+
+#: src/window.py:866
+msgid "URL"
+msgstr "Посилання"
+
+#: src/window.py:874 src/playlist.blp:22
+msgid "Add"
+msgstr "Додати"
+
+#: src/window.py:874 src/window.blp:93
+msgid "Open"
+msgstr "Відкрити"
+
+#: src/window.py:1067 src/window.py:1191
+msgid "Chapter"
+msgstr "Розділ"
+
+#: src/window.py:1246 src/window.py:1365
+msgid "Play"
+msgstr "Відтворити"
+
+#: src/window.py:1246
+msgid "Pause"
+msgstr "Призупинити"
+
+#: src/options.blp:14
+msgid "Options"
+msgstr "Опції"
+
+#: src/options.blp:28
+msgid "Reset All"
+msgstr "Скинути все"
+
+#: src/options.blp:40
+msgid "Reset Aspect Ratio"
+msgstr "Скинути співвідношення сторін"
+
+#: src/options.blp:50
+msgid "Aspect Ratio"
+msgstr "Співвідношення сторін"
+
+#: src/options.blp:76 src/options.blp:135
+msgid "Original"
+msgstr "Оригінальне"
+
+#: src/options.blp:99
+msgid "Reset Crop"
+msgstr "Скинути обрізання"
+
+#: src/options.blp:109
+msgid "Crop"
+msgstr "Обрізання"
+
+#: src/options.blp:159
+msgid "Reset Rotation"
+msgstr "Скинути обертання"
+
+#: src/options.blp:169
+msgid "Rotate"
+msgstr "Обертання"
+
+#: src/options.blp:196
+msgid "Rotate Left"
+msgstr "Обернути ліворуч"
+
+#: src/options.blp:204
+msgid "Rotate Right"
+msgstr "Обернути праворуч"
+
+#: src/options.blp:217
+msgid "Reset Flip"
+msgstr "Скинути віддзеркалення"
+
+#: src/options.blp:227
+msgid "Flip"
+msgstr "Віддзеркалення"
+
+#: src/options.blp:254
+msgid "Flip Horizontally"
+msgstr "Віддзеркалити горизонтально"
+
+#: src/options.blp:262
+msgid "Flip Vertically"
+msgstr "Віддзеркалити вертикально"
+
+#: src/options.blp:275
+msgid "Reset Zoom"
+msgstr "Скинути масштабування"
+
+#: src/options.blp:332
+msgid "Reset Contrast"
+msgstr "Скинути контрастність"
+
+#: src/options.blp:388
+msgid "Reset Brightness"
+msgstr "Скинути яскравість"
+
+#: src/options.blp:444
+msgid "Reset Gamma"
+msgstr "Скинути гамму"
+
+#: src/options.blp:500
+msgid "Reset Saturation"
+msgstr "Скинути насиченість"
+
+#: src/options.blp:556
+msgid "Reset Hue"
+msgstr "Скинути відтінок"
+
+#. TRANSLATORS: Do not use "Color" or "Temperature", those are different things
+#: src/options.blp:567 src/options.blp:592
+msgid "Hue"
+msgstr "Відтінок"
+
+#: src/options.blp:613
+msgid "Reset Subtitle Delay"
+msgstr "Скинути затримку субтитрів"
+
+#: src/options.blp:670
+msgid "Reset Audio Delay"
+msgstr "Скинути затримку звуку"
+
+#: src/options.blp:737 src/options.blp:763
+msgid "Playback Speed"
+msgstr "Швидкість відтворення"
+
+#: src/playlist.blp:94
+msgid "No Results Found"
+msgstr "Результатів не знайдено"
+
+#: src/playlist.blp:128
+msgid "Add to Playlist"
+msgstr "Додати до списку відтворення"
+
+#: src/preferences.blp:15
+msgid "About Permissions"
+msgstr "Про дозволи"
+
+#: src/preferences.blp:81
+msgid "Open New Window for New Files"
+msgstr "Відкривати нове вікно для нового файлу"
+
+#: src/preferences.blp:85
+msgid "Progress Bar Thumbnail"
+msgstr "Мініатюра індикатора прогресу"
+
+#: src/preferences.blp:89
+msgid "Normalize Volume"
+msgstr "Нормалізувати гучність"
+
+#: src/preferences.blp:93
+msgid "Hardware Acceleration"
+msgstr "Апаратне прискорення"
+
+#: src/preferences.blp:94
+msgid "Use GPU for video decoding when available"
+msgstr "Використовувати ГП для декодування коли можливо"
+
+#: src/preferences.blp:99
+msgid "Pick up where you left off after saving from the menu"
+msgstr "Продовжувати з місця зупинки, після збереження з меню"
+
+#: src/preferences.blp:134
+msgid "Also save options like brightness, subtitle delay, etc."
+msgstr "Також зберегти параметри як яскравість, затримка субтитрів, тощо."
+
+#: src/preferences.blp:183 src/preferences.blp:229
+msgid "Reset"
+msgstr "Скинути"
+
+#: src/preferences.blp:193
+msgid "Subtitle Font"
+msgstr "Шрифт субтитрів"
+
+#: src/preferences.blp:206
+msgid "Some fonts may not work"
+msgstr "Деякі шрифти можуть не працювати"
+
+#: src/preferences.blp:269
+msgid "Primary Click"
+msgstr "Основне клацання"
+
+#: src/preferences.blp:274
+msgid "Focus/Play/Pause"
+msgstr "Фокус/Відтворення/Пауза"
+
+#: src/preferences.blp:275 src/preferences.blp:287
+msgid "Bypass"
+msgstr "Обхід"
+
+#: src/preferences.blp:281
+msgid "Secondary Click"
+msgstr "Другорядне клацання"
+
+#: src/preferences.blp:286
+msgid "Context Menu"
+msgstr "Контекстне меню"
+
+#: src/preferences.blp:295
+msgid "Preferred Subtitle Languages"
+msgstr "Бажані мови субтитрів"
+
+#: src/preferences.blp:296 src/preferences.blp:301
+msgid "Example: en,es,pt"
+msgstr "Приклад: en,es,pt"
+
+#: src/preferences.blp:300
+msgid "Preferred Audio Languages"
+msgstr "Бажані мови звуку"
+
+#: src/preferences.blp:307
+msgid "Open Config Folder"
+msgstr "Відкрити теку конфігурації"
+
+#: src/shortcuts-dialog.blp:8
+msgid "General"
+msgstr "Загальні"
+
+#: src/shortcuts-dialog.blp:31
+msgid "Add Files to Playlist"
+msgstr "Додати файли до списку відтворення"
+
+#: src/shortcuts-dialog.blp:36
+msgid "Add Folder to Playlist"
+msgstr "Додати теку до списку відтворення"
+
+#: src/shortcuts-dialog.blp:41
+msgid "Add URL to Playlist"
+msgstr "Додати посилання до списку відтворення"
+
+#: src/shortcuts-dialog.blp:46
+msgid "Open Subtitles Menu"
+msgstr "Відкрити меню субтитрів"
+
+#: src/shortcuts-dialog.blp:51
+msgid "Open Audio Menu"
+msgstr "Відкрити меню звуку"
+
+#: src/shortcuts-dialog.blp:56
+msgid "Open Chapters Menu"
+msgstr "відкрити меню розділів"
+
+#: src/shortcuts-dialog.blp:66
+msgid "Show Shortcuts"
+msgstr "Показати Скорочення"
+
+#: src/shortcuts-dialog.blp:71
+msgid "Close Window"
+msgstr "Закрити вікно"
+
+#: src/shortcuts-dialog.blp:76 src/window.blp:129
+msgid "Save Session"
+msgstr "Зберегти сесію"
+
+#: src/shortcuts-dialog.blp:81 src/window.blp:130
+msgid "Save Session and Close"
+msgstr "Зберегти сесію та закрити"
+
+#: src/shortcuts-dialog.blp:86
+msgid "Quit"
+msgstr "Вийти"
+
+#: src/window.blp:118
+msgid "Main Menu"
+msgstr "Головне меню"
+
+#: src/window.blp:124
+msgid "Keyboard Shortcuts"
+msgstr "Клавіатурні скорочення"
+
+#: src/window.blp:125
+msgid "About Cine"
+msgstr "Про Кіно"
+
+#: src/window.blp:169 src/window.blp:543
+msgid "Previous"
+msgstr "Попередній"
+
+#: src/window.blp:192 src/window.blp:544
+msgid "Next"
+msgstr "Наступний"
+
+#: src/window.blp:273
+msgid "Video"
+msgstr "Відео"
+
+#: src/window.blp:288
+msgid "Chapters"
+msgstr "Розділи"
+
+#: src/window.blp:305
+msgid "Shuffle Playlist"
+msgstr "Перемішати список відтворення"
+
+#: src/window.blp:318
+msgid "Loop Playlist"
+msgstr "Зациклити список відтворення"
+
+#: src/window.blp:392
+msgid "Toggle Elapsed/Remaining"
+msgstr "Перемкнути Пройшло/Залишилось"
+
+#: src/window.blp:439
+msgid "Drag and drop files here"
+msgstr "Перетягнути файли сюди"
+
+#: src/window.blp:459
+msgid "Open…"
+msgstr "Відкрити…"
+
+#~ msgid "Left Click"
+#~ msgstr "Лівий клік"
+
+#~ msgid "Disabled"
+#~ msgstr "Вимкнено"
+
+#~ msgid "Right Click"
+#~ msgstr "Правий клік"
+
+#~ msgid "Window Menu"
+#~ msgstr "Віконне меню"
+
+#~ msgid "Subtitle"
+#~ msgstr "Субтитр"

@@ -1,0 +1,683 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $CineWindow: Adw.ApplicationWindow {
+  name: "io-github-fastrizwaan-PopcornBox";
+  title: _("PopcornBox");
+  default-width: 800;
+  default-height: 600;
+  width-request: 332;
+  height-request: 187;
+
+  Adw.Breakpoint breakpoint {
+    condition ("max-width: 550sp")
+
+    setters {
+      controls_separator.visible: false;
+      controls_wrap_box.child-spacing: 2;
+    }
+  }
+
+  content: Adw.ToastOverlay toast_overlay {
+    WindowHandle window_handle {
+      Adw.ViewStack main_stack {
+        
+        Adw.ViewStackPage page_library {
+          name: "library";
+          child: Box {
+            orientation: vertical;
+            Adw.HeaderBar library_header {
+              [title]
+              Adw.ViewSwitcher {
+                stack: library_stack;
+                policy: wide;
+              }
+
+              [end]
+              MenuButton library_primary_menu_btn {
+                valign: center;
+                primary: true;
+                icon-name: "open-menu-symbolic";
+                tooltip-text: _("Main Menu");
+
+                menu-model: primary_menu;
+              }
+            }
+            Adw.ViewStack library_stack {
+              Adw.ViewStackPage {
+                name: "movies";
+                title: _("Movies");
+                icon-name: "video-x-generic-symbolic";
+                child: ScrolledWindow movies_scrolled {
+                  vexpand: true;
+                  FlowBox movies_flowbox {
+                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                    max-children-per-line: 10;
+                    min-children-per-line: 2;
+                    selection-mode: none;
+                    halign: center;
+                  }
+                };
+              }
+              Adw.ViewStackPage {
+                name: "series";
+                title: _("Series");
+                icon-name: "tv-symbolic";
+                child: ScrolledWindow series_scrolled {
+                  vexpand: true;
+                  FlowBox series_flowbox {
+                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                    max-children-per-line: 10;
+                    min-children-per-line: 2;
+                    selection-mode: none;
+                    halign: center;
+                  }
+                };
+              }
+              Adw.ViewStackPage {
+                name: "addons";
+                title: _("Addons");
+                icon-name: "system-component-addon-symbolic";
+                child: ScrolledWindow {
+                  vexpand: true;
+                  child: Box {
+                    orientation: vertical;
+                    margin-top: 24; margin-start: 24; margin-end: 24;
+                    spacing: 12;
+                    Box {
+                      spacing: 8;
+                      halign: center;
+                      Entry addon_url_entry {
+                        placeholder-text: "https://.../manifest.json";
+                        width-request: 400;
+                      }
+                      Button add_addon_btn {
+                        label: _("Add Addon");
+                        styles ["suggested-action"]
+                        action-name: "win.add-addon";
+                      }
+                    }
+                    ListBox addons_listbox {
+                      margin-top: 24;
+                      selection-mode: none;
+                      styles ["boxed-list"]
+                    }
+                  };
+                };
+              }
+            }
+          };
+        }
+
+        Adw.ViewStackPage page_details {
+          name: "details";
+          child: Box details_box {
+            orientation: vertical;
+            hexpand: true;
+            vexpand: true;
+          };
+        }
+
+        Adw.ViewStackPage page_player {
+          name: "player";
+          child: Overlay video_overlay {
+            styles [
+              "video-overlay",
+            ]
+
+        [overlay]
+        Image audio_only_icon {
+          icon-name: "cine-audio-x-generic-symbolic";
+          visible: false;
+          pixel-size: 128;
+          opacity: 0.33;
+        }
+
+        [overlay]
+        Revealer revealer_icon_indicator {
+          transition-duration: 350;
+          transition-type: crossfade;
+
+          Image icon_indicator {
+            halign: center;
+            valign: center;
+            pixel-size: 64;
+
+            styles [
+              "icon-indicator",
+            ]
+          }
+        }
+
+        [overlay]
+        Adw.Spinner spinner {
+          halign: center;
+          valign: center;
+          width-request: 90;
+          height-request: 90;
+          visible: false;
+
+          styles [
+            "cine-spinner",
+          ]
+        }
+
+        [overlay]
+        Revealer revealer_ui {
+          transition-duration: 300;
+          transition-type: crossfade;
+
+          Box {
+            orientation: vertical;
+
+            styles [
+              "header-and-controls",
+            ]
+
+            Adw.HeaderBar headerbar {
+              valign: start;
+
+              title-widget: Adw.WindowTitle title_widget {
+                title: _("PopcornBox");
+                visible: false;
+              };
+
+              styles [
+                "osd",
+                "header-bar",
+              ]
+
+              [start]
+              Button close_player_btn {
+                valign: center;
+                icon-name: "go-previous-symbolic";
+                tooltip-text: _("Back to Library");
+                visible: bind start_page.visible inverted;
+                action-name: "win.close-player";
+              }
+
+              MenuButton open_menu_btn {
+                valign: center;
+                label: _("Open");
+                visible: bind start_page.visible inverted;
+                always-show-arrow: true;
+
+                menu-model: menu {
+                  item (_("Open Files"), "win.clear-and-add")
+                  item (_("Open Folder"), "win.open-folder")
+                  item (_("Open URL"), "win.open-url")
+                  item (_("Add Files"), "win.add-playlist-files")
+                  item (_("Add Folder"), "win.add-playlist-folder")
+                  item (_("Add URL"), "win.add-url")
+                  item (_("Add Subtitle Track"), "win.add-sub-tracks")
+                  item (_("Add Audio Track"), "win.add-audio-tracks")
+
+                  section {
+                    item (_("Watch History"), "win.open-history")
+                  }
+                };
+              }
+
+              [end]
+              MenuButton primary_menu_btn {
+                valign: center;
+                primary: true;
+                icon-name: "open-menu-symbolic";
+                tooltip-text: _("Main Menu");
+
+                menu-model: menu primary_menu {
+                  section {
+                    item (_("New Window"), "app.new-window")
+                    item (_("Preferences"), "app.preferences")
+                    item (_("Keyboard Shortcuts"), "win.custom-shortcuts")
+                    item (_("About PopcornBox"), "app.about")
+                  }
+
+                  section {
+                    item (_("Save Session"), "win.save-session")
+                    item (_("Save Session and Close"), "win.save-session-close")
+                  }
+                };
+              }
+            }
+
+            Separator {
+              vexpand: true;
+              opacity: 0;
+            }
+
+            Box controls_box {
+              styles [
+                "osd",
+                "controls",
+              ]
+
+              valign: end;
+              orientation: vertical;
+              visible: false;
+
+              Adw.WrapBox controls_wrap_box {
+                align: 0.5;
+                valign: center;
+                margin-top: 10;
+                margin-start: 13;
+                margin-end: 13;
+                child-spacing: 4;
+                wrap-reverse: true;
+                justify: spread;
+                justify-last-line: true;
+
+                Button previous_btn {
+                  styles [
+                    "circular",
+                    "flat",
+                  ]
+
+                  icon-name: "cine-skip-backward-symbolic";
+                  tooltip-text: _("Previous");
+                  clicked => $_on_previous_clicked();
+                }
+
+                Button play_pause_btn {
+                  styles [
+                    "circular",
+                    "flat",
+                  ]
+
+                  icon-name: "cine-playback-start-symbolic";
+                  tooltip-text: _("Play/Pause");
+                  halign: center;
+                  clicked => $_on_play_pause_clicked();
+                }
+
+                Button next_btn {
+                  styles [
+                    "circular",
+                    "flat",
+                  ]
+
+                  icon-name: "cine-skip-forward-symbolic";
+                  tooltip-text: _("Next");
+                  halign: center;
+                  clicked => $_on_next_clicked();
+                }
+
+                MenuButton volume_menu_btn {
+                  halign: center;
+                  icon-name: "cine-volume-max-symbolic";
+                  direction: up;
+                  tooltip-text: _("Volume");
+
+                  styles [
+                    "flat",
+                    "circular",
+                  ]
+
+                  popover: Popover {
+                    Box volume_box {
+                      ToggleButton mute_toggle_btn {
+                        icon-name: "cine-volume-mute-symbolic";
+                        tooltip-text: _("Mute/Unmute");
+
+                        styles [
+                          "flat",
+                          "circular",
+                          "toggle-mute",
+                        ]
+                      }
+
+                      Scale volume_scale {
+                        width-request: 180;
+
+                        adjustment: Adjustment volume_scale_adj {
+                          lower: 0;
+                          upper: 130;
+                          value: 0;
+                        };
+                      }
+                    }
+                  };
+                }
+
+                MenuButton subtitles_menu_btn {
+                  styles [
+                    "circular",
+                    "flat",
+                    "first-label-bold",
+                  ]
+
+                  direction: up;
+                  halign: center;
+                  icon-name: "cine-subtitles-symbolic";
+                  tooltip-text: _("Subtitles");
+
+                  menu-model: menu subtitles_menu {};
+                }
+
+                MenuButton audio_tracks_menu_btn {
+                  styles [
+                    "circular",
+                    "flat",
+                    "first-label-bold",
+                  ]
+
+                  direction: up;
+                  halign: center;
+                  icon-name: "cine-audio-symbolic";
+                  tooltip-text: _("Audio");
+
+                  menu-model: menu audio_tracks_menu {};
+                }
+
+                MenuButton video_tracks_menu_btn {
+                  styles [
+                    "circular",
+                    "flat",
+                  ]
+
+                  direction: up;
+                  halign: center;
+                  icon-name: "cine-video-symbolic";
+                  tooltip-text: _("Video");
+
+                  menu-model: menu video_tracks_menu {};
+                }
+
+                MenuButton chapters_menu_btn {
+                  styles [
+                    "circular",
+                    "flat",
+                  ]
+
+                  notify::active => $_sync_chapter_menu_selected();
+                  direction: up;
+                  halign: center;
+                  icon-name: "cine-chapters-symbolic";
+                  tooltip-text: _("Chapters");
+
+                  menu-model: menu chapters_menu {};
+                }
+
+                Separator controls_separator {
+                  hexpand: true;
+                  opacity: 0;
+                }
+
+                ToggleButton shuffle_toggle_btn {
+                  styles [
+                    "circular",
+                    "flat",
+                  ]
+
+                  icon-name: "cine-playlist-shuffle-symbolic";
+                  tooltip-text: _("Shuffle Playlist");
+                  valign: end;
+                  halign: center;
+                  toggled => $_on_shuffle_toggled();
+                }
+
+                ToggleButton loop_playlist_btn {
+                  styles [
+                    "circular",
+                    "flat",
+                  ]
+
+                  icon-name: "cine-playlist-repeat-symbolic";
+                  tooltip-text: _("Loop Playlist");
+                  valign: end;
+                  halign: center;
+                  toggled => $_on_loop_playlist_toggled();
+                }
+
+                ToggleButton loop_file_btn {
+                  styles [
+                    "circular",
+                    "flat",
+                  ]
+
+                  icon-name: "cine-repeat-file-symbolic";
+                  tooltip-text: _("Loop File");
+                  valign: end;
+                  halign: center;
+                  toggled => $_on_loop_file_toggled();
+                }
+
+                Button {
+                  styles [
+                    "circular",
+                    "flat",
+                  ]
+
+                  tooltip-text: _("Playlist");
+                  icon-name: "cine-playlist-symbolic";
+                  valign: end;
+                  halign: center;
+                  action-name: "win.open-playlist-dialog";
+                }
+
+                $OptionsMenuButton options_menu_btn {}
+
+                Button fullscreen_btn {
+                  styles [
+                    "circular",
+                    "flat",
+                  ]
+
+                  icon-name: "cine-view-fullscreen-symbolic";
+                  tooltip-text: _("Fullscreen");
+                  valign: end;
+                  halign: center;
+                }
+              }
+
+              Box progress_box {
+                valign: center;
+                margin-start: 3;
+                margin-end: 20;
+                margin-bottom: 5;
+                height-request: 37;
+
+                Box vid_progress_scale_box {
+                  Scale video_progress_scale {
+                    halign: fill;
+                    hexpand: true;
+                    valign: center;
+                    margin-start: 8;
+                    margin-end: 3;
+
+                    adjustment: Adjustment video_progress_adj {
+                      lower: 0;
+                      upper: 100;
+                      value: 0;
+                    };
+                  }
+                }
+
+                Button time_elapsed_button {
+                  halign: end;
+                  valign: center;
+                  clicked => $_toggle_elapsed_remaining();
+                  tooltip-text: _("Toggle Elapsed/Remaining");
+
+                  child: Label time_elapsed_label {
+                    label: "0:00";
+                    width-chars: 5;
+                  };
+
+                  styles [
+                    "heading",
+                    "numeric",
+                    "flat",
+                    "circular",
+                    "time-elapsed",
+                  ]
+                }
+
+                Separator {
+                  styles [
+                    "time-separator",
+                  ]
+
+                  height-request: 16;
+                  width-request: 2;
+                  valign: center;
+                  margin-start: 10;
+                  margin-end: 10;
+                }
+
+                Label time_total_label {
+                  halign: end;
+                  label: "0:00";
+
+                  styles [
+                    "heading",
+                    "numeric",
+                  ]
+                }
+              }
+            }
+          }
+        }
+
+        [overlay]
+        Adw.StatusPage start_page {
+          margin-top: 48;
+          icon-name: "io.github.fastrizwaan.PopcornBox";
+          title: _("PopcornBox");
+          description: _("Drag and drop files here");
+
+          styles [
+            "start-page",
+          ]
+
+          Box {
+            spacing: 12;
+            halign: center;
+            valign: center;
+            orientation: vertical;
+
+            Box {
+              spacing: 5;
+
+              styles [
+                "open-btns-box",
+              ]
+
+              Button {
+                label: _("Open…");
+                action-name: "win.clear-and-add";
+                hexpand: true;
+
+                styles [
+                  "suggested-action",
+                  "pill",
+                ]
+              }
+
+              Button {
+                tooltip-text: _("Watch History");
+                icon-name: "document-open-recent-symbolic";
+                action-name: "win.open-history";
+
+                styles [
+                  "suggested-action",
+                  "circular",
+                  "watch-history",
+                ]
+              }
+            }
+
+            Button {
+              label: _("Search Addons");
+              action-name: "win.search-addons";
+
+              styles [
+                "pill",
+                "suggested-action"
+              ]
+            }
+
+            Button {
+              label: _("Open Folder");
+              action-name: "win.open-folder";
+
+              styles [
+                "pill",
+              ]
+            }
+
+            Button {
+              label: _("Open URL");
+              action-name: "win.open-url";
+
+              styles [
+                "pill",
+              ]
+            }
+          }
+        }
+
+        [overlay]
+        Revealer revealer_drop_indicator {
+          transition-duration: 200;
+          transition-type: crossfade;
+          can-focus: false;
+          can-target: false;
+
+          Box {
+            styles [
+              "drop-indicator",
+            ]
+
+            homogeneous: true;
+
+            Box {
+              valign: center;
+
+              Image drop_icon {
+                pixel-size: 64;
+              }
+
+              orientation: vertical;
+              spacing: 12;
+
+              Label drop_label {
+                styles [
+                  "title-1",
+                ]
+              }
+            }
+          }
+        }
+
+        [overlay]
+        PopoverMenu context_popover_menu {
+          has-arrow: false;
+          halign: start;
+
+          menu-model: menu {
+            section {
+              item (_("Play/Pause"), "win.play-pause")
+              item (_("Previous"), "win.previous")
+              item (_("Next"), "win.next")
+            }
+
+            section {
+              item (_("Open Files"), "win.clear-and-add")
+              item (_("Open Folder"), "win.open-folder")
+              item (_("Open URL"), "win.open-url")
+            }
+
+            section {
+              item (_("Preferences"), "app.preferences")
+              item (_("Watch History"), "win.open-history")
+              item (_("Playlist"), "win.open-playlist-dialog")
+            }
+          };
+        }
+      };
+      }
+      }
+    }
+  };
+}

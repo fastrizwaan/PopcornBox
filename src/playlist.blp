@@ -1,0 +1,139 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $Playlist: Adw.Dialog {
+	content-width: 610;
+	presentation-mode: bottom_sheet;
+	name: "playlist";
+
+	Adw.ToastOverlay toast_overlay {
+		Overlay {
+			[overlay]
+			Adw.ToolbarView {
+				[top]
+				Adw.HeaderBar {
+					title-widget: Adw.WindowTitle title_widget {
+						title: _("Playlist");
+					};
+
+					[start]
+					MenuButton {
+						icon-name: "list-add-symbolic";
+						tooltip-text: _("Add");
+
+						menu-model: menu {
+							item {
+								label: _("Add Files");
+								action: "win.add-playlist-files";
+							}
+
+							item {
+								label: _("Add Folder");
+								action: "win.add-playlist-folder";
+							}
+
+							item {
+								label: _("Add URL");
+								action: "win.add-url";
+							}
+						};
+					}
+
+					[start]
+					ToggleButton search_btn {
+						icon-name: "system-search-symbolic";
+						tooltip-text: _("Search");
+					}
+
+					[start]
+					Button save_playlist_btn {
+						icon-name: "document-save-symbolic";
+						clicked => $_on_save_playlist();
+						tooltip-text: _("Save Playlist");
+					}
+
+					[start]
+					Adw.Spinner spinner {
+						visible: false;
+						margin-start: 8;
+					}
+				}
+
+				content: ScrolledWindow {
+					Adw.ClampScrollable playlist_clamp {
+						maximum-size: 650;
+
+						ListView playlist_list_view {
+							single-click-activate: true;
+							activate => $_on_list_item_activate();
+							css-name: "cine-list-view";
+
+							factory: SignalListItemFactory factory {
+								setup => $_on_factory_setup();
+								bind => $_on_factory_bind();
+								unbind => $_on_factory_unbind();
+							};
+						}
+					}
+				};
+
+				[top]
+				SearchBar search_bar {
+					SearchEntry search_entry {
+						margin-bottom: 5;
+						search-delay: 100;
+						width-request: 300;
+					}
+				}
+			}
+
+			[overlay]
+			Label no_results_label {
+				margin-top: 82;
+				margin-bottom: 18;
+				label: _("No Results Found");
+				visible: false;
+
+				styles [
+					"title-3",
+				]
+			}
+
+			[overlay]
+			Revealer drop_indicator_revealer {
+				transition-duration: 200;
+				transition-type: crossfade;
+				can-focus: false;
+				can-target: false;
+
+				Box {
+					styles [
+						"drop-indicator",
+					]
+
+					homogeneous: true;
+
+					Box {
+						valign: center;
+
+						Image drop_icon {
+							icon-name: "cine-list-add-symbolic";
+							pixel-size: 64;
+						}
+
+						orientation: vertical;
+						spacing: 12;
+
+						Label drop_label {
+							label: _("Add to Playlist");
+
+							styles [
+								"title-1",
+							]
+						}
+					}
+				}
+			}
+		}
+	}
+}

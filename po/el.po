@@ -1,0 +1,883 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the io.github.diegopvlk.Cine package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: io.github.diegopvlk.Cine\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-16 18:07-0300\n"
+"PO-Revision-Date: 2026-06-30 00:38+0000\n"
+"Last-Translator: Hazel L <hazeltwink@gmail.com>\n"
+"Language-Team: Greek <https://hosted.weblate.org/projects/cine/app/el/>\n"
+"Language: el\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=n != 1;\n"
+"X-Generator: Weblate 2026.7.dev0\n"
+
+#: data/io.github.diegopvlk.Cine.desktop.in:2 src/main.py:230 src/mpris.py:140
+#: src/mpris.py:358 src/window.py:208 src/window.py:2096 src/window.blp:6
+#: src/window.blp:81 src/window.blp:438
+msgid "Cine"
+msgstr "Cine"
+
+#: data/io.github.diegopvlk.Cine.desktop.in:3
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:23
+msgid "Play your videos"
+msgstr "Αναπαράγετε τα βίντεό σας"
+
+#. TRANSLATORS: Search terms to find this application. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
+#: data/io.github.diegopvlk.Cine.desktop.in:10
+msgid "Audio;Video;Movie;TV;Film;Clip;Player;Cine;mpv;"
+msgstr "Audio;Video;Movie;TV;Film;Clip;Player;Cine;mpv;Ήχος;Βίντεο;Ταινία;Τηλεόραση;Κλιπ;Αναπαραγωγός;"
+
+#: data/io.github.diegopvlk.Cine.desktop.in:18 src/shortcuts-dialog.blp:11
+#: src/window.blp:122
+msgid "New Window"
+msgstr "Νέο παράθυρο"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:25
+msgid ""
+"Cine combines a clean interface with a high-performance engine to deliver a "
+"seamless viewing experience."
+msgstr ""
+"Το Cine συνδυάζει μια καθαρή διεπαφή με μια μηχανή υψηλής απόδοσης "
+"προσφέροντας μια αψεγάδιαστη εμπειρία προβολής."
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:27
+msgid "Simple Design: A refined, distraction-free interface"
+msgstr "Απλή σχεδίαση: μια κομψή διεπαφή χωρίς περισπασμούς"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:28
+msgid ""
+"MPV-Based: Leverages the robust power of MPV for great playback and format "
+"support"
+msgstr ""
+"Βασισμένο στο MPV: αξιοποιεί την ισχύ του MPV για εξαιρετική αναπαραγωγή και "
+"υποστήριξη μορφότυπων"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:29
+msgid ""
+"Audio and Subtitles: Control track selection and synchronization for both"
+msgstr "Ήχος και υπότιτλοι: ρυθμίστε το κομμάτι και το συγχρονισμό και των δύο"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:30
+msgid ""
+"Video Controls: Easily adjust brightness, contrast, zoom, aspect ratio, etc."
+msgstr ""
+"Ρυθμίσεις βίντεο: προσαρμόστε με ευκολία φωτεινότητα, αντίθεση, μεγέθυνση, "
+"λόγο διαστάσεων κ.ά."
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:42
+msgid "Video Playing"
+msgstr "Αναπαραγωγή βίντεο"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:46
+msgid "Video Options"
+msgstr "Ρυθμίσεις βίντεο"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:50 src/preferences.blp:5
+#: src/preferences.blp:77 src/window.blp:123 src/window.blp:554
+msgid "Preferences"
+msgstr "Προτιμήσεις"
+
+#: data/io.github.diegopvlk.Cine.metainfo.xml.in:54
+msgid "Main Window"
+msgstr "Κύριο παράθυρο"
+
+#: src/history.py:54 src/history.py:58
+msgid "Load All"
+msgstr "Φόρτωση όλων"
+
+#: src/history.py:136
+msgid "Remove from History"
+msgstr "Αφαίρεση από το ιστορικό"
+
+#: src/history.py:206 src/playlist.py:421
+msgid "Open Item Location"
+msgstr "Άνοιγμα τοποθεσίας αντικειμένου"
+
+#: src/history.py:295
+msgid "Clear Watch History?"
+msgstr "Καθαρισμός ιστορικού παρακολούθησης;"
+
+#: src/history.py:296
+msgid "Cancel"
+msgstr "Ακύρωση"
+
+#: src/history.py:297 src/history.blp:16
+msgid "Clear All"
+msgstr "Καθαρισμός όλων"
+
+#. Translators: Replace "translator-credits" with your name/username, and optionally an email or URL.
+#: src/main.py:240
+msgid "translator-credits"
+msgstr "Φουντουκιά (Hazel) Λεβέντη <hazeltwink@gmail.com>"
+
+#: src/playlist.py:118 src/playlist.blp:45
+msgid "Search"
+msgstr "Αναζήτηση"
+
+#: src/playlist.py:181 src/playlist.py:189 src/playlist.py:461
+#: src/preferences.py:331 src/playlist.blp:52
+msgid "Save Playlist"
+msgstr "Αποθήκευση λίστας αναπαραγωγής"
+
+#: src/playlist.py:184 src/preferences.blp:115 src/preferences.blp:150
+msgid ""
+"Requires flatpak permission to read the folder where the video is stored"
+msgstr ""
+"Απαιτείται άδεια flatpak για ανάγνωση του φακέλου όπου είναι αποθηκευμένο το "
+"βίντεο"
+
+#: src/playlist.py:316 src/window.py:1369 src/window.py:1903
+msgid "File Error"
+msgstr "Σφάλμα αρχείου"
+
+#: src/playlist.py:422
+msgid "Remove from Playlist"
+msgstr "Αφαίρεση από την λίστα αναπαραγωγής"
+
+#: src/playlist.py:462 src/playlist.blp:16 src/window.blp:343
+#: src/window.blp:556
+msgid "Playlist"
+msgstr "Λίστα αναπαραγωγής"
+
+#: src/playlist.py:482
+#, python-brace-format
+msgid "{n} item"
+msgid_plural "{n} items"
+msgstr[0] "{n} αντικείμενο"
+msgstr[1] "{n} αντικείμενα"
+
+#: src/preferences.py:113 src/preferences.blp:170
+msgid "Subtitle Color"
+msgstr "Χρώμα υποτίτλων"
+
+#: src/preferences.py:127 src/preferences.blp:250
+msgid "Subtitle Background"
+msgstr "Υπόβαθρο υποτίτλων"
+
+#: src/preferences.py:328
+msgid "Some features require extra permission to work properly:"
+msgstr ""
+"Μερικά χαρακτηριστικά απαιτούν επιπλέον άδειες για να λειτουργήσουν σωστά:"
+
+#: src/preferences.py:329
+msgid "Auto load subtitle file"
+msgstr "Αυτόματη φόρτωση αρχείου υποτίτλων"
+
+#: src/preferences.py:330
+msgid "Auto add files from the same folder to playlist"
+msgstr "Αυτόματη προσθήκη αρχείων από τον ίδιο φάκελο στη λίστα αναπαραγωγής"
+
+#: src/preferences.py:332 src/preferences.blp:98
+msgid "Restore Saved Session"
+msgstr "Επαναφορά αποθηκευμένης συνεδρίας"
+
+#: src/preferences.py:333 src/preferences.blp:133
+msgid "Save Video Position on Close"
+msgstr "Αποθήκευση θέσης βίντεο κατά το κλείσιμο"
+
+#: src/preferences.py:334 src/history.blp:5 src/shortcuts-dialog.blp:61
+#: src/window.blp:108 src/window.blp:470 src/window.blp:555
+msgid "Watch History"
+msgstr "Ιστορικό παρακολούθησης"
+
+#: src/preferences.py:338
+msgid ""
+"If you wish to use those features, install Flatseal for granular folder "
+"control, or run this command to grant access to all folders in the system:"
+msgstr ""
+"Εάν επιθυμείτε να χρησιμοποιήσετε αυτά τα χαρακτηριστικά, εγκαταστήστε το "
+"Flatseal για λεπτομερή έλεγχο πρόσβασης σε φακέλους, ή εκτελέστε αυτήν την "
+"εντολή ώστε να παραχωρήσετε πρόσβαση σε όλους τους φακέλους του συστήματος:"
+
+#: src/preferences.py:344
+msgid "Extra permission enabled."
+msgstr "Επιπλέον άδειες παραχωρήθηκαν."
+
+#: src/preferences.py:360
+msgid "Copied"
+msgstr "Αντιγράφτηκε"
+
+#: src/preferences.py:366 src/preferences.blp:58
+msgid "Copy"
+msgstr "Αντιγραφή"
+
+#: src/save_session.py:66
+msgid "Restoring Session…"
+msgstr "Ανάκτηση συνεδρίας…"
+
+#: src/shortcuts.py:31 src/shortcuts.py:32 src/shortcuts.py:33
+#: src/shortcuts.py:34 src/window.py:2028 src/window.blp:201
+msgid "Volume"
+msgstr "Ένταση"
+
+#: src/shortcuts.py:31
+msgid "Volume Increase"
+msgstr "Αύξηση έντασης"
+
+#: src/shortcuts.py:32
+msgid "Volume Decrease"
+msgstr "Μείωση έντασης"
+
+#: src/shortcuts.py:35 src/shortcuts.py:36 src/shortcuts.py:37
+#: src/preferences.blp:273 src/preferences.blp:285 src/window.blp:180
+#: src/window.blp:542
+msgid "Play/Pause"
+msgstr "Αναπαραγωγή/παύση"
+
+#: src/shortcuts.py:38
+msgid "Show/Hide Subtitles"
+msgstr "Εμφάνιση/απόκρυψη υποτίτλων"
+
+#: src/shortcuts.py:39 src/shortcuts.py:40 src/shortcuts.py:169
+#: src/shortcuts.py:233 src/window.py:779 src/window.blp:244
+msgid "Subtitles"
+msgstr "Υπότιτλοι"
+
+#: src/shortcuts.py:39
+msgid "Next Subtitle Track"
+msgstr "Επόμενο κομμάτι υποτίτλων"
+
+#: src/shortcuts.py:40
+msgid "Previous Subtitle Track"
+msgstr "Προηγούμενο κομμάτι υποτίτλων"
+
+#: src/shortcuts.py:41 src/shortcuts.py:42
+msgid "Secondary Subtitles"
+msgstr "Δευτερεύοντες υπότιτλοι"
+
+#: src/shortcuts.py:41
+msgid "Next Secondary Subtitle Track"
+msgstr "Επόμενο κομμάτι δευτερευόντων υποτίτλων"
+
+#: src/shortcuts.py:42
+msgid "Previous Secondary Subtitle Track"
+msgstr "Προηγούμενο κομμάτι δευτερευόντων υποτίτλων"
+
+#: src/shortcuts.py:43 src/shortcuts.py:44 src/window.py:784 src/window.blp:259
+msgid "Audio"
+msgstr "Ήχος"
+
+#: src/shortcuts.py:43
+msgid "Next Audio Track"
+msgstr "Επόμενο κομμάτι ήχου"
+
+#: src/shortcuts.py:44
+msgid "Previous Audio Track"
+msgstr "Προηγούμενο κομμάτι ήχου"
+
+#: src/shortcuts.py:45
+msgid "Seek 10s Backward"
+msgstr "Προσπέλαση 10δ πίσω"
+
+#: src/shortcuts.py:46
+msgid "Seek 10s Forward"
+msgstr "Προσπέλαση 10δ μπροστά"
+
+#: src/shortcuts.py:47
+msgid "Seek 5s Backward"
+msgstr "Προσπέλαση 5δ πίσω"
+
+#: src/shortcuts.py:48
+msgid "Seek 5s Forward"
+msgstr "Προσπέλαση 5δ μπροστά"
+
+#: src/shortcuts.py:49 src/shortcuts.py:50 src/window.py:1972
+#: src/window.blp:359
+msgid "Fullscreen"
+msgstr "Πλήρης οθόνη"
+
+#: src/shortcuts.py:51 src/window.py:1972
+msgid "Exit Fullscreen"
+msgstr "Έξοδος από πλήρη οθόνη"
+
+#: src/shortcuts.py:61 src/shortcuts.py:62 src/shortcuts.py:63
+#: src/options.blp:285 src/options.blp:311
+msgid "Zoom"
+msgstr "Μεγέθυνση"
+
+#: src/shortcuts.py:61 src/shortcuts.py:62
+msgid "Zoom In"
+msgstr "Μεγέθυνση"
+
+#: src/shortcuts.py:63
+msgid "Zoom Out"
+msgstr "Σμίκρυνση"
+
+#: src/shortcuts.py:66 src/shortcuts.py:67 src/options.blp:623
+#: src/options.blp:649
+msgid "Subtitle Delay"
+msgstr "Καθυστέρηση υποτίτλων"
+
+#: src/shortcuts.py:66
+msgid "Decrease Subtitle Delay"
+msgstr "Μείωση καθυστέρησης υποτίτλων"
+
+#: src/shortcuts.py:67
+msgid "Increase Subtitle Delay"
+msgstr "Αύξηση καθυστέρησης υποτίτλων"
+
+#: src/shortcuts.py:68 src/shortcuts.py:69
+msgid "Subtitle Position"
+msgstr "Θέση υποτίτλων"
+
+#: src/shortcuts.py:68
+msgid "Move Subtitles Up"
+msgstr "Μετακίνηση υποτίτλων πάνω"
+
+#: src/shortcuts.py:69
+msgid "Move Subtitles Down"
+msgstr "Μετακίνηση υποτίτλων κάτω"
+
+#: src/shortcuts.py:70 src/shortcuts.py:71 src/preferences.blp:239
+msgid "Subtitle Scale"
+msgstr "Κλίμακα υποτίτλων"
+
+#: src/shortcuts.py:70
+msgid "Increase Subtitle Scale"
+msgstr "Μεγέθυνση υποτίτλων"
+
+#: src/shortcuts.py:71
+msgid "Decrease Subtitle Scale"
+msgstr "Σμίκρυνση υποτίτλων"
+
+#: src/shortcuts.py:72 src/window.blp:212
+msgid "Mute/Unmute"
+msgstr "Εναλλαγή σίγασης"
+
+#: src/shortcuts.py:73 src/shortcuts.py:74 src/shortcuts.py:75
+#: src/options.blp:680 src/options.blp:706
+msgid "Audio Delay"
+msgstr "Καθυστέρηση ήχου"
+
+#: src/shortcuts.py:73
+msgid "Decrease Audio Delay"
+msgstr "Μείωση καθυστέρησης ήχου"
+
+#: src/shortcuts.py:74 src/shortcuts.py:75
+msgid "Increase Audio Delay"
+msgstr "Αύξηση καθυστέρησης ήχου"
+
+#: src/shortcuts.py:76
+msgid "Go Back One Frame"
+msgstr "Μετάβαση πίσω κατά ένα καρέ"
+
+#: src/shortcuts.py:77
+msgid "Advance One Frame"
+msgstr "Μετάβαση μπροστά κατά ένα καρέ"
+
+#: src/shortcuts.py:78
+msgid "Seek to the Previous Chapter"
+msgstr "Μεταπήδηση στο προηγούμενο κεφάλαιο"
+
+#: src/shortcuts.py:79
+msgid "Seek to the Next Chapter"
+msgstr "Μεταπήδηση στο επόμενο κεφάλαιο"
+
+#: src/shortcuts.py:80
+msgid "Take Screenshot With Subtitles"
+msgstr "Λήψη στιγμιότυπου με υποτίτλους"
+
+#: src/shortcuts.py:81
+msgid "Take Screenshot Without Subtitles"
+msgstr "Λήψη στιγμιότυπου χωρίς υποτίτλους"
+
+#: src/shortcuts.py:82
+msgid "Statistics"
+msgstr "Στατιστικά"
+
+#: src/shortcuts.py:83
+msgid "Statistics Overlay"
+msgstr "Επικάλυψη στατιστικών"
+
+#: src/shortcuts.py:84
+msgid "Set/Clear A-B Loop Points"
+msgstr "Ορισμός/καθαρισμός σημείων Α-Β επανάληψης"
+
+#: src/shortcuts.py:85
+msgid "Loop"
+msgstr "Επανάληψη"
+
+#: src/shortcuts.py:85 src/window.blp:331
+msgid "Loop File"
+msgstr "Επανάληψη αρχείου"
+
+#: src/shortcuts.py:86 src/shortcuts.py:87 src/options.blp:342
+#: src/options.blp:367
+msgid "Contrast"
+msgstr "Αντίθεση"
+
+#: src/shortcuts.py:86
+msgid "Decrease Contrast"
+msgstr "Μείωση αντίθεσης"
+
+#: src/shortcuts.py:87
+msgid "Increase Contrast"
+msgstr "Αύξηση αντίθεσης"
+
+#: src/shortcuts.py:88 src/shortcuts.py:89 src/options.blp:398
+#: src/options.blp:423
+msgid "Brightness"
+msgstr "Φωτεινότητα"
+
+#: src/shortcuts.py:88
+msgid "Decrease Brightness"
+msgstr "Μείωση φωτεινότητας"
+
+#: src/shortcuts.py:89
+msgid "Increase Brightness"
+msgstr "Αύξηση φωτεινότητας"
+
+#: src/shortcuts.py:90 src/shortcuts.py:91 src/options.blp:454
+#: src/options.blp:479
+msgid "Gamma"
+msgstr "Γάμμα"
+
+#: src/shortcuts.py:90
+msgid "Decrease Gamma"
+msgstr "Μείωση γάμμα"
+
+#: src/shortcuts.py:91
+msgid "Increase Gamma"
+msgstr "Αύξηση γάμμα"
+
+#: src/shortcuts.py:92 src/shortcuts.py:93 src/options.blp:510
+#: src/options.blp:535
+msgid "Saturation"
+msgstr "Κορεσμός"
+
+#: src/shortcuts.py:92
+msgid "Decrease Saturation"
+msgstr "Μείωση κορεσμού"
+
+#: src/shortcuts.py:93
+msgid "Increase Saturation"
+msgstr "Αύξηση κορεσμού"
+
+#: src/shortcuts.py:94 src/shortcuts.py:95 src/shortcuts.py:96
+msgid "Speed"
+msgstr "Ταχύτητα"
+
+#: src/shortcuts.py:94
+msgid "Decrease Playback Speed"
+msgstr "Μείωση ταχύτητας αναπαραγωγής"
+
+#: src/shortcuts.py:95
+msgid "Increase Playback Speed"
+msgstr "Αύξηση ταχύτητας αναπαραγωγής"
+
+#: src/shortcuts.py:96 src/options.blp:727
+msgid "Reset Playback Speed"
+msgstr "Επαναφορά ταχύτητας αναπαραγωγής"
+
+#: src/shortcuts.py:153 src/shortcuts.py:236
+msgid "Display & Video"
+msgstr "Προβολή και βίντεο"
+
+#: src/shortcuts.py:170 src/shortcuts.py:234
+msgid "Audio & Volume"
+msgstr "Ήχος και ένταση"
+
+#: src/shortcuts.py:171 src/shortcuts.py:235
+msgid "Navigation"
+msgstr "Πλοήγηση"
+
+#: src/shortcuts.py:172 src/shortcuts.py:237
+msgid "Playback"
+msgstr "Αναπαραγωγή"
+
+#: src/shortcuts.py:176 src/shortcuts.py:182 src/shortcuts.py:238
+#: src/shortcuts.py:242
+msgid "Miscellaneous"
+msgstr "Διάφορα"
+
+#: src/window.py:635 src/window.py:1361 src/window.blp:104
+msgid "Add Subtitle Track"
+msgstr "Προσθήκη κομματιού υποτίτλων"
+
+#: src/window.py:637 src/window.py:646
+msgid "None"
+msgstr "Κανένα"
+
+#: src/window.py:644 src/window.blp:105
+msgid "Add Audio Track"
+msgstr "Προσθήκη κομματιού ήχου"
+
+#: src/window.py:683
+msgid "Track"
+msgstr "Κομμάτι"
+
+#: src/window.py:726 src/playlist.blp:31 src/window.blp:102
+msgid "Add Folder"
+msgstr "Προσθήκη φακέλου"
+
+#: src/window.py:726 src/shortcuts-dialog.blp:21 src/window.blp:99
+#: src/window.blp:483 src/window.blp:549
+msgid "Open Folder"
+msgstr "Άνοιγμα φακέλου"
+
+#: src/window.py:753 src/shortcuts-dialog.blp:16 src/window.blp:98
+#: src/window.blp:548
+msgid "Open Files"
+msgstr "Άνοιγμα αρχείων"
+
+#: src/window.py:756 src/playlist.blp:26 src/window.blp:101
+msgid "Add Files"
+msgstr "Προσθήκη αρχείων"
+
+#: src/window.py:760
+msgid "Add Subtitle"
+msgstr "Προσθήκη υποτίτλων"
+
+#: src/window.py:763
+msgid "Add Audio"
+msgstr "Προσθήκη ήχου"
+
+#: src/window.py:788
+msgid "Media"
+msgstr "Μέσα"
+
+#: src/window.py:847
+msgid "Session Saved"
+msgstr "Η συνεδρία αποθηκεύτηκε"
+
+#: src/window.py:853 src/playlist.blp:36 src/window.blp:103
+msgid "Add URL"
+msgstr "Προσθήκη URL"
+
+#: src/window.py:853 src/shortcuts-dialog.blp:26 src/window.blp:100
+#: src/window.blp:492 src/window.blp:550
+msgid "Open URL"
+msgstr "Άνοιγμα URL"
+
+#: src/window.py:866
+msgid "URL"
+msgstr "URL"
+
+#: src/window.py:874 src/playlist.blp:22
+msgid "Add"
+msgstr "Προσθήκη"
+
+#: src/window.py:874 src/window.blp:93
+msgid "Open"
+msgstr "Άνοιγμα"
+
+#: src/window.py:1067 src/window.py:1191
+msgid "Chapter"
+msgstr "Κεφάλαιο"
+
+#: src/window.py:1246 src/window.py:1365
+msgid "Play"
+msgstr "Αναπαραγωγή"
+
+#: src/window.py:1246
+msgid "Pause"
+msgstr "Παύση"
+
+#: src/options.blp:14
+msgid "Options"
+msgstr "Ρυθμίσεις"
+
+#: src/options.blp:28
+msgid "Reset All"
+msgstr "Επαναφορά όλων"
+
+#: src/options.blp:40
+msgid "Reset Aspect Ratio"
+msgstr "Επαναφορά λόγου διαστάσεων"
+
+#: src/options.blp:50
+msgid "Aspect Ratio"
+msgstr "Λόγος διαστάσεων"
+
+#: src/options.blp:76 src/options.blp:135
+msgid "Original"
+msgstr "Αρχικό"
+
+#: src/options.blp:99
+msgid "Reset Crop"
+msgstr "Επαναφορά περικοπής"
+
+#: src/options.blp:109
+msgid "Crop"
+msgstr "Περικοπή"
+
+#: src/options.blp:159
+msgid "Reset Rotation"
+msgstr "Επαναφορά περιστροφής"
+
+#: src/options.blp:169
+msgid "Rotate"
+msgstr "Περιστροφή"
+
+#: src/options.blp:196
+msgid "Rotate Left"
+msgstr "Περιστροφή αριστερά"
+
+#: src/options.blp:204
+msgid "Rotate Right"
+msgstr "Περιστροφή δεξιά"
+
+#: src/options.blp:217
+msgid "Reset Flip"
+msgstr "Επαναφορά αναστροφής"
+
+#: src/options.blp:227
+msgid "Flip"
+msgstr "Αναστροφή"
+
+#: src/options.blp:254
+msgid "Flip Horizontally"
+msgstr "Οριζόντια αναστροφή"
+
+#: src/options.blp:262
+msgid "Flip Vertically"
+msgstr "Κάθετη αναστροφή"
+
+#: src/options.blp:275
+msgid "Reset Zoom"
+msgstr "Επαναφορά μεγέθυνσης"
+
+#: src/options.blp:332
+msgid "Reset Contrast"
+msgstr "Επαναφορά αντίθεσης"
+
+#: src/options.blp:388
+msgid "Reset Brightness"
+msgstr "Επαναφορά φωτεινότητας"
+
+#: src/options.blp:444
+msgid "Reset Gamma"
+msgstr "Επαναφορά γάμμα"
+
+#: src/options.blp:500
+msgid "Reset Saturation"
+msgstr "Επαναφορά κορεσμού"
+
+#: src/options.blp:556
+msgid "Reset Hue"
+msgstr "Επαναφορά απόχρωσης"
+
+#. TRANSLATORS: Do not use "Color" or "Temperature", those are different things
+#: src/options.blp:567 src/options.blp:592
+msgid "Hue"
+msgstr "Απόχρωση"
+
+#: src/options.blp:613
+msgid "Reset Subtitle Delay"
+msgstr "Επαναφορά καθυστέρησης υποτίτλων"
+
+#: src/options.blp:670
+msgid "Reset Audio Delay"
+msgstr "Επαναφορά καθυστέρησης ήχου"
+
+#: src/options.blp:737 src/options.blp:763
+msgid "Playback Speed"
+msgstr "Ταχύτητα αναπαραγωγής"
+
+#: src/playlist.blp:94
+msgid "No Results Found"
+msgstr "Δεν βρέθηκαν αποτελέσματα"
+
+#: src/playlist.blp:128
+msgid "Add to Playlist"
+msgstr "Προσθήκη στη λίστα αναπαραγωγής"
+
+#: src/preferences.blp:15
+msgid "About Permissions"
+msgstr "Σχετικά με τις άδειες"
+
+#: src/preferences.blp:81
+msgid "Open New Window for New Files"
+msgstr "Άνοιγμα νέου παραθύρου για νέα αρχεία"
+
+#: src/preferences.blp:85
+msgid "Progress Bar Thumbnail"
+msgstr "Μικρογραφία γραμμής προόδου"
+
+#: src/preferences.blp:89
+msgid "Normalize Volume"
+msgstr "Κανονικοποίηση έντασης"
+
+#: src/preferences.blp:93
+msgid "Hardware Acceleration"
+msgstr "Επιτάχυνση υλισμικού"
+
+#: src/preferences.blp:94
+msgid "Use GPU for video decoding when available"
+msgstr "Χρήση της GPU για αποκωδικοποίηση βίντεο όταν είναι δυνατό"
+
+#: src/preferences.blp:99
+msgid "Pick up where you left off after saving from the menu"
+msgstr ""
+"Συνεχίστε από το σημείο που βρισκόσασταν όταν αποθηκεύσατε από το μενού"
+
+#: src/preferences.blp:134
+msgid "Also save options like brightness, subtitle delay, etc."
+msgstr ""
+"Επίσης αποθηκεύει ρυθμίσεις όπως φωτεινότητα, καθυστέρηση υποτίτλων, κ.ά."
+
+#: src/preferences.blp:183 src/preferences.blp:229
+msgid "Reset"
+msgstr "Επαναφορά"
+
+#: src/preferences.blp:193
+msgid "Subtitle Font"
+msgstr "Γραμματοσειρά υποτίτλων"
+
+#: src/preferences.blp:206
+msgid "Some fonts may not work"
+msgstr "Μερικές γραμματοσειρές ίσως να μη λειτουργούν"
+
+#: src/preferences.blp:269
+msgid "Primary Click"
+msgstr "Πρωτεύον κλικ"
+
+#: src/preferences.blp:274
+msgid "Focus/Play/Pause"
+msgstr "Εστίαση/Αναπαραγωγή/Παύση"
+
+#: src/preferences.blp:275 src/preferences.blp:287
+msgid "Bypass"
+msgstr "Παράκαμψη"
+
+#: src/preferences.blp:281
+msgid "Secondary Click"
+msgstr "Δευτερεύον κλικ"
+
+#: src/preferences.blp:286
+msgid "Context Menu"
+msgstr "Μενού επιλογών"
+
+#: src/preferences.blp:295
+msgid "Preferred Subtitle Languages"
+msgstr "Προτιμώμενες γλώσσες υποτίτλων"
+
+#: src/preferences.blp:296 src/preferences.blp:301
+msgid "Example: en,es,pt"
+msgstr "Παράδειγμα: el,en,es"
+
+#: src/preferences.blp:300
+msgid "Preferred Audio Languages"
+msgstr "Προτιμώμενες γλώσσες ήχου"
+
+#: src/preferences.blp:307
+msgid "Open Config Folder"
+msgstr "Άνοιγμα φακέλου ρυθμίσεων"
+
+#: src/shortcuts-dialog.blp:8
+msgid "General"
+msgstr "Γενικά"
+
+#: src/shortcuts-dialog.blp:31
+msgid "Add Files to Playlist"
+msgstr "Προσθήκη αρχείων στην λίστα αναπαραγωγής"
+
+#: src/shortcuts-dialog.blp:36
+msgid "Add Folder to Playlist"
+msgstr "Προσθήκη φακέλου στην λίστα αναπαραγωγής"
+
+#: src/shortcuts-dialog.blp:41
+msgid "Add URL to Playlist"
+msgstr "Προσθήκη URL στη λίστα αναπαραγωγής"
+
+#: src/shortcuts-dialog.blp:46
+msgid "Open Subtitles Menu"
+msgstr "Άνοιγμα μενού υποτίτλων"
+
+#: src/shortcuts-dialog.blp:51
+msgid "Open Audio Menu"
+msgstr "Άνοιγμα μενού ήχου"
+
+#: src/shortcuts-dialog.blp:56
+msgid "Open Chapters Menu"
+msgstr "Άνοιγμα μενού κεφαλαίων"
+
+#: src/shortcuts-dialog.blp:66
+msgid "Show Shortcuts"
+msgstr "Εμφάνιση συντομεύσεων"
+
+#: src/shortcuts-dialog.blp:71
+msgid "Close Window"
+msgstr "Κλείσιμο παραθύρου"
+
+#: src/shortcuts-dialog.blp:76 src/window.blp:129
+msgid "Save Session"
+msgstr "Αποθήκευση συνεδρίας"
+
+#: src/shortcuts-dialog.blp:81 src/window.blp:130
+msgid "Save Session and Close"
+msgstr "Αποθήκευση συνεδρίας και κλείσιμο"
+
+#: src/shortcuts-dialog.blp:86
+msgid "Quit"
+msgstr "Έξοδος"
+
+#: src/window.blp:118
+msgid "Main Menu"
+msgstr "Κύριο μενού"
+
+#: src/window.blp:124
+msgid "Keyboard Shortcuts"
+msgstr "Συντομεύσεις πληκτρολογίου"
+
+#: src/window.blp:125
+msgid "About Cine"
+msgstr "Σχετικά με το Cine"
+
+#: src/window.blp:169 src/window.blp:543
+msgid "Previous"
+msgstr "Προηγούμενο"
+
+#: src/window.blp:192 src/window.blp:544
+msgid "Next"
+msgstr "Επόμενο"
+
+#: src/window.blp:273
+msgid "Video"
+msgstr "Βίντεο"
+
+#: src/window.blp:288
+msgid "Chapters"
+msgstr "Κεφάλαια"
+
+#: src/window.blp:305
+msgid "Shuffle Playlist"
+msgstr "Ανακάτεμα λίστας αναπαραγωγής"
+
+#: src/window.blp:318
+msgid "Loop Playlist"
+msgstr "Επανάληψη λίστας αναπαραγωγής"
+
+#: src/window.blp:392
+msgid "Toggle Elapsed/Remaining"
+msgstr "Εναλλαγή παρερχόμενου/υπολειπόμενου χρόνου"
+
+#: src/window.blp:439
+msgid "Drag and drop files here"
+msgstr "Σύρετε και αφήστε αρχεία εδώ"
+
+#: src/window.blp:459
+msgid "Open…"
+msgstr "Άνοιγμα…"
+
+#~ msgid "Left Click"
+#~ msgstr "Αριστερό κλικ"
+
+#~ msgid "Disabled"
+#~ msgstr "Απενεργοποιημένο"
+
+#~ msgid "Right Click"
+#~ msgstr "Δεξί κλικ"
+
+#~ msgid "Window Menu"
+#~ msgstr "Μενού παραθύρου"
+
+#~ msgid "Subtitle"
+#~ msgstr "Υπότιτλοι"
