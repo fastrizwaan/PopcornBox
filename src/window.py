@@ -495,7 +495,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.media_type,
                 sel_season,
                 sel_episode,
-                callback=lambda t, is_cached=False, is_complete=False: GLib.idle_add(on_stream_batch, t, is_cached, is_complete)
+                callback=lambda t, is_cached=False, is_complete=False: GLib.idle_add(on_stream_batch, t, is_cached, is_complete),
+                title=self.movie_stub.get("title")
             )
         threading.Thread(target=fetch, daemon=True).start()
 
@@ -733,23 +734,24 @@ class CineWindow(Adw.ApplicationWindow):
     library_stack: Adw.ViewStack = Gtk.Template.Child()
     header_stack: Gtk.Stack = Gtk.Template.Child()
     category_btn_stack: Gtk.Stack = Gtk.Template.Child()
+    movies_genre_menu: Gio.Menu = Gtk.Template.Child()
+    series_genre_menu: Gio.Menu = Gtk.Template.Child()
+    discover_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    discover_options_revealer: Gtk.Revealer = Gtk.Template.Child()
     library_header: Adw.HeaderBar = Gtk.Template.Child()
     search_header: Adw.HeaderBar = Gtk.Template.Child()
     search_entry: Gtk.SearchEntry = Gtk.Template.Child()
     catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
-    movies_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
-    series_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
-    search_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
-    movies_flowbox: Gtk.FlowBox = Gtk.Template.Child()
-    series_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    media_type_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    genre_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    content_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
+    content_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     search_movies_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     search_series_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     favorites_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     history_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     watched_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     downloads_listbox: Gtk.ListBox = Gtk.Template.Child()
-    movies_genre_menu: Gio.Menu = Gtk.Template.Child()
-    series_genre_menu: Gio.Menu = Gtk.Template.Child()
     addon_url_entry: Gtk.Entry = Gtk.Template.Child()
     addons_listbox: Gtk.ListBox = Gtk.Template.Child()
     video_overlay: Gtk.Overlay = Gtk.Template.Child()
@@ -888,7 +890,6 @@ class CineWindow(Adw.ApplicationWindow):
             osd_bar=False,
             osd_blur=1,
             osd_border_size=1.5,
-            osd_shadow_offset=0.6,
             osd_border_color="#BE000000",
             osd_shadow_color="#1B000000",
             osd_margin_x=66,
@@ -1526,7 +1527,7 @@ class CineWindow(Adw.ApplicationWindow):
             try:
                 item = row.item_data
                 details = api.fetch_movie_details(item["id"], media_type=item.get("type", "movie"), title=item["title"])
-                streams = api.get_torrents_streamed(details["id"], media_type=item.get("type", "movie"))
+                streams = api.get_torrents_streamed(details["id"], media_type=item.get("type", "movie"), title=item.get("title") or details.get("name"))
                 
                 direct_stream = None
                 for s in streams:
@@ -2959,55 +2960,72 @@ class CineWindow(Adw.ApplicationWindow):
     def _load_catalogs(self):
         # Initial stack is library
         self.main_stack.set_visible_child_name("library")
+        self.library_stack.set_visible_child_name("content")
         
-        catalogs_list = Gtk.StringList.new(["All", "Cinemeta"])
-        self.catalog_dropdown.set_model(catalogs_list)
+        from . import api
         
-        self._populate_addons()
+        self.all_catalogs = []
+        self.current_media_type = "movie"
+        self.current_catalog = None
+        self.current_genre = None
         
-        self.movies_page = 1
-        self.series_page = 1
-        self.is_fetching_movies = False
-        self.is_fetching_series = False
-        self.movies_seen_ids = set()
-        self.series_seen_ids = set()
-
-        if hasattr(self, "movies_scrolled"):
-            self.movies_scrolled.get_vadjustment().connect("value-changed", self._on_movies_scroll)
-        if hasattr(self, "series_scrolled"):
-            self.series_scrolled.get_vadjustment().connect("value-changed", self._on_series_scroll)
+        self.content_page = 1
+        self.is_fetching_content = False
+        self.content_seen_ids = set()
         
-        def fetch_movies():
-            self.is_fetching_movies = True
-            try:
-                m1 = fetch_items(media_type="movie", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=1)
-                m2 = fetch_items(media_type="movie", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=2)
-                movies = (m1 or []) + (m2 or [])
-                if movies:
-                    self.movies_page = 2
-                    GLib.idle_add(self._populate_flowbox, self.movies_flowbox, movies, self.movies_seen_ids)
-            except Exception as e:
-                logger.error(f"Error fetching movies: {e}")
-            finally:
-                self.is_fetching_movies = False
-
-        def fetch_series():
-            self.is_fetching_series = True
-            try:
-                s1 = fetch_items(media_type="series", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=1)
-                s2 = fetch_items(media_type="series", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=2)
-                series = (s1 or []) + (s2 or [])
-                if series:
-                    self.series_page = 2
-                    GLib.idle_add(self._populate_flowbox, self.series_flowbox, series, self.series_seen_ids)
-            except Exception as e:
-                logger.error(f"Error fetching series: {e}")
-            finally:
-                self.is_fetching_series = False
-
-        threading.Thread(target=fetch_movies, daemon=True).start()
-        threading.Thread(target=fetch_series, daemon=True).start()
+        # Populate media type dropdown
+        media_types = Gtk.StringList.new(["Movies", "Series"])
+        self.media_type_dropdown.set_model(media_types)
         
+        def on_media_type_changed(dropdown, pspec):
+            selected = dropdown.get_selected()
+            self.current_media_type = "movie" if selected == 0 else "series"
+            self.all_catalogs = api.get_available_catalogs(self.current_media_type)
+            
+            # Populate catalog dropdown
+            cat_names = [c["display_name"] for c in self.all_catalogs]
+            if not cat_names:
+                cat_names = ["No Catalogs Found"]
+            self.catalog_dropdown.set_model(Gtk.StringList.new(cat_names))
+            
+            # Explicitly trigger catalog change because index 0 might not emit notify::selected
+            on_catalog_changed(self.catalog_dropdown, None)
+            
+        self.media_type_dropdown.connect("notify::selected", on_media_type_changed)
+        
+        def on_catalog_changed(dropdown, pspec):
+            selected = dropdown.get_selected()
+            if not self.all_catalogs or selected >= len(self.all_catalogs):
+                self.current_catalog = None
+                return
+                
+            self.current_catalog = self.all_catalogs[selected]
+            genres = self.current_catalog.get("genres", [])
+            
+            if genres:
+                genre_names = ["All"] + genres
+                self.genre_dropdown.set_model(Gtk.StringList.new(genre_names))
+                self.genre_dropdown.set_visible(True)
+            else:
+                self.genre_dropdown.set_visible(False)
+                self.current_genre = None
+                
+            self._refresh_content()
+            
+        self.catalog_dropdown.connect("notify::selected", on_catalog_changed)
+        
+        def on_genre_changed(dropdown, pspec):
+            if not self.genre_dropdown.get_visible():
+                return
+            selected_item = dropdown.get_selected_item()
+            if selected_item:
+                genre_str = selected_item.get_string()
+                self.current_genre = genre_str if genre_str != "All" else None
+                self._refresh_content()
+                
+        self.genre_dropdown.connect("notify::selected", on_genre_changed)
+        
+        # Restore classic genre menus
         movie_genres = ["All", "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "History", "Horror", "Music", "Musical", "Mystery", "Romance", "Sci-Fi", "Short", "Sport", "Thriller", "War", "Western"]
         series_genres = ["All", "Action & Adventure", "Animation", "Family", "Kids", "Comedy", "Drama", "Crime", "Mystery", "Sci-Fi & Fantasy", "Western", "War & Politics", "Reality", "Documentary", "Talk", "News", "Soap", "Romance", "Music", "Musical", "History"]
         for g in movie_genres:
@@ -3015,9 +3033,74 @@ class CineWindow(Adw.ApplicationWindow):
         for g in series_genres:
             self.series_genre_menu.append(g, f"win.series-genre-selected::{g}")
             
+        # Classic Action Handlers
+        action = Gio.SimpleAction.new("movies-genre-selected", GLib.VariantType.new("s"))
+        def on_movies_genre(action, parameter):
+            g = parameter.get_string()
+            self.current_media_type = "movie"
+            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
+            self.current_genre = None if g == "All" else g
+            self.category_btn_stack.set_visible_child_name("movies")
+            self._refresh_content()
+        action.connect("activate", on_movies_genre)
+        self.add_action(action)
+        
+        action = Gio.SimpleAction.new("series-genre-selected", GLib.VariantType.new("s"))
+        def on_series_genre(action, parameter):
+            g = parameter.get_string()
+            self.current_media_type = "series"
+            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
+            self.current_genre = None if g == "All" else g
+            self.category_btn_stack.set_visible_child_name("series")
+            self._refresh_content()
+        action.connect("activate", on_series_genre)
+        self.add_action(action)
+        
+        action = Gio.SimpleAction.new("switch-to-movies", None)
+        def on_switch_movies(action, parameter):
+            self.current_media_type = "movie"
+            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
+            self.current_genre = None
+            self.category_btn_stack.set_visible_child_name("movies")
+            self._refresh_content()
+        action.connect("activate", on_switch_movies)
+        self.add_action(action)
+        
+        action = Gio.SimpleAction.new("switch-to-series", None)
+        def on_switch_series(action, parameter):
+            self.current_media_type = "series"
+            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
+            self.current_genre = None
+            self.category_btn_stack.set_visible_child_name("series")
+            self._refresh_content()
+        action.connect("activate", on_switch_series)
+        self.add_action(action)
+
+        def on_discover_toggled(button, pspec):
+            is_active = button.get_active()
+            self.discover_options_revealer.set_reveal_child(is_active)
+            self.category_btn_stack.set_visible(not is_active)
+            if is_active:
+                on_media_type_changed(self.media_type_dropdown, None)
+            else:
+                self.activate_action("switch-to-movies", None)
+                
+        self.discover_toggle_btn.connect("notify::active", on_discover_toggled)
+        
+        if hasattr(self, "content_scrolled"):
+            self.content_scrolled.get_vadjustment().connect("value-changed", self._on_content_scroll)
+            
+        self._populate_addons()
+        
+        # Trigger initial load in classic mode
+        self.activate_action("switch-to-movies", None)
+        
         self.search_entry.connect("search-changed", self._on_search_changed)
         search_key_ctrl = Gtk.EventControllerKey()
         def on_search_key_pressed(controller, keyval, keycode, state):
+            if keyval in [Gdk.KEY_Return, Gdk.KEY_KP_Enter]:
+                self._on_search_changed(self.search_entry)
+                return True
             if keyval == Gdk.KEY_Escape:
                 self._close_search()
                 return True
@@ -3025,47 +3108,64 @@ class CineWindow(Adw.ApplicationWindow):
         search_key_ctrl.connect("key-pressed", on_search_key_pressed)
         self.search_entry.add_controller(search_key_ctrl)
 
-    def _on_movies_scroll(self, adj):
-        if self.is_fetching_movies:
-            return
-        if adj.get_value() > 0 and adj.get_value() >= adj.get_upper() - adj.get_page_size() - 400:
-            self.is_fetching_movies = True
-            next_page = self.movies_page + 1
-            def fetch_next():
-                try:
-                    movies = fetch_items(media_type="movie", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=next_page)
-                    if movies:
-                        self.movies_page = next_page
-                        GLib.idle_add(self._append_flowbox, self.movies_flowbox, movies, self.movies_seen_ids)
-                except Exception as e:
-                    logger.error(f"Error fetching more movies: {e}")
-                finally:
-                    def reset_fetching():
-                        self.is_fetching_movies = False
-                        return False
-                    GLib.idle_add(reset_fetching)
-            threading.Thread(target=fetch_next, daemon=True).start()
+    def _refresh_content(self):
+        self.content_page = 1
+        self.content_seen_ids.clear()
+        
+        # Clear flowbox
+        while self.content_flowbox.get_first_child() is not None:
+            self.content_flowbox.remove(self.content_flowbox.get_first_child())
+            
+        if self.current_catalog:
+            self._fetch_content_page()
 
-    def _on_series_scroll(self, adj):
-        if self.is_fetching_series:
+    def _fetch_content_page(self):
+        if self.is_fetching_content or not self.current_catalog:
+            return
+            
+        self.is_fetching_content = True
+        
+        def fetch():
+            from . import api
+            try:
+                cat_url = self.current_catalog["manifest_url"]
+                cat_id = self.current_catalog["catalog_id"]
+                
+                # Fetch two pages to fill screen initially if page is 1
+                items1 = api.fetch_items(media_type=self.current_media_type, 
+                                        catalog_id=cat_id, catalog_url=cat_url, 
+                                        genre=self.current_genre, page=self.content_page)
+                
+                items = items1 or []
+                if self.content_page == 1:
+                    items2 = api.fetch_items(media_type=self.current_media_type, 
+                                            catalog_id=cat_id, catalog_url=cat_url, 
+                                            genre=self.current_genre, page=self.content_page + 1)
+                    items.extend(items2 or [])
+                
+                if items:
+                    increment = 2 if self.content_page == 1 else 1
+                    self.content_page += increment
+                    if self.content_page <= 2:
+                        GLib.idle_add(self._populate_flowbox, self.content_flowbox, items, self.content_seen_ids)
+                    else:
+                        GLib.idle_add(self._append_flowbox, self.content_flowbox, items, self.content_seen_ids)
+            except Exception as e:
+                logger.error(f"Error fetching content: {e}")
+            finally:
+                def reset_fetching():
+                    self.is_fetching_content = False
+                    return False
+                GLib.idle_add(reset_fetching)
+                
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _on_content_scroll(self, adj):
+        if self.is_fetching_content:
             return
         if adj.get_value() > 0 and adj.get_value() >= adj.get_upper() - adj.get_page_size() - 400:
-            self.is_fetching_series = True
-            next_page = self.series_page + 1
-            def fetch_next():
-                try:
-                    series = fetch_items(media_type="series", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=next_page)
-                    if series:
-                        self.series_page = next_page
-                        GLib.idle_add(self._append_flowbox, self.series_flowbox, series, self.series_seen_ids)
-                except Exception as e:
-                    logger.error(f"Error fetching more series: {e}")
-                finally:
-                    def reset_fetching():
-                        self.is_fetching_series = False
-                        return False
-                    GLib.idle_add(reset_fetching)
-            threading.Thread(target=fetch_next, daemon=True).start()
+            if getattr(self, "current_catalog", None):
+                self._fetch_content_page()
 
     def _populate_flowbox(self, flowbox, items, seen_ids=None):
         while flowbox.get_first_child() is not None:
@@ -3329,32 +3429,33 @@ class CineWindow(Adw.ApplicationWindow):
             while self.search_series_flowbox.get_first_child() is not None:
                 self.search_series_flowbox.remove(self.search_series_flowbox.get_first_child())
                 
-            def do_search():
+            def do_search_movies():
                 try:
-                    movies = fetch_items(media_type="movie", query=query)
-                    if movies:
-                        GLib.idle_add(self._append_flowbox, self.search_movies_flowbox, movies, None)
-                    
-                    series = fetch_items(media_type="series", query=query)
-                    if series:
-                        GLib.idle_add(self._append_flowbox, self.search_series_flowbox, series, None)
+                    def on_movies_batch(batch):
+                        GLib.idle_add(self._append_flowbox, self.search_movies_flowbox, batch, None)
+                    fetch_items(media_type="movie", query=query, on_item_found=on_movies_batch)
                 except Exception as e:
-                    logger.error(f"Search error: {e}")
+                    logger.error(f"Search error (movies): {e}")
+
+            def do_search_series():
+                try:
+                    def on_series_batch(batch):
+                        GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
+                    fetch_items(media_type="series", query=query, on_item_found=on_series_batch)
+                except Exception as e:
+                    logger.error(f"Search error (series): {e}")
                     
-            threading.Thread(target=do_search, daemon=True).start()
+            threading.Thread(target=do_search_movies, daemon=True).start()
+            threading.Thread(target=do_search_series, daemon=True).start()
             return False
 
-        self.search_timeout_id = GLib.timeout_add(500, trigger_search)
+        self.search_timeout_id = GLib.timeout_add(350, trigger_search)
 
     def switch_to_library_page(self, page_name: str):
         self.library_stack.set_visible_child_name(page_name)
 
     def _on_library_stack_changed(self, *args):
-        child_name = self.library_stack.get_visible_child_name()
-        if child_name == "movies":
-            self.category_btn_stack.set_visible_child_name("movies")
-        elif child_name == "series":
-            self.category_btn_stack.set_visible_child_name("series")
+        pass
 
     def _open_local_page(self, page_name):
         self.main_stack.set_visible_child_name(page_name)

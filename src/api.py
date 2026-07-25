@@ -120,7 +120,102 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
 def fetch_genre_counts(media_type="movie"):
     return {}
 
-def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False):
+def get_available_catalogs(c_type="movie"):
+    from . import database
+    catalogs = []
+    addons = [a for a in database.get_addons() if a.get("enabled", True)]
+    
+    for addon in addons:
+        addon_name = addon.get("name", "Unknown Addon")
+        manifest_url = addon.get("manifest_url", "")
+        if not manifest_url or manifest_url.startswith("builtin:"):
+            continue
+            
+        base_url = manifest_url.rsplit("manifest.json", 1)[0]
+        if not base_url.endswith("/"): base_url += "/"
+            
+        addon_catalogs = addon.get("catalogs", [])
+        for cat in addon_catalogs:
+            if cat.get("type") == c_type:
+                genres = []
+                extra = cat.get("extra") or []
+                for ex in extra:
+                    if isinstance(ex, dict) and ex.get("name") == "genre":
+                        genres = ex.get("options", [])
+                        
+                cat_name = cat.get("name") or ""
+                cat_id = cat.get("id", "")
+                
+                if not cat_name or cat_name.lower() == "catalog":
+                    display_name = f"{addon_name} - {cat_id}"
+                else:
+                    display_name = f"{addon_name} - {cat_name}" if addon_name.lower() not in cat_name.lower() else cat_name
+                    if "tpbctlg" in display_name.lower():
+                         display_name = f"{display_name} ({cat_id})"
+                
+                catalogs.append({
+                    "addon_name": addon_name,
+                    "manifest_url": manifest_url,
+                    "base_url": base_url,
+                    "catalog_id": cat.get("id"),
+                    "catalog_name": cat_name,
+                    "display_name": display_name,
+                    "genres": genres,
+                    "type": c_type
+                })
+    return catalogs
+
+def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
+    catalogs = addon.get("catalogs", [])
+    if not catalogs:
+        m_url = addon.get("manifest_url", "")
+        if m_url and not m_url.startswith("builtin:"):
+            try:
+                manifest_data = _get_cached_request(m_url, max_age_hours=168, cache_only=cache_only, timeout=3)
+                if manifest_data and "catalogs" in manifest_data:
+                    catalogs = manifest_data["catalogs"]
+            except Exception:
+                pass
+
+    search_cats = []
+    for cat in catalogs:
+        cat_type = cat.get("type")
+        if cat_type != c_type:
+            continue
+            
+        cat_id = cat.get("id", "")
+        cat_name = cat.get("name", "")
+        extra = cat.get("extra", [])
+        extra_sup = cat.get("extraSupported", [])
+        
+        is_search = False
+        if addon.get("id") == "cinemeta" and cat_id == "top":
+            is_search = True
+        elif "search" in str(cat_id).lower() or "search" in str(cat_name).lower():
+            is_search = True
+        elif "search" in extra_sup:
+            is_search = True
+        else:
+            for ex in extra:
+                if ex == "search":
+                    is_search = True
+                    break
+                elif isinstance(ex, dict) and ex.get("name") == "search":
+                    is_search = True
+                    break
+                    
+        if is_search and cat_id not in search_cats:
+            search_cats.append(cat_id)
+            
+    if not search_cats and addon.get("id") in ["org.stremio.tmdb", "org.cinetorrent", "com.stremio.indianStreamCatalog"]:
+        for cat in catalogs:
+            if cat.get("type") == c_type:
+                search_cats.append(cat.get("id"))
+                
+    return search_cats
+
+
+def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None):
     c_type = "series" if media_type in ["series", "anime"] else media_type
     skip = (page - 1) * 50
 
@@ -137,50 +232,46 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             base_url = m_url.rsplit("manifest.json", 1)[0]
             if not base_url.endswith("/"): base_url += "/"
             
-            search_catalogs = []
-            try:
-                manifest_data = _get_cached_request(m_url, max_age_hours=168, cache_only=cache_only)
-                if manifest_data and "catalogs" in manifest_data:
-                    for cat in manifest_data["catalogs"]:
-                        if cat.get("type") == c_type:
-                            has_search = False
-                            for extra in cat.get("extra", []):
-                                if getattr(extra, "get", lambda x: None)("name") == "search":
-                                    has_search = True
-                                    break
-                            if has_search:
-                                search_catalogs.append(cat.get("id"))
-            except Exception:
-                pass
-                
+            search_catalogs = _get_search_catalogs_for_addon(addon, c_type, cache_only=cache_only)
             if not search_catalogs:
                 return []
                 
             addon_items = []
             for cat_id in search_catalogs:
                 search_url = f"{base_url}catalog/{c_type}/{cat_id}/search={urllib.parse.quote(query)}.json"
-                data = _get_cached_request(search_url, max_age_hours=2, cache_only=cache_only, timeout=3)
+                data = _get_cached_request(search_url, max_age_hours=2, cache_only=cache_only, timeout=4)
                 if data and isinstance(data.get("metas"), list):
                     addon_items.extend(data["metas"])
             return addon_items
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
             future_to_addon = {executor.submit(fetch_addon_search, addon): addon for addon in database.get_addons()}
             try:
-                for future in concurrent.futures.as_completed(future_to_addon, timeout=15):
+                for future in concurrent.futures.as_completed(future_to_addon, timeout=12):
                     try:
                         addon_items = future.result()
+                        new_batch = []
+                        q_lower = query.lower()
                         for m in addon_items:
+                            title = m.get("name", "")
+                            desc = m.get("description", "")
+                            if q_lower not in title.lower() and q_lower not in desc.lower():
+                                continue
+                                
                             imdb_id = m.get("imdb_id") or m.get("id")
                             if imdb_id and imdb_id not in seen_ids:
                                 seen_ids.add(imdb_id)
-                                items.append({
+                                item_obj = {
                                     "id": imdb_id,
-                                    "title": m.get("name", ""),
+                                    "title": title,
                                     "year": str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else "",
                                     "medium_cover_image": m.get("poster", ""),
                                     "type": media_type
-                                })
+                                }
+                                items.append(item_obj)
+                                new_batch.append(item_obj)
+                        if new_batch and on_item_found:
+                            on_item_found(new_batch)
                     except Exception:
                         pass
             except concurrent.futures.TimeoutError:
@@ -294,58 +385,67 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
                     database.save_cached_metadata(imdb_id, media_type, res)
                     return res
                     
+def resolve_tmdb_to_imdb(imdb_id, media_type, title=None):
     is_tmdb = str(imdb_id).startswith("tmdb:") or str(imdb_id).startswith("ctmdb.")
-    if is_tmdb:
-        resolved_id = None
+    if not is_tmdb:
+        return imdb_id
+        
+    resolved_id = None
+    c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
+    try:
+        tmdb_api_key = None
+        import re
+        for addon in database.get_addons():
+            m_url = addon.get("manifest_url", "")
+            if "tmdb" in m_url.lower():
+                match = re.search(r'/([a-fA-F0-9]{32})/', m_url)
+                if match:
+                    tmdb_api_key = match.group(1)
+                    break
+                    
+        if tmdb_api_key:
+            tmdb_id = str(imdb_id).split(":")[-1] if ":" in str(imdb_id) else str(imdb_id).split(".")[-1]
+            tmdb_type = "tv" if c_type == "series" else "movie"
+            tmdb_url = f"https://api.themoviedb.org/3/{tmdb_type}/{tmdb_id}?api_key={tmdb_api_key}&append_to_response=external_ids"
+            
+            tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168)
+            if tmdb_data and "external_ids" in tmdb_data:
+                resolved_id = tmdb_data["external_ids"].get("imdb_id")
+    except Exception:
+        pass
+        
+    if not resolved_id and title and title != "Loading...":
         try:
-            tmdb_api_key = None
-            import re
-            for addon in database.get_addons():
-                m_url = addon.get("manifest_url", "")
-                if "tmdb" in m_url.lower():
-                    match = re.search(r'/([a-fA-F0-9]{32})/', m_url)
-                    if match:
-                        tmdb_api_key = match.group(1)
+            import urllib.parse
+            search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(title)}.json"
+            search_data = _get_cached_request(search_url, max_age_hours=168)
+            if search_data and "metas" in search_data:
+                for m in search_data["metas"]:
+                    m_id = m.get("imdb_id") or m.get("id", "")
+                    if str(m_id).startswith("tt") and str(m.get("name", "")).lower() == str(title).lower():
+                        resolved_id = m_id
                         break
-                        
-            if tmdb_api_key:
-                tmdb_id = str(imdb_id).split(":")[-1] if ":" in str(imdb_id) else str(imdb_id).split(".")[-1]
-                tmdb_type = "tv" if c_type == "series" else "movie"
-                tmdb_url = f"https://api.themoviedb.org/3/{tmdb_type}/{tmdb_id}?api_key={tmdb_api_key}&append_to_response=external_ids"
-                
-                tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168)
-                if tmdb_data and "external_ids" in tmdb_data:
-                    resolved_id = tmdb_data["external_ids"].get("imdb_id")
+                if not resolved_id:
+                    for m in search_data["metas"]:
+                        m_id = m.get("imdb_id") or m.get("id", "")
+                        if str(m_id).startswith("tt"):
+                            resolved_id = m_id
+                            break
         except Exception:
             pass
             
-        if not resolved_id and title and title != "Loading...":
-            try:
-                import urllib.parse
-                search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(title)}.json"
-                search_data = _get_cached_request(search_url, max_age_hours=168)
-                if search_data and "metas" in search_data:
-                    for m in search_data["metas"]:
-                        m_id = m.get("imdb_id") or m.get("id", "")
-                        if str(m_id).startswith("tt") and str(m.get("name", "")).lower() == str(title).lower():
-                            resolved_id = m_id
-                            break
-                    if not resolved_id:
-                        for m in search_data["metas"]:
-                            m_id = m.get("imdb_id") or m.get("id", "")
-                            if str(m_id).startswith("tt"):
-                                resolved_id = m_id
-                                break
-            except Exception:
-                pass
-                
-        if resolved_id:
-            imdb_id = resolved_id
-            if use_cache:
-                cached = database.get_cached_metadata(imdb_id)
-                if cached and is_valid_meta(cached):
-                    return cached
+    return resolved_id or imdb_id
 
+def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True):
+    c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
+    
+    # Resolve TMDB ids to IMDB format if needed
+    imdb_id = resolve_tmdb_to_imdb(imdb_id, media_type, title)
+
+    if use_cache:
+        cached = database.get_cached_metadata(imdb_id)
+        if cached and is_valid_meta(cached):
+            return cached
 
     def fetch_addon_meta(addon):
         if not addon.get("enabled", True): return None
@@ -755,10 +855,12 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
         database.save_cached_streams(cache_key, valid_streams)
     return valid_streams
 
-def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None):
+def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None):
     if not imdb_id:
         if callback: callback([], is_cached=False, is_complete=True)
         return []
+
+    imdb_id = resolve_tmdb_to_imdb(imdb_id, media_type, title)
 
     cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
     cached = database.get_cached_streams(cache_key, max_age_hours=24)

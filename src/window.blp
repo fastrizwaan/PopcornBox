@@ -73,6 +73,12 @@ template $CineWindow: Adw.ApplicationWindow {
                     }
                   }
 
+                  ToggleButton discover_toggle_btn {
+                    icon-name: "compass2-symbolic";
+                    tooltip-text: _("Discover Mode");
+                    styles ["flat", "circular"]
+                  }
+
                 [title]
                 Adw.WindowTitle {
                   title: _("PopcornBox");
@@ -121,22 +127,42 @@ template $CineWindow: Adw.ApplicationWindow {
                   placeholder-text: _("Search PopcornBox...");
                   width-request: 400;
                 }
-
-                [end]
-                DropDown catalog_dropdown {
-                  valign: center;
-                }
                 };
               }
             }
             Adw.ViewStack library_stack {
               Adw.ViewStackPage {
-                name: "movies";
-                title: _("Movies");
+                name: "content";
+                title: _("Content");
                 icon-name: "video-x-generic-symbolic";
-                child: ScrolledWindow movies_scrolled {
-                  vexpand: true;
-                  FlowBox movies_flowbox {
+                child: Box {
+                  orientation: vertical;
+                  
+                  Revealer discover_options_revealer {
+                    transition-type: slide_down;
+                    Box navigation_box {
+                      spacing: 6;
+                      margin-bottom: 12; margin-start: 12; margin-end: 12;
+                      halign: center;
+
+                      DropDown media_type_dropdown {
+                        valign: center;
+                      }
+
+                      DropDown catalog_dropdown {
+                        valign: center;
+                      }
+
+                      DropDown genre_dropdown {
+                        valign: center;
+                        visible: false;
+                      }
+                    }
+                  }
+
+                  ScrolledWindow content_scrolled {
+                    vexpand: true;
+                  FlowBox content_flowbox {
                     margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
                     max-children-per-line: 20;
                     min-children-per-line: 2;
@@ -145,25 +171,9 @@ template $CineWindow: Adw.ApplicationWindow {
                     row-spacing: 2;
                     column-spacing: 2;
                   }
-                };
-              }
-              Adw.ViewStackPage {
-                name: "series";
-                title: _("Series");
-                icon-name: "tv-symbolic";
-                child: ScrolledWindow series_scrolled {
-                  vexpand: true;
-                  FlowBox series_flowbox {
-                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
-                    max-children-per-line: 20;
-                    min-children-per-line: 2;
-                    selection-mode: none;
-                    halign: center;
-                    row-spacing: 2;
-                    column-spacing: 2;
-                  }
-                };
-              }
+                }
+              };
+            }
               Adw.ViewStackPage {
                 name: "search_results";
                 child: ScrolledWindow search_scrolled {

@@ -32,10 +32,10 @@ DEFAULT_ADDONS = [
         "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
         "enabled": True,
         "catalogs": [
-            {"type": "movie", "id": "top", "name": "Popular"},
-            {"type": "movie", "id": "imdbRating", "name": "IMDb Rating"},
-            {"type": "series", "id": "top", "name": "Popular"},
-            {"type": "series", "id": "imdbRating", "name": "IMDb Rating"}
+            {"type": "movie", "id": "top", "genres": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western"], "extra": [{"name": "genre", "options": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western"]}, {"name": "search"}, {"name": "skip"}], "name": "Popular"},
+            {"type": "movie", "id": "imdbRating", "genres": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western"], "extra": [{"name": "genre", "options": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western"]}, {"name": "skip"}], "name": "IMDb Rating"},
+            {"type": "series", "id": "top", "genres": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western","Reality-TV","Talk-Show","Game-Show"], "extra": [{"name": "genre", "options": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western","Reality-TV","Talk-Show","Game-Show"]}, {"name": "search"}, {"name": "skip"}], "name": "Popular"},
+            {"type": "series", "id": "imdbRating", "genres": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western","Reality-TV","Talk-Show","Game-Show"], "extra": [{"name": "genre", "options": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western","Reality-TV","Talk-Show","Game-Show"]}, {"name": "skip"}], "name": "IMDb Rating"}
         ]
     }
 ]
@@ -75,6 +75,13 @@ def _read_db():
                             if "catalogs" in default_addon and "catalogs" not in a:
                                 a["catalogs"] = default_addon["catalogs"]
                                 migrated = True
+                                
+                            # Migrate Cinemeta to have genres and extra properties
+                            if a.get("id") == "cinemeta" and "catalogs" in a:
+                                has_extra = any("extra" in cat for cat in a["catalogs"])
+                                if not has_extra:
+                                    a["catalogs"] = default_addon["catalogs"]
+                                    migrated = True
                             # Migrate dead TMDB url
                             if a.get("id") == "org.stremio.tmdb" and "tmdb.strem.fun" in a.get("manifest_url", ""):
                                 a["manifest_url"] = "https://tmdb-addon.strem.io/manifest.json"
