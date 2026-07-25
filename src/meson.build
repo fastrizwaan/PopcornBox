@@ -44,6 +44,7 @@ cine_sources = [
   '__init__.py',
   'api.py',
   'database.py',
+  'download_row.py',
   'history.py',
   'libtorrent_stream.py',
   'main.py',

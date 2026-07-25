@@ -122,7 +122,7 @@ def fetch_genre_counts(media_type="movie"):
 
 def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False):
     c_type = "series" if media_type in ["series", "anime"] else media_type
-    skip = (page - 1) * 100
+    skip = (page - 1) * 50
 
     if query:
         import concurrent.futures
@@ -164,7 +164,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     addon_items.extend(data["metas"])
             return addon_items
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             future_to_addon = {executor.submit(fetch_addon_search, addon): addon for addon in database.get_addons()}
             try:
                 for future in concurrent.futures.as_completed(future_to_addon, timeout=15):
@@ -464,7 +464,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
     other_addons = [a for a in addons if a != cinemeta_addon]
     if other_addons:
         import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(other_addons), 30)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(other_addons), 8)) as executor:
             future_to_addon = {executor.submit(fetch_addon_meta, addon): addon for addon in other_addons}
             try:
                 for future in concurrent.futures.as_completed(future_to_addon, timeout=15):

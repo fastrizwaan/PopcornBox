@@ -138,10 +138,12 @@ template $CineWindow: Adw.ApplicationWindow {
                   vexpand: true;
                   FlowBox movies_flowbox {
                     margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
-                    max-children-per-line: 10;
+                    max-children-per-line: 20;
                     min-children-per-line: 2;
                     selection-mode: none;
                     halign: center;
+                    row-spacing: 2;
+                    column-spacing: 2;
                   }
                 };
               }
@@ -153,10 +155,12 @@ template $CineWindow: Adw.ApplicationWindow {
                   vexpand: true;
                   FlowBox series_flowbox {
                     margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
-                    max-children-per-line: 10;
+                    max-children-per-line: 20;
                     min-children-per-line: 2;
                     selection-mode: none;
                     halign: center;
+                    row-spacing: 2;
+                    column-spacing: 2;
                   }
                 };
               }
@@ -176,8 +180,9 @@ template $CineWindow: Adw.ApplicationWindow {
                     }
                     Separator { margin-bottom: 12; }
                     FlowBox search_movies_flowbox {
-                      max-children-per-line: 10; min-children-per-line: 2;
+                      max-children-per-line: 20; min-children-per-line: 2;
                       selection-mode: none; halign: center;
+                      row-spacing: 2; column-spacing: 2;
                     }
                     Label {
                       label: _("Series");
@@ -187,51 +192,120 @@ template $CineWindow: Adw.ApplicationWindow {
                     }
                     Separator { margin-bottom: 12; }
                     FlowBox search_series_flowbox {
-                      max-children-per-line: 10; min-children-per-line: 2;
+                      max-children-per-line: 20; min-children-per-line: 2;
                       selection-mode: none; halign: center;
+                      row-spacing: 2; column-spacing: 2;
                     }
                   }
                 };
               }
-              Adw.ViewStackPage {
-                name: "favorites";
-                child: ScrolledWindow favorites_scrolled {
-                  vexpand: true;
-                  FlowBox favorites_flowbox {
-                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
-                    max-children-per-line: 10; min-children-per-line: 2; selection-mode: none; halign: center;
-                  }
-                };
+
+            }
+          };
+        }
+
+        Adw.ViewStackPage {
+          name: "favorites";
+          child: Box {
+            orientation: vertical;
+            Adw.HeaderBar {
+              [start]
+              Button {
+                icon-name: "go-previous-symbolic";
+                action-name: "win.back-to-library";
+                tooltip-text: _("Back to Library");
               }
-              Adw.ViewStackPage {
-                name: "history";
-                child: ScrolledWindow history_scrolled {
-                  vexpand: true;
-                  FlowBox history_flowbox {
-                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
-                    max-children-per-line: 10; min-children-per-line: 2; selection-mode: none; halign: center;
-                  }
-                };
+              [title]
+              Adw.WindowTitle {
+                title: _("Favorites");
               }
-              Adw.ViewStackPage {
-                name: "watched";
-                child: ScrolledWindow watched_scrolled {
-                  vexpand: true;
-                  FlowBox watched_flowbox {
-                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
-                    max-children-per-line: 10; min-children-per-line: 2; selection-mode: none; halign: center;
-                  }
-                };
+            }
+            ScrolledWindow favorites_scrolled {
+              vexpand: true;
+              FlowBox favorites_flowbox {
+                margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                max-children-per-line: 20; min-children-per-line: 2; selection-mode: none; halign: center;
+                row-spacing: 2; column-spacing: 2;
               }
-              Adw.ViewStackPage {
-                name: "downloads";
-                child: ScrolledWindow downloads_scrolled {
-                  vexpand: true;
-                  FlowBox downloads_flowbox {
-                    margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
-                    max-children-per-line: 10; min-children-per-line: 2; selection-mode: none; halign: center;
-                  }
-                };
+            }
+          };
+        }
+
+        Adw.ViewStackPage {
+          name: "history";
+          child: Box {
+            orientation: vertical;
+            Adw.HeaderBar {
+              [start]
+              Button {
+                icon-name: "go-previous-symbolic";
+                action-name: "win.back-to-library";
+                tooltip-text: _("Back to Library");
+              }
+              [title]
+              Adw.WindowTitle {
+                title: _("History");
+              }
+            }
+            ScrolledWindow history_scrolled {
+              vexpand: true;
+              FlowBox history_flowbox {
+                margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                max-children-per-line: 20; min-children-per-line: 2; selection-mode: none; halign: center;
+                row-spacing: 2; column-spacing: 2;
+              }
+            }
+          };
+        }
+
+        Adw.ViewStackPage {
+          name: "watched";
+          child: Box {
+            orientation: vertical;
+            Adw.HeaderBar {
+              [start]
+              Button {
+                icon-name: "go-previous-symbolic";
+                action-name: "win.back-to-library";
+                tooltip-text: _("Back to Library");
+              }
+              [title]
+              Adw.WindowTitle {
+                title: _("Watched");
+              }
+            }
+            ScrolledWindow watched_scrolled {
+              vexpand: true;
+              FlowBox watched_flowbox {
+                margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                max-children-per-line: 20; min-children-per-line: 2; selection-mode: none; halign: center;
+                row-spacing: 2; column-spacing: 2;
+              }
+            }
+          };
+        }
+
+        Adw.ViewStackPage {
+          name: "downloads";
+          child: Box {
+            orientation: vertical;
+            Adw.HeaderBar {
+              [start]
+              Button {
+                icon-name: "go-previous-symbolic";
+                action-name: "win.back-to-library";
+                tooltip-text: _("Back to Library");
+              }
+              [title]
+              Adw.WindowTitle {
+                title: _("Downloads");
+              }
+            }
+            ScrolledWindow downloads_scrolled {
+              vexpand: true;
+              ListBox downloads_listbox {
+                margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                selection-mode: none; halign: fill;
               }
             }
           };
@@ -331,16 +405,35 @@ template $CineWindow: Adw.ApplicationWindow {
         }
 
         [overlay]
-        Adw.Spinner spinner {
+        Box player_loading_box {
+          orientation: vertical;
           halign: center;
           valign: center;
-          width-request: 90;
-          height-request: 90;
+          spacing: 16;
           visible: false;
 
-          styles [
-            "cine-spinner",
-          ]
+          Adw.Spinner spinner {
+            halign: center;
+            valign: center;
+            width-request: 72;
+            height-request: 72;
+
+            styles [
+              "cine-spinner",
+            ]
+          }
+
+          Label player_buffering_label {
+            label: _("Fetching metadata...");
+            justify: center;
+            halign: center;
+            valign: center;
+
+            styles [
+              "title-3",
+              "osd",
+            ]
+          }
         }
 
         [overlay]
@@ -377,28 +470,6 @@ template $CineWindow: Adw.ApplicationWindow {
                 action-name: "win.close-player";
               }
 
-              MenuButton open_menu_btn {
-                valign: center;
-                label: _("Open");
-                visible: bind start_page.visible inverted;
-                always-show-arrow: true;
-
-                menu-model: menu {
-                  item (_("Open Files"), "win.clear-and-add")
-                  item (_("Open Folder"), "win.open-folder")
-                  item (_("Open URL"), "win.open-url")
-                  item (_("Add Files"), "win.add-playlist-files")
-                  item (_("Add Folder"), "win.add-playlist-folder")
-                  item (_("Add URL"), "win.add-url")
-                  item (_("Add Subtitle Track"), "win.add-sub-tracks")
-                  item (_("Add Audio Track"), "win.add-audio-tracks")
-
-                  section {
-                    item (_("Watch History"), "win.open-history")
-                  }
-                };
-              }
-
               [end]
               MenuButton primary_menu_btn {
                 valign: center;
@@ -408,9 +479,23 @@ template $CineWindow: Adw.ApplicationWindow {
 
                 menu-model: menu primary_menu {
                   section {
+                    submenu {
+                      label: _("Open Media");
+                      item (_("Open Files"), "win.clear-and-add")
+                      item (_("Open Folder"), "win.open-folder")
+                      item (_("Open URL"), "win.open-url")
+                      item (_("Add Files"), "win.add-playlist-files")
+                      item (_("Add Folder"), "win.add-playlist-folder")
+                      item (_("Add URL"), "win.add-url")
+                      item (_("Add Subtitle Track"), "win.add-sub-tracks")
+                      item (_("Add Audio Track"), "win.add-audio-tracks")
+                    }
+                  }
+                  section {
                     item (_("History"), "win.open-history")
                     item (_("Downloads"), "win.open-downloads")
                     item (_("Watched"), "win.open-watched")
+                    item (_("Favorites"), "win.open-favorites")
                     item (_("Player"), "win.open-player")
                     item (_("Addons"), "win.open-addons")
                   }

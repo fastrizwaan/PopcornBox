@@ -14,7 +14,7 @@ else:
 IMAGE_CACHE_DIR = os.path.join(BASE_DIR, 'images')
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
-_image_pool = ThreadPoolExecutor(max_workers=8)
+_image_pool = ThreadPoolExecutor(max_workers=4)
 
 def load_image_into_picture(url, picture_widget, width=None, height=None):
     if not url: return
@@ -30,14 +30,23 @@ def load_image_into_picture(url, picture_widget, width=None, height=None):
                     data = f.read()
             else:
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    content_type = response.headers.get('Content-Type', '')
-                    data = response.read()
-                    if 'image' in content_type and data:
-                        with open(cache_file, 'wb') as f:
-                            f.write(data)
-                    elif not data:
-                        return
+                for attempt in range(3):
+                    try:
+                        with urllib.request.urlopen(req, timeout=15) as response:
+                            content_type = response.headers.get('Content-Type', '')
+                            data = response.read()
+                            if 'image' in content_type and data:
+                                with open(cache_file, 'wb') as f:
+                                    f.write(data)
+                            break
+                    except Exception as e:
+                        if attempt == 2:
+                            raise e
+                        import time
+                        time.sleep(1)
+                
+                if not data:
+                    return
             
             if not data:
                 return
@@ -151,11 +160,12 @@ class MovieWidget(Gtk.Box):
         icon_container.append(self.overlay)
         self.append(icon_container)
         
-        poster_url = movie_data.get("medium_cover_image")
+        poster_url = movie_data.get("medium_cover_image") or movie_data.get("poster")
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195)
             
-        title_label = Gtk.Label(label=movie_data.get("title", "Unknown"))
+        title_text = movie_data.get("title") or movie_data.get("name") or "Unknown"
+        title_label = Gtk.Label(label=title_text)
         title_label.set_lines(1)
         title_label.set_ellipsize(Pango.EllipsizeMode.END)
         title_label.set_max_width_chars(1)
@@ -165,7 +175,7 @@ class MovieWidget(Gtk.Box):
         title_label.add_css_class("pt-card-title")
         self.append(title_label)
         
-        year_str = str(movie_data.get("year", ""))
+        year_str = str(movie_data.get("year", "")) or str(movie_data.get("releaseInfo", ""))
         if year_str:
             year_label = Gtk.Label(label=year_str)
             year_label.set_halign(Gtk.Align.START)

@@ -164,17 +164,18 @@ class MovieDetailsPage(Gtk.Overlay):
         
         self.poster = Gtk.Picture()
         self.poster.set_can_shrink(True)
-        self.poster.set_size_request(240, 360)
+        self.poster.set_size_request(360, 540)
         self.poster.set_valign(Gtk.Align.START)
         self.poster.set_halign(Gtk.Align.START)
         self.poster.set_hexpand(False)
         self.poster.set_content_fit(Gtk.ContentFit.COVER)
+        self.poster.add_css_class("pt-card")
         self.top_hbox.append(self.poster)
         
         from .movie_widget import load_image_into_picture
         poster_url = self.movie_stub.get("medium_cover_image")
         if poster_url:
-            load_image_into_picture(poster_url, self.poster, width=240, height=360)
+            load_image_into_picture(poster_url, self.poster, width=360, height=540)
             
         self.info_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.info_vbox.set_hexpand(True)
@@ -526,6 +527,31 @@ class MovieDetailsPage(Gtk.Overlay):
             
         self.quality_buttons = []
         
+        def _parse_size_gb(size_str):
+            if not size_str: return 0.0
+            import re
+            m = re.search(r'([\d.]+)\s*(GB|MB)', str(size_str), re.IGNORECASE)
+            if m:
+                try:
+                    val = float(m.group(1))
+                    return val / 1024.0 if m.group(2).upper() == 'MB' else val
+                except ValueError:
+                    return 0.0
+            return 0.0
+
+        def _stream_sort_key(t):
+            size_gb = _parse_size_gb(t.get('size', ''))
+            seeders = t.get('seeders', 0)
+            if 2.0 <= size_gb <= 4.5:
+                size_score = 3
+            elif 1.0 <= size_gb <= 8.0:
+                size_score = 2
+            elif size_gb > 0:
+                size_score = 1
+            else:
+                size_score = 0
+            return (size_score, seeders)
+
         def on_quality_btn_clicked(btn, t_list):
             for b in self.quality_buttons: b.remove_css_class('suggested-action')
             btn.add_css_class('suggested-action')
@@ -540,33 +566,61 @@ class MovieDetailsPage(Gtk.Overlay):
             self.file_dropdown.set_model(Gtk.StringList.new(strings))
             self.file_dropdown.set_selected(0)
             
-        default_btn = None
-        default_t_list = None
-        for q_label in ["4K", "1080p", "720p", "More", "Direct"]:
+        saved_label = getattr(self, 'user_selected_quality', None)
+        target_btn = None
+        target_t_list = None
+        
+        preferred_order = ["1080p", "720p", "4K", "More", "Direct"]
+        
+        for q_label in preferred_order:
             t_list = quality_groups[q_label]
             if t_list:
+                t_list.sort(key=_stream_sort_key, reverse=True)
                 btn = Gtk.Button(label=q_label)
                 btn.add_css_class('pill')
-                btn.connect("clicked", lambda b, tl=t_list: on_quality_btn_clicked(b, tl))
+                
+                def make_click_cb(b, label, tl):
+                    def cb(*args):
+                        self.user_selected_quality = label
+                        on_quality_btn_clicked(b, tl)
+                    return cb
+                    
+                btn.connect("clicked", make_click_cb(btn, q_label, t_list))
                 self.quality_buttons.append(btn)
                 self.quality_button_box.append(btn)
-                if not default_btn:
-                    default_btn = btn
-                    default_t_list = t_list
+                
+                if saved_label and q_label == saved_label:
+                    target_btn = btn
+                    target_t_list = t_list
+                elif not target_btn and not saved_label:
+                    target_btn = btn
+                    target_t_list = t_list
                     
-        if default_btn:
-            on_quality_btn_clicked(default_btn, default_t_list)
+        if not target_btn and self.quality_buttons:
+            target_btn = self.quality_buttons[0]
+            for q_label in preferred_order:
+                if quality_groups[q_label]:
+                    target_t_list = quality_groups[q_label]
+                    break
+                    
+        if target_btn and target_t_list:
+            on_quality_btn_clicked(target_btn, target_t_list)
 
     def on_trailer_clicked(self, trailer_url):
         if not trailer_url: return
         from . import player
+        if self.window:
+            self.window.show_player_loading("Resolving trailer stream...")
         def progress_callback(stats):
-            url = stats.get("url")
+            url = stats.get("url") if isinstance(stats, dict) else None
             if url and self.window:
-                self.window._play_stream(url)
-            elif stats.get("status"):
+                trailer_title = f"{self.movie_stub.get('name') or self.movie_stub.get('title', 'Unknown Title')} (Trailer)"
+                self.window._play_stream(url, trailer_title)
+            elif isinstance(stats, dict) and stats.get("status"):
                 if hasattr(self, 'progress_label') and self.progress_label:
                     self.progress_label.set_text(stats.get("status"))
+                if self.window:
+                    self.window.update_player_loading(stats.get("status"))
         player.play_trailer(trailer_url, progress_callback=progress_callback)
 
     def on_stop_clicked(self, btn):
@@ -598,21 +652,64 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def _start_streaming(self, magnet, file_index):
         if not magnet: return
+        
+        media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
+        if self.media_type == "series" and getattr(self, "selected_season", None) is not None:
+            try:
+                s_int = int(self.selected_season)
+                e_int = int(self.selected_episode)
+                media_title = f"{media_title} (S{s_int:02d}E{e_int:02d})"
+            except (ValueError, TypeError):
+                media_title = f"{media_title} (S{self.selected_season}E{self.selected_episode})"
+            
         if magnet.startswith("http://") or magnet.startswith("https://"):
             if self.window:
-                self.window._play_stream(magnet)
+                self.window.show_player_loading("Opening direct stream...", media_title)
+                self.window._play_stream(magnet, media_title)
         else:
             from . import player
+            if self.window:
+                self.window.show_player_loading("Fetching metadata...", media_title)
+                
             def progress_callback(stats):
-                status = stats.get("status")
-                url = stats.get("url")
+                url = stats.get("url") if isinstance(stats, dict) else None
                 if url and self.window:
-                    self.window._play_stream(url)
+                    display_title = media_title
+                    if isinstance(stats, dict) and stats.get("filePath"):
+                        import os
+                        display_title = os.path.basename(stats.get("filePath"))
+                    self.window._play_stream(url, display_title)
                     GLib.idle_add(self.stop_btn.set_visible, True)
                     GLib.idle_add(self.watch_btn.set_label, "▶ Continue Watching")
-                elif status:
+                elif isinstance(stats, dict):
+                    status_msg = stats.get("status", "Buffering...")
                     if hasattr(self, 'progress_label') and self.progress_label:
-                        self.progress_label.set_text(status)
+                        self.progress_label.set_text(status_msg)
+                        
+                    parts = [status_msg]
+                    dl = stats.get("downloaded", 0)
+                    tot = stats.get("totalLength", 0)
+                    spd = stats.get("downloadSpeed", 0)
+                    peers = stats.get("activePeers", 0)
+                    prog = stats.get("progress", 0)
+                    
+                    if prog > 0:
+                        pct = prog * 100.0
+                        spd_mb = spd / (1024 * 1024)
+                        dl_mb = dl / (1024 * 1024)
+                        tot_gb = tot / (1024 * 1024 * 1024) if tot > 0 else 0
+                        if tot_gb > 0:
+                            parts.append(f"Buffering: {pct:.1f}% — {dl_mb:.1f} MB of {tot_gb:.2f} GB (↓ {spd_mb:.1f} MB/s, {peers} seeds)")
+                        else:
+                            parts.append(f"Buffering: {pct:.1f}% — {dl_mb:.1f} MB (↓ {spd_mb:.1f} MB/s, {peers} seeds)")
+                    elif dl > 0 or spd > 0 or peers > 0:
+                        spd_mb = spd / (1024 * 1024)
+                        dl_mb = dl / (1024 * 1024)
+                        parts.append(f"{dl_mb:.1f} MB buffered (↓ {spd_mb:.1f} MB/s, {peers} seeds)")
+                        
+                    full_text = "\n".join(parts)
+                    if self.window:
+                        self.window.update_player_loading(full_text)
                         
             player.play_magnet(
                 magnet,
@@ -640,6 +737,9 @@ class CineWindow(Adw.ApplicationWindow):
     search_header: Adw.HeaderBar = Gtk.Template.Child()
     search_entry: Gtk.SearchEntry = Gtk.Template.Child()
     catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    movies_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
+    series_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
+    search_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
     movies_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     series_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     search_movies_flowbox: Gtk.FlowBox = Gtk.Template.Child()
@@ -647,7 +747,7 @@ class CineWindow(Adw.ApplicationWindow):
     favorites_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     history_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     watched_flowbox: Gtk.FlowBox = Gtk.Template.Child()
-    downloads_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    downloads_listbox: Gtk.ListBox = Gtk.Template.Child()
     movies_genre_menu: Gio.Menu = Gtk.Template.Child()
     series_genre_menu: Gio.Menu = Gtk.Template.Child()
     addon_url_entry: Gtk.Entry = Gtk.Template.Child()
@@ -666,10 +766,10 @@ class CineWindow(Adw.ApplicationWindow):
     revealer_drop_indicator: Gtk.Revealer = Gtk.Template.Child()
     drop_label: Gtk.Label = Gtk.Template.Child()
     drop_icon: Gtk.Image = Gtk.Template.Child()
+    player_loading_box: Gtk.Box = Gtk.Template.Child()
+    player_buffering_label: Gtk.Label = Gtk.Template.Child()
     spinner: Adw.Spinner = Gtk.Template.Child()
     context_popover_menu: Gtk.PopoverMenu = Gtk.Template.Child()
-
-    open_menu_btn: Gtk.MenuButton = Gtk.Template.Child()
     primary_menu_btn: Gtk.MenuButton = Gtk.Template.Child()
     previous_btn: Gtk.Button = Gtk.Template.Child()
     play_pause_btn: Gtk.Button = Gtk.Template.Child()
@@ -1087,7 +1187,6 @@ class CineWindow(Adw.ApplicationWindow):
 
         buttons = [
             self.primary_menu_btn,
-            self.open_menu_btn,
             self.options_menu_btn,
             self.volume_menu_btn,
             self.subtitles_menu_btn,
@@ -1099,7 +1198,7 @@ class CineWindow(Adw.ApplicationWindow):
             popover = btn.props.popover
             popover.connect("closed", self._hide_ui_timeout)
 
-            if btn in (self.primary_menu_btn, self.open_menu_btn):
+            if btn == self.primary_menu_btn:
 
                 def on_popv_closed(*args):
                     if is_same_playlist(self.mpv.playlist):
@@ -1115,7 +1214,6 @@ class CineWindow(Adw.ApplicationWindow):
         groups = {
             Gtk.PropagationLimit.SAME_NATIVE: [
                 self.primary_menu_btn,
-                self.open_menu_btn,
                 self.volume_menu_btn,
                 self.subtitles_menu_btn,
                 self.audio_tracks_menu_btn,
@@ -1178,13 +1276,13 @@ class CineWindow(Adw.ApplicationWindow):
                 or header_hover
                 or controls_hover
                 or self.primary_menu_btn.props.active
-                or self.open_menu_btn.props.active
                 or self.options_menu_btn.props.active
                 or self.volume_menu_btn.props.active
                 or self.subtitles_menu_btn.props.active
                 or self.audio_tracks_menu_btn.props.active
                 or self.video_tracks_menu_btn.props.active
                 or self.chapters_menu_btn.props.active
+                or getattr(self, "is_loading_stream", False)
             )
             if not active_or_hover:
                 self.revealer_ui.set_reveal_child(False)
@@ -2741,9 +2839,9 @@ class CineWindow(Adw.ApplicationWindow):
                 self.actions["open-audio-menu"].set_enabled(not is_idle)
 
                 self.title_widget.set_visible(not is_idle)
-                self.start_page.set_visible(is_idle)
+                self.start_page.set_visible(is_idle and not getattr(self, "is_loading_stream", False))
                 self.controls_box.set_visible(not is_idle)
-                self.gl_area.set_visible(not is_idle)
+                self.gl_area.set_visible(not is_idle or getattr(self, "is_loading_stream", False))
 
                 if is_idle:
                     self.error_count = 0
@@ -2861,6 +2959,10 @@ class CineWindow(Adw.ApplicationWindow):
     def _load_catalogs(self):
         # Initial stack is library
         self.main_stack.set_visible_child_name("library")
+        
+        catalogs_list = Gtk.StringList.new(["All", "Cinemeta"])
+        self.catalog_dropdown.set_model(catalogs_list)
+        
         self._populate_addons()
         
         self.movies_page = 1
@@ -2878,8 +2980,11 @@ class CineWindow(Adw.ApplicationWindow):
         def fetch_movies():
             self.is_fetching_movies = True
             try:
-                movies = fetch_items(media_type="movie", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=1)
+                m1 = fetch_items(media_type="movie", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=1)
+                m2 = fetch_items(media_type="movie", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=2)
+                movies = (m1 or []) + (m2 or [])
                 if movies:
+                    self.movies_page = 2
                     GLib.idle_add(self._populate_flowbox, self.movies_flowbox, movies, self.movies_seen_ids)
             except Exception as e:
                 logger.error(f"Error fetching movies: {e}")
@@ -2889,8 +2994,11 @@ class CineWindow(Adw.ApplicationWindow):
         def fetch_series():
             self.is_fetching_series = True
             try:
-                series = fetch_items(media_type="series", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=1)
+                s1 = fetch_items(media_type="series", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=1)
+                s2 = fetch_items(media_type="series", catalog_id="top", catalog_url="https://v3-cinemeta.strem.io/manifest.json", page=2)
+                series = (s1 or []) + (s2 or [])
                 if series:
+                    self.series_page = 2
                     GLib.idle_add(self._populate_flowbox, self.series_flowbox, series, self.series_seen_ids)
             except Exception as e:
                 logger.error(f"Error fetching series: {e}")
@@ -2932,7 +3040,10 @@ class CineWindow(Adw.ApplicationWindow):
                 except Exception as e:
                     logger.error(f"Error fetching more movies: {e}")
                 finally:
-                    self.is_fetching_movies = False
+                    def reset_fetching():
+                        self.is_fetching_movies = False
+                        return False
+                    GLib.idle_add(reset_fetching)
             threading.Thread(target=fetch_next, daemon=True).start()
 
     def _on_series_scroll(self, adj):
@@ -2950,7 +3061,10 @@ class CineWindow(Adw.ApplicationWindow):
                 except Exception as e:
                     logger.error(f"Error fetching more series: {e}")
                 finally:
-                    self.is_fetching_series = False
+                    def reset_fetching():
+                        self.is_fetching_series = False
+                        return False
+                    GLib.idle_add(reset_fetching)
             threading.Thread(target=fetch_next, daemon=True).start()
 
     def _populate_flowbox(self, flowbox, items, seen_ids=None):
@@ -2980,19 +3094,55 @@ class CineWindow(Adw.ApplicationWindow):
         self.details_box.append(page)
         self.main_stack.set_visible_child_name("details")
 
-    def _play_stream(self, url):
-        self.spinner.set_visible(False)
+    def show_player_loading(self, text="Fetching metadata...", title=None):
+        GLib.idle_add(self._show_player_loading_ui, text, title)
+
+    def _show_player_loading_ui(self, text, title=None):
+        self.is_loading_stream = True
+        self.main_stack.set_visible_child_name("player")
+        if hasattr(self, "start_page"):
+            self.start_page.set_visible(False)
+        if hasattr(self, "gl_area"):
+            self.gl_area.set_visible(True)
+        if hasattr(self, "player_loading_box"):
+            self.player_loading_box.set_visible(True)
+        if hasattr(self, "player_buffering_label"):
+            self.player_buffering_label.set_text(text)
+            
+        if title and hasattr(self, "title_widget"):
+            self.title_widget.set_title(title)
+            self.title_widget.set_visible(True)
+            self._show_ui()
+
+    def update_player_loading(self, text):
+        if hasattr(self, "player_buffering_label"):
+            GLib.idle_add(self.player_buffering_label.set_text, text)
+
+    def hide_player_loading(self):
+        GLib.idle_add(self._hide_player_loading_ui)
+
+    def _hide_player_loading_ui(self):
+        self.is_loading_stream = False
+        if hasattr(self, "player_loading_box"):
+            self.player_loading_box.set_visible(False)
+
+    def _play_stream(self, url, title=None):
+        self.hide_player_loading()
         self.main_stack.set_visible_child_name("player")
         
+        if title:
+            self.mpv["force-media-title"] = title
+            
         self.mpv.loadfile(url, "replace")
         self.mpv.pause = False
         self.is_inactive = False
 
     def _on_no_streams_found(self):
-        self.spinner.set_visible(False)
+        self.hide_player_loading()
         logger.warning("No direct HTTP streams found for this item.")
 
     def _close_player(self, *args):
+        self.hide_player_loading()
         self.mpv.stop()
         if self.details_box.get_first_child():
             self.main_stack.set_visible_child_name("details")
@@ -3161,31 +3311,40 @@ class CineWindow(Adw.ApplicationWindow):
         self.library_stack.set_visible_child_name("movies")
 
     def _on_search_changed(self, entry):
+        if getattr(self, "search_timeout_id", None):
+            GLib.source_remove(self.search_timeout_id)
+            self.search_timeout_id = None
+            
         query = entry.get_text().strip()
         if not query:
             self.library_stack.set_visible_child_name("movies")
             return
             
-        self.library_stack.set_visible_child_name("search_results")
-        
-        while self.search_movies_flowbox.get_first_child() is not None:
-            self.search_movies_flowbox.remove(self.search_movies_flowbox.get_first_child())
-        while self.search_series_flowbox.get_first_child() is not None:
-            self.search_series_flowbox.remove(self.search_series_flowbox.get_first_child())
+        def trigger_search():
+            self.search_timeout_id = None
+            self.library_stack.set_visible_child_name("search_results")
             
-        def do_search():
-            try:
-                movies = fetch_items(media_type="movie", query=query)
-                if movies:
-                    GLib.idle_add(self._append_flowbox, self.search_movies_flowbox, movies, None)
+            while self.search_movies_flowbox.get_first_child() is not None:
+                self.search_movies_flowbox.remove(self.search_movies_flowbox.get_first_child())
+            while self.search_series_flowbox.get_first_child() is not None:
+                self.search_series_flowbox.remove(self.search_series_flowbox.get_first_child())
                 
-                series = fetch_items(media_type="series", query=query)
-                if series:
-                    GLib.idle_add(self._append_flowbox, self.search_series_flowbox, series, None)
-            except Exception as e:
-                logger.error(f"Search error: {e}")
-                
-        threading.Thread(target=do_search, daemon=True).start()
+            def do_search():
+                try:
+                    movies = fetch_items(media_type="movie", query=query)
+                    if movies:
+                        GLib.idle_add(self._append_flowbox, self.search_movies_flowbox, movies, None)
+                    
+                    series = fetch_items(media_type="series", query=query)
+                    if series:
+                        GLib.idle_add(self._append_flowbox, self.search_series_flowbox, series, None)
+                except Exception as e:
+                    logger.error(f"Search error: {e}")
+                    
+            threading.Thread(target=do_search, daemon=True).start()
+            return False
+
+        self.search_timeout_id = GLib.timeout_add(500, trigger_search)
 
     def switch_to_library_page(self, page_name: str):
         self.library_stack.set_visible_child_name(page_name)
@@ -3198,8 +3357,7 @@ class CineWindow(Adw.ApplicationWindow):
             self.category_btn_stack.set_visible_child_name("series")
 
     def _open_local_page(self, page_name):
-        self.main_stack.set_visible_child_name("library")
-        self.library_stack.set_visible_child_name(page_name)
+        self.main_stack.set_visible_child_name(page_name)
         self._populate_local_db_page(page_name)
         
     def _populate_local_db_page(self, page_name):
@@ -3213,7 +3371,25 @@ class CineWindow(Adw.ApplicationWindow):
             items = database.get_watched()
         elif page_name == "downloads":
             items = database.get_downloads()
+            self._populate_downloads_listbox(self.downloads_listbox, items)
+            return
             
         flowbox = getattr(self, f"{page_name}_flowbox", None)
         if flowbox:
             self._populate_flowbox(flowbox, items)
+
+    def _populate_downloads_listbox(self, listbox, items):
+        while child := listbox.get_first_child():
+            listbox.remove(child)
+            
+        if not items:
+            empty = Gtk.Label(label="No downloads yet.")
+            empty.add_css_class("dim-label")
+            empty.set_valign(Gtk.Align.CENTER)
+            empty.set_vexpand(True)
+            listbox.append(empty)
+            return
+            
+        from .download_row import DownloadItemRow
+        for dl in items:
+            listbox.append(DownloadItemRow(dl))
