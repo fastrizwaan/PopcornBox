@@ -3092,8 +3092,12 @@ class CineWindow(Adw.ApplicationWindow):
             
         self._populate_addons()
         
-        # Trigger initial load in classic mode
-        self.activate_action("switch-to-movies", None)
+        # Trigger initial load in classic mode manually (activate_action drops events during init)
+        self.current_media_type = "movie"
+        self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
+        self.current_genre = None
+        self.category_btn_stack.set_visible_child_name("movies")
+        self._refresh_content()
         
         self.search_entry.connect("search-changed", self._on_search_changed)
         search_key_ctrl = Gtk.EventControllerKey()
@@ -3131,22 +3135,17 @@ class CineWindow(Adw.ApplicationWindow):
                 cat_url = self.current_catalog["manifest_url"]
                 cat_id = self.current_catalog["catalog_id"]
                 
-                # Fetch two pages to fill screen initially if page is 1
+                # Fetch one page at a time to reduce initial load latency
                 items1 = api.fetch_items(media_type=self.current_media_type, 
                                         catalog_id=cat_id, catalog_url=cat_url, 
                                         genre=self.current_genre, page=self.content_page)
                 
                 items = items1 or []
-                if self.content_page == 1:
-                    items2 = api.fetch_items(media_type=self.current_media_type, 
-                                            catalog_id=cat_id, catalog_url=cat_url, 
-                                            genre=self.current_genre, page=self.content_page + 1)
-                    items.extend(items2 or [])
                 
                 if items:
-                    increment = 2 if self.content_page == 1 else 1
-                    self.content_page += increment
-                    if self.content_page <= 2:
+                    is_first_page = (self.content_page == 1)
+                    self.content_page += 1
+                    if is_first_page:
                         GLib.idle_add(self._populate_flowbox, self.content_flowbox, items, self.content_seen_ids)
                     else:
                         GLib.idle_add(self._append_flowbox, self.content_flowbox, items, self.content_seen_ids)
