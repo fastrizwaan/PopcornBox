@@ -2974,26 +2974,25 @@ class CineWindow(Adw.ApplicationWindow):
         self.is_fetching_content = False
         self.content_seen_ids = set()
         
-        # Populate search catalog dropdown
-        from . import database
-        search_addon_names = ["All Addons"]
-        self.search_addon_urls = [None]
-        for a in database.get_addons():
-            if not a.get("enabled", True): continue
-            m_url = a.get("manifest_url", "")
-            if not m_url or m_url.startswith("builtin:"): continue
-            
-            can_search = False
-            for cat in a.get("catalogs", []):
-                for ex in cat.get("extra", []):
-                    if ex == "search" or (isinstance(ex, dict) and ex.get("name") == "search"):
-                        can_search = True
-                        break
-            if can_search:
-                search_addon_names.append(a.get("name", "Unknown Addon"))
-                self.search_addon_urls.append(m_url)
+        # Populate search catalog dropdown with all available catalogs
+        movie_cats = api.get_available_catalogs("movie")
+        series_cats = api.get_available_catalogs("series")
+        
+        seen_cat_keys = set()
+        self.search_catalogs_list = [{"display_name": "All Catalogs", "manifest_url": None, "catalog_id": None}]
+        
+        for cat in movie_cats + series_cats:
+            key = (cat["manifest_url"], cat["catalog_id"])
+            if key not in seen_cat_keys:
+                seen_cat_keys.add(key)
+                self.search_catalogs_list.append({
+                    "display_name": cat["display_name"],
+                    "manifest_url": cat["manifest_url"],
+                    "catalog_id": cat["catalog_id"]
+                })
                 
-        self.search_catalog_dropdown.set_model(Gtk.StringList.new(search_addon_names))
+        search_cat_names = [c["display_name"] for c in self.search_catalogs_list]
+        self.search_catalog_dropdown.set_model(Gtk.StringList.new(search_cat_names))
         
         def on_search_catalog_changed(dropdown, pspec):
             if self.search_entry.get_text().strip():
@@ -3456,15 +3455,18 @@ class CineWindow(Adw.ApplicationWindow):
                 self.search_series_flowbox.remove(self.search_series_flowbox.get_first_child())
                 
             selected_idx = self.search_catalog_dropdown.get_selected()
-            search_addon_url = None
-            if hasattr(self, "search_addon_urls") and selected_idx < len(self.search_addon_urls):
-                search_addon_url = self.search_addon_urls[selected_idx]
+            target_manifest_url = None
+            target_catalog_id = None
+            if hasattr(self, "search_catalogs_list") and selected_idx < len(self.search_catalogs_list):
+                cat_obj = self.search_catalogs_list[selected_idx]
+                target_manifest_url = cat_obj["manifest_url"]
+                target_catalog_id = cat_obj["catalog_id"]
                 
             def do_search_movies():
                 try:
                     def on_movies_batch(batch):
                         GLib.idle_add(self._append_flowbox, self.search_movies_flowbox, batch, None)
-                    fetch_items(media_type="movie", query=query, on_item_found=on_movies_batch, search_addon_url=search_addon_url)
+                    fetch_items(media_type="movie", query=query, on_item_found=on_movies_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
                 except Exception as e:
                     logger.error(f"Search error (movies): {e}")
 
@@ -3472,7 +3474,7 @@ class CineWindow(Adw.ApplicationWindow):
                 try:
                     def on_series_batch(batch):
                         GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
-                    fetch_items(media_type="series", query=query, on_item_found=on_series_batch, search_addon_url=search_addon_url)
+                    fetch_items(media_type="series", query=query, on_item_found=on_series_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
                 except Exception as e:
                     logger.error(f"Search error (series): {e}")
                     

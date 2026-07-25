@@ -215,7 +215,7 @@ def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
     return search_cats
 
 
-def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None, search_addon_url=None):
+def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None, target_manifest_url=None, target_catalog_id=None):
     c_type = "series" if media_type in ["series", "anime"] else media_type
     skip = (page - 1) * 50
 
@@ -229,13 +229,17 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             m_url = addon.get("manifest_url", "")
             if not m_url or m_url.startswith("builtin:"): return []
             
-            if search_addon_url and m_url != search_addon_url:
+            if target_manifest_url and m_url != target_manifest_url:
                 return []
             
             base_url = m_url.rsplit("manifest.json", 1)[0]
             if not base_url.endswith("/"): base_url += "/"
             
-            search_catalogs = _get_search_catalogs_for_addon(addon, c_type, cache_only=cache_only)
+            if target_catalog_id:
+                search_catalogs = [target_catalog_id]
+            else:
+                search_catalogs = _get_search_catalogs_for_addon(addon, c_type, cache_only=cache_only)
+                
             if not search_catalogs:
                 return []
                 
