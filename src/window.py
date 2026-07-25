@@ -744,6 +744,7 @@ class CineWindow(Adw.ApplicationWindow):
     catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
     media_type_dropdown: Gtk.DropDown = Gtk.Template.Child()
     genre_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    search_catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
     content_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
     content_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     search_movies_flowbox: Gtk.FlowBox = Gtk.Template.Child()
