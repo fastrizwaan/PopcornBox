@@ -3440,7 +3440,7 @@ class CineWindow(Adw.ApplicationWindow):
                 elif isinstance(stats, dict):
                     status_msg = stats.get("status", "Buffering...")
                     self.update_player_loading(status_msg)
-            player.play_torrent(magnet, file_index=file_index, progress_callback=progress_callback, item_id=torrent.get("id"))
+            player.play_magnet(magnet, file_index=file_index, progress_callback=progress_callback, item_id=torrent.get("id"))
         else:
             self._try_next_stream_in_queue()
 
