@@ -50,12 +50,11 @@ template $CineWindow: Adw.ApplicationWindow {
                         Button series_inactive_btn {
                           action-name: "win.switch-to-series";
                           icon-name: "tv-symbolic";
-                          tooltip-text: _("Series");
                         }
-                        Button anime_inactive_btn1 {
+                        Button anime_inactive_btn_movies {
                           action-name: "win.switch-to-anime";
                           icon-name: "anime-manga-symbolic";
-                          tooltip-text: _("Anime");
+                          visible: false;
                         }
                       };
                     }
@@ -66,7 +65,6 @@ template $CineWindow: Adw.ApplicationWindow {
                         Button movies_inactive_btn {
                           action-name: "win.switch-to-movies";
                           icon-name: "video-x-generic-symbolic";
-                          tooltip-text: _("Movies");
                         }
                         MenuButton series_active_btn {
                           always-show-arrow: true;
@@ -76,10 +74,10 @@ template $CineWindow: Adw.ApplicationWindow {
                             label: _("Series");
                           };
                         }
-                        Button anime_inactive_btn2 {
+                        Button anime_inactive_btn_series {
                           action-name: "win.switch-to-anime";
                           icon-name: "anime-manga-symbolic";
-                          tooltip-text: _("Anime");
+                          visible: false;
                         }
                       };
                     }
@@ -87,15 +85,13 @@ template $CineWindow: Adw.ApplicationWindow {
                       name: "anime";
                       child: Box {
                         styles ["linked"]
-                        Button movies_inactive_btn2 {
+                        Button movies_inactive_btn_anime {
                           action-name: "win.switch-to-movies";
                           icon-name: "video-x-generic-symbolic";
-                          tooltip-text: _("Movies");
                         }
-                        Button series_inactive_btn2 {
+                        Button series_inactive_btn_anime {
                           action-name: "win.switch-to-series";
                           icon-name: "tv-symbolic";
-                          tooltip-text: _("Series");
                         }
                         MenuButton anime_active_btn {
                           always-show-arrow: true;
@@ -244,18 +240,6 @@ template $CineWindow: Adw.ApplicationWindow {
                     }
                     Separator { margin-bottom: 12; }
                     FlowBox search_series_flowbox {
-                      max-children-per-line: 20; min-children-per-line: 2;
-                      selection-mode: none; halign: center;
-                      row-spacing: 2; column-spacing: 2;
-                    }
-                    Label {
-                      label: _("Anime");
-                      styles ["title-2"]
-                      halign: start;
-                      margin-top: 24; margin-bottom: 8; margin-start: 12;
-                    }
-                    Separator { margin-bottom: 12; }
-                    FlowBox search_anime_flowbox {
                       max-children-per-line: 20; min-children-per-line: 2;
                       selection-mode: none; halign: center;
                       row-spacing: 2; column-spacing: 2;

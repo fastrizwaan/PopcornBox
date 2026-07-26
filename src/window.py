@@ -757,9 +757,8 @@ class CineWindow(Adw.ApplicationWindow):
     movies_genre_menu: Gio.Menu = Gtk.Template.Child()
     series_genre_menu: Gio.Menu = Gtk.Template.Child()
     anime_genre_menu: Gio.Menu = Gtk.Template.Child()
-    anime_inactive_btn1: Gtk.Button = Gtk.Template.Child()
-    anime_inactive_btn2: Gtk.Button = Gtk.Template.Child()
-    anime_inactive_btn3: Gtk.Button = Gtk.Template.Child()
+    anime_inactive_btn_movies: Gtk.Button = Gtk.Template.Child()
+    anime_inactive_btn_series: Gtk.Button = Gtk.Template.Child()
     discover_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
     discover_options_revealer: Gtk.Revealer = Gtk.Template.Child()
     library_header: Adw.HeaderBar = Gtk.Template.Child()
@@ -773,7 +772,6 @@ class CineWindow(Adw.ApplicationWindow):
     content_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     search_movies_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     search_series_flowbox: Gtk.FlowBox = Gtk.Template.Child()
-    search_anime_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     favorites_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     history_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     watched_flowbox: Gtk.FlowBox = Gtk.Template.Child()
@@ -3024,13 +3022,37 @@ class CineWindow(Adw.ApplicationWindow):
                 self._on_search_changed(self.search_entry)
         self.search_catalog_dropdown.connect("notify::selected", on_search_catalog_changed)
         
+        # Check anime support from addons
+        def _check_anime_support():
+            addons = api.database.get_addons()
+            for addon in addons:
+                if not addon.get("enabled", True): continue
+                # check types
+                types = addon.get("types", [])
+                if "anime" in types: return True
+                # check catalogs explicitly
+                for cat in addon.get("catalogs", []):
+                    if cat.get("type") == "anime": return True
+            return False
+            
+        self.anime_supported = _check_anime_support()
+        self.anime_inactive_btn_movies.set_visible(self.anime_supported)
+        self.anime_inactive_btn_series.set_visible(self.anime_supported)
+        
         # Populate media type dropdown
-        media_types = Gtk.StringList.new(["Movies", "Series", "Anime"])
+        if self.anime_supported:
+            media_types = Gtk.StringList.new(["Movies", "Series", "Anime"])
+        else:
+            media_types = Gtk.StringList.new(["Movies", "Series"])
+            
         self.media_type_dropdown.set_model(media_types)
         
         def on_media_type_changed(dropdown, pspec):
             selected = dropdown.get_selected()
-            self.current_media_type = "movie" if selected == 0 else ("series" if selected == 1 else "anime")
+            if selected == 0: self.current_media_type = "movie"
+            elif selected == 1: self.current_media_type = "series"
+            elif selected == 2: self.current_media_type = "anime"
+            
             self.all_catalogs = api.get_available_catalogs(self.current_media_type)
             
             # Populate catalog dropdown
@@ -3079,14 +3101,10 @@ class CineWindow(Adw.ApplicationWindow):
         # Restore classic genre menus
         movie_genres = ["All", "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "History", "Horror", "Music", "Musical", "Mystery", "Romance", "Sci-Fi", "Short", "Sport", "Thriller", "War", "Western"]
         series_genres = ["All", "Action & Adventure", "Animation", "Family", "Kids", "Comedy", "Drama", "Crime", "Mystery", "Sci-Fi & Fantasy", "Western", "War & Politics", "Reality", "Documentary", "Talk", "News", "Soap", "Romance", "Music", "Musical", "History"]
-        anime_genres = ["All", "Action", "Adventure", "Cars", "Comedy", "Dementia", "Demons", "Drama", "Ecchi", "Fantasy", "Game", "Harem", "Historical", "Horror", "Josei", "Kids", "Magic", "Martial Arts", "Mecha", "Military", "Music", "Mystery", "Parody", "Police", "Psychological", "Romance", "Samurai", "School", "Sci-Fi", "Seinen", "Shoujo", "Shounen", "Slice of Life", "Space", "Sports", "Super Power", "Supernatural", "Thriller", "Vampire"]
         for g in movie_genres:
             self.movies_genre_menu.append(g, f"win.movies-genre-selected::{g}")
         for g in series_genres:
             self.series_genre_menu.append(g, f"win.series-genre-selected::{g}")
-        if hasattr(self, 'anime_genre_menu') and self.anime_genre_menu:
-            for g in anime_genres:
-                self.anime_genre_menu.append(g, f"win.anime-genre-selected::{g}")
             
         # Classic Action Handlers
         action = Gio.SimpleAction.new("movies-genre-selected", GLib.VariantType.new("s"))
@@ -3109,21 +3127,6 @@ class CineWindow(Adw.ApplicationWindow):
             self.category_btn_stack.set_visible_child_name("series")
             self._refresh_content()
         action.connect("activate", on_series_genre)
-        self.add_action(action)
-
-        action = Gio.SimpleAction.new("anime-genre-selected", GLib.VariantType.new("s"))
-        def on_anime_genre(action, parameter):
-            g = parameter.get_string()
-            self.current_media_type = "anime"
-            anime_cats = api.get_available_catalogs("anime")
-            if anime_cats:
-                self.current_catalog = anime_cats[0]
-            else:
-                self.current_catalog = {"catalog_id": "kitsu-anime-trending", "manifest_url": "https://anime-kitsu.strem.fun/manifest.json"}
-            self.current_genre = None if g == "All" else g
-            self.category_btn_stack.set_visible_child_name("anime")
-            self._refresh_content()
-        action.connect("activate", on_anime_genre)
         self.add_action(action)
         
         action = Gio.SimpleAction.new("switch-to-movies", None)
@@ -3149,15 +3152,23 @@ class CineWindow(Adw.ApplicationWindow):
         action = Gio.SimpleAction.new("switch-to-anime", None)
         def on_switch_anime(action, parameter):
             self.current_media_type = "anime"
-            anime_cats = api.get_available_catalogs("anime")
-            if anime_cats:
-                self.current_catalog = anime_cats[0]
-            else:
-                self.current_catalog = {"catalog_id": "kitsu-anime-trending", "manifest_url": "https://anime-kitsu.strem.fun/manifest.json"}
+            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
             self.current_genre = None
             self.category_btn_stack.set_visible_child_name("anime")
             self._refresh_content()
         action.connect("activate", on_switch_anime)
+        self.add_action(action)
+        
+        # anime genre action
+        action = Gio.SimpleAction.new("set-anime-genre", GLib.VariantType.new("s"))
+        def on_anime_genre(action, parameter):
+            g = parameter.get_string()
+            self.current_media_type = "anime"
+            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
+            self.current_genre = None if g == "All" else g
+            self.category_btn_stack.set_visible_child_name("anime")
+            self._refresh_content()
+        action.connect("activate", on_anime_genre)
         self.add_action(action)
 
         def on_discover_toggled(button, pspec):
@@ -3525,9 +3536,6 @@ class CineWindow(Adw.ApplicationWindow):
                 self.search_movies_flowbox.remove(self.search_movies_flowbox.get_first_child())
             while self.search_series_flowbox.get_first_child() is not None:
                 self.search_series_flowbox.remove(self.search_series_flowbox.get_first_child())
-            if hasattr(self, "search_anime_flowbox") and self.search_anime_flowbox:
-                while self.search_anime_flowbox.get_first_child() is not None:
-                    self.search_anime_flowbox.remove(self.search_anime_flowbox.get_first_child())
                 
             selected_idx = self.search_catalog_dropdown.get_selected()
             target_manifest_url = None
@@ -3552,19 +3560,9 @@ class CineWindow(Adw.ApplicationWindow):
                     fetch_items(media_type="series", query=query, on_item_found=on_series_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
                 except Exception as e:
                     logger.error(f"Search error (series): {e}")
-
-            def do_search_anime():
-                try:
-                    def on_anime_batch(batch):
-                        if hasattr(self, "search_anime_flowbox") and self.search_anime_flowbox:
-                            GLib.idle_add(self._append_flowbox, self.search_anime_flowbox, batch, None)
-                    fetch_items(media_type="anime", query=query, on_item_found=on_anime_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
-                except Exception as e:
-                    logger.error(f"Search error (anime): {e}")
                     
             threading.Thread(target=do_search_movies, daemon=True).start()
             threading.Thread(target=do_search_series, daemon=True).start()
-            threading.Thread(target=do_search_anime, daemon=True).start()
             return False
 
         self.search_timeout_id = GLib.timeout_add(350, trigger_search)
