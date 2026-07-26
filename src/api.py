@@ -338,7 +338,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             movies = []
             for m in data["metas"]:
                 imdb_id = m.get("imdb_id") or m.get("id")
-                poster = m.get("poster", "")
+                poster = m.get("poster") or m.get("posterShape") or m.get("logo") or m.get("background") or m.get("thumbnail") or m.get("image") or ""
+                if poster and poster.startswith("//"):
+                    poster = "https:" + poster
                 title = m.get("name", "")
                 year = str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else ""
                 movies.append({
@@ -346,6 +348,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     "title": title,
                     "year": year,
                     "medium_cover_image": poster,
+                    "poster": poster,
                     "type": media_type
                 })
             return movies

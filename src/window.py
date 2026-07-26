@@ -3224,6 +3224,8 @@ class CineWindow(Adw.ApplicationWindow):
         self.search_entry.add_controller(search_key_ctrl)
 
     def _refresh_content(self):
+        self.content_request_id = getattr(self, "content_request_id", 0) + 1
+        self.is_fetching_content = False
         self.content_page = 1
         self.content_seen_ids.clear()
         self.has_more_content = True
@@ -3240,6 +3242,7 @@ class CineWindow(Adw.ApplicationWindow):
             return
             
         self.is_fetching_content = True
+        current_req_id = getattr(self, "content_request_id", 0)
         
         def fetch():
             from . import api
@@ -3253,6 +3256,9 @@ class CineWindow(Adw.ApplicationWindow):
                                         genre=self.current_genre, page=self.content_page)
                 
                 items = items1 or []
+                
+                if current_req_id != getattr(self, "content_request_id", 0):
+                    return
                 
                 if items:
                     is_first_page = (self.content_page == 1)
@@ -3268,15 +3274,10 @@ class CineWindow(Adw.ApplicationWindow):
                 self.has_more_content = False
             finally:
                 def reset_fetching():
-                    self.is_fetching_content = False
-                    
-                    # Manually trigger a scroll check after finishing a fetch,
-                    # since GTK might not have emitted "changed" if the window is very large
-                    # and the adjustment values updated synchronously before the idle.
-                    # Or just to be safe:
-                    if hasattr(self, "content_scrolled") and getattr(self, "has_more_content", True):
-                        self._on_content_scroll(self.content_scrolled.get_vadjustment())
-                        
+                    if current_req_id == getattr(self, "content_request_id", 0):
+                        self.is_fetching_content = False
+                        if hasattr(self, "content_scrolled") and getattr(self, "has_more_content", True):
+                            self._on_content_scroll(self.content_scrolled.get_vadjustment())
                     return False
                 GLib.idle_add(reset_fetching)
                 

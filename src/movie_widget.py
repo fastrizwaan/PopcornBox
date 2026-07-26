@@ -18,10 +18,12 @@ _image_pool = ThreadPoolExecutor(max_workers=4)
 
 def load_image_into_picture(url, picture_widget, width=None, height=None):
     if not url: return
+    if url.startswith("//"):
+        url = "https:" + url
     
     url_hash = hashlib.md5(url.encode()).hexdigest()
     cache_file = os.path.join(IMAGE_CACHE_DIR, url_hash)
-    
+
     def fetch_image():
         try:
             data = None
@@ -160,7 +162,9 @@ class MovieWidget(Gtk.Box):
         icon_container.append(self.overlay)
         self.append(icon_container)
         
-        poster_url = movie_data.get("medium_cover_image") or movie_data.get("poster")
+        poster_url = movie_data.get("medium_cover_image") or movie_data.get("poster") or movie_data.get("posterShape") or movie_data.get("logo") or movie_data.get("background") or movie_data.get("thumbnail") or movie_data.get("image")
+        if poster_url and poster_url.startswith("//"):
+            poster_url = "https:" + poster_url
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195)
             
