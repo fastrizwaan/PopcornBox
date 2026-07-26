@@ -435,7 +435,9 @@ def resolve_tmdb_to_imdb(imdb_id, media_type, title=None):
                 if not resolved_id:
                     for m in search_data["metas"]:
                         m_id = m.get("imdb_id") or m.get("id", "")
-                        if str(m_id).startswith("tt"):
+                        m_name = str(m.get("name", "")).lower()
+                        t_lower = str(title).lower()
+                        if str(m_id).startswith("tt") and (m_name in t_lower or t_lower in m_name):
                             resolved_id = m_id
                             break
         except Exception:
