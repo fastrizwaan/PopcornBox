@@ -721,29 +721,8 @@ class MovieDetailsPage(Gtk.Overlay):
                     if hasattr(self, 'progress_label') and self.progress_label:
                         self.progress_label.set_text(status_msg)
                         
-                    parts = [status_msg]
-                    dl = stats.get("downloaded", 0)
-                    tot = stats.get("totalLength", 0)
-                    spd = stats.get("downloadSpeed", 0)
-                    peers = stats.get("activePeers", 0)
-                    prog = stats.get("progress", 0)
-                    
-                    if prog > 0:
-                        pct = prog * 100.0
-                        spd_mb = spd / (1024 * 1024)
-                        dl_mb = dl / (1024 * 1024)
-                        tot_gb = tot / (1024 * 1024 * 1024) if tot > 0 else 0
-                        if tot_gb > 0:
-                            parts.append(f"Buffering: {pct:.1f}% — {dl_mb:.1f} MB of {tot_gb:.2f} GB (↓ {spd_mb:.1f} MB/s, {peers} seeds)")
-                        else:
-                            parts.append(f"Buffering: {pct:.1f}% — {dl_mb:.1f} MB (↓ {spd_mb:.1f} MB/s, {peers} seeds)")
-                    elif dl > 0 or spd > 0 or peers > 0:
-                        spd_mb = spd / (1024 * 1024)
-                        dl_mb = dl / (1024 * 1024)
-                        parts.append(f"{dl_mb:.1f} MB buffered (↓ {spd_mb:.1f} MB/s, {peers} seeds)")
-                        
-                    full_text = "\n".join(parts)
                     if self.window:
+                        full_text = self.window.format_stream_stats(stats)
                         self.window.update_player_loading(full_text)
                         
             player.play_magnet(
@@ -3387,6 +3366,42 @@ class CineWindow(Adw.ApplicationWindow):
             self.title_widget.set_visible(True)
             self._show_ui()
 
+    def format_stream_stats(self, stats):
+        if not isinstance(stats, dict):
+            return str(stats)
+            
+        status_msg = stats.get("status", "Buffering...")
+        
+        prog = stats.get("progress", 0)
+        dl = stats.get("downloaded", 0)
+        tot = stats.get("totalLength", 0)
+        spd_dl = stats.get("downloadSpeed", 0) / 1024
+        spd_ul = stats.get("uploadSpeed", 0) / 1024
+        peers = stats.get("activePeers", 0)
+        seeds = stats.get("seeds", 0)
+
+        if prog == 0 and dl == 0 and spd_dl == 0 and spd_ul == 0 and peers == 0 and seeds == 0:
+            return status_msg
+            
+        metric_str = f"{prog * 100.0:.1f}%"
+        
+        if spd_dl > 0 or spd_ul > 0:
+            metric_str += f" - D: {spd_dl:.1f} KiB/s | U: {spd_ul:.1f} KiB/s"
+        elif prog < 1.0:
+            metric_str += " - Connecting..."
+            
+        if tot > 0:
+            metric_str += f" ({dl / (1024 * 1024):.1f} MB / {tot / (1024 * 1024 * 1024):.2f} GB)"
+        elif dl > 0:
+            metric_str += f" ({dl / (1024 * 1024):.1f} MB)"
+            
+        if peers > 0 or seeds > 0:
+            metric_str += f" | Peers: {peers} / Seeds: {seeds}"
+            
+        if status_msg and status_msg.lower() not in ["downloading", "buffering..."]:
+            return f"{status_msg}\n{metric_str}"
+        return metric_str
+
     def update_player_loading(self, text):
         if hasattr(self, "player_buffering_label"):
             GLib.idle_add(self.player_buffering_label.set_text, text)
@@ -3456,8 +3471,7 @@ class CineWindow(Adw.ApplicationWindow):
                         t = os.path.basename(stats.get("filePath"))
                     self._play_stream(url, t)
                 elif isinstance(stats, dict):
-                    status_msg = stats.get("status", "Buffering...")
-                    self.update_player_loading(status_msg)
+                    text = self.format_stream_stats(stats)
             player.play_magnet(magnet, file_index=file_index, progress_callback=progress_callback, item_id=torrent.get("id"))
         else:
             self._try_next_stream_in_queue()
