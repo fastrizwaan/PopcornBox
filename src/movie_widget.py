@@ -16,10 +16,36 @@ os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
 _image_pool = ThreadPoolExecutor(max_workers=4)
 
+def extract_image_url(m):
+    if not isinstance(m, dict):
+        return ""
+    candidates = [
+        m.get("medium_cover_image"),
+        m.get("poster"),
+        m.get("logo"),
+        m.get("icon"),
+        m.get("thumbnail"),
+        m.get("banner"),
+        m.get("background"),
+        m.get("image"),
+        m.get("cover")
+    ]
+    for url in candidates:
+        if isinstance(url, str):
+            url = url.strip()
+            if url.startswith("//"):
+                return "https:" + url
+            if url.startswith("http://") or url.startswith("https://"):
+                return url
+    return ""
+
 def load_image_into_picture(url, picture_widget, width=None, height=None):
-    if not url: return
+    if not url or not isinstance(url, str): return
+    url = url.strip()
     if url.startswith("//"):
         url = "https:" + url
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return
     
     url_hash = hashlib.md5(url.encode()).hexdigest()
     cache_file = os.path.join(IMAGE_CACHE_DIR, url_hash)
@@ -27,17 +53,22 @@ def load_image_into_picture(url, picture_widget, width=None, height=None):
     def fetch_image():
         try:
             data = None
-            if os.path.exists(cache_file):
+            if os.path.exists(cache_file) and os.path.getsize(cache_file) > 0:
                 with open(cache_file, 'rb') as f:
                     data = f.read()
             else:
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                if os.path.exists(cache_file):
+                    try: os.remove(cache_file)
+                    except Exception: pass
+                req = urllib.request.Request(
+                    url,
+                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+                )
                 for attempt in range(3):
                     try:
                         with urllib.request.urlopen(req, timeout=15) as response:
-                            content_type = response.headers.get('Content-Type', '')
                             data = response.read()
-                            if 'image' in content_type and data:
+                            if data:
                                 with open(cache_file, 'wb') as f:
                                     f.write(data)
                             break
@@ -47,9 +78,6 @@ def load_image_into_picture(url, picture_widget, width=None, height=None):
                         import time
                         time.sleep(1)
                 
-                if not data:
-                    return
-            
             if not data:
                 return
                 
@@ -162,9 +190,7 @@ class MovieWidget(Gtk.Box):
         icon_container.append(self.overlay)
         self.append(icon_container)
         
-        poster_url = movie_data.get("medium_cover_image") or movie_data.get("poster") or movie_data.get("posterShape") or movie_data.get("logo") or movie_data.get("background") or movie_data.get("thumbnail") or movie_data.get("image")
-        if poster_url and poster_url.startswith("//"):
-            poster_url = "https:" + poster_url
+        poster_url = extract_image_url(movie_data)
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195)
             

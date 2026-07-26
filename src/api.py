@@ -329,12 +329,11 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             
         data = _get_cached_request(url, max_age_hours=2, cache_only=cache_only)
         if data and isinstance(data.get("metas"), list):
+            from .movie_widget import extract_image_url
             movies = []
             for m in data["metas"]:
                 imdb_id = m.get("imdb_id") or m.get("id")
-                poster = m.get("poster") or m.get("posterShape") or m.get("logo") or m.get("background") or m.get("thumbnail") or m.get("image") or ""
-                if poster and poster.startswith("//"):
-                    poster = "https:" + poster
+                poster = extract_image_url(m)
                 title = m.get("name", "")
                 year = str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else ""
                 movies.append({
