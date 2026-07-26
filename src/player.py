@@ -331,7 +331,27 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                 database.set_download_paused(info_hash, False)
                 if hasattr(engine, 'resume'):
                     engine.resume()
-                def resume_stream(): launch_player_only(engine)
+                def resume_stream():
+                    print("Phase 3: Waiting for playable buffer (reused engine)...")
+                    last_nonzero_time = time.time()
+                    for i in range(300):
+                        with _engines_lock:
+                            if _streaming_hash != info_hash: return
+                        stats = engine.stats()
+                        downloaded = stats.get("downloaded", 0)
+                        buffered = stats.get("bufferedFromStart", downloaded)
+                        
+                        stats["status"] = "Verifying / Buffering..."
+                        if progress_callback: GLib.idle_add(progress_callback, stats)
+                            
+                        if downloaded > 0 or buffered > 0:
+                            last_nonzero_time = time.time()
+                        if engine.is_buffering_finished():
+                            break
+                        if (time.time() - last_nonzero_time) > 30:
+                            break
+                        time.sleep(1)
+                    launch_player_only(engine)
                 threading.Thread(target=resume_stream, daemon=True).start()
                 if progress_callback: GLib.idle_add(progress_callback, {"status": "Resuming stream..."})
                 return
@@ -349,16 +369,23 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                         engine.resume()
                     def resume_stream():
                         print("Phase 3: Waiting for playable buffer (existing engine)...")
+                        last_nonzero_time = time.time()
                         for i in range(300):
                             with _engines_lock:
                                 if _streaming_hash != info_hash: return
+                            stats = engine.stats()
+                            downloaded = stats.get("downloaded", 0)
+                            buffered = stats.get("bufferedFromStart", downloaded)
+                            
+                            stats["status"] = "Verifying / Buffering..."
+                            if progress_callback: GLib.idle_add(progress_callback, stats)
+                                
+                            if downloaded > 0 or buffered > 0:
+                                last_nonzero_time = time.time()
                             if engine.is_buffering_finished():
                                 break
-                            if progress_callback:
-                                stats = engine.stats()
-                                buffered = stats.get("bufferedFromStart", 0)
-                                stats["status"] = f"Buffering... {buffered/(1024*1024):.1f} MB"
-                                GLib.idle_add(progress_callback, stats)
+                            if (time.time() - last_nonzero_time) > 30:
+                                break
                             time.sleep(1)
                         launch_player_only(engine)
                     threading.Thread(target=resume_stream, daemon=True).start()
