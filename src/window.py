@@ -3161,11 +3161,26 @@ class CineWindow(Adw.ApplicationWindow):
         action.connect("activate", on_series_genre)
         self.add_action(action)
         
+        def set_catalog_for_media_type(m_type):
+            self.current_media_type = m_type
+            cats = api.get_available_catalogs(m_type)
+            if cats:
+                self.current_catalog = {
+                    "catalog_id": cats[0].get("catalog_id", "top"),
+                    "manifest_url": cats[0].get("manifest_url", "")
+                }
+            elif m_type == "anime":
+                self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
+                self.current_media_type = "series"
+                self.current_genre = "Animation"
+                return
+            else:
+                self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
+            self.current_genre = None
+
         action = Gio.SimpleAction.new("switch-to-movies", None)
         def on_switch_movies(action, parameter):
-            self.current_media_type = "movie"
-            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
-            self.current_genre = None
+            set_catalog_for_media_type("movie")
             self.category_btn_stack.set_visible_child_name("movies")
             self._refresh_content()
         action.connect("activate", on_switch_movies)
@@ -3173,9 +3188,7 @@ class CineWindow(Adw.ApplicationWindow):
         
         action = Gio.SimpleAction.new("switch-to-series", None)
         def on_switch_series(action, parameter):
-            self.current_media_type = "series"
-            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
-            self.current_genre = None
+            set_catalog_for_media_type("series")
             self.category_btn_stack.set_visible_child_name("series")
             self._refresh_content()
         action.connect("activate", on_switch_series)
@@ -3183,16 +3196,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         action = Gio.SimpleAction.new("switch-to-anime", None)
         def on_switch_anime(action, parameter):
-            self.current_media_type = "anime"
-            anime_cats = api.get_available_catalogs("anime")
-            if anime_cats:
-                self.current_catalog = {
-                    "catalog_id": anime_cats[0].get("catalog_id", "top"),
-                    "manifest_url": anime_cats[0].get("manifest_url", "")
-                }
-            else:
-                self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
-            self.current_genre = None
+            set_catalog_for_media_type("anime")
             self.category_btn_stack.set_visible_child_name("anime")
             self._refresh_content()
         action.connect("activate", on_switch_anime)
@@ -3202,16 +3206,9 @@ class CineWindow(Adw.ApplicationWindow):
         action = Gio.SimpleAction.new("set-anime-genre", GLib.VariantType.new("s"))
         def on_anime_genre(action, parameter):
             g = parameter.get_string()
-            self.current_media_type = "anime"
-            anime_cats = api.get_available_catalogs("anime")
-            if anime_cats:
-                self.current_catalog = {
-                    "catalog_id": anime_cats[0].get("catalog_id", "top"),
-                    "manifest_url": anime_cats[0].get("manifest_url", "")
-                }
-            else:
-                self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
-            self.current_genre = None if g == "All" else g
+            set_catalog_for_media_type("anime")
+            if g != "All":
+                self.current_genre = g
             self.category_btn_stack.set_visible_child_name("anime")
             self._refresh_content()
         action.connect("activate", on_anime_genre)
@@ -3270,53 +3267,64 @@ class CineWindow(Adw.ApplicationWindow):
             self._fetch_content_page()
 
     def _fetch_content_page(self):
-        if self.is_fetching_content or not self.current_catalog or not getattr(self, "has_more_content", True):
+        if not self.current_catalog or not getattr(self, "has_more_content", True):
+            return
+            
+        if getattr(self, "is_fetching_content", False):
             return
             
         self.is_fetching_content = True
+        
         current_req_id = getattr(self, "content_request_id", 0)
+        page_to_fetch = getattr(self, "content_page", 1)
+        media_type = self.current_media_type
+        catalog = dict(self.current_catalog)
+        genre = self.current_genre
         
         def fetch():
             from . import api
+            items = []
             try:
-                cat_url = self.current_catalog["manifest_url"]
-                cat_id = self.current_catalog["catalog_id"]
+                cat_url = catalog.get("manifest_url")
+                cat_id = catalog.get("catalog_id")
                 
-                # Fetch one page at a time to reduce initial load latency
-                items1 = api.fetch_items(media_type=self.current_media_type, 
-                                        catalog_id=cat_id, catalog_url=cat_url, 
-                                        genre=self.current_genre, page=self.content_page)
-                
-                items = items1 or []
-                
-                if current_req_id != getattr(self, "content_request_id", 0):
-                    return
-                
-                if items:
-                    is_first_page = (self.content_page == 1)
-                    self.content_page += 1
-                    if is_first_page:
-                        GLib.idle_add(self._populate_flowbox, self.content_flowbox, items, self.content_seen_ids)
-                    else:
-                        GLib.idle_add(self._append_flowbox, self.content_flowbox, items, self.content_seen_ids)
-                else:
-                    self.has_more_content = False
+                items = api.fetch_items(
+                    media_type=media_type, 
+                    catalog_id=cat_id, 
+                    catalog_url=cat_url, 
+                    genre=genre, 
+                    page=page_to_fetch
+                ) or []
             except Exception as e:
                 logger.error(f"Error fetching content: {e}")
-                self.has_more_content = False
-            finally:
-                def reset_fetching():
-                    if current_req_id == getattr(self, "content_request_id", 0):
-                        self.is_fetching_content = False
-                        if hasattr(self, "content_scrolled") and getattr(self, "has_more_content", True):
-                            self._on_content_scroll(self.content_scrolled.get_vadjustment())
-                    return False
-                GLib.idle_add(reset_fetching)
                 
+            def apply_results():
+                # Race condition guard: ignore if user selected another tab or catalog
+                if current_req_id != getattr(self, "content_request_id", 0):
+                    return False
+                    
+                self.is_fetching_content = False
+                
+                if items:
+                    is_first_page = (page_to_fetch == 1)
+                    if is_first_page:
+                        self._populate_flowbox(self.content_flowbox, items, self.content_seen_ids)
+                    else:
+                        self._append_flowbox(self.content_flowbox, items, self.content_seen_ids)
+                    self.content_page = page_to_fetch + 1
+                else:
+                    self.has_more_content = False
+
+                if getattr(self, "has_more_content", True) and hasattr(self, "content_scrolled"):
+                    self._on_content_scroll(self.content_scrolled.get_vadjustment())
+                return False
+
+            GLib.idle_add(apply_results)
+
         threading.Thread(target=fetch, daemon=True).start()
 
     def _on_content_scroll(self, adj):
-        if self.is_fetching_content or not getattr(self, "has_more_content", True):
+        if getattr(self, "is_fetching_content", False) or not getattr(self, "has_more_content", True):
             return
         if adj.get_value() >= adj.get_upper() - adj.get_page_size() - 400:
             if getattr(self, "current_catalog", None):
