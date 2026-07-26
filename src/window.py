@@ -3358,6 +3358,8 @@ class CineWindow(Adw.ApplicationWindow):
             self.gl_area.set_visible(True)
         if hasattr(self, "player_loading_box"):
             self.player_loading_box.set_visible(True)
+        if hasattr(self, "spinner"):
+            self.spinner.set_visible(True)
         if hasattr(self, "player_buffering_label"):
             self.player_buffering_label.set_text(text)
             
