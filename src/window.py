@@ -313,6 +313,19 @@ class MovieDetailsPage(Gtk.Overlay):
         self.stop_btn.set_visible(False)
         self.row4_box.append(self.stop_btn)
         
+        self.search_online_btn = Gtk.Button(label="🔍 Search Online")
+        self.search_online_btn.add_css_class("pill")
+        self.search_online_btn.set_valign(Gtk.Align.CENTER)
+        def on_search_online_clicked(btn):
+            import urllib.parse, subprocess
+            title = self.movie_stub.get("title", "")
+            year = self.movie_stub.get("year", "")
+            query = f'"{title}" {year} watch online stream' if year else f'"{title}" watch online stream'
+            encoded_query = urllib.parse.quote(query)
+            subprocess.Popen(["xdg-open", f"https://www.google.com/search?q={encoded_query}"])
+        self.search_online_btn.connect("clicked", on_search_online_clicked)
+        self.row4_box.append(self.search_online_btn)
+        
         self.row4_box.set_visible(False)
         self.info_vbox.append(self.row4_box)
         
@@ -484,9 +497,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 elif is_cached:
                     self.progress_label.set_text("Loaded cached streams...")
 
-            if torrents:
-                self.torrents = torrents
-                self.update_quality_dropdown()
+            self.torrents = torrents or []
+            self.update_quality_dropdown()
 
         def fetch():
             from . import api
@@ -507,13 +519,21 @@ class MovieDetailsPage(Gtk.Overlay):
         if not self.torrents:
             self.quality_button_box.set_visible(False)
             self.row3_box.set_visible(False)
-            self.row4_box.set_visible(False)
+            self.row4_box.set_visible(True)
+            self.watch_btn.set_visible(False)
+            if hasattr(self, 'search_online_btn'):
+                self.search_online_btn.set_visible(True)
+                self.search_online_btn.add_css_class("suggested-action")
             return
             
         self.quality_button_box.set_visible(True)
         self.row3_box.set_visible(True)
         self.row4_box.set_visible(True)
+        self.watch_btn.set_visible(True)
         self.watch_btn.set_sensitive(True)
+        if hasattr(self, 'search_online_btn'):
+            self.search_online_btn.set_visible(True)
+            self.search_online_btn.remove_css_class("suggested-action")
         
         quality_groups = {"4K": [], "1080p": [], "720p": [], "More": [], "Direct": []}
         for t in self.torrents:

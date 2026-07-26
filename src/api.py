@@ -7,6 +7,7 @@ import time
 import hashlib
 import logging
 from . import database
+from .tmdb_helper import resolve_to_imdb_id
 import concurrent.futures
 
 DEFAULT_TRACKERS = [
@@ -392,64 +393,11 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
                     database.save_cached_metadata(imdb_id, media_type, res)
                     return res
                     
-def resolve_tmdb_to_imdb(imdb_id, media_type, title=None):
-    is_tmdb = str(imdb_id).startswith("tmdb:") or str(imdb_id).startswith("ctmdb.")
-    if not is_tmdb:
-        return imdb_id
-        
-    resolved_id = None
-    c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
-    try:
-        tmdb_api_key = None
-        import re
-        for addon in database.get_addons():
-            m_url = addon.get("manifest_url", "")
-            if "tmdb" in m_url.lower():
-                match = re.search(r'/([a-fA-F0-9]{32})/', m_url)
-                if match:
-                    tmdb_api_key = match.group(1)
-                    break
-                    
-        if tmdb_api_key:
-            tmdb_id = str(imdb_id).split(":")[-1] if ":" in str(imdb_id) else str(imdb_id).split(".")[-1]
-            tmdb_type = "tv" if c_type == "series" else "movie"
-            tmdb_url = f"https://api.themoviedb.org/3/{tmdb_type}/{tmdb_id}?api_key={tmdb_api_key}&append_to_response=external_ids"
-            
-            tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168)
-            if tmdb_data and "external_ids" in tmdb_data:
-                resolved_id = tmdb_data["external_ids"].get("imdb_id")
-    except Exception:
-        pass
-        
-    if not resolved_id and title and title != "Loading...":
-        try:
-            import urllib.parse
-            search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(title)}.json"
-            search_data = _get_cached_request(search_url, max_age_hours=168)
-            if search_data and "metas" in search_data:
-                for m in search_data["metas"]:
-                    m_id = m.get("imdb_id") or m.get("id", "")
-                    if str(m_id).startswith("tt") and str(m.get("name", "")).lower() == str(title).lower():
-                        resolved_id = m_id
-                        break
-                if not resolved_id:
-                    for m in search_data["metas"]:
-                        m_id = m.get("imdb_id") or m.get("id", "")
-                        m_name = str(m.get("name", "")).lower()
-                        t_lower = str(title).lower()
-                        if str(m_id).startswith("tt") and (m_name in t_lower or t_lower in m_name):
-                            resolved_id = m_id
-                            break
-        except Exception:
-            pass
-            
-    return resolved_id or imdb_id
-
 def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True):
     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
     
     # Resolve TMDB ids to IMDB format if needed
-    imdb_id = resolve_tmdb_to_imdb(imdb_id, media_type, title)
+    imdb_id = resolve_to_imdb_id(imdb_id, media_type, title)
 
     if use_cache:
         cached = database.get_cached_metadata(imdb_id)
@@ -869,7 +817,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if callback: callback([], is_cached=False, is_complete=True)
         return []
 
-    imdb_id = resolve_tmdb_to_imdb(imdb_id, media_type, title)
+    imdb_id = resolve_to_imdb_id(imdb_id, media_type, title)
 
     cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
     cached = database.get_cached_streams(cache_key, max_age_hours=24)
@@ -988,11 +936,13 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     final_streams = process_raw_streams(all_raw_streams)
     if final_streams:
         database.save_cached_streams(cache_key, final_streams)
+    elif stremio_addons:
+        database.delete_cached_streams(cache_key)
 
     if callback:
-        callback(final_streams or cached or [], is_cached=False, is_complete=True)
+        callback(final_streams, is_cached=False, is_complete=True)
 
-    return final_streams or cached or []
+    return final_streams
 
 def get_subtitles(imdb_id, media_type="movie", season=None, episode=None):
     if not imdb_id:
