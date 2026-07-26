@@ -217,7 +217,7 @@ def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
 
 
 def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None, target_manifest_url=None, target_catalog_id=None):
-    c_type = "series" if media_type in ["series", "anime"] else media_type
+    c_type = media_type
     skip = (page - 1) * 50
 
     if query:
@@ -431,7 +431,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
             except Exception:
                 pass
                 
-        if addon_types is not None and c_type not in addon_types:
+        if addon_types is not None and not any(t in addon_types for t in [c_type, media_type, "anime" if media_type == "anime" else ""]):
             return None
             
         if addon_prefixes is not None:
@@ -451,8 +451,12 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
         base_url = m_url.rsplit("manifest.json", 1)[0] if "manifest.json" in m_url else m_url
         if not base_url.endswith("/"): base_url += "/"
         
-        meta_url = f"{base_url}meta/{c_type}/{imdb_id}.json"
+        meta_type = "anime" if (media_type == "anime" or str(imdb_id).startswith("kitsu:")) else c_type
+        meta_url = f"{base_url}meta/{meta_type}/{imdb_id}.json"
         data = _get_cached_request(meta_url, max_age_hours=168)
+        if (not data or not data.get("meta")) and meta_type != c_type:
+            meta_url = f"{base_url}meta/{c_type}/{imdb_id}.json"
+            data = _get_cached_request(meta_url, max_age_hours=168)
         
         if data and data.get("meta"):
             cm = data["meta"]
@@ -824,7 +828,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     if cached and callback:
         callback(cached, is_cached=True, is_complete=False)
 
-    actual_media = media_type if media_type == "tv" else ("series" if media_type in ["series", "anime"] else media_type)
+    actual_media = "anime" if (media_type == "anime" or str(imdb_id).startswith("kitsu:")) else ("series" if media_type in ["series", "tv"] else media_type)
     addons = [a for a in database.get_addons() if a.get("enabled", True)]
     if not addons:
         if callback: callback(cached or [], is_cached=False, is_complete=True)

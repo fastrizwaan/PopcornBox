@@ -37,6 +37,30 @@ DEFAULT_ADDONS = [
             {"type": "series", "id": "top", "genres": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western","Reality-TV","Talk-Show","Game-Show"], "extra": [{"name": "genre", "options": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western","Reality-TV","Talk-Show","Game-Show"]}, {"name": "search"}, {"name": "skip"}], "name": "Popular"},
             {"type": "series", "id": "imdbRating", "genres": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western","Reality-TV","Talk-Show","Game-Show"], "extra": [{"name": "genre", "options": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western","Reality-TV","Talk-Show","Game-Show"]}, {"name": "skip"}], "name": "IMDb Rating"}
         ]
+    },
+    {
+        "id": "anime-kitsu",
+        "name": "Anime Kitsu",
+        "version": "1.0.0",
+        "description": "Provides anime catalogs from Kitsu.",
+        "manifest_url": "https://anime-kitsu.strem.fun/manifest.json",
+        "enabled": True,
+        "catalogs": [
+            {
+                "type": "anime",
+                "id": "kitsu-anime-trending",
+                "name": "Trending",
+                "genres": ["Action","Adventure","Cars","Comedy","Dementia","Demons","Drama","Ecchi","Fantasy","Game","Harem","Historical","Horror","Josei","Kids","Magic","Martial Arts","Mecha","Military","Music","Mystery","Parody","Police","Psychological","Romance","Samurai","School","Sci-Fi","Seinen","Shoujo","Shounen","Slice of Life","Space","Sports","Super Power","Supernatural","Thriller","Vampire"],
+                "extra": [{"name": "genre", "options": ["Action","Adventure","Cars","Comedy","Dementia","Demons","Drama","Ecchi","Fantasy","Game","Harem","Historical","Horror","Josei","Kids","Magic","Martial Arts","Mecha","Military","Music","Mystery","Parody","Police","Psychological","Romance","Samurai","School","Sci-Fi","Seinen","Shoujo","Shounen","Slice of Life","Space","Sports","Super Power","Supernatural","Thriller","Vampire"]}, {"name": "search"}, {"name": "skip"}]
+            },
+            {
+                "type": "anime",
+                "id": "kitsu-anime-top",
+                "name": "Top Rated",
+                "genres": ["Action","Adventure","Cars","Comedy","Dementia","Demons","Drama","Ecchi","Fantasy","Game","Harem","Historical","Horror","Josei","Kids","Magic","Martial Arts","Mecha","Military","Music","Mystery","Parody","Police","Psychological","Romance","Samurai","School","Sci-Fi","Seinen","Shoujo","Shounen","Slice of Life","Space","Sports","Super Power","Supernatural","Thriller","Vampire"],
+                "extra": [{"name": "genre", "options": ["Action","Adventure","Cars","Comedy","Dementia","Demons","Drama","Ecchi","Fantasy","Game","Harem","Historical","Horror","Josei","Kids","Magic","Martial Arts","Mecha","Military","Music","Mystery","Parody","Police","Psychological","Romance","Samurai","School","Sci-Fi","Seinen","Shoujo","Shounen","Slice of Life","Space","Sports","Super Power","Supernatural","Thriller","Vampire"]}, {"name": "skip"}]
+            }
+        ]
     }
 ]
 

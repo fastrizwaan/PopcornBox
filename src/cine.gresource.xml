@@ -52,5 +52,6 @@
     <file alias="object-rotate-left-symbolic.svg">../data/icons/scalable/actions/object-rotate-left-symbolic.svg</file>
     <file alias="object-rotate-right-symbolic.svg">../data/icons/scalable/actions/object-rotate-right-symbolic.svg</file>
     <file alias="compass2-symbolic.svg">../data/icons/scalable/actions/compass2-symbolic.svg</file>
+    <file alias="anime-manga-symbolic.svg">../data/icons/scalable/actions/anime-manga-symbolic.svg</file>
   </gresource>
 </gresources>
