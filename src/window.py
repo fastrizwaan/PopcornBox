@@ -3114,7 +3114,9 @@ class CineWindow(Adw.ApplicationWindow):
         self.discover_toggle_btn.connect("notify::active", on_discover_toggled)
         
         if hasattr(self, "content_scrolled"):
-            self.content_scrolled.get_vadjustment().connect("value-changed", self._on_content_scroll)
+            adj = self.content_scrolled.get_vadjustment()
+            adj.connect("value-changed", self._on_content_scroll)
+            adj.connect("changed", self._on_content_scroll)
             
         self._populate_addons()
         
@@ -3141,6 +3143,7 @@ class CineWindow(Adw.ApplicationWindow):
     def _refresh_content(self):
         self.content_page = 1
         self.content_seen_ids.clear()
+        self.has_more_content = True
         
         # Clear flowbox
         while self.content_flowbox.get_first_child() is not None:
@@ -3150,7 +3153,7 @@ class CineWindow(Adw.ApplicationWindow):
             self._fetch_content_page()
 
     def _fetch_content_page(self):
-        if self.is_fetching_content or not self.current_catalog:
+        if self.is_fetching_content or not self.current_catalog or not getattr(self, "has_more_content", True):
             return
             
         self.is_fetching_content = True
@@ -3175,20 +3178,31 @@ class CineWindow(Adw.ApplicationWindow):
                         GLib.idle_add(self._populate_flowbox, self.content_flowbox, items, self.content_seen_ids)
                     else:
                         GLib.idle_add(self._append_flowbox, self.content_flowbox, items, self.content_seen_ids)
+                else:
+                    self.has_more_content = False
             except Exception as e:
                 logger.error(f"Error fetching content: {e}")
+                self.has_more_content = False
             finally:
                 def reset_fetching():
                     self.is_fetching_content = False
+                    
+                    # Manually trigger a scroll check after finishing a fetch,
+                    # since GTK might not have emitted "changed" if the window is very large
+                    # and the adjustment values updated synchronously before the idle.
+                    # Or just to be safe:
+                    if hasattr(self, "content_scrolled") and getattr(self, "has_more_content", True):
+                        self._on_content_scroll(self.content_scrolled.get_vadjustment())
+                        
                     return False
                 GLib.idle_add(reset_fetching)
                 
         threading.Thread(target=fetch, daemon=True).start()
 
     def _on_content_scroll(self, adj):
-        if self.is_fetching_content:
+        if self.is_fetching_content or not getattr(self, "has_more_content", True):
             return
-        if adj.get_value() > 0 and adj.get_value() >= adj.get_upper() - adj.get_page_size() - 400:
+        if adj.get_value() >= adj.get_upper() - adj.get_page_size() - 400:
             if getattr(self, "current_catalog", None):
                 self._fetch_content_page()
 
