@@ -808,6 +808,59 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
         database.save_cached_streams(cache_key, valid_streams)
     return valid_streams
 
+def _ping_stream_url(stream):
+    url = stream.get("url")
+    if not url or not isinstance(url, str) or not (url.startswith("http://") or url.startswith("https://")):
+        return stream
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    
+    # 1. Try HEAD request with 2.5s timeout
+    try:
+        req = urllib.request.Request(url, headers=headers, method='HEAD')
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            if resp.status < 400:
+                stream["is_working"] = True
+                return stream
+    except Exception:
+        pass
+        
+    # 2. Try GET request with Range bytes=0-100 and 2.5s timeout
+    try:
+        req = urllib.request.Request(url, headers=dict(headers, Range='bytes=0-100'))
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            if resp.status < 400:
+                stream["is_working"] = True
+                return stream
+    except Exception:
+        pass
+
+    stream["is_working"] = False
+    return stream
+
+def ping_and_filter_streams(streams):
+    if not streams:
+        return []
+    http_streams = [s for s in streams if s.get("url") and (s["url"].startswith("http://") or s["url"].startswith("https://"))]
+    if not http_streams:
+        return streams
+        
+    num_workers = min(len(http_streams), 15)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        results = list(executor.map(_ping_stream_url, http_streams))
+        
+    working_urls = {s["url"] for s in results if s.get("is_working") is True}
+    if not working_urls:
+        return streams
+        
+    filtered = []
+    for s in streams:
+        url = s.get("url")
+        if not url or not (url.startswith("http://") or url.startswith("https://")):
+            filtered.append(s)
+        elif url in working_urls:
+            filtered.append(s)
+    return filtered
+
 def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None):
     if not imdb_id:
         if callback: callback([], is_cached=False, is_complete=True)
@@ -930,6 +983,9 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 print("Timeout fetching streams from some addons")
 
     final_streams = process_raw_streams(all_raw_streams)
+    if actual_media == "tv" and final_streams:
+        final_streams = ping_and_filter_streams(final_streams)
+
     if final_streams:
         database.save_cached_streams(cache_key, final_streams)
     elif stremio_addons:

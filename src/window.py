@@ -662,14 +662,28 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.progress_label.set_text("Please select a stream first.")
             return
             
-        torrent = self.selected_torrent
-        magnet = torrent.get("url") or torrent.get("magnet")
-        if not magnet and torrent.get("hash"):
-            from . import api
-            magnet = api.build_magnet(torrent.get("hash"), self.movie_stub.get("title", ""))
+        media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
+        if self.media_type == "series" and getattr(self, "selected_season", None) is not None:
+            try:
+                s_int = int(self.selected_season)
+                e_int = int(self.selected_episode)
+                media_title = f"{media_title} (S{s_int:02d}E{e_int:02d})"
+            except (ValueError, TypeError):
+                media_title = f"{media_title} (S{self.selected_season}E{self.selected_episode})"
             
-        file_index = torrent.get("file_index")
-        self._start_streaming(magnet, file_index)
+        queue = getattr(self, 'current_t_list', None) or getattr(self, 'torrents', None) or [self.selected_torrent]
+        init_idx = queue.index(self.selected_torrent) if self.selected_torrent in queue else 0
+
+        if self.window and hasattr(self.window, 'play_stream_with_failover'):
+            self.window.play_stream_with_failover(queue, initial_index=init_idx, title=media_title, previous_page="details")
+        else:
+            torrent = self.selected_torrent
+            magnet = torrent.get("url") or torrent.get("magnet")
+            if not magnet and torrent.get("hash"):
+                from . import api
+                magnet = api.build_magnet(torrent.get("hash"), self.movie_stub.get("title", ""))
+            file_index = torrent.get("file_index")
+            self._start_streaming(magnet, file_index)
 
     def _start_streaming(self, magnet, file_index):
         if not magnet: return
@@ -2678,12 +2692,15 @@ class CineWindow(Adw.ApplicationWindow):
                     self.error_count += 1
                     logger.warning(f"File error path: {self.loaded_path}")
                     error = info["file_error"].decode("utf-8")
-                    idle_add_once(self._show_toast, _("File Error") + f": {error}")
 
-                    if self.error_count == 20:
-                        self.mpv.stop()
-                        self.shuffle_toggle_btn.set_active(False)
-                        self.error_count = 0
+                    if getattr(self, "stream_queue", None) and len(self.stream_queue) > 0:
+                        idle_add_once(self._try_next_stream_in_queue)
+                    else:
+                        idle_add_once(self._show_toast, _("File Error") + f": {error}")
+                        if self.error_count == 20:
+                            self.mpv.stop()
+                            self.shuffle_toggle_btn.set_active(False)
+                            self.error_count = 0
                 elif (
                     not self.mpv.keep_open and self.mpv.idle_active and not self.startup
                 ):
@@ -3374,6 +3391,85 @@ class CineWindow(Adw.ApplicationWindow):
         self.mpv.loadfile(url, "replace")
         self.mpv.pause = False
         self.is_inactive = False
+
+    def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page="details"):
+        self.stream_queue = list(queue)
+        self.stream_queue_index = initial_index
+        self.stream_queue_title = title
+        self.previous_page_before_player = previous_page
+        self._play_current_stream_from_queue()
+
+    def _play_current_stream_from_queue(self):
+        if not getattr(self, 'stream_queue', None) or len(self.stream_queue) == 0:
+            return
+        if self.stream_queue_index >= len(self.stream_queue):
+            self._handle_all_streams_exhausted()
+            return
+
+        torrent = self.stream_queue[self.stream_queue_index]
+        magnet = torrent.get("url") or torrent.get("magnet")
+        if not magnet and torrent.get("hash"):
+            from . import api
+            magnet = api.build_magnet(torrent.get("hash"), self.stream_queue_title or "")
+
+        title_text = self.stream_queue_title or "Stream"
+        stream_name = torrent.get("name") or torrent.get("stream_title") or ""
+        if stream_name:
+            display_title = f"{title_text} ({stream_name})"
+        else:
+            display_title = title_text
+
+        self.show_player_loading(
+            f"Connecting to stream ({self.stream_queue_index + 1}/{len(self.stream_queue)})...",
+            display_title
+        )
+
+        if magnet and (magnet.startswith("http://") or magnet.startswith("https://")):
+            self._play_stream(magnet, display_title)
+        elif magnet:
+            from . import player
+            file_index = torrent.get("file_index")
+            def progress_callback(stats):
+                url = stats.get("url") if isinstance(stats, dict) else None
+                if url:
+                    t = display_title
+                    if isinstance(stats, dict) and stats.get("filePath"):
+                        import os
+                        t = os.path.basename(stats.get("filePath"))
+                    self._play_stream(url, t)
+                elif isinstance(stats, dict):
+                    status_msg = stats.get("status", "Buffering...")
+                    self.update_player_loading(status_msg)
+            player.play_torrent(magnet, file_index=file_index, progress_callback=progress_callback, item_id=torrent.get("id"))
+        else:
+            self._try_next_stream_in_queue()
+
+    def _try_next_stream_in_queue(self):
+        if not getattr(self, 'stream_queue', None):
+            return
+        self.stream_queue_index += 1
+        if self.stream_queue_index < len(self.stream_queue):
+            msg = f"Stream failed. Trying next stream ({self.stream_queue_index + 1}/{len(self.stream_queue)})..."
+            logger.info(msg)
+            self._show_toast(msg)
+            self._play_current_stream_from_queue()
+        else:
+            self._handle_all_streams_exhausted()
+
+    def _handle_all_streams_exhausted(self):
+        logger.warning("All candidate streams failed or were exhausted.")
+        self._show_toast(_("All available streams failed to play."))
+        self.hide_player_loading()
+        if hasattr(self, 'mpv'):
+            try: self.mpv.stop()
+            except Exception: pass
+        self.stream_queue = []
+        self.stream_queue_index = 0
+        prev_page = getattr(self, 'previous_page_before_player', 'details')
+        if prev_page and prev_page in ['details', 'main', 'discover']:
+            self.main_stack.set_visible_child_name(prev_page)
+        else:
+            self.main_stack.set_visible_child_name('details')
 
     def _on_no_streams_found(self):
         self.hide_player_loading()
