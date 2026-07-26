@@ -3370,8 +3370,12 @@ class CineWindow(Adw.ApplicationWindow):
         if not isinstance(stats, dict):
             return str(stats)
             
-        status_msg = stats.get("status", "Buffering...")
+        status_msg = stats.get("status") or "Connecting..."
         
+        # If it's a simple text dict without torrent metric fields
+        if "progress" not in stats and "downloaded" not in stats and "activePeers" not in stats:
+            return status_msg
+            
         prog = stats.get("progress", 0)
         dl = stats.get("downloaded", 0)
         tot = stats.get("totalLength", 0)
@@ -3380,23 +3384,19 @@ class CineWindow(Adw.ApplicationWindow):
         peers = stats.get("activePeers", 0)
         seeds = stats.get("seeds", 0)
 
-        if prog == 0 and dl == 0 and spd_dl == 0 and spd_ul == 0 and peers == 0 and seeds == 0:
-            return status_msg
-            
         metric_str = f"{prog * 100.0:.1f}%"
         
         if spd_dl > 0 or spd_ul > 0:
             metric_str += f" - D: {spd_dl:.1f} KiB/s | U: {spd_ul:.1f} KiB/s"
-        elif prog < 1.0:
+        else:
             metric_str += " - Connecting..."
             
         if tot > 0:
             metric_str += f" ({dl / (1024 * 1024):.1f} MB / {tot / (1024 * 1024 * 1024):.2f} GB)"
         elif dl > 0:
-            metric_str += f" ({dl / (1024 * 1024):.1f} MB)"
+            metric_str += f" ({dl / (1024 * 1024):.1f} MB downloaded)"
             
-        if peers > 0 or seeds > 0:
-            metric_str += f" | Peers: {peers} / Seeds: {seeds}"
+        metric_str += f" | Peers: {peers} / Seeds: {seeds}"
             
         if status_msg and status_msg.lower() not in ["downloading", "buffering..."]:
             return f"{status_msg}\n{metric_str}"
