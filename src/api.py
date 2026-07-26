@@ -319,7 +319,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             m_url = a.get("manifest_url", "")
             if m_url and (m_url == catalog_url or catalog_url.startswith(m_url.rsplit("manifest.json", 1)[0])):
                 for cat in a.get("catalogs", []):
-                    if cat.get("id") == catalog_id:
+                    if cat.get("id") == catalog_id and cat.get("type") == c_type:
                         actual_cat_type = cat.get("type") or c_type
                         break
 

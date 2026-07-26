@@ -1069,7 +1069,7 @@ template $CineWindow: Adw.ApplicationWindow {
               Button {
                 tooltip-text: _("Watch History");
                 icon-name: "document-open-recent-symbolic";
-                action-name: "win.open-history";
+                action-name: "win.open-watch-history";
 
                 styles [
                   "suggested-action",
@@ -1079,15 +1079,6 @@ template $CineWindow: Adw.ApplicationWindow {
               }
             }
 
-            Button {
-              label: _("Search Addons");
-              action-name: "win.search-addons";
-
-              styles [
-                "pill",
-                "suggested-action"
-              ]
-            }
 
             Button {
               label: _("Open Folder");
