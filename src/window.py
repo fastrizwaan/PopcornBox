@@ -3441,9 +3441,10 @@ class CineWindow(Adw.ApplicationWindow):
 
         torrent = self.stream_queue[self.stream_queue_index]
         magnet = torrent.get("url") or torrent.get("magnet")
-        if not magnet and torrent.get("hash"):
+        hash_val = torrent.get("hash") or torrent.get("infoHash")
+        if not magnet and hash_val:
             from . import api
-            magnet = api.build_magnet(torrent.get("hash"), self.stream_queue_title or "")
+            magnet = api.build_magnet(hash_val, self.stream_queue_title or "")
 
         title_text = self.stream_queue_title or "Stream"
         stream_name = torrent.get("name") or torrent.get("stream_title") or ""
@@ -3462,6 +3463,8 @@ class CineWindow(Adw.ApplicationWindow):
         elif magnet:
             from . import player
             file_index = torrent.get("file_index")
+            if file_index is None:
+                file_index = torrent.get("fileIdx")
             def progress_callback(stats):
                 url = stats.get("url") if isinstance(stats, dict) else None
                 if url:
@@ -3472,6 +3475,7 @@ class CineWindow(Adw.ApplicationWindow):
                     self._play_stream(url, t)
                 elif isinstance(stats, dict):
                     text = self.format_stream_stats(stats)
+                    self.update_player_loading(text)
             player.play_magnet(magnet, file_index=file_index, progress_callback=progress_callback, item_id=torrent.get("id"))
         else:
             self._try_next_stream_in_queue()
