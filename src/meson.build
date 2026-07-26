@@ -56,6 +56,7 @@ cine_sources = [
   'preferences.py',
   'save_session.py',
   'shortcuts.py',
+  'tmdb_helper.py',
   'utils.py',
   'window.py',
 ]
