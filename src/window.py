@@ -3515,7 +3515,11 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _close_player(self, *args):
         self.hide_player_loading()
-        self.mpv.stop()
+        if hasattr(self, 'mpv'):
+            try: self.mpv.stop()
+            except Exception: pass
+        from . import player
+        player.stop_player()
         if self.details_box.get_first_child():
             self.main_stack.set_visible_child_name("details")
         else:
