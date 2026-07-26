@@ -1045,13 +1045,49 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None):
         url = f"https://opensubtitles-v3.strem.io/subtitles/movie/{imdb_id}.json"
         
     try:
+        import gi
+        gi.require_version('Gio', '2.0')
+        from gi.repository import Gio
+        
+        settings = Gio.Settings.new("io.github.fastrizwaan.PopcornBox")
+        pref_langs_str = settings.get_string("subtitle-languages")
+        pref_langs = []
+        if pref_langs_str:
+            pref_langs = [l.strip().lower() for l in pref_langs_str.split(',') if l.strip()]
+            
+        if not pref_langs:
+            pref_langs = ["eng", "en", "english"]
+            
+        mapping = {
+            "en": ["eng", "english"],
+            "es": ["spa", "spanish", "esp"],
+            "pt": ["por", "pob", "portuguese"],
+            "fr": ["fre", "fra", "french"],
+            "de": ["ger", "deu", "german"],
+            "it": ["ita", "italian"],
+            "ru": ["rus", "russian"],
+            "hi": ["hin", "hindi"],
+            "ar": ["ara", "arabic"],
+            "tr": ["tur", "turkish"],
+            "zh": ["chi", "zho", "chinese"]
+        }
+        
+        expanded_prefs = set(pref_langs)
+        for pl in pref_langs:
+            if pl in mapping:
+                expanded_prefs.update(mapping[pl])
+
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode('utf-8'))
             subs = data.get("subtitles", [])
             
-            eng_subs = [s for s in subs if s.get("lang", "").lower() in ["eng", "en", "english"]]
-            return eng_subs
+            filtered_subs = []
+            for s in subs:
+                sub_lang = s.get("lang", "").lower()
+                if sub_lang in expanded_prefs or any(sub_lang.startswith(p) for p in expanded_prefs):
+                    filtered_subs.append(s)
+            return filtered_subs
     except urllib.error.HTTPError as e:
         print(f"HTTP Error {e.code} fetching subtitles")
         e.close()

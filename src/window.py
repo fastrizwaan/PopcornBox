@@ -674,6 +674,12 @@ class MovieDetailsPage(Gtk.Overlay):
         queue = getattr(self, 'current_t_list', None) or getattr(self, 'torrents', None) or [self.selected_torrent]
         init_idx = queue.index(self.selected_torrent) if self.selected_torrent in queue else 0
 
+        if self.window and hasattr(self.window, "fetch_and_add_subtitles"):
+            imdb_id = self.movie_stub.get("id")
+            season = getattr(self, "selected_season", None)
+            episode = getattr(self, "selected_episode", None)
+            self.window.fetch_and_add_subtitles(imdb_id, self.media_type, season, episode)
+
         if self.window and hasattr(self.window, 'play_stream_with_failover'):
             self.window.play_stream_with_failover(queue, initial_index=init_idx, title=media_title, previous_page="details")
         else:
@@ -2635,6 +2641,9 @@ class CineWindow(Adw.ApplicationWindow):
                     self.is_local_path = is_local_path(self.mpv.path)
                     self.start_page.set_sensitive(True)
                     self._hide_ui_timeout()
+                    
+                    if hasattr(self, "_try_add_pending_subtitles"):
+                        self._try_add_pending_subtitles()
 
                     if settings.get_boolean("thumbnail-preview"):
                         self.thumb_preview.props.visible = True
@@ -3336,6 +3345,9 @@ class CineWindow(Adw.ApplicationWindow):
             flowbox.append(MovieWidget(item, self._on_movie_clicked))
 
     def _on_movie_clicked(self, movie_data):
+        from . import database
+        database.add_history(movie_data)
+        
         while child := self.details_box.get_first_child():
             self.details_box.remove(child)
             
@@ -3426,6 +3438,46 @@ class CineWindow(Adw.ApplicationWindow):
         self.mpv.loadfile(url, "replace")
         self.mpv.pause = False
         self.is_inactive = False
+
+    def fetch_and_add_subtitles(self, imdb_id, media_type, season, episode):
+        self.pending_subtitles = []
+        
+        def fetch():
+            from . import api
+            import time
+            subs = api.get_subtitles(imdb_id, media_type, season, episode)
+            if subs:
+                for idx, s in enumerate(subs):
+                    url = s.get("url")
+                    lang = s.get("lang", "en")
+                    if url:
+                        filename = f"{imdb_id}_{int(time.time())}_{idx}_{lang}.srt"
+                        path = api.download_subtitle(url, filename)
+                        if path:
+                            def _queue(p=path, l=lang, is_first=(idx == 0)):
+                                if not hasattr(self, 'pending_subtitles'):
+                                    self.pending_subtitles = []
+                                self.pending_subtitles.append((p, l, is_first))
+                                self._try_add_pending_subtitles()
+                                return False
+                            GLib.idle_add(_queue)
+                            
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _try_add_pending_subtitles(self):
+        if not hasattr(self, 'pending_subtitles') or not self.pending_subtitles:
+            return
+            
+        if self.mpv.core_idle:
+            return
+            
+        try:
+            for path, lang, select in list(self.pending_subtitles):
+                mode = "select" if select else "auto"
+                self.mpv.command("sub-add", path, mode, lang)
+            self.pending_subtitles.clear()
+        except Exception as e:
+            logger.error(f"Failed to add pending subtitles: {e}")
 
     def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page="details"):
         self.stream_queue = list(queue)
