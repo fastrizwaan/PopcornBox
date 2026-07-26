@@ -3222,11 +3222,13 @@ class CineWindow(Adw.ApplicationWindow):
         # Restore classic genre menus
         movie_genres = ["All", "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "History", "Horror", "Music", "Musical", "Mystery", "Romance", "Sci-Fi", "Short", "Sport", "Thriller", "War", "Western"]
         series_genres = ["All", "Action & Adventure", "Animation", "Family", "Kids", "Comedy", "Drama", "Crime", "Mystery", "Sci-Fi & Fantasy", "Western", "War & Politics", "Reality", "Documentary", "Talk", "News", "Soap", "Romance", "Music", "Musical", "History"]
+        anime_genres = ["All", "Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Magic", "Mecha", "Music", "Mystery", "Psychological", "Romance", "School", "Sci-Fi", "Slice of Life", "Sports", "Supernatural"]
         for g in movie_genres:
             self.movies_genre_menu.append(g, f"win.movies-genre-selected::{g}")
         for g in series_genres:
             self.series_genre_menu.append(g, f"win.series-genre-selected::{g}")
-            
+        for g in anime_genres:
+            self.anime_genre_menu.append(g, f"win.set-anime-genre::{g}")
         # Classic Action Handlers
         action = Gio.SimpleAction.new("movies-genre-selected", GLib.VariantType.new("s"))
         def on_movies_genre(action, parameter):
@@ -3310,7 +3312,13 @@ class CineWindow(Adw.ApplicationWindow):
             if is_active:
                 on_media_type_changed(self.media_type_dropdown, None)
             else:
-                self.activate_action("switch-to-movies", None)
+                active_cat = self.category_btn_stack.get_visible_child_name()
+                if active_cat == "series":
+                    self.activate_action("win.switch-to-series", None)
+                elif active_cat == "anime":
+                    self.activate_action("win.switch-to-anime", None)
+                else:
+                    self.activate_action("win.switch-to-movies", None)
                 
         self.discover_toggle_btn.connect("notify::active", on_discover_toggled)
         
@@ -3342,6 +3350,8 @@ class CineWindow(Adw.ApplicationWindow):
         self.search_entry.add_controller(search_key_ctrl)
 
     def _refresh_content(self):
+        from .movie_widget import cancel_pending_image_downloads
+        cancel_pending_image_downloads()
         self.content_request_id = getattr(self, "content_request_id", 0) + 1
         self.is_fetching_content = False
         self.content_page = 1
@@ -3437,6 +3447,8 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _on_movie_clicked(self, movie_data):
         from . import database
+        from .movie_widget import cancel_pending_image_downloads
+        cancel_pending_image_downloads()
         database.add_history(movie_data)
         
         while child := self.details_box.get_first_child():

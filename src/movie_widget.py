@@ -15,6 +15,15 @@ IMAGE_CACHE_DIR = os.path.join(BASE_DIR, 'images')
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
 _image_pool = ThreadPoolExecutor(max_workers=4)
+_disk_pool = ThreadPoolExecutor(max_workers=4)
+
+def cancel_pending_image_downloads():
+    global _image_pool
+    try:
+        _image_pool.shutdown(wait=False, cancel_futures=True)
+    except TypeError:
+        _image_pool.shutdown(wait=False)
+    _image_pool = ThreadPoolExecutor(max_workers=4)
 
 def extract_image_url(m):
     if not isinstance(m, dict):
@@ -64,19 +73,17 @@ def load_image_into_picture(url, picture_widget, width=None, height=None):
                     url,
                     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                 )
-                for attempt in range(3):
+                for attempt in range(1):
                     try:
-                        with urllib.request.urlopen(req, timeout=15) as response:
+                        with urllib.request.urlopen(req, timeout=3) as response:
                             data = response.read()
                             if data:
                                 with open(cache_file, 'wb') as f:
                                     f.write(data)
                             break
                     except Exception as e:
-                        if attempt == 2:
-                            raise e
-                        import time
-                        time.sleep(1)
+                        if attempt == 0:
+                            pass
                 
             if not data:
                 return
@@ -124,8 +131,10 @@ def load_image_into_picture(url, picture_widget, width=None, height=None):
                 GLib.idle_add(_apply_pixbuf, picture_widget, pixbuf)
         except Exception as e:
             print(f"Failed to load image {url}: {e}")
-    
-    _image_pool.submit(fetch_image)
+    if os.path.exists(cache_file) and os.path.getsize(cache_file) > 0:
+        _disk_pool.submit(fetch_image)
+    else:
+        _image_pool.submit(fetch_image)
 
 def _apply_pixbuf(picture_widget, pixbuf):
     try:
