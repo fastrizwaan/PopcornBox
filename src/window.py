@@ -771,10 +771,34 @@ class CineWindow(Adw.ApplicationWindow):
     content_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     search_movies_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     search_series_flowbox: Gtk.FlowBox = Gtk.Template.Child()
-    favorites_flowbox: Gtk.FlowBox = Gtk.Template.Child()
-    history_flowbox: Gtk.FlowBox = Gtk.Template.Child()
-    watched_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    favorites_box: Gtk.Box = Gtk.Template.Child()
+    history_box: Gtk.Box = Gtk.Template.Child()
+    watched_box: Gtk.Box = Gtk.Template.Child()
     downloads_listbox: Gtk.ListBox = Gtk.Template.Child()
+    
+    fav_all_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    fav_movies_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    fav_series_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    fav_anime_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    hist_all_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    hist_movies_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    hist_series_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    hist_anime_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    watch_all_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    watch_movies_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    watch_series_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    watch_anime_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    
+    fav_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
+    hist_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
+    watch_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
+    
+    fav_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    hist_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    watch_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    down_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    addon_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
+
     addon_url_entry: Gtk.Entry = Gtk.Template.Child()
     addons_listbox: Gtk.ListBox = Gtk.Template.Child()
     video_overlay: Gtk.Overlay = Gtk.Template.Child()
@@ -849,6 +873,73 @@ class CineWindow(Adw.ApplicationWindow):
         self.playlist_changed: bool = False
         self.has_some_doc_path: bool = False
         self.can_go_prev: bool = False
+        
+        self.local_media_type_filter = "all"
+        self._syncing_local_btns = False
+
+        def on_local_btn_toggled(btn, m_type):
+            if self._syncing_local_btns or not btn.get_active():
+                return
+                
+            self._syncing_local_btns = True
+            self.local_media_type_filter = m_type
+            
+            if m_type == "all":
+                self.fav_all_btn.set_active(True)
+                self.hist_all_btn.set_active(True)
+                self.watch_all_btn.set_active(True)
+            elif m_type == "movie":
+                self.fav_movies_btn.set_active(True)
+                self.hist_movies_btn.set_active(True)
+                self.watch_movies_btn.set_active(True)
+            elif m_type == "series":
+                self.fav_series_btn.set_active(True)
+                self.hist_series_btn.set_active(True)
+                self.watch_series_btn.set_active(True)
+            elif m_type == "anime":
+                self.fav_anime_btn.set_active(True)
+                self.hist_anime_btn.set_active(True)
+                self.watch_anime_btn.set_active(True)
+                
+            self._syncing_local_btns = False
+            
+            page = self.main_stack.get_visible_child_name()
+            if page in ["favorites", "history", "watched"]:
+                self._populate_local_db_page(page)
+
+        self.fav_all_btn.connect("toggled", on_local_btn_toggled, "all")
+        self.fav_movies_btn.connect("toggled", on_local_btn_toggled, "movie")
+        self.fav_series_btn.connect("toggled", on_local_btn_toggled, "series")
+        self.fav_anime_btn.connect("toggled", on_local_btn_toggled, "anime")
+        self.hist_all_btn.connect("toggled", on_local_btn_toggled, "all")
+        self.hist_movies_btn.connect("toggled", on_local_btn_toggled, "movie")
+        self.hist_series_btn.connect("toggled", on_local_btn_toggled, "series")
+        self.hist_anime_btn.connect("toggled", on_local_btn_toggled, "anime")
+        self.watch_all_btn.connect("toggled", on_local_btn_toggled, "all")
+        self.watch_movies_btn.connect("toggled", on_local_btn_toggled, "movie")
+        self.watch_series_btn.connect("toggled", on_local_btn_toggled, "series")
+        self.watch_anime_btn.connect("toggled", on_local_btn_toggled, "anime")
+        
+        def on_local_search_changed(entry):
+            page = self.main_stack.get_visible_child_name()
+            if page in ["favorites", "history", "watched"]:
+                self._populate_local_db_page(page)
+                
+        self.fav_search_entry.connect("search-changed", on_local_search_changed)
+        self.hist_search_entry.connect("search-changed", on_local_search_changed)
+        self.watch_search_entry.connect("search-changed", on_local_search_changed)
+        
+        def on_active_btn_toggled(btn):
+            if not btn.get_active():
+                btn.set_active(True)
+                self._back_to_library()
+                
+        self.fav_active_btn.connect("toggled", on_active_btn_toggled)
+        self.hist_active_btn.connect("toggled", on_active_btn_toggled)
+        self.watch_active_btn.connect("toggled", on_active_btn_toggled)
+        self.down_active_btn.connect("toggled", on_active_btn_toggled)
+        self.addon_active_btn.connect("toggled", on_active_btn_toggled)
+
         self.can_go_next: bool = False
         self.chapters: list = []
         self.curr_chapter_time = None
@@ -3830,10 +3921,47 @@ class CineWindow(Adw.ApplicationWindow):
             items = database.get_downloads()
             self._populate_downloads_listbox(self.downloads_listbox, items)
             return
+        container = getattr(self, f"{page_name}_box", None)
+        if not container:
+            return
             
-        flowbox = getattr(self, f"{page_name}_flowbox", None)
-        if flowbox:
-            self._populate_flowbox(flowbox, items)
+        while child := container.get_first_child():
+            container.remove(child)
+            
+        m_type = getattr(self, "local_media_type_filter", "all")
+        
+        search_entry = getattr(self, f"{page_name}_search_entry", None)
+        query = search_entry.get_text().strip().lower() if search_entry else ""
+        
+        if query:
+            items = [i for i in items if query in i.get("name", "").lower()]
+            
+        movies = [i for i in items if i.get("type", "movie") == "movie"]
+        series = [i for i in items if i.get("type", "movie") in ["series", "tv", "channel", "tvchannel"]]
+        anime = [i for i in items if i.get("type", "movie") == "anime"]
+        
+        def _add_section(title, data):
+            if not data: return
+            lbl = Gtk.Label(label=title, halign=Gtk.Align.START)
+            lbl.add_css_class("title-2")
+            lbl.set_margin_top(12)
+            lbl.set_margin_bottom(12)
+            container.append(lbl)
+            
+            flowbox = Gtk.FlowBox(
+                max_children_per_line=20, min_children_per_line=2, 
+                selection_mode=Gtk.SelectionMode.NONE, halign=Gtk.Align.START,
+                row_spacing=2, column_spacing=2
+            )
+            self._populate_flowbox(flowbox, data)
+            container.append(flowbox)
+
+        if m_type in ["all", "movie"]:
+            _add_section(_("Movies"), movies)
+        if m_type in ["all", "series"]:
+            _add_section(_("Series"), series)
+        if m_type in ["all", "anime"]:
+            _add_section(_("Anime"), anime)
 
     def _populate_downloads_listbox(self, listbox, items):
         while child := listbox.get_first_child():

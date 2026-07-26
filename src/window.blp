@@ -125,11 +125,14 @@ template $CineWindow: Adw.ApplicationWindow {
                 }
                 
                 [end]
-                Button favorites_btn {
-                  icon-name: "starred-symbolic";
-                  tooltip-text: _("Favorites");
-                  action-name: "win.open-favorites";
-                  styles ["flat", "circular"]
+                Box {
+                  spacing: 2;
+                  Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
+                  Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
+                  Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
+                  Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
+                  Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                  Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
                 }
 
                 [end]
@@ -261,19 +264,62 @@ template $CineWindow: Adw.ApplicationWindow {
               Button {
                 icon-name: "go-previous-symbolic";
                 action-name: "win.back-to-library";
-                tooltip-text: _("Back to Library");
+                tooltip-text: _("Library");
+                styles ["flat", "circular"]
+              }
+              [start]
+              Box {
+                styles ["linked"]
+                ToggleButton fav_all_btn { label: _("All"); active: true; styles ["category-filter-btn"] }
+                ToggleButton fav_movies_btn { label: _("Movies"); group: fav_all_btn; styles ["category-filter-btn"] }
+                ToggleButton fav_series_btn { label: _("Series"); group: fav_all_btn; styles ["category-filter-btn"] }
+                ToggleButton fav_anime_btn { label: _("Anime"); group: fav_all_btn; styles ["category-filter-btn"] }
               }
               [title]
               Adw.WindowTitle {
-                title: _("Favorites");
+                title: _("PopcornBox");
+              }
+              [end]
+              MenuButton {
+                valign: center;
+                primary: true;
+                icon-name: "open-menu-symbolic";
+                tooltip-text: _("Main Menu");
+                menu-model: primary_menu;
+              }
+              [end]
+              Box {
+                spacing: 2;
+                ToggleButton fav_active_btn { active: true; child: Adw.ButtonContent { icon-name: "starred-symbolic"; label: _("Favorites"); }; styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
+              }
+              [end]
+              ToggleButton fav_search_btn {
+                icon-name: "system-search-symbolic";
+                tooltip-text: _("Search");
+                styles ["flat", "circular"]
               }
             }
             ScrolledWindow favorites_scrolled {
               vexpand: true;
-              FlowBox favorites_flowbox {
-                margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
-                max-children-per-line: 20; min-children-per-line: 2; selection-mode: none; halign: center;
-                row-spacing: 2; column-spacing: 2;
+              Box {
+                orientation: vertical;
+                Revealer fav_search_revealer {
+                  reveal-child: bind fav_search_btn.active;
+                  SearchEntry fav_search_entry {
+                    margin-top: 12; margin-bottom: 0; margin-start: 12; margin-end: 12;
+                    placeholder-text: _("Search Favorites...");
+                  }
+                }
+                Box favorites_box {
+                  orientation: vertical;
+                  spacing: 12;
+                  margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                }
               }
             }
           };
@@ -288,19 +334,62 @@ template $CineWindow: Adw.ApplicationWindow {
               Button {
                 icon-name: "go-previous-symbolic";
                 action-name: "win.back-to-library";
-                tooltip-text: _("Back to Library");
+                tooltip-text: _("Library");
+                styles ["flat", "circular"]
+              }
+              [start]
+              Box {
+                styles ["linked"]
+                ToggleButton hist_all_btn { label: _("All"); active: true; styles ["category-filter-btn"] }
+                ToggleButton hist_movies_btn { label: _("Movies"); group: hist_all_btn; styles ["category-filter-btn"] }
+                ToggleButton hist_series_btn { label: _("Series"); group: hist_all_btn; styles ["category-filter-btn"] }
+                ToggleButton hist_anime_btn { label: _("Anime"); group: hist_all_btn; styles ["category-filter-btn"] }
               }
               [title]
               Adw.WindowTitle {
-                title: _("History");
+                title: _("PopcornBox");
+              }
+              [end]
+              MenuButton {
+                valign: center;
+                primary: true;
+                icon-name: "open-menu-symbolic";
+                tooltip-text: _("Main Menu");
+                menu-model: primary_menu;
+              }
+              [end]
+              Box {
+                spacing: 2;
+                Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
+                ToggleButton hist_active_btn { active: true; child: Adw.ButtonContent { icon-name: "document-open-recent-symbolic"; label: _("History"); }; styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
+              }
+              [end]
+              ToggleButton hist_search_btn {
+                icon-name: "system-search-symbolic";
+                tooltip-text: _("Search");
+                styles ["flat", "circular"]
               }
             }
             ScrolledWindow history_scrolled {
               vexpand: true;
-              FlowBox history_flowbox {
-                margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
-                max-children-per-line: 20; min-children-per-line: 2; selection-mode: none; halign: center;
-                row-spacing: 2; column-spacing: 2;
+              Box {
+                orientation: vertical;
+                Revealer hist_search_revealer {
+                  reveal-child: bind hist_search_btn.active;
+                  SearchEntry hist_search_entry {
+                    margin-top: 12; margin-bottom: 0; margin-start: 12; margin-end: 12;
+                    placeholder-text: _("Search History...");
+                  }
+                }
+                Box history_box {
+                  orientation: vertical;
+                  spacing: 12;
+                  margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                }
               }
             }
           };
@@ -315,19 +404,62 @@ template $CineWindow: Adw.ApplicationWindow {
               Button {
                 icon-name: "go-previous-symbolic";
                 action-name: "win.back-to-library";
-                tooltip-text: _("Back to Library");
+                tooltip-text: _("Library");
+                styles ["flat", "circular"]
+              }
+              [start]
+              Box {
+                styles ["linked"]
+                ToggleButton watch_all_btn { label: _("All"); active: true; styles ["category-filter-btn"] }
+                ToggleButton watch_movies_btn { label: _("Movies"); group: watch_all_btn; styles ["category-filter-btn"] }
+                ToggleButton watch_series_btn { label: _("Series"); group: watch_all_btn; styles ["category-filter-btn"] }
+                ToggleButton watch_anime_btn { label: _("Anime"); group: watch_all_btn; styles ["category-filter-btn"] }
               }
               [title]
               Adw.WindowTitle {
-                title: _("Watched");
+                title: _("PopcornBox");
+              }
+              [end]
+              MenuButton {
+                valign: center;
+                primary: true;
+                icon-name: "open-menu-symbolic";
+                tooltip-text: _("Main Menu");
+                menu-model: primary_menu;
+              }
+              [end]
+              Box {
+                spacing: 2;
+                Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
+                ToggleButton watch_active_btn { active: true; child: Adw.ButtonContent { icon-name: "view-visible-symbolic"; label: _("Watched"); }; styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
+              }
+              [end]
+              ToggleButton watch_search_btn {
+                icon-name: "system-search-symbolic";
+                tooltip-text: _("Search");
+                styles ["flat", "circular"]
               }
             }
             ScrolledWindow watched_scrolled {
               vexpand: true;
-              FlowBox watched_flowbox {
-                margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
-                max-children-per-line: 20; min-children-per-line: 2; selection-mode: none; halign: center;
-                row-spacing: 2; column-spacing: 2;
+              Box {
+                orientation: vertical;
+                Revealer watch_search_revealer {
+                  reveal-child: bind watch_search_btn.active;
+                  SearchEntry watch_search_entry {
+                    margin-top: 12; margin-bottom: 0; margin-start: 12; margin-end: 12;
+                    placeholder-text: _("Search Watched...");
+                  }
+                }
+                Box watched_box {
+                  orientation: vertical;
+                  spacing: 12;
+                  margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                }
               }
             }
           };
@@ -342,11 +474,30 @@ template $CineWindow: Adw.ApplicationWindow {
               Button {
                 icon-name: "go-previous-symbolic";
                 action-name: "win.back-to-library";
-                tooltip-text: _("Back to Library");
+                tooltip-text: _("Library");
+                styles ["flat", "circular"]
               }
               [title]
               Adw.WindowTitle {
-                title: _("Downloads");
+                title: _("PopcornBox");
+              }
+              [end]
+              MenuButton {
+                valign: center;
+                primary: true;
+                icon-name: "open-menu-symbolic";
+                tooltip-text: _("Main Menu");
+                menu-model: primary_menu;
+              }
+              [end]
+              Box {
+                spacing: 2;
+                Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
+                ToggleButton down_active_btn { active: true; child: Adw.ButtonContent { icon-name: "folder-download-symbolic"; label: _("Downloads"); }; styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
               }
             }
             ScrolledWindow downloads_scrolled {
@@ -368,11 +519,30 @@ template $CineWindow: Adw.ApplicationWindow {
               Button {
                 icon-name: "go-previous-symbolic";
                 action-name: "win.back-to-library";
-                tooltip-text: _("Back to Library");
+                tooltip-text: _("Library");
+                styles ["flat", "circular"]
               }
               [title]
               Adw.WindowTitle {
-                title: _("Addons");
+                title: _("PopcornBox");
+              }
+              [end]
+              MenuButton {
+                valign: center;
+                primary: true;
+                icon-name: "open-menu-symbolic";
+                tooltip-text: _("Main Menu");
+                menu-model: primary_menu;
+              }
+              [end]
+              Box {
+                spacing: 2;
+                Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
+                ToggleButton addon_active_btn { active: true; child: Adw.ButtonContent { icon-name: "application-x-addon-symbolic"; label: _("Addons"); }; styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
               }
             }
             ScrolledWindow {
@@ -514,7 +684,6 @@ template $CineWindow: Adw.ApplicationWindow {
                 valign: center;
                 icon-name: "go-previous-symbolic";
                 tooltip-text: _("Back to Library");
-                visible: bind start_page.visible inverted;
                 action-name: "win.close-player";
               }
 

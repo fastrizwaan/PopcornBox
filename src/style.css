@@ -489,3 +489,21 @@ cine-list-view row:last-child>box {
     background-color: rgb(from currentColor r g b / calc(alpha * 0.15));
   }
 }
+
+/* Local Nav Buttons */
+button.local-nav-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+}
+button.local-nav-btn:checked {
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow: none;
+}
+
+/* Category Filter Buttons (All/Movies/Series/Anime) */
+button.category-filter-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+button.category-filter-btn:checked {
+  background: rgba(255, 255, 255, 0.20);
+}
