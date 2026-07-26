@@ -3152,7 +3152,14 @@ class CineWindow(Adw.ApplicationWindow):
         action = Gio.SimpleAction.new("switch-to-anime", None)
         def on_switch_anime(action, parameter):
             self.current_media_type = "anime"
-            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
+            anime_cats = api.get_available_catalogs("anime")
+            if anime_cats:
+                self.current_catalog = {
+                    "catalog_id": anime_cats[0].get("catalog_id", "top"),
+                    "manifest_url": anime_cats[0].get("manifest_url", "")
+                }
+            else:
+                self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
             self.current_genre = None
             self.category_btn_stack.set_visible_child_name("anime")
             self._refresh_content()
@@ -3164,7 +3171,14 @@ class CineWindow(Adw.ApplicationWindow):
         def on_anime_genre(action, parameter):
             g = parameter.get_string()
             self.current_media_type = "anime"
-            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
+            anime_cats = api.get_available_catalogs("anime")
+            if anime_cats:
+                self.current_catalog = {
+                    "catalog_id": anime_cats[0].get("catalog_id", "top"),
+                    "manifest_url": anime_cats[0].get("manifest_url", "")
+                }
+            else:
+                self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
             self.current_genre = None if g == "All" else g
             self.category_btn_stack.set_visible_child_name("anime")
             self._refresh_content()
@@ -3560,9 +3574,19 @@ class CineWindow(Adw.ApplicationWindow):
                     fetch_items(media_type="series", query=query, on_item_found=on_series_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
                 except Exception as e:
                     logger.error(f"Search error (series): {e}")
+
+            def do_search_anime():
+                try:
+                    def on_anime_batch(batch):
+                        GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
+                    fetch_items(media_type="anime", query=query, on_item_found=on_anime_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
+                except Exception as e:
+                    logger.error(f"Search error (anime): {e}")
                     
             threading.Thread(target=do_search_movies, daemon=True).start()
             threading.Thread(target=do_search_series, daemon=True).start()
+            if getattr(self, "anime_supported", False):
+                threading.Thread(target=do_search_anime, daemon=True).start()
             return False
 
         self.search_timeout_id = GLib.timeout_add(350, trigger_search)
