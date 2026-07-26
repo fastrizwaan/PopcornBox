@@ -271,6 +271,23 @@ class TorrentStreamEngine:
             handle.set_sequential_download(True)
         except Exception:
             pass
+
+        try:
+            for tr in EXTRA_TRACKERS:
+                try:
+                    handle.add_tracker({"url": tr})
+                except Exception:
+                    try:
+                        handle.add_tracker(lt.announce_entry(tr))
+                    except Exception:
+                        pass
+            if hasattr(handle, 'force_reannounce'):
+                handle.force_reannounce()
+            if hasattr(handle, 'force_dht_announce'):
+                handle.force_dht_announce()
+        except Exception as e:
+            pass
+
         return handle
         
     def set_download_limit(self, limit_bytes):
