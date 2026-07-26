@@ -3052,27 +3052,37 @@ class CineWindow(Adw.ApplicationWindow):
                     if cat.get("type") == "anime": return True
             return False
 
-        def _check_tv_support():
+        def _get_supported_types():
             addons = api.database.get_addons()
+            types_found = set()
             for addon in addons:
                 if not addon.get("enabled", True): continue
-                types = addon.get("types", [])
-                if "tv" in types or "channel" in types or "tvchannel" in types: return True
+                for t in addon.get("types", []):
+                    types_found.add(t)
                 for cat in addon.get("catalogs", []):
-                    if cat.get("type") in ["tv", "channel", "tvchannel"]: return True
-            return False
-            
-        self.anime_supported = _check_anime_support()
-        self.tv_supported = _check_tv_support()
+                    if cat.get("type"):
+                        types_found.add(cat.get("type"))
+            return types_found
+
+        supported_types = _get_supported_types()
+        self.anime_supported = ("anime" in supported_types)
+        self.tv_supported = any(t in supported_types for t in ["tv", "channel", "tvchannel"])
         self.anime_inactive_btn_movies.set_visible(self.anime_supported)
         self.anime_inactive_btn_series.set_visible(self.anime_supported)
         
         # Populate media type dropdown
         media_type_labels = ["Movies", "Series"]
         media_type_keys = ["movie", "series"]
-        if self.tv_supported:
+        if "channel" in supported_types:
+            media_type_labels.append("Channel")
+            media_type_keys.append("channel")
+        if "tv" in supported_types or "tvchannel" in supported_types:
             media_type_labels.append("TV Channels")
             media_type_keys.append("tv")
+        elif self.tv_supported and "channel" not in media_type_keys:
+            media_type_labels.append("TV Channels")
+            media_type_keys.append("tv")
+            
         if self.anime_supported:
             media_type_labels.append("Anime")
             media_type_keys.append("anime")
