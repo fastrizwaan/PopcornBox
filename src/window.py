@@ -3034,24 +3034,39 @@ class CineWindow(Adw.ApplicationWindow):
                 for cat in addon.get("catalogs", []):
                     if cat.get("type") == "anime": return True
             return False
+
+        def _check_tv_support():
+            addons = api.database.get_addons()
+            for addon in addons:
+                if not addon.get("enabled", True): continue
+                types = addon.get("types", [])
+                if "tv" in types or "channel" in types or "tvchannel" in types: return True
+                for cat in addon.get("catalogs", []):
+                    if cat.get("type") in ["tv", "channel", "tvchannel"]: return True
+            return False
             
         self.anime_supported = _check_anime_support()
+        self.tv_supported = _check_tv_support()
         self.anime_inactive_btn_movies.set_visible(self.anime_supported)
         self.anime_inactive_btn_series.set_visible(self.anime_supported)
         
         # Populate media type dropdown
+        media_type_labels = ["Movies", "Series"]
+        media_type_keys = ["movie", "series"]
+        if self.tv_supported:
+            media_type_labels.append("TV Channels")
+            media_type_keys.append("tv")
         if self.anime_supported:
-            media_types = Gtk.StringList.new(["Movies", "Series", "Anime"])
-        else:
-            media_types = Gtk.StringList.new(["Movies", "Series"])
+            media_type_labels.append("Anime")
+            media_type_keys.append("anime")
             
-        self.media_type_dropdown.set_model(media_types)
+        self.media_type_keys = media_type_keys
+        self.media_type_dropdown.set_model(Gtk.StringList.new(media_type_labels))
         
         def on_media_type_changed(dropdown, pspec):
             selected = dropdown.get_selected()
-            if selected == 0: self.current_media_type = "movie"
-            elif selected == 1: self.current_media_type = "series"
-            elif selected == 2: self.current_media_type = "anime"
+            if selected < len(self.media_type_keys):
+                self.current_media_type = self.media_type_keys[selected]
             
             self.all_catalogs = api.get_available_catalogs(self.current_media_type)
             
@@ -3583,11 +3598,21 @@ class CineWindow(Adw.ApplicationWindow):
                     fetch_items(media_type="anime", query=query, on_item_found=on_anime_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
                 except Exception as e:
                     logger.error(f"Search error (anime): {e}")
+
+            def do_search_tv():
+                try:
+                    def on_tv_batch(batch):
+                        GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
+                    fetch_items(media_type="tv", query=query, on_item_found=on_tv_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
+                except Exception as e:
+                    logger.error(f"Search error (tv): {e}")
                     
             threading.Thread(target=do_search_movies, daemon=True).start()
             threading.Thread(target=do_search_series, daemon=True).start()
             if getattr(self, "anime_supported", False):
                 threading.Thread(target=do_search_anime, daemon=True).start()
+            if getattr(self, "tv_supported", False):
+                threading.Thread(target=do_search_tv, daemon=True).start()
             return False
 
         self.search_timeout_id = GLib.timeout_add(350, trigger_search)

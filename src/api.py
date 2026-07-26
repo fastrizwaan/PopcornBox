@@ -137,7 +137,8 @@ def get_available_catalogs(c_type="movie"):
             
         addon_catalogs = addon.get("catalogs", [])
         for cat in addon_catalogs:
-            if cat.get("type") == c_type:
+            cat_type = cat.get("type")
+            if cat_type == c_type or (c_type == "tv" and cat_type in ["tv", "channel", "tvchannel"]):
                 genres = []
                 extra = cat.get("extra") or []
                 for ex in extra:
@@ -173,21 +174,14 @@ def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
         if m_url and not m_url.startswith("builtin:"):
             try:
                 manifest_data = _get_cached_request(m_url, max_age_hours=168, cache_only=cache_only, timeout=3)
-                if manifest_data and "catalogs" in manifest_data:
-                    catalogs = manifest_data["catalogs"]
+                if manifest_data:
+                    catalogs = manifest_data.get("catalogs", [])
             except Exception:
                 pass
 
-    search_cats = []
+    cat_ids = []
     for cat in catalogs:
         cat_type = cat.get("type")
-        if cat_type != c_type:
-            continue
-            
-        cat_id = cat.get("id", "")
-        cat_name = cat.get("name", "")
-        extra = cat.get("extra", [])
-        extra_sup = cat.get("extraSupported", [])
         
         is_search = False
         if addon.get("id") == "cinemeta" and cat_id == "top":
@@ -703,7 +697,7 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
         if cached is not None:
             return cached
 
-    actual_media = "series" if media_type == "tv" else media_type
+    actual_media = media_type
     
     addons = [a for a in database.get_addons() if a.get("enabled", True)]
     if not addons:
@@ -827,7 +821,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     if cached and callback:
         callback(cached, is_cached=True, is_complete=False)
 
-    actual_media = "series" if media_type == "tv" else media_type
+    actual_media = media_type
     addons = [a for a in database.get_addons() if a.get("enabled", True)]
     if not addons:
         if callback: callback(cached or [], is_cached=False, is_complete=True)
