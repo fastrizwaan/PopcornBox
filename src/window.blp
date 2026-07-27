@@ -1101,6 +1101,88 @@ template $CineWindow: Adw.ApplicationWindow {
         }
 
         [overlay]
+        Revealer next_episode_revealer {
+          transition-duration: 300;
+          transition-type: crossfade;
+          reveal-child: false;
+          halign: end;
+          valign: end;
+          margin-bottom: 90;
+          margin-end: 24;
+
+          Box next_ep_box {
+            orientation: horizontal;
+            spacing: 12;
+            valign: center;
+
+            styles [
+              "osd",
+              "next-ep-card",
+            ]
+
+            Box {
+              orientation: vertical;
+              valign: center;
+              spacing: 2;
+
+              Label next_ep_title_label {
+                label: _("Next Episode");
+                halign: start;
+
+                styles [
+                  "heading",
+                  "title-4",
+                ]
+              }
+
+              Label next_ep_label {
+                label: _("Next episode in 30s");
+                halign: start;
+
+                styles [
+                  "caption",
+                  "dim-label",
+                ]
+              }
+            }
+
+            Button next_ep_play_btn {
+              styles [
+                "pill",
+                "suggested-action",
+              ]
+
+              child: Box {
+                orientation: horizontal;
+                spacing: 6;
+                valign: center;
+
+                Image {
+                  icon-name: "cine-skip-forward-symbolic";
+                }
+
+                Label {
+                  label: _("Play Next");
+                }
+              };
+
+              clicked => $_on_next_ep_play_clicked();
+            }
+
+            Button next_ep_dismiss_btn {
+              styles [
+                "circular",
+                "flat",
+              ]
+
+              icon-name: "window-close-symbolic";
+              tooltip-text: _("Dismiss");
+              clicked => $_on_next_ep_dismiss_clicked();
+            }
+          }
+        }
+
+        [overlay]
         Revealer revealer_drop_indicator {
           transition-duration: 200;
           transition-type: crossfade;

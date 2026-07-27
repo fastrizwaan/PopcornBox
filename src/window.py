@@ -104,6 +104,7 @@ class MovieDetailsPage(Gtk.Overlay):
         self._destroyed = False
         self._last_played_magnet = None
         self._last_played_file_index = None
+        self._auto_play_next = False
         
         self.backdrop_pic = Gtk.Picture()
         self.backdrop_pic.set_can_shrink(True)
@@ -269,6 +270,12 @@ class MovieDetailsPage(Gtk.Overlay):
         self.episode_dropdown = Gtk.DropDown.new_from_strings([])
         self.episode_dropdown.set_valign(Gtk.Align.CENTER)
         self.row2_box.append(self.episode_dropdown)
+
+        self.play_next_check = Gtk.CheckButton(label="Play Next Episode")
+        self.play_next_check.set_valign(Gtk.Align.CENTER)
+        from .preferences import settings
+        settings.bind("auto-play-next", self.play_next_check, "active", Gio.SettingsBindFlags.DEFAULT)
+        self.row2_box.append(self.play_next_check)
         
         self.row2_box.set_visible(False)
         self.info_vbox.append(self.row2_box)
@@ -386,6 +393,9 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def build_ui(self, details):
         if not details: return
+        self.movie_details = details
+        if details.get("videos"):
+            self.videos = details.get("videos")
         from . import database
         from .movie_widget import load_image_into_picture
 
@@ -445,7 +455,20 @@ class MovieDetailsPage(Gtk.Overlay):
             seasons = sorted(list(set([v.get("season", 1) for v in videos])))
             self.season_dropdown.set_model(Gtk.StringList.new([f"Season {s}" for s in seasons]))
             
+            self._ignore_dropdown_changes = False
+            
+            def on_episode_changed(dropdown, *args):
+                if getattr(self, '_ignore_dropdown_changes', False): return
+                idx = dropdown.get_selected()
+                if idx == Gtk.INVALID_LIST_POSITION: return
+                ep = self.current_episodes[idx].get("episode")
+                self.selected_episode = ep
+                self.fetch_torrents_async()
+                
+            self.episode_dropdown.connect("notify::selected", on_episode_changed)
+            
             def on_season_changed(dropdown, *args):
+                if getattr(self, '_ignore_dropdown_changes', False): return
                 idx = dropdown.get_selected()
                 if idx == Gtk.INVALID_LIST_POSITION: return
                 s = seasons[idx]
@@ -461,20 +484,24 @@ class MovieDetailsPage(Gtk.Overlay):
                 unique_eps.sort(key=lambda x: x.get("episode", 0))
                 self.current_episodes = unique_eps
                 ep_strings = [f"Ep {e.get('episode')}: {e.get('title') or e.get('name', '')}" for e in unique_eps]
+                
+                self._ignore_dropdown_changes = True
                 self.episode_dropdown.set_model(Gtk.StringList.new(ep_strings))
-                self.episode_dropdown.set_selected(0)
+                ep_nums = [e.get('episode') for e in unique_eps]
+                default_ep_idx = ep_nums.index(1) if 1 in ep_nums else 0
+                self.episode_dropdown.set_selected(default_ep_idx)
+                self._ignore_dropdown_changes = False
+                
+                on_episode_changed(self.episode_dropdown)
                 
             self.season_dropdown.connect("notify::selected", on_season_changed)
             
-            def on_episode_changed(dropdown, *args):
-                idx = dropdown.get_selected()
-                if idx == Gtk.INVALID_LIST_POSITION: return
-                ep = self.current_episodes[idx].get("episode")
-                self.selected_episode = ep
-                self.fetch_torrents_async()
-                
-            self.episode_dropdown.connect("notify::selected", on_episode_changed)
-            if seasons: on_season_changed(self.season_dropdown)
+            if seasons:
+                default_s_idx = seasons.index(1) if 1 in seasons else 0
+                self._ignore_dropdown_changes = True
+                self.season_dropdown.set_selected(default_s_idx)
+                self._ignore_dropdown_changes = False
+                on_season_changed(self.season_dropdown)
         else:
             self.fetch_torrents_async()
 
@@ -497,8 +524,39 @@ class MovieDetailsPage(Gtk.Overlay):
                 elif is_cached:
                     self.progress_label.set_text("Loaded cached streams...")
 
-            self.torrents = torrents or []
+            torrents = torrents or []
+            
+            if is_complete and torrents:
+                from . import player, api
+                active_hash = player.get_active_info_hash()
+                if active_hash:
+                    with player._engines_lock:
+                        engine = player._engines.get(active_hash)
+                        if engine and hasattr(engine, '_files'):
+                            try:
+                                files_data = [{"name": f["path"], "size": f["size"]} for f in engine._files()]
+                                found_idx = api.find_episode_file_index(files_data, sel_season, sel_episode)
+                                if found_idx is not None:
+                                    torrents = [t for t in torrents if t.get("infoHash") != active_hash and (not t.get("hash") or t.get("hash").lower() != active_hash)]
+                                    active_stream = {
+                                        "infoHash": active_hash,
+                                        "magnet": getattr(engine, "magnet_link", ""),
+                                        "fileIdx": found_idx,
+                                        "quality": "Active Pack",
+                                        "stream_title": "[Active Pack] " + str(getattr(engine, "name", "Season Pack")),
+                                        "size": files_data[found_idx]["size"],
+                                        "seeders": 999999,
+                                    }
+                                    torrents.insert(0, active_stream)
+                            except Exception:
+                                pass
+
+            self.torrents = torrents
             self.update_quality_dropdown()
+            
+            if is_complete and self.torrents and getattr(self, '_auto_play_next', False):
+                self._auto_play_next = False
+                GLib.idle_add(self.on_watch_clicked, self.watch_btn)
 
         def fetch():
             from . import api
@@ -535,8 +593,11 @@ class MovieDetailsPage(Gtk.Overlay):
             self.search_online_btn.set_visible(True)
             self.search_online_btn.remove_css_class("suggested-action")
         
-        quality_groups = {"4K": [], "1080p": [], "720p": [], "More": [], "Direct": []}
+        quality_groups = {"Active Pack": [], "4K": [], "1080p": [], "720p": [], "More": [], "Direct": []}
         for t in self.torrents:
+            if t.get('quality') == "Active Pack":
+                quality_groups["Active Pack"].append(t)
+                continue
             if t.get('is_http'):
                 quality_groups["Direct"].append(t)
                 continue
@@ -591,7 +652,10 @@ class MovieDetailsPage(Gtk.Overlay):
         target_btn = None
         target_t_list = None
         
-        preferred_order = ["1080p", "720p", "4K", "More", "Direct"]
+        if quality_groups.get("Active Pack"):
+            saved_label = "Active Pack"
+        
+        preferred_order = ["Active Pack", "1080p", "720p", "4K", "More", "Direct"]
         
         for q_label in preferred_order:
             t_list = quality_groups[q_label]
@@ -818,6 +882,10 @@ class CineWindow(Adw.ApplicationWindow):
     player_loading_box: Gtk.Box = Gtk.Template.Child()
     player_buffering_label: Gtk.Label = Gtk.Template.Child()
     spinner: Adw.Spinner = Gtk.Template.Child()
+    next_episode_revealer: Gtk.Revealer = Gtk.Template.Child()
+    next_ep_label: Gtk.Label = Gtk.Template.Child()
+    next_ep_play_btn: Gtk.Button = Gtk.Template.Child()
+    next_ep_dismiss_btn: Gtk.Button = Gtk.Template.Child()
     context_popover_menu: Gtk.PopoverMenu = Gtk.Template.Child()
     primary_menu_btn: Gtk.MenuButton = Gtk.Template.Child()
     previous_btn: Gtk.Button = Gtk.Template.Child()
@@ -974,6 +1042,8 @@ class CineWindow(Adw.ApplicationWindow):
         self.hide_timeout_id: int = 0
         self.is_fs: bool = False
         self.is_inactive: bool = False
+        self.next_ep_dismissed: bool = False
+        self.next_ep_auto_triggered: bool = False
         self.mpv_ctx: mpv.MpvRenderContext
 
         self.mpv = mpv.MPV(
@@ -2024,12 +2094,31 @@ class CineWindow(Adw.ApplicationWindow):
             self.video_progress_adj.handler_unblock_by_func(self._on_progress_adjusted)
 
         try:
+            duration = float(self.mpv.duration or 0)
+            remaining = (duration - curr_time) if duration > curr_time else 0
+
             if self.show_remaining:
-                duration = float(self.mpv.duration or 0)
-                remaining = (duration - curr_time) if duration > curr_time else 0
                 self.time_elapsed_label.props.label = f"-{format_time(remaining)}"
             else:
                 self.time_elapsed_label.props.label = format_time(curr_time)
+
+            auto_play_enabled = settings.get_boolean("auto-play-next")
+            if auto_play_enabled and not getattr(self, "next_ep_dismissed", False) and duration > 30 and remaining <= 30 and remaining > 0 and self._has_next_episode():
+                if hasattr(self, "next_episode_revealer"):
+                    rem_sec = max(1, int(remaining))
+                    if hasattr(self, "next_ep_label"):
+                        self.next_ep_label.set_text(f"Next episode in {rem_sec}s")
+                    if not self.next_episode_revealer.get_reveal_child():
+                        self.next_episode_revealer.set_reveal_child(True)
+
+                if remaining <= 1.0 and not getattr(self, "next_ep_auto_triggered", False):
+                    self.next_ep_auto_triggered = True
+                    if hasattr(self, "next_episode_revealer"):
+                        self.next_episode_revealer.set_reveal_child(False)
+                    self._try_play_next_episode()
+            else:
+                if hasattr(self, "next_episode_revealer") and self.next_episode_revealer.get_reveal_child():
+                    self.next_episode_revealer.set_reveal_child(False)
         except mpv.ShutdownError:
             pass
 
@@ -2780,10 +2869,16 @@ class CineWindow(Adw.ApplicationWindow):
                             self.mpv.stop()
                             self.shuffle_toggle_btn.set_active(False)
                             self.error_count = 0
+                elif reason == b"eof":
+                    if not self.mpv.keep_open and self.mpv.idle_active and not self.startup:
+                        def _handle_eof():
+                            if not self._try_play_next_episode():
+                                self._close_player()
+                        idle_add_once(_handle_eof)
                 elif (
                     not self.mpv.keep_open and self.mpv.idle_active and not self.startup
                 ):
-                    idle_add_once(self.close)
+                    idle_add_once(self._close_player)
             except mpv.ShutdownError:
                 pass
 
@@ -3538,6 +3633,11 @@ class CineWindow(Adw.ApplicationWindow):
         if title:
             self.mpv["force-media-title"] = title
             
+        self.next_ep_dismissed = False
+        self.next_ep_auto_triggered = False
+        if hasattr(self, "next_episode_revealer"):
+            self.next_episode_revealer.set_reveal_child(False)
+
         self.mpv.loadfile(url, "replace")
         self.mpv.pause = False
         self.is_inactive = False
@@ -3667,6 +3767,100 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_no_streams_found(self):
         self.hide_player_loading()
         logger.warning("No direct HTTP streams found for this item.")
+
+    def _has_next_episode(self):
+        page = self.details_box.get_first_child()
+        if not page or getattr(page, 'media_type', '') not in ["series", "anime", "tv"]:
+            return False
+        current_season = getattr(page, 'selected_season', None)
+        current_episode = getattr(page, 'selected_episode', None)
+        if current_season is None or current_episode is None:
+            return False
+        videos = getattr(page, 'videos', None) or (getattr(page, 'movie_details', {}) or {}).get("videos") or (getattr(page, 'movie_stub', {}) or {}).get("videos") or []
+        if not videos and hasattr(page, 'movie_stub'):
+            from . import database
+            cached = database.get_cached_metadata(page.movie_stub.get("id"))
+            if cached:
+                videos = cached.get("videos", [])
+        if not videos:
+            return False
+        next_ep = current_episode + 1
+        eps_in_season = [v for v in videos if v.get("season") == current_season]
+        if any(e.get("episode") == next_ep for e in eps_in_season):
+            return True
+        target_season = current_season + 1
+        eps_in_next_season = [v for v in videos if v.get("season") == target_season]
+        return bool(eps_in_next_season)
+
+    @Gtk.Template.Callback()
+    def _on_next_ep_play_clicked(self, *args):
+        self.next_ep_dismissed = True
+        if hasattr(self, "next_episode_revealer"):
+            self.next_episode_revealer.set_reveal_child(False)
+        self._try_play_next_episode()
+
+    @Gtk.Template.Callback()
+    def _on_next_ep_dismiss_clicked(self, *args):
+        self.next_ep_dismissed = True
+        if hasattr(self, "next_episode_revealer"):
+            self.next_episode_revealer.set_reveal_child(False)
+
+    def _try_play_next_episode(self):
+        page = self.details_box.get_first_child()
+        if not page or getattr(page, 'media_type', '') not in ["series", "anime", "tv"]:
+            return False
+            
+        current_season = getattr(page, 'selected_season', None)
+        current_episode = getattr(page, 'selected_episode', None)
+        if current_season is None or current_episode is None:
+            return False
+            
+        videos = getattr(page, 'videos', None) or (getattr(page, 'movie_details', {}) or {}).get("videos") or (getattr(page, 'movie_stub', {}) or {}).get("videos") or []
+        if not videos and hasattr(page, 'movie_stub'):
+            from . import database
+            cached = database.get_cached_metadata(page.movie_stub.get("id"))
+            if cached:
+                videos = cached.get("videos", [])
+                
+        if not videos:
+            return False
+            
+        next_ep = current_episode + 1
+        eps_in_season = [v for v in videos if v.get("season") == current_season]
+        found_next_ep = any(e.get("episode") == next_ep for e in eps_in_season)
+        
+        target_season = current_season
+        target_episode = next_ep
+        
+        if not found_next_ep:
+            target_season = current_season + 1
+            eps_in_next_season = [v for v in videos if v.get("season") == target_season]
+            if not eps_in_next_season:
+                return False
+            
+            target_episode = min((e.get("episode", 1) for e in eps_in_next_season), default=1)
+            
+        self._show_toast(f"Playing next: Season {target_season} Episode {target_episode}")
+        self.main_stack.set_visible_child_name("player")
+        self.show_player_loading(f"Loading Season {target_season} Episode {target_episode}...")
+        if hasattr(self, 'mpv'):
+            try: self.mpv.stop()
+            except Exception: pass
+        
+        page._auto_play_next = True
+        
+        if target_season != current_season:
+            seasons = sorted(list(set([v.get("season", 1) for v in videos])))
+            if target_season in seasons:
+                idx = seasons.index(target_season)
+                page.season_dropdown.set_selected(idx)
+        else:
+            ep_nums = [e.get('episode') for e in page.current_episodes]
+            if target_episode in ep_nums:
+                idx = ep_nums.index(target_episode)
+                page.episode_dropdown.set_selected(idx)
+                
+        return True
 
     def _close_player(self, *args):
         self.hide_player_loading()

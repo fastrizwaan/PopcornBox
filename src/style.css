@@ -507,3 +507,14 @@ button.category-filter-btn:hover {
 button.category-filter-btn:checked {
   background: rgba(255, 255, 255, 0.20);
 }
+
+/* Next Episode Banner Card */
+.next-ep-card {
+  background: rgba(20, 20, 24, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 16px;
+  padding: 12px 16px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+}
+

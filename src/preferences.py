@@ -72,6 +72,7 @@ class Preferences(Adw.Dialog):
     cmd_label: Gtk.Label = Gtk.Template.Child()
     copy_cmd_button: Gtk.Button = Gtk.Template.Child()
     open_new_row: Adw.SwitchRow = Gtk.Template.Child()
+    auto_play_next_row: Adw.SwitchRow = Gtk.Template.Child()
     thumb_preview_row: Adw.SwitchRow = Gtk.Template.Child()
     hwdec_row: Adw.SwitchRow = Gtk.Template.Child()
     normalize_volume_row: Adw.SwitchRow = Gtk.Template.Child()
@@ -133,6 +134,7 @@ class Preferences(Adw.Dialog):
     def _bind_ui(self):
         bindings = [
             ("open-new-windows", self.open_new_row, "active"),
+            ("auto-play-next", self.auto_play_next_row, "active"),
             ("thumbnail-preview", self.thumb_preview_row, "active"),
             ("normalize-volume", self.normalize_volume_row, "active"),
             ("hwdec", self.hwdec_row, "active"),
