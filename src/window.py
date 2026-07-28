@@ -137,7 +137,28 @@ class MovieDetailsPage(Gtk.Overlay):
         def on_reload(btn):
             from . import database, api
             item_id = self.movie_stub.get("id")
+            # Preserve the valid poster/background before deleting, so re-entry is instant
+            existing = database.get_cached_metadata(item_id)
+            saved_poster = None
+            saved_bg = None
+            if existing:
+                p = existing.get("medium_cover_image", "")
+                b = existing.get("background", "")
+                if p and "metahub.space" not in p:
+                    saved_poster = p
+                if b and "metahub.space" not in b:
+                    saved_bg = b
             database.delete_cached_metadata(item_id)
+            # Re-save a stub with the preserved poster so re-entry is instant
+            if saved_poster or saved_bg:
+                stub = existing.copy() if existing else {}
+                if saved_poster:
+                    stub["medium_cover_image"] = saved_poster
+                if saved_bg:
+                    stub["background"] = saved_bg
+                stub["id"] = item_id
+                database.save_cached_metadata(item_id, self.media_type, stub)
+                print(f"[RELOAD] Preserved poster in cache: {saved_poster}")
             cache_key = api.get_stream_cache_key(item_id, self.media_type, getattr(self, 'selected_season', None), getattr(self, 'selected_episode', None))
             database.delete_cached_streams(cache_key)
             self._ui_built = False
