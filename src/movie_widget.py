@@ -203,12 +203,24 @@ class MovieWidget(Gtk.Box):
         icon_container.append(self.overlay)
         self.append(icon_container)
         
-        poster_url = extract_image_url(movie_data)
+        item_id = movie_data.get("imdb_id") or movie_data.get("id")
+        item_type = movie_data.get("type", "movie")
+        
+        poster_url = None
+        if item_id:
+            try:
+                from .database import get_cached_metadata
+                cached = get_cached_metadata(item_id, item_type)
+                if cached and cached.get("medium_cover_image"):
+                    poster_url = cached.get("medium_cover_image")
+            except Exception:
+                pass
+                
+        if not poster_url:
+            poster_url = extract_image_url(movie_data)
         
         def fetch_fallback_poster():
-            item_id = movie_data.get("imdb_id") or movie_data.get("id")
             if not item_id: return
-            item_type = movie_data.get("type", "movie")
             try:
                 from .api import _get_cached_request
                 if str(item_id).startswith("tt"):
