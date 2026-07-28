@@ -225,6 +225,34 @@ class MovieWidget(Gtk.Box):
             if not item_id: return
             try:
                 from .api import _get_cached_request
+                
+                # FIRST FALLBACK: Use IMDb autocomplete API to get the highest quality poster directly
+                if str(item_id).startswith("tt"):
+                    imdb_url = f"https://v3.sg.media-imdb.com/suggestion/x/{item_id}.json"
+                    req = urllib.request.Request(imdb_url, headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    })
+                    with urllib.request.urlopen(req, timeout=4) as response:
+                        import json
+                        data = json.loads(response.read().decode('utf-8', errors='ignore'))
+                        if data and "d" in data and len(data["d"]) > 0:
+                            for item in data["d"]:
+                                if item.get("id") == item_id and "i" in item and "imageUrl" in item["i"]:
+                                    poster_url = item["i"]["imageUrl"]
+                                    try:
+                                        from .database import get_cached_metadata, save_cached_metadata
+                                        existing = get_cached_metadata(item_id, item_type) or {}
+                                        existing["medium_cover_image"] = poster_url
+                                        save_cached_metadata(item_id, item_type, existing)
+                                    except Exception:
+                                        pass
+                                    GLib.idle_add(load_image_into_picture, poster_url, self.poster_image, 130, 195)
+                                    return
+            except Exception as e:
+                pass
+                
+            try:
+                from .api import _get_cached_request
                 if str(item_id).startswith("tt"):
                     url = f"https://v3-cinemeta.strem.io/meta/{item_type}/{item_id}.json"
                     meta_data = _get_cached_request(url, max_age_hours=168)
@@ -257,29 +285,6 @@ class MovieWidget(Gtk.Box):
                         return
                 except Exception:
                     pass
-                
-                # ULTIMATE FALLBACK: Use IMDb autocomplete API to get the poster directly
-                if str(item_id).startswith("tt"):
-                    imdb_url = f"https://v3.sg.media-imdb.com/suggestion/x/{item_id}.json"
-                    req = urllib.request.Request(imdb_url, headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                    })
-                    with urllib.request.urlopen(req, timeout=4) as response:
-                        import json
-                        data = json.loads(response.read().decode('utf-8', errors='ignore'))
-                        if data and "d" in data and len(data["d"]) > 0:
-                            for item in data["d"]:
-                                if item.get("id") == item_id and "i" in item and "imageUrl" in item["i"]:
-                                    poster_url = item["i"]["imageUrl"]
-                                    try:
-                                        from .database import get_cached_metadata, save_cached_metadata
-                                        existing = get_cached_metadata(item_id, item_type) or {}
-                                        existing["medium_cover_image"] = poster_url
-                                        save_cached_metadata(item_id, item_type, existing)
-                                    except Exception:
-                                        pass
-                                    GLib.idle_add(load_image_into_picture, poster_url, self.poster_image, 130, 195)
-                                    return
             except Exception as e:
                 pass
                 
