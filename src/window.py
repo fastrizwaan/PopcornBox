@@ -144,9 +144,9 @@ class MovieDetailsPage(Gtk.Overlay):
             if existing:
                 p = existing.get("medium_cover_image", "")
                 b = existing.get("background", "")
-                if p and "metahub.space" not in p:
+                if p:
                     saved_poster = p
-                if b and "metahub.space" not in b:
+                if b:
                     saved_bg = b
             database.delete_cached_metadata(item_id)
             # Re-save a stub with the preserved poster so re-entry is instant
@@ -435,12 +435,12 @@ class MovieDetailsPage(Gtk.Overlay):
             load_image_into_picture(details.get("background"), self.backdrop_pic)
             
         cover = details.get("medium_cover_image")
-        if not cover or "metahub.space" in cover:
+        if not cover:
             cover = self.movie_stub.get("medium_cover_image")
-            if not cover or "metahub.space" in cover:
+            if not cover:
                 from . import database
                 cached = database.get_cached_metadata(self.movie_stub.get("id"))
-                if cached and cached.get("medium_cover_image") and "metahub.space" not in cached["medium_cover_image"]:
+                if cached and cached.get("medium_cover_image"):
                     cover = cached["medium_cover_image"]
             print(f"[CARD CLICK Step 8a] Cover resolved to: '{cover}'")
             

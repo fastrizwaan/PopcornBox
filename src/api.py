@@ -377,7 +377,7 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None):
         return res
 
     current_poster = res.get("medium_cover_image", "")
-    if not current_poster or "metahub.space" in current_poster:
+    if not current_poster:
         # 1. Try TMDB addon first
         try:
             c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
@@ -392,7 +392,7 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None):
             print(f"[TMDB Fallback] Failed for {imdb_id}: {e}")
 
         # 2. Try IMDb API by title search
-        if "metahub.space" in res.get("medium_cover_image", "") and title:
+        if not res.get("medium_cover_image") and title:
             try:
                 import urllib.request, json, urllib.parse, re
                 clean_title = re.sub(r'[^a-zA-Z0-9]', '_', title).lower()
@@ -407,20 +407,20 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None):
                                 poster = item["i"]["imageUrl"]
                                 poster = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX400_.jpg', poster)
                                 res["medium_cover_image"] = poster
-                                if not res.get("background") or "metahub.space" in res.get("background", ""):
+                                if not res.get("background"):
                                     res["background"] = poster
                                 print(f"[IMDb API] Successfully fetched poster for {imdb_id}: {poster}")
                                 break
             except Exception as e:
                 print(f"[IMDb API] Failed for {imdb_id}: {e}")
 
-    # Preserve existing valid poster/background from cache if new result is still a metahub placeholder
+    # Preserve existing valid poster/background from cache if new result is missing them
     existing = database.get_cached_metadata(imdb_id)
     if existing:
-        if "metahub.space" in res.get("medium_cover_image", "") and existing.get("medium_cover_image") and "metahub.space" not in existing["medium_cover_image"]:
+        if not res.get("medium_cover_image", "") and existing.get("medium_cover_image"):
             res["medium_cover_image"] = existing["medium_cover_image"]
             print(f"[CACHE PROTECT] Preserved existing poster for {imdb_id}: {existing['medium_cover_image']}")
-        if "metahub.space" in res.get("background", "") and existing.get("background") and "metahub.space" not in existing["background"]:
+        if not res.get("background", "") and existing.get("background"):
             res["background"] = existing["background"]
 
     database.save_cached_metadata(imdb_id, media_type, res)
