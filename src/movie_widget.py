@@ -228,24 +228,21 @@ class MovieWidget(Gtk.Box):
                 except Exception:
                     pass
                 
-                # ULTIMATE FALLBACK: Scrape IMDb directly for the og:image if addons fail or timeout
+                # ULTIMATE FALLBACK: Use IMDb autocomplete API to get the poster directly
                 if str(item_id).startswith("tt"):
-                    imdb_url = f"https://www.imdb.com/title/{item_id}/"
+                    imdb_url = f"https://v3.sg.media-imdb.com/suggestion/x/{item_id}.json"
                     req = urllib.request.Request(imdb_url, headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.5',
-                        'Connection': 'keep-alive'
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     })
                     with urllib.request.urlopen(req, timeout=4) as response:
-                        html = response.read().decode('utf-8', errors='ignore')
-                        import re
-                        match = re.search(r'<meta\s+(?:property|name)="og:image"\s+content="([^"]+)"', html)
-                        if match:
-                            GLib.idle_add(load_image_into_picture, match.group(1), self.poster_image, 130, 195)
-                            return
-                        else:
-                            print(f"IMDb fallback: No og:image found for {item_id}")
+                        import json
+                        data = json.loads(response.read().decode('utf-8', errors='ignore'))
+                        if data and "d" in data and len(data["d"]) > 0:
+                            for item in data["d"]:
+                                if item.get("id") == item_id and "i" in item and "imageUrl" in item["i"]:
+                                    GLib.idle_add(load_image_into_picture, item["i"]["imageUrl"], self.poster_image, 130, 195)
+                                    return
+                            print(f"IMDb API fallback: No poster found for {item_id}")
             except Exception as e:
                 print(f"Fallback poster fetch completely failed for {item_id}: {e}")
                 
