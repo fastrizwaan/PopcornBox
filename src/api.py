@@ -611,6 +611,8 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
                     for item in data["d"]:
                         if item.get("id") == imdb_id and "i" in item and "imageUrl" in item["i"]:
                             poster = item["i"]["imageUrl"]
+                            import re
+                            poster = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX500_.jpg', poster)
                             cinemeta_res["medium_cover_image"] = poster
                             cinemeta_res["background"] = poster
                             print(f"[IMDb API] Successfully fetched high-res poster for {imdb_id}: {poster}")

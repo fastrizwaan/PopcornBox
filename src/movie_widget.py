@@ -248,6 +248,8 @@ class MovieWidget(Gtk.Box):
                             for item in data["d"]:
                                 if item.get("id") == item_id and "i" in item and "imageUrl" in item["i"]:
                                     poster_url = item["i"]["imageUrl"]
+                                    import re
+                                    poster_url = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX500_.jpg', poster_url)
                                     print(f"[IMDb API] Successfully fetched fallback catalog poster for {item_id}: {poster_url}")
                                     try:
                                         from .database import get_cached_metadata, save_cached_metadata
