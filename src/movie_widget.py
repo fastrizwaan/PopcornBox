@@ -155,13 +155,15 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
 
 def _apply_pixbuf(picture_widget, pixbuf):
     try:
-        if picture_widget.get_parent() is None:
+        if not picture_widget or not pixbuf:
+            print("[IMAGE APPLY WARNING] picture_widget or pixbuf is None.")
             return False
         picture_widget.set_can_shrink(True)
         texture = Gdk.Texture.new_for_pixbuf(pixbuf)
         picture_widget.set_paintable(texture)
-    except Exception:
-        pass
+        print(f"[IMAGE APPLY SUCCESS] Successfully painted texture ({pixbuf.get_width()}x{pixbuf.get_height()}) onto picture_widget!")
+    except Exception as e:
+        print(f"[IMAGE APPLY ERROR] Failed to paint texture: {e}")
     return False
 
 

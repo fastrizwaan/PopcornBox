@@ -344,19 +344,28 @@ class MovieDetailsPage(Gtk.Overlay):
         self.content_box.append(self.top_hbox)
         
         from . import database
-        cached_details = database.get_cached_metadata(self.movie_stub.get("id"))
+        item_id = self.movie_stub.get("id")
+        cached_details = database.get_cached_metadata(item_id)
         if cached_details:
+            print(f"[CARD CLICK Step 5] Found cached metadata in database for '{item_id}'. Building UI immediately.")
             self.build_ui(cached_details)
             self.load_details_async(force_refresh=False)
         else:
+            print(f"[CARD CLICK Step 5] No cached metadata in database for '{item_id}'. Initiating background fetch.")
             self.load_details_async(force_refresh=True)
 
     def load_details_async(self, force_refresh=False):
+        item_id = self.movie_stub.get("id")
+        print(f"[CARD CLICK Step 6] load_details_async started (force_refresh={force_refresh}) for '{item_id}'")
         def fetch():
             from . import api
-            details = api.fetch_movie_details(self.movie_stub.get("id"), self.media_type, title=self.movie_stub.get("title"), use_cache=not force_refresh)
+            details = api.fetch_movie_details(item_id, self.media_type, title=self.movie_stub.get("title"), use_cache=not force_refresh)
             if details:
+                poster = details.get("medium_cover_image")
+                print(f"[CARD CLICK Step 7] api.fetch_movie_details completed for '{item_id}'. Poster URL: {poster}")
                 GLib.idle_add(self.build_ui, details)
+            else:
+                print(f"[CARD CLICK Step 7 WARNING] api.fetch_movie_details returned None for '{item_id}'")
         threading.Thread(target=fetch, daemon=True).start()
 
     def toggle_favorite(self, details):
@@ -394,6 +403,8 @@ class MovieDetailsPage(Gtk.Overlay):
     def build_ui(self, details):
         if not details: return
         self.movie_details = details
+        item_id = details.get("id") or self.movie_stub.get("id")
+        print(f"[CARD CLICK Step 8] build_ui() running for '{item_id}'")
         if details.get("videos"):
             self.videos = details.get("videos")
         from . import database
@@ -404,10 +415,13 @@ class MovieDetailsPage(Gtk.Overlay):
             
         cover = details.get("medium_cover_image")
         if not cover or "metahub.space" in cover:
+            print(f"[CARD CLICK Step 8a] Details cover was '{cover}', falling back to stub cover '{self.movie_stub.get('medium_cover_image')}'")
             cover = self.movie_stub.get("medium_cover_image")
             
         if cover:
+            print(f"[CARD CLICK Step 8b] Calling load_image_into_picture for poster: {cover}")
             def on_poster_error():
+                print(f"[CARD CLICK Step 8c ERROR] Poster load failed for '{cover}'. Triggering fetch_fallback_poster.")
                 from .movie_widget import fetch_fallback_poster
                 fetch_fallback_poster(details.get("id") or self.movie_stub.get("id"), self.media_type, self.poster, details.get("title") or self.movie_stub.get("title"))
             load_image_into_picture(cover, self.poster, width=360, height=540, on_error=on_poster_error)
@@ -3551,20 +3565,27 @@ class CineWindow(Adw.ApplicationWindow):
             flowbox.append(MovieWidget(item, self._on_movie_clicked))
 
     def _on_movie_clicked(self, movie_data):
+        item_id = movie_data.get("id") or movie_data.get("imdb_id")
+        title = movie_data.get("title") or movie_data.get("name")
+        print(f"[CARD CLICK Step 1] Clicked movie card: '{title}' (id: {item_id})")
         from . import database
         from .movie_widget import cancel_pending_image_downloads
         cancel_pending_image_downloads()
+        print(f"[CARD CLICK Step 2] Canceled pending image downloads for clean navigation.")
         database.add_history(movie_data)
         
         while child := self.details_box.get_first_child():
             self.details_box.remove(child)
             
         def on_back():
+            print(f"[CARD CLICK Nav] Back button clicked. Returning to library view.")
             self.main_stack.set_visible_child_name("library")
             
+        print(f"[CARD CLICK Step 3] Creating MovieDetailsPage widget...")
         page = MovieDetailsPage(movie_data, on_back, window=self)
         self.details_box.append(page)
         self.main_stack.set_visible_child_name("details")
+        print(f"[CARD CLICK Step 4] Switched main stack to details view.")
 
     def show_player_loading(self, text="Fetching metadata...", title=None):
         GLib.idle_add(self._show_player_loading_ui, text, title)
