@@ -42,7 +42,7 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
     if not resolved_id:
         try:
             tmdb_id = str(imdb_id).split(":")[-1] if ":" in str(imdb_id) else str(imdb_id).split(".")[-1]
-            addon_url = f"https://tmdb-addon.strem.io/meta/{c_type}/tmdb:{tmdb_id}.json"
+            addon_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/tmdb:{tmdb_id}.json"
             addon_data = _get_cached_request(addon_url, max_age_hours=168)
             if addon_data and "meta" in addon_data:
                 resolved_id = addon_data["meta"].get("imdb_id")

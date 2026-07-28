@@ -111,8 +111,8 @@ def _read_db():
                                     a["catalogs"] = default_addon["catalogs"]
                                     migrated = True
                             # Migrate dead TMDB url
-                            if a.get("id") == "org.stremio.tmdb" and "tmdb.strem.fun" in a.get("manifest_url", ""):
-                                a["manifest_url"] = "https://tmdb-addon.strem.io/manifest.json"
+                            if a.get("id") == "org.stremio.tmdb" and ("tmdb.strem.fun" in a.get("manifest_url", "") or "tmdb-addon.strem.io" in a.get("manifest_url", "")):
+                                a["manifest_url"] = "https://94c8cb9f702d-tmdb-addon.baby-beamup.club/manifest.json"
                                 migrated = True
                             break
                     if not found:

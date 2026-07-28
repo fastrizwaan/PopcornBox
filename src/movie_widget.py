@@ -219,8 +219,7 @@ class MovieWidget(Gtk.Box):
                         return
                 
                 c_type = "series" if item_type in ["series", "anime", "tv"] else "movie"
-                tmdb_id = str(item_id).split(":")[-1] if ":" in str(item_id) else str(item_id).split(".")[-1]
-                url = f"https://tmdb-addon.strem.io/meta/{c_type}/tmdb:{tmdb_id}.json"
+                url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{item_id}.json"
                 tmdb_data = _get_cached_request(url, max_age_hours=168)
                 if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
                     GLib.idle_add(load_image_into_picture, tmdb_data["meta"]["poster"], self.poster_image, 130, 195)
