@@ -293,10 +293,6 @@ class MovieWidget(Gtk.Box):
 
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195, on_error=trigger_fallback)
-            # If the poster came from the addon and we don't have it cached in our DB, the addon might have sent a generic placeholder.
-            # We eagerly fetch the real poster in the background just in case.
-            if not has_cached_poster and item_id:
-                trigger_fallback()
         else:
             trigger_fallback()
             
