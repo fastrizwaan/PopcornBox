@@ -207,12 +207,14 @@ class MovieWidget(Gtk.Box):
         item_type = movie_data.get("type", "movie")
         
         poster_url = None
+        has_cached_poster = False
         if item_id:
             try:
                 from .database import get_cached_metadata
                 cached = get_cached_metadata(item_id, item_type)
                 if cached and cached.get("medium_cover_image"):
                     poster_url = cached.get("medium_cover_image")
+                    has_cached_poster = True
             except Exception:
                 pass
                 
@@ -254,15 +256,18 @@ class MovieWidget(Gtk.Box):
                                 if item.get("id") == item_id and "i" in item and "imageUrl" in item["i"]:
                                     GLib.idle_add(load_image_into_picture, item["i"]["imageUrl"], self.poster_image, 130, 195)
                                     return
-                            print(f"IMDb API fallback: No poster found for {item_id}")
             except Exception as e:
-                print(f"Fallback poster fetch completely failed for {item_id}: {e}")
+                pass
                 
         def trigger_fallback():
             _image_pool.submit(fetch_fallback_poster)
 
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195, on_error=trigger_fallback)
+            # If the poster came from the addon and we don't have it cached in our DB, the addon might have sent a generic placeholder.
+            # We eagerly fetch the real poster in the background just in case.
+            if not has_cached_poster and item_id:
+                trigger_fallback()
         else:
             trigger_fallback()
             
