@@ -402,6 +402,9 @@ class MovieDetailsPage(Gtk.Overlay):
         if details.get("background"):
             load_image_into_picture(details.get("background"), self.backdrop_pic)
             
+        if details.get("medium_cover_image"):
+            load_image_into_picture(details.get("medium_cover_image"), self.poster, width=360, height=540)
+            
         self.title_label.set_text(details.get("title", ""))
         
         def on_copy_clicked(btn):
