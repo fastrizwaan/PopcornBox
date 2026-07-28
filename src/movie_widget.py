@@ -237,7 +237,8 @@ class MovieWidget(Gtk.Box):
                 
                 # FIRST FALLBACK: Use IMDb autocomplete API to get the highest quality poster directly
                 if str(item_id).startswith("tt"):
-                    imdb_url = f"https://v3.sg.media-imdb.com/suggestion/x/{item_id}.json"
+                    first_char = str(item_id)[0].lower()
+                    imdb_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{item_id}.json"
                     req = urllib.request.Request(imdb_url, headers={
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     })

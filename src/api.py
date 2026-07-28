@@ -603,7 +603,8 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
         # Always prioritize IMDb API for the highest quality poster and background, skipping metahub placeholders
         try:
             import urllib.request, json
-            imdb_url = f"https://v3.sg.media-imdb.com/suggestion/x/{imdb_id}.json"
+            first_char = str(imdb_id)[0].lower() if imdb_id else "t"
+            imdb_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{imdb_id}.json"
             req = urllib.request.Request(imdb_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
             with urllib.request.urlopen(req, timeout=4) as response:
                 data = json.loads(response.read().decode('utf-8', errors='ignore'))
