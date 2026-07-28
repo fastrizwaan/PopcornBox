@@ -4097,12 +4097,17 @@ class CineWindow(Adw.ApplicationWindow):
             GLib.source_remove(self.search_timeout_id)
             self.search_timeout_id = None
             
+        self._current_search_id = getattr(self, "_current_search_id", 0) + 1
+        current_search_id = self._current_search_id
+            
         query = entry.get_text().strip()
         if not query:
             self.library_stack.set_visible_child_name("content")
             return
             
         def trigger_search():
+            if self._current_search_id != current_search_id:
+                return False
             self.search_timeout_id = None
             self.library_stack.set_visible_child_name("search_results")
             
@@ -4122,7 +4127,8 @@ class CineWindow(Adw.ApplicationWindow):
             def do_search_movies():
                 try:
                     def on_movies_batch(batch):
-                        GLib.idle_add(self._append_flowbox, self.search_movies_flowbox, batch, None)
+                        if self._current_search_id == current_search_id:
+                            GLib.idle_add(self._append_flowbox, self.search_movies_flowbox, batch, None)
                     fetch_items(media_type="movie", query=query, on_item_found=on_movies_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
                 except Exception as e:
                     logger.error(f"Search error (movies): {e}")
@@ -4130,7 +4136,8 @@ class CineWindow(Adw.ApplicationWindow):
             def do_search_series():
                 try:
                     def on_series_batch(batch):
-                        GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
+                        if self._current_search_id == current_search_id:
+                            GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
                     fetch_items(media_type="series", query=query, on_item_found=on_series_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
                 except Exception as e:
                     logger.error(f"Search error (series): {e}")
@@ -4138,7 +4145,8 @@ class CineWindow(Adw.ApplicationWindow):
             def do_search_anime():
                 try:
                     def on_anime_batch(batch):
-                        GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
+                        if self._current_search_id == current_search_id:
+                            GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
                     fetch_items(media_type="anime", query=query, on_item_found=on_anime_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
                 except Exception as e:
                     logger.error(f"Search error (anime): {e}")
@@ -4146,7 +4154,8 @@ class CineWindow(Adw.ApplicationWindow):
             def do_search_tv():
                 try:
                     def on_tv_batch(batch):
-                        GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
+                        if self._current_search_id == current_search_id:
+                            GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
                     fetch_items(media_type="tv", query=query, on_item_found=on_tv_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
                 except Exception as e:
                     logger.error(f"Search error (tv): {e}")
@@ -4159,7 +4168,7 @@ class CineWindow(Adw.ApplicationWindow):
                 threading.Thread(target=do_search_tv, daemon=True).start()
             return False
 
-        self.search_timeout_id = GLib.timeout_add(350, trigger_search)
+        self.search_timeout_id = GLib.timeout_add(500, trigger_search)
 
     def switch_to_library_page(self, page_name: str):
         self.library_stack.set_visible_child_name(page_name)
