@@ -564,12 +564,8 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
     if cinemeta_addon:
         cinemeta_res = fetch_addon_meta(cinemeta_addon)
         if cinemeta_res and is_valid_meta(cinemeta_res):
-            # If we found a trailer in Cinemeta, we are good to go!
             if cinemeta_res.get("trailer"):
-                database.save_cached_metadata(imdb_id, media_type, cinemeta_res)
-                if cinemeta_res.get("id") and cinemeta_res.get("id") != imdb_id:
-                    database.save_cached_metadata(cinemeta_res.get("id"), media_type, cinemeta_res)
-                return cinemeta_res
+                return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title)
 
     # If Cinemeta had no trailer, or failed, fallback to other addons
     other_addons = [a for a in addons if a != cinemeta_addon]
@@ -583,75 +579,17 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
                     if res and is_valid_meta(res):
                         if cinemeta_res and not cinemeta_res.get("trailer") and res.get("trailer"):
                             cinemeta_res["trailer"] = res.get("trailer")
-                            # Check for missing background/poster while we're at it
                             if not cinemeta_res.get("background") and res.get("background"):
                                 cinemeta_res["background"] = res.get("background")
-                            database.save_cached_metadata(imdb_id, media_type, cinemeta_res)
-                            if cinemeta_res.get("id") and cinemeta_res.get("id") != imdb_id:
-                                database.save_cached_metadata(cinemeta_res.get("id"), media_type, cinemeta_res)
-                            return cinemeta_res
+                            return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title)
                             
                         if not cinemeta_res:
-                            database.save_cached_metadata(imdb_id, media_type, res)
-                            if res.get("id") and res.get("id") != imdb_id:
-                                database.save_cached_metadata(res.get("id"), media_type, res)
-                            return res
+                            return _save_and_return_meta(res, imdb_id, media_type, title)
             except concurrent.futures.TimeoutError:
                 pass
 
     if cinemeta_res:
-        current_poster = cinemeta_res.get("medium_cover_image", "")
-        # If poster is missing or is a metahub placeholder, attempt IMDb and TMDB fallbacks
-        if not current_poster or "metahub.space" in current_poster:
-            # 1. Try TMDB addon first (most reliable, high quality, small file size)
-            try:
-                c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
-                tmdb_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{imdb_id}.json"
-                tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168, timeout=4)
-                if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
-                    cinemeta_res["medium_cover_image"] = tmdb_data["meta"]["poster"]
-                    if tmdb_data["meta"].get("background"):
-                        cinemeta_res["background"] = tmdb_data["meta"]["background"]
-                    print(f"[TMDB Fallback] Successfully updated poster for {imdb_id}: {cinemeta_res['medium_cover_image']}")
-            except Exception as e:
-                print(f"[TMDB Fallback] Failed for {imdb_id}: {e}")
-
-            # 2. If still metahub, try IMDb API by title search
-            if "metahub.space" in cinemeta_res.get("medium_cover_image", "") and title:
-                try:
-                    import urllib.request, json, urllib.parse, re
-                    clean_title = re.sub(r'[^a-zA-Z0-9]', '_', title).lower()
-                    first_char = clean_title[0] if clean_title else "t"
-                    imdb_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{urllib.parse.quote(clean_title)}.json"
-                    req = urllib.request.Request(imdb_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-                    with urllib.request.urlopen(req, timeout=4) as response:
-                        data = json.loads(response.read().decode('utf-8', errors='ignore'))
-                        if data and "d" in data:
-                            for item in data["d"]:
-                                if "i" in item and "imageUrl" in item["i"]:
-                                    poster = item["i"]["imageUrl"]
-                                    poster = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX400_.jpg', poster)
-                                    cinemeta_res["medium_cover_image"] = poster
-                                    if not cinemeta_res.get("background") or "metahub.space" in cinemeta_res.get("background", ""):
-                                        cinemeta_res["background"] = poster
-                                    print(f"[IMDb API] Successfully fetched poster for {imdb_id}: {poster}")
-                                    break
-                except Exception as e:
-                    print(f"[IMDb API] Failed for {imdb_id}: {e}")
-
-        # Preserve existing valid poster/background from cache if new result is a metahub placeholder
-        existing = database.get_cached_metadata(imdb_id)
-        if existing:
-            if "metahub.space" in cinemeta_res.get("medium_cover_image", "") and existing.get("medium_cover_image") and "metahub.space" not in existing["medium_cover_image"]:
-                cinemeta_res["medium_cover_image"] = existing["medium_cover_image"]
-                print(f"[CACHE PROTECT] Preserved existing poster for {imdb_id}: {existing['medium_cover_image']}")
-            if "metahub.space" in cinemeta_res.get("background", "") and existing.get("background") and "metahub.space" not in existing["background"]:
-                cinemeta_res["background"] = existing["background"]
-
-        database.save_cached_metadata(imdb_id, media_type, cinemeta_res)
-        if cinemeta_res.get("id") and cinemeta_res.get("id") != imdb_id:
-            database.save_cached_metadata(cinemeta_res.get("id"), media_type, cinemeta_res)
-        return cinemeta_res
+        return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title)
 
     if title and title != "Loading...":
         return {
