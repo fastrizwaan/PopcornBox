@@ -229,7 +229,15 @@ class MovieWidget(Gtk.Box):
                     url = f"https://v3-cinemeta.strem.io/meta/{item_type}/{item_id}.json"
                     meta_data = _get_cached_request(url, max_age_hours=168)
                     if meta_data and "meta" in meta_data and meta_data["meta"].get("poster"):
-                        GLib.idle_add(load_image_into_picture, meta_data["meta"]["poster"], self.poster_image, 130, 195)
+                        poster_url = meta_data["meta"]["poster"]
+                        try:
+                            from .database import get_cached_metadata, save_cached_metadata
+                            existing = get_cached_metadata(item_id, item_type) or {}
+                            existing["medium_cover_image"] = poster_url
+                            save_cached_metadata(item_id, item_type, existing)
+                        except Exception:
+                            pass
+                        GLib.idle_add(load_image_into_picture, poster_url, self.poster_image, 130, 195)
                         return
                 
                 c_type = "series" if item_type in ["series", "anime", "tv"] else "movie"
@@ -237,7 +245,15 @@ class MovieWidget(Gtk.Box):
                 try:
                     tmdb_data = _get_cached_request(url, max_age_hours=168, timeout=4)
                     if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
-                        GLib.idle_add(load_image_into_picture, tmdb_data["meta"]["poster"], self.poster_image, 130, 195)
+                        poster_url = tmdb_data["meta"]["poster"]
+                        try:
+                            from .database import get_cached_metadata, save_cached_metadata
+                            existing = get_cached_metadata(item_id, item_type) or {}
+                            existing["medium_cover_image"] = poster_url
+                            save_cached_metadata(item_id, item_type, existing)
+                        except Exception:
+                            pass
+                        GLib.idle_add(load_image_into_picture, poster_url, self.poster_image, 130, 195)
                         return
                 except Exception:
                     pass
@@ -254,7 +270,15 @@ class MovieWidget(Gtk.Box):
                         if data and "d" in data and len(data["d"]) > 0:
                             for item in data["d"]:
                                 if item.get("id") == item_id and "i" in item and "imageUrl" in item["i"]:
-                                    GLib.idle_add(load_image_into_picture, item["i"]["imageUrl"], self.poster_image, 130, 195)
+                                    poster_url = item["i"]["imageUrl"]
+                                    try:
+                                        from .database import get_cached_metadata, save_cached_metadata
+                                        existing = get_cached_metadata(item_id, item_type) or {}
+                                        existing["medium_cover_image"] = poster_url
+                                        save_cached_metadata(item_id, item_type, existing)
+                                    except Exception:
+                                        pass
+                                    GLib.idle_add(load_image_into_picture, poster_url, self.poster_image, 130, 195)
                                     return
             except Exception as e:
                 pass
