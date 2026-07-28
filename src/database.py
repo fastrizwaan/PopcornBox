@@ -384,7 +384,7 @@ def _get_cache_db():
     conn.commit()
     return conn
 
-def get_cached_metadata(item_id):
+def get_cached_metadata(item_id, media_type=None):
     if not item_id:
         return None
     try:
