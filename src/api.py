@@ -639,6 +639,15 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
                 except Exception as e:
                     print(f"[IMDb API] Failed for {imdb_id}: {e}")
 
+        # Preserve existing valid poster/background from cache if new result is a metahub placeholder
+        existing = database.get_cached_metadata(imdb_id)
+        if existing:
+            if "metahub.space" in cinemeta_res.get("medium_cover_image", "") and existing.get("medium_cover_image") and "metahub.space" not in existing["medium_cover_image"]:
+                cinemeta_res["medium_cover_image"] = existing["medium_cover_image"]
+                print(f"[CACHE PROTECT] Preserved existing poster for {imdb_id}: {existing['medium_cover_image']}")
+            if "metahub.space" in cinemeta_res.get("background", "") and existing.get("background") and "metahub.space" not in existing["background"]:
+                cinemeta_res["background"] = existing["background"]
+
         database.save_cached_metadata(imdb_id, media_type, cinemeta_res)
         if cinemeta_res.get("id") and cinemeta_res.get("id") != imdb_id:
             database.save_cached_metadata(cinemeta_res.get("id"), media_type, cinemeta_res)

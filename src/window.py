@@ -415,8 +415,13 @@ class MovieDetailsPage(Gtk.Overlay):
             
         cover = details.get("medium_cover_image")
         if not cover or "metahub.space" in cover:
-            print(f"[CARD CLICK Step 8a] Details cover was '{cover}', falling back to stub cover '{self.movie_stub.get('medium_cover_image')}'")
             cover = self.movie_stub.get("medium_cover_image")
+            if not cover or "metahub.space" in cover:
+                from . import database
+                cached = database.get_cached_metadata(self.movie_stub.get("id"))
+                if cached and cached.get("medium_cover_image") and "metahub.space" not in cached["medium_cover_image"]:
+                    cover = cached["medium_cover_image"]
+            print(f"[CARD CLICK Step 8a] Cover resolved to: '{cover}'")
             
         if cover:
             print(f"[CARD CLICK Step 8b] Calling load_image_into_picture for poster: {cover}")
