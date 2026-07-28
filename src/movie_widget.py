@@ -202,6 +202,29 @@ class MovieWidget(Gtk.Box):
         poster_url = extract_image_url(movie_data)
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195)
+        else:
+            item_id = movie_data.get("imdb_id") or movie_data.get("id")
+            if item_id:
+                item_type = movie_data.get("type", "movie")
+                def fetch_fallback_poster():
+                    try:
+                        from .api import _get_cached_request
+                        if str(item_id).startswith("tt"):
+                            url = f"https://v3-cinemeta.strem.io/meta/{item_type}/{item_id}.json"
+                            meta_data = _get_cached_request(url, max_age_hours=168)
+                            if meta_data and "meta" in meta_data and meta_data["meta"].get("poster"):
+                                GLib.idle_add(load_image_into_picture, meta_data["meta"]["poster"], self.poster_image, 130, 195)
+                                return
+                        
+                        c_type = "series" if item_type in ["series", "anime", "tv"] else "movie"
+                        tmdb_id = str(item_id).split(":")[-1] if ":" in str(item_id) else str(item_id).split(".")[-1]
+                        url = f"https://tmdb-addon.strem.io/meta/{c_type}/tmdb:{tmdb_id}.json"
+                        tmdb_data = _get_cached_request(url, max_age_hours=168)
+                        if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
+                            GLib.idle_add(load_image_into_picture, tmdb_data["meta"]["poster"], self.poster_image, 130, 195)
+                    except Exception as e:
+                        pass
+                _image_pool.submit(fetch_fallback_poster)
             
         title_text = movie_data.get("title") or movie_data.get("name") or "Unknown"
         title_label = Gtk.Label(label=title_text)
