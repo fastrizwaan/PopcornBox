@@ -61,6 +61,11 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
     if not (url.startswith("http://") or url.startswith("https://")):
         return
     
+    if "media-amazon.com" in url or "ssl-images-amazon.com" in url:
+        import re
+        size_tag = f"UX{width}_.jpg" if width else "UX600_.jpg"
+        url = re.sub(r'\._V1_.*?\.(jpg|png)', rf'._V1_{size_tag}', url)
+    
     url_hash = hashlib.md5(url.encode()).hexdigest()
     cache_file = os.path.join(IMAGE_CACHE_DIR, url_hash)
 
