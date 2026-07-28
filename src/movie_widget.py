@@ -167,6 +167,78 @@ def _apply_pixbuf(picture_widget, pixbuf):
     return False
 
 
+def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=130, height=195):
+    if not item_id: return
+    try:
+        import urllib.request
+        from .api import _get_cached_request
+        
+        # FIRST FALLBACK: Use IMDb autocomplete API to get the highest quality poster directly
+        if str(item_id).startswith("tt"):
+            first_char = str(item_id)[0].lower()
+            imdb_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{item_id}.json"
+            req = urllib.request.Request(imdb_url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            })
+            with urllib.request.urlopen(req, timeout=4) as response:
+                import json
+                data = json.loads(response.read().decode('utf-8', errors='ignore'))
+                if data and "d" in data and len(data["d"]) > 0:
+                    for item in data["d"]:
+                        if item.get("id") == item_id and "i" in item and "imageUrl" in item["i"]:
+                            poster_url = item["i"]["imageUrl"]
+                            import re
+                            poster_url = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX500_.jpg', poster_url)
+                            print(f"[IMDb API] Successfully fetched fallback catalog poster for {item_id}: {poster_url}")
+                            try:
+                                from .database import get_cached_metadata, save_cached_metadata
+                                existing = get_cached_metadata(item_id, item_type) or {}
+                                existing["medium_cover_image"] = poster_url
+                                save_cached_metadata(item_id, item_type, existing)
+                            except Exception:
+                                pass
+                            GLib.idle_add(load_image_into_picture, poster_url, poster_widget, width, height)
+                            return
+    except Exception as e:
+        pass
+        
+    try:
+        from .api import _get_cached_request
+        if str(item_id).startswith("tt"):
+            url = f"https://v3-cinemeta.strem.io/meta/{item_type}/{item_id}.json"
+            meta_data = _get_cached_request(url, max_age_hours=168)
+            if meta_data and "meta" in meta_data and meta_data["meta"].get("poster"):
+                poster_url = meta_data["meta"]["poster"]
+                try:
+                    from .database import get_cached_metadata, save_cached_metadata
+                    existing = get_cached_metadata(item_id, item_type) or {}
+                    existing["medium_cover_image"] = poster_url
+                    save_cached_metadata(item_id, item_type, existing)
+                except Exception:
+                    pass
+                GLib.idle_add(load_image_into_picture, poster_url, poster_widget, width, height)
+                return
+        
+        c_type = "series" if item_type in ["series", "anime", "tv"] else "movie"
+        url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{item_id}.json"
+        try:
+            tmdb_data = _get_cached_request(url, max_age_hours=168, timeout=4)
+            if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
+                poster_url = tmdb_data["meta"]["poster"]
+                try:
+                    from .database import get_cached_metadata, save_cached_metadata
+                    existing = get_cached_metadata(item_id, item_type) or {}
+                    existing["medium_cover_image"] = poster_url
+                    save_cached_metadata(item_id, item_type, existing)
+                except Exception:
+                    pass
+                GLib.idle_add(load_image_into_picture, poster_url, poster_widget, width, height)
+                return
+        except Exception:
+            pass
+    except Exception as e:
+        pass
+
 class MovieWidget(Gtk.Box):
     def __init__(self, movie_data, click_callback, on_remove_clicked=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -236,79 +308,8 @@ class MovieWidget(Gtk.Box):
         if not poster_url:
             poster_url = extract_image_url(movie_data)
         
-        def fetch_fallback_poster():
-            if not item_id: return
-            try:
-                from .api import _get_cached_request
-                
-                # FIRST FALLBACK: Use IMDb autocomplete API to get the highest quality poster directly
-                if str(item_id).startswith("tt"):
-                    first_char = str(item_id)[0].lower()
-                    imdb_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{item_id}.json"
-                    req = urllib.request.Request(imdb_url, headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                    })
-                    with urllib.request.urlopen(req, timeout=4) as response:
-                        import json
-                        data = json.loads(response.read().decode('utf-8', errors='ignore'))
-                        if data and "d" in data and len(data["d"]) > 0:
-                            for item in data["d"]:
-                                if item.get("id") == item_id and "i" in item and "imageUrl" in item["i"]:
-                                    poster_url = item["i"]["imageUrl"]
-                                    import re
-                                    poster_url = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX500_.jpg', poster_url)
-                                    print(f"[IMDb API] Successfully fetched fallback catalog poster for {item_id}: {poster_url}")
-                                    try:
-                                        from .database import get_cached_metadata, save_cached_metadata
-                                        existing = get_cached_metadata(item_id, item_type) or {}
-                                        existing["medium_cover_image"] = poster_url
-                                        save_cached_metadata(item_id, item_type, existing)
-                                    except Exception:
-                                        pass
-                                    GLib.idle_add(load_image_into_picture, poster_url, self.poster_image, 130, 195)
-                                    return
-            except Exception as e:
-                pass
-                
-            try:
-                from .api import _get_cached_request
-                if str(item_id).startswith("tt"):
-                    url = f"https://v3-cinemeta.strem.io/meta/{item_type}/{item_id}.json"
-                    meta_data = _get_cached_request(url, max_age_hours=168)
-                    if meta_data and "meta" in meta_data and meta_data["meta"].get("poster"):
-                        poster_url = meta_data["meta"]["poster"]
-                        try:
-                            from .database import get_cached_metadata, save_cached_metadata
-                            existing = get_cached_metadata(item_id, item_type) or {}
-                            existing["medium_cover_image"] = poster_url
-                            save_cached_metadata(item_id, item_type, existing)
-                        except Exception:
-                            pass
-                        GLib.idle_add(load_image_into_picture, poster_url, self.poster_image, 130, 195)
-                        return
-                
-                c_type = "series" if item_type in ["series", "anime", "tv"] else "movie"
-                url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{item_id}.json"
-                try:
-                    tmdb_data = _get_cached_request(url, max_age_hours=168, timeout=4)
-                    if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
-                        poster_url = tmdb_data["meta"]["poster"]
-                        try:
-                            from .database import get_cached_metadata, save_cached_metadata
-                            existing = get_cached_metadata(item_id, item_type) or {}
-                            existing["medium_cover_image"] = poster_url
-                            save_cached_metadata(item_id, item_type, existing)
-                        except Exception:
-                            pass
-                        GLib.idle_add(load_image_into_picture, poster_url, self.poster_image, 130, 195)
-                        return
-                except Exception:
-                    pass
-            except Exception as e:
-                pass
-                
         def trigger_fallback():
-            _image_pool.submit(fetch_fallback_poster)
+            _image_pool.submit(fetch_fallback_poster, item_id, item_type, self.poster_image, movie_data.get("title") or movie_data.get("name"), 130, 195)
 
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195, on_error=trigger_fallback)
