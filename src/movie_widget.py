@@ -51,6 +51,8 @@ def extract_image_url(m):
                 return url
     return ""
 
+FAILED_IMAGE_URLS = set()
+
 def load_image_into_picture(url, picture_widget, width=None, height=None, on_error=None):
     if not url or not isinstance(url, str): return
     url = url.strip()
@@ -61,6 +63,10 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
     
     url_hash = hashlib.md5(url.encode()).hexdigest()
     cache_file = os.path.join(IMAGE_CACHE_DIR, url_hash)
+
+    if url in FAILED_IMAGE_URLS and not (os.path.exists(cache_file) and os.path.getsize(cache_file) > 0):
+        if on_error: GLib.idle_add(on_error)
+        return
 
     def fetch_image():
         try:
@@ -78,15 +84,15 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                 )
                 for attempt in range(1):
                     try:
-                        with urllib.request.urlopen(req, timeout=3) as response:
+                        with urllib.request.urlopen(req, timeout=2) as response:
                             data = response.read()
                             if data:
                                 with open(cache_file, 'wb') as f:
                                     f.write(data)
+                                FAILED_IMAGE_URLS.discard(url)
                             break
                     except Exception as e:
-                        if attempt == 0:
-                            pass
+                        FAILED_IMAGE_URLS.add(url)
                 
             if not data:
                 if on_error: GLib.idle_add(on_error)
