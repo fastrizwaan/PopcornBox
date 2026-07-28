@@ -220,9 +220,25 @@ class MovieWidget(Gtk.Box):
                 
                 c_type = "series" if item_type in ["series", "anime", "tv"] else "movie"
                 url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{item_id}.json"
-                tmdb_data = _get_cached_request(url, max_age_hours=168)
-                if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
-                    GLib.idle_add(load_image_into_picture, tmdb_data["meta"]["poster"], self.poster_image, 130, 195)
+                try:
+                    tmdb_data = _get_cached_request(url, max_age_hours=168, timeout=4)
+                    if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
+                        GLib.idle_add(load_image_into_picture, tmdb_data["meta"]["poster"], self.poster_image, 130, 195)
+                        return
+                except Exception:
+                    pass
+                
+                # ULTIMATE FALLBACK: Scrape IMDb directly for the og:image if addons fail or timeout
+                if str(item_id).startswith("tt"):
+                    imdb_url = f"https://www.imdb.com/title/{item_id}/"
+                    req = urllib.request.Request(imdb_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+                    with urllib.request.urlopen(req, timeout=4) as response:
+                        html = response.read().decode('utf-8', errors='ignore')
+                        import re
+                        match = re.search(r'<meta property="og:image" content="(https://m\.media-amazon\.com/images/M/[^"]+)"', html)
+                        if match:
+                            GLib.idle_add(load_image_into_picture, match.group(1), self.poster_image, 130, 195)
+                            return
             except Exception as e:
                 pass
                 
