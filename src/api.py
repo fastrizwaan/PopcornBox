@@ -613,6 +613,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
                             poster = item["i"]["imageUrl"]
                             cinemeta_res["medium_cover_image"] = poster
                             cinemeta_res["background"] = poster
+                            print(f"[IMDb API] Successfully fetched high-res poster for {imdb_id}: {poster}")
                             break
         except Exception as e:
             print(f"IMDb API fallback failed for {imdb_id}: {e}")
