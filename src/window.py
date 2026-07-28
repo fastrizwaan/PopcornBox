@@ -402,8 +402,15 @@ class MovieDetailsPage(Gtk.Overlay):
         if details.get("background"):
             load_image_into_picture(details.get("background"), self.backdrop_pic)
             
-        if details.get("medium_cover_image"):
-            load_image_into_picture(details.get("medium_cover_image"), self.poster, width=360, height=540)
+        cover = details.get("medium_cover_image")
+        if not cover or "metahub.space" in cover:
+            cover = self.movie_stub.get("medium_cover_image")
+            
+        if cover:
+            def on_poster_error():
+                from .movie_widget import fetch_fallback_poster
+                fetch_fallback_poster(details.get("id") or self.movie_stub.get("id"), self.media_type, self.poster, details.get("title") or self.movie_stub.get("title"))
+            load_image_into_picture(cover, self.poster, width=360, height=540, on_error=on_poster_error)
             
         self.title_label.set_text(details.get("title", ""))
         
