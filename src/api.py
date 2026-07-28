@@ -179,9 +179,16 @@ def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
             except Exception:
                 pass
 
-    cat_ids = []
+    search_cats = []
     for cat in catalogs:
         cat_type = cat.get("type")
+        if cat_type and cat_type != c_type:
+            continue
+            
+        cat_id = cat.get("id", "")
+        cat_name = cat.get("name", "")
+        extra = cat.get("extra") or []
+        extra_sup = cat.get("extraSupported") or []
         
         is_search = False
         if addon.get("id") == "cinemeta" and cat_id == "top":
@@ -241,15 +248,18 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             addon_items = []
             for cat_id in search_catalogs:
                 search_url = f"{base_url}catalog/{c_type}/{cat_id}/search={urllib.parse.quote(query)}.json"
-                data = _get_cached_request(search_url, max_age_hours=2, cache_only=cache_only, timeout=4)
+                data = _get_cached_request(search_url, max_age_hours=2, cache_only=cache_only, timeout=3)
                 if data and isinstance(data.get("metas"), list):
                     addon_items.extend(data["metas"])
+                    if addon_items: 
+                        break # Break early if we found results for this addon
             return addon_items
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-            future_to_addon = {executor.submit(fetch_addon_search, addon): addon for addon in database.get_addons()}
+        addons_to_search = [a for a in database.get_addons() if not target_manifest_url or a.get("manifest_url") == target_manifest_url]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            future_to_addon = {executor.submit(fetch_addon_search, addon): addon for addon in addons_to_search}
             try:
-                for future in concurrent.futures.as_completed(future_to_addon, timeout=12):
+                for future in concurrent.futures.as_completed(future_to_addon, timeout=8):
                     try:
                         addon_items = future.result()
                         new_batch = []
