@@ -255,9 +255,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                         new_batch = []
                         q_lower = query.lower()
                         for m in addon_items:
-                            title = m.get("name", "")
-                            desc = m.get("description", "")
-                            if q_lower not in title.lower() and q_lower not in desc.lower():
+                            title = m.get("name") or ""
+                            desc = m.get("description") or ""
+                            if q_lower not in str(title).lower() and q_lower not in str(desc).lower():
                                 continue
                                 
                             imdb_id = m.get("imdb_id") or m.get("id")
