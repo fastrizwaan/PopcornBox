@@ -231,16 +231,23 @@ class MovieWidget(Gtk.Box):
                 # ULTIMATE FALLBACK: Scrape IMDb directly for the og:image if addons fail or timeout
                 if str(item_id).startswith("tt"):
                     imdb_url = f"https://www.imdb.com/title/{item_id}/"
-                    req = urllib.request.Request(imdb_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+                    req = urllib.request.Request(imdb_url, headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Connection': 'keep-alive'
+                    })
                     with urllib.request.urlopen(req, timeout=4) as response:
                         html = response.read().decode('utf-8', errors='ignore')
                         import re
-                        match = re.search(r'<meta property="og:image" content="(https://m\.media-amazon\.com/images/M/[^"]+)"', html)
+                        match = re.search(r'<meta\s+(?:property|name)="og:image"\s+content="([^"]+)"', html)
                         if match:
                             GLib.idle_add(load_image_into_picture, match.group(1), self.poster_image, 130, 195)
                             return
+                        else:
+                            print(f"IMDb fallback: No og:image found for {item_id}")
             except Exception as e:
-                pass
+                print(f"Fallback poster fetch completely failed for {item_id}: {e}")
                 
         def trigger_fallback():
             _image_pool.submit(fetch_fallback_poster)
