@@ -18,12 +18,15 @@ _image_pool = ThreadPoolExecutor(max_workers=4)
 _disk_pool = ThreadPoolExecutor(max_workers=4)
 
 def cancel_pending_image_downloads():
-    global _image_pool
+    global _image_pool, _disk_pool
     try:
         _image_pool.shutdown(wait=False, cancel_futures=True)
+        _disk_pool.shutdown(wait=False, cancel_futures=True)
     except TypeError:
         _image_pool.shutdown(wait=False)
+        _disk_pool.shutdown(wait=False)
     _image_pool = ThreadPoolExecutor(max_workers=4)
+    _disk_pool = ThreadPoolExecutor(max_workers=4)
 
 def extract_image_url(m):
     if not isinstance(m, dict):
