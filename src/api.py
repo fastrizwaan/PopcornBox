@@ -604,7 +604,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
         try:
             import urllib.request, json
             imdb_url = f"https://v3.sg.media-imdb.com/suggestion/x/{imdb_id}.json"
-            req = urllib.request.Request(imdb_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+            req = urllib.request.Request(imdb_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
             with urllib.request.urlopen(req, timeout=4) as response:
                 data = json.loads(response.read().decode('utf-8', errors='ignore'))
                 if data and "d" in data and len(data["d"]) > 0:
@@ -615,7 +615,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
                             cinemeta_res["background"] = poster
                             break
         except Exception as e:
-            pass
+            print(f"IMDb API fallback failed for {imdb_id}: {e}")
 
         database.save_cached_metadata(imdb_id, media_type, cinemeta_res)
         if cinemeta_res.get("id") and cinemeta_res.get("id") != imdb_id:
