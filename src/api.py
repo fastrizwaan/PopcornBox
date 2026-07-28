@@ -517,6 +517,28 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
                     except Exception:
                         pass
                         
+            extracted_trailer = None
+            trailer_streams = cm.get("trailerStreams", [])
+            if trailer_streams and isinstance(trailer_streams, list):
+                for ts in trailer_streams:
+                    if isinstance(ts, dict) and ts.get("ytId"):
+                        extracted_trailer = ts.get("ytId")
+                        break
+            
+            if not extracted_trailer:
+                trailers = cm.get("trailers", [])
+                if trailers and isinstance(trailers, list):
+                    for t in trailers:
+                        if isinstance(t, dict):
+                            if t.get("source"): extracted_trailer = t.get("source")
+                            elif t.get("ytId"): extracted_trailer = t.get("ytId")
+                        elif isinstance(t, str):
+                            extracted_trailer = t
+                        if extracted_trailer: break
+                        
+            if not extracted_trailer and isinstance(cm.get("trailer"), str):
+                extracted_trailer = cm.get("trailer")
+                
             res_dict = {
                 "id": true_id,
                 "title": cm.get("name", ""),
@@ -527,7 +549,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
                 "runtime": cm.get("runtime", ""),
                 "genre": ", ".join(cm.get("genres", [])),
                 "imdbRating": str(cm.get("imdbRating", "")),
-                "trailer": cm.get("trailers", [{"source": ""}])[0].get("source") if cm.get("trailers") else None,
+                "trailer": extracted_trailer,
                 "videos": videos,
                 "cast": cm.get("cast", [])
             }
@@ -537,14 +559,19 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
 
     addons = database.get_addons()
     cinemeta_addon = next((a for a in addons if a.get("id") == "cinemeta" or "cinemeta" in a.get("manifest_url", "").lower()), None)
+    
+    cinemeta_res = None
     if cinemeta_addon:
         cinemeta_res = fetch_addon_meta(cinemeta_addon)
         if cinemeta_res and is_valid_meta(cinemeta_res):
-            database.save_cached_metadata(imdb_id, media_type, cinemeta_res)
-            if cinemeta_res.get("id") and cinemeta_res.get("id") != imdb_id:
-                database.save_cached_metadata(cinemeta_res.get("id"), media_type, cinemeta_res)
-            return cinemeta_res
+            # If we found a trailer in Cinemeta, we are good to go!
+            if cinemeta_res.get("trailer"):
+                database.save_cached_metadata(imdb_id, media_type, cinemeta_res)
+                if cinemeta_res.get("id") and cinemeta_res.get("id") != imdb_id:
+                    database.save_cached_metadata(cinemeta_res.get("id"), media_type, cinemeta_res)
+                return cinemeta_res
 
+    # If Cinemeta had no trailer, or failed, fallback to other addons
     other_addons = [a for a in addons if a != cinemeta_addon]
     if other_addons:
         import concurrent.futures
@@ -554,12 +581,29 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True)
                 for future in concurrent.futures.as_completed(future_to_addon, timeout=15):
                     res = future.result()
                     if res and is_valid_meta(res):
-                        database.save_cached_metadata(imdb_id, media_type, res)
-                        if res.get("id") and res.get("id") != imdb_id:
-                            database.save_cached_metadata(res.get("id"), media_type, res)
-                        return res
+                        if cinemeta_res and not cinemeta_res.get("trailer") and res.get("trailer"):
+                            cinemeta_res["trailer"] = res.get("trailer")
+                            # Check for missing background/poster while we're at it
+                            if not cinemeta_res.get("background") and res.get("background"):
+                                cinemeta_res["background"] = res.get("background")
+                            database.save_cached_metadata(imdb_id, media_type, cinemeta_res)
+                            if cinemeta_res.get("id") and cinemeta_res.get("id") != imdb_id:
+                                database.save_cached_metadata(cinemeta_res.get("id"), media_type, cinemeta_res)
+                            return cinemeta_res
+                            
+                        if not cinemeta_res:
+                            database.save_cached_metadata(imdb_id, media_type, res)
+                            if res.get("id") and res.get("id") != imdb_id:
+                                database.save_cached_metadata(res.get("id"), media_type, res)
+                            return res
             except concurrent.futures.TimeoutError:
                 pass
+
+    if cinemeta_res:
+        database.save_cached_metadata(imdb_id, media_type, cinemeta_res)
+        if cinemeta_res.get("id") and cinemeta_res.get("id") != imdb_id:
+            database.save_cached_metadata(cinemeta_res.get("id"), media_type, cinemeta_res)
+        return cinemeta_res
 
     if title and title != "Loading...":
         return {
