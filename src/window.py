@@ -195,8 +195,9 @@ class MovieDetailsPage(Gtk.Overlay):
         self.top_hbox.append(self.poster)
         
         from .movie_widget import load_image_into_picture
-        poster_url = self.movie_stub.get("medium_cover_image")
+        poster_url = self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster")
         if poster_url:
+            self._loaded_poster_url = poster_url
             load_image_into_picture(poster_url, self.poster, width=360, height=540)
             
         self.info_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -377,10 +378,11 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def load_details_async(self, force_refresh=False):
         item_id = self.movie_stub.get("id")
+        existing_poster = self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster")
         print(f"[CARD CLICK Step 6] load_details_async started (force_refresh={force_refresh}) for '{item_id}'")
         def fetch():
             from . import api
-            details = api.fetch_movie_details(item_id, self.media_type, title=self.movie_stub.get("title"), use_cache=not force_refresh)
+            details = api.fetch_movie_details(item_id, self.media_type, title=self.movie_stub.get("title"), use_cache=not force_refresh, poster=existing_poster)
             if details:
                 poster = details.get("medium_cover_image")
                 print(f"[CARD CLICK Step 7] api.fetch_movie_details completed for '{item_id}'. Poster URL: {poster}")
@@ -434,23 +436,27 @@ class MovieDetailsPage(Gtk.Overlay):
         if details.get("background"):
             load_image_into_picture(details.get("background"), self.backdrop_pic)
             
-        cover = details.get("medium_cover_image")
+        cover = self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster")
         if not cover:
-            cover = self.movie_stub.get("medium_cover_image")
-            if not cover:
-                from . import database
-                cached = database.get_cached_metadata(self.movie_stub.get("id"))
-                if cached and cached.get("medium_cover_image"):
-                    cover = cached["medium_cover_image"]
-            print(f"[CARD CLICK Step 8a] Cover resolved to: '{cover}'")
+            from . import database
+            cached = database.get_cached_metadata(self.movie_stub.get("id"))
+            if cached and cached.get("medium_cover_image"):
+                cover = cached["medium_cover_image"]
+        if not cover:
+            cover = details.get("medium_cover_image")
+            
+        print(f"[CARD CLICK Step 8a] Cover resolved to: '{cover}'")
             
         if cover:
-            print(f"[CARD CLICK Step 8b] Calling load_image_into_picture for poster: {cover}")
-            def on_poster_error():
-                print(f"[CARD CLICK Step 8c ERROR] Poster load failed for '{cover}'. Triggering fetch_fallback_poster.")
-                from .movie_widget import fetch_fallback_poster
-                fetch_fallback_poster(details.get("id") or self.movie_stub.get("id"), self.media_type, self.poster, details.get("title") or self.movie_stub.get("title"))
-            load_image_into_picture(cover, self.poster, width=360, height=540, on_error=on_poster_error)
+            details["medium_cover_image"] = cover
+            if cover != getattr(self, "_loaded_poster_url", None):
+                self._loaded_poster_url = cover
+                print(f"[CARD CLICK Step 8b] Calling load_image_into_picture for poster: {cover}")
+                def on_poster_error():
+                    print(f"[CARD CLICK Step 8c ERROR] Poster load failed for '{cover}'. Triggering fetch_fallback_poster.")
+                    from .movie_widget import fetch_fallback_poster
+                    fetch_fallback_poster(details.get("id") or self.movie_stub.get("id"), self.media_type, self.poster, details.get("title") or self.movie_stub.get("title"))
+                load_image_into_picture(cover, self.poster, width=360, height=540, on_error=on_poster_error)
             
         self.title_label.set_text(details.get("title", ""))
         
@@ -972,6 +978,16 @@ class CineWindow(Adw.ApplicationWindow):
         self.app_mpris: MPRIS = self.app.mpris  # type: ignore
 
         Gtk.WindowGroup().add_window(self)
+
+        if hasattr(self, 'content_flowbox'):
+            self.content_flowbox.set_valign(Gtk.Align.START)
+            self.content_flowbox.set_row_spacing(12)
+        if hasattr(self, 'search_movies_flowbox'):
+            self.search_movies_flowbox.set_valign(Gtk.Align.START)
+            self.search_movies_flowbox.set_row_spacing(12)
+        if hasattr(self, 'search_series_flowbox'):
+            self.search_series_flowbox.set_valign(Gtk.Align.START)
+            self.search_series_flowbox.set_row_spacing(12)
 
         self.gl_area: Gtk.GLArea = Gtk.GLArea()
         self.offload: Gtk.GraphicsOffload = Gtk.GraphicsOffload(child=self.gl_area)
@@ -4223,7 +4239,8 @@ class CineWindow(Adw.ApplicationWindow):
             flowbox = Gtk.FlowBox(
                 max_children_per_line=20, min_children_per_line=2, 
                 selection_mode=Gtk.SelectionMode.NONE, halign=Gtk.Align.START,
-                row_spacing=2, column_spacing=2
+                valign=Gtk.Align.START,
+                row_spacing=12, column_spacing=2
             )
             self._populate_flowbox(flowbox, data)
             container.append(flowbox)
