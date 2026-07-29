@@ -1005,6 +1005,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.video_overlay.set_child(self.offload)
 
         self.visible_dialog: Adw.Dialog | None = None
+        self.nav_stack: list = []
         self.playlist_ls: Gio.ListStore = Gio.ListStore.new(PlaylistItemObj)
         self.playlist_debounce_id: int = 0
         self.playlist_prev_pos: int
@@ -3633,9 +3634,10 @@ class CineWindow(Adw.ApplicationWindow):
             self.details_box.remove(child)
             
         def on_back():
-            print(f"[CARD CLICK Nav] Back button clicked. Returning to library view.")
-            self.main_stack.set_visible_child_name("library")
+            print(f"[CARD CLICK Nav] Back button clicked. Returning to previous view.")
+            self._go_back()
             
+        self._push_current_nav_state()
         print(f"[CARD CLICK Step 3] Creating MovieDetailsPage widget...")
         page = MovieDetailsPage(movie_data, on_back, window=self)
         self.details_box.append(page)
@@ -4074,11 +4076,40 @@ class CineWindow(Adw.ApplicationWindow):
         subtitle = row.get_subtitle().lower() if row.get_subtitle() else ""
         return search_text in title or search_text in subtitle
 
+    def _push_current_nav_state(self):
+        if not hasattr(self, "nav_stack"):
+            self.nav_stack = []
+        current = {
+            "main_page": self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else "library",
+            "library_page": self.library_stack.get_visible_child_name() if hasattr(self, "library_stack") else "content",
+            "category_btn": self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else "movies"
+        }
+        if not self.nav_stack or self.nav_stack[-1] != current:
+            self.nav_stack.append(current)
+            if len(self.nav_stack) > 50:
+                self.nav_stack.pop(0)
+
+    def _go_back(self, *args):
+        if hasattr(self, "nav_stack") and self.nav_stack:
+            prev = self.nav_stack.pop()
+            main_page = prev.get("main_page", "library")
+            self.main_stack.set_visible_child_name(main_page)
+            if main_page == "library":
+                if hasattr(self, "library_stack") and prev.get("library_page"):
+                    self.library_stack.set_visible_child_name(prev["library_page"])
+                if hasattr(self, "category_btn_stack") and prev.get("category_btn"):
+                    self.category_btn_stack.set_visible_child_name(prev["category_btn"])
+            elif main_page in ["favorites", "history", "watched", "downloads"]:
+                self._populate_local_db_page(main_page)
+        else:
+            self.main_stack.set_visible_child_name("library")
+
     def _open_addons(self, *args):
+        self._push_current_nav_state()
         self.main_stack.set_visible_child_name("addons")
 
     def _back_to_library(self, *args):
-        self.main_stack.set_visible_child_name("library")
+        self._go_back()
 
     def _import_addons(self, *args):
         dialog = Gtk.FileDialog(title=_("Import Addons"))
@@ -4138,6 +4169,8 @@ class CineWindow(Adw.ApplicationWindow):
             if self._current_search_id != current_search_id:
                 return False
             self.search_timeout_id = None
+            if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "search_results":
+                self._push_current_nav_state()
             self.library_stack.set_visible_child_name("search_results")
             
             from .movie_widget import cancel_pending_image_downloads
@@ -4190,6 +4223,7 @@ class CineWindow(Adw.ApplicationWindow):
         pass
 
     def _open_local_page(self, page_name):
+        self._push_current_nav_state()
         self.main_stack.set_visible_child_name(page_name)
         self._populate_local_db_page(page_name)
         
