@@ -4215,7 +4215,9 @@ class CineWindow(Adw.ApplicationWindow):
             
         m_type = getattr(self, "local_media_type_filter", "all")
         
-        search_entry = getattr(self, f"{page_name}_search_entry", None)
+        prefix_map = {"favorites": "fav", "history": "hist", "watched": "watch"}
+        prefix = prefix_map.get(page_name, page_name)
+        search_entry = getattr(self, f"{prefix}_search_entry", None)
         query = search_entry.get_text().strip().lower() if search_entry else ""
         
         if query:
