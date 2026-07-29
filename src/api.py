@@ -273,11 +273,15 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                             imdb_id = m.get("imdb_id") or m.get("id")
                             if imdb_id and imdb_id not in seen_ids:
                                 seen_ids.add(imdb_id)
+                                poster_url = m.get("poster") or m.get("medium_cover_image") or m.get("logo") or m.get("banner") or m.get("background") or m.get("icon") or m.get("thumbnail") or ""
+                                if poster_url and poster_url.startswith("//"):
+                                    poster_url = "https:" + poster_url
                                 item_obj = {
                                     "id": imdb_id,
                                     "title": title,
                                     "year": str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else "",
-                                    "medium_cover_image": m.get("poster", ""),
+                                    "medium_cover_image": poster_url,
+                                    "poster": poster_url,
                                     "type": media_type
                                 }
                                 items.append(item_obj)

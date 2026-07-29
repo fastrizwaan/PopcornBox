@@ -27,6 +27,7 @@ def cancel_pending_image_downloads():
         _disk_pool.shutdown(wait=False)
     _image_pool = ThreadPoolExecutor(max_workers=4)
     _disk_pool = ThreadPoolExecutor(max_workers=4)
+    FAILED_IMAGE_URLS.clear()
 
 def extract_image_url(m):
     if not isinstance(m, dict):
@@ -88,7 +89,7 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                 )
                 for attempt in range(1):
                     try:
-                        with urllib.request.urlopen(req, timeout=2) as response:
+                        with urllib.request.urlopen(req, timeout=6) as response:
                             data = response.read()
                             if data:
                                 with open(cache_file, 'wb') as f:

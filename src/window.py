@@ -4129,6 +4129,9 @@ class CineWindow(Adw.ApplicationWindow):
             self.search_timeout_id = None
             self.library_stack.set_visible_child_name("search_results")
             
+            from .movie_widget import cancel_pending_image_downloads
+            cancel_pending_image_downloads()
+            
             for cat in ["movies", "series", "anime", "tv"]:
                 section = getattr(self, f"search_{cat}_section", None)
                 flowbox = getattr(self, f"search_{cat}_flowbox", None)
