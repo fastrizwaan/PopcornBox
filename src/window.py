@@ -888,9 +888,14 @@ class CineWindow(Adw.ApplicationWindow):
     genre_dropdown: Gtk.DropDown = Gtk.Template.Child()
     search_catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
     content_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
-    content_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    search_movies_section: Gtk.Box = Gtk.Template.Child()
+    search_series_section: Gtk.Box = Gtk.Template.Child()
+    search_anime_section: Gtk.Box = Gtk.Template.Child()
+    search_tv_section: Gtk.Box = Gtk.Template.Child()
     search_movies_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     search_series_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    search_anime_flowbox: Gtk.FlowBox = Gtk.Template.Child()
+    search_tv_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     favorites_box: Gtk.Box = Gtk.Template.Child()
     history_box: Gtk.Box = Gtk.Template.Child()
     watched_box: Gtk.Box = Gtk.Template.Child()
@@ -979,15 +984,11 @@ class CineWindow(Adw.ApplicationWindow):
 
         Gtk.WindowGroup().add_window(self)
 
-        if hasattr(self, 'content_flowbox'):
-            self.content_flowbox.set_valign(Gtk.Align.START)
-            self.content_flowbox.set_row_spacing(12)
-        if hasattr(self, 'search_movies_flowbox'):
-            self.search_movies_flowbox.set_valign(Gtk.Align.START)
-            self.search_movies_flowbox.set_row_spacing(12)
-        if hasattr(self, 'search_series_flowbox'):
-            self.search_series_flowbox.set_valign(Gtk.Align.START)
-            self.search_series_flowbox.set_row_spacing(12)
+        for name in ['content_flowbox', 'search_movies_flowbox', 'search_series_flowbox', 'search_anime_flowbox', 'search_tv_flowbox']:
+            if hasattr(self, name):
+                fb = getattr(self, name)
+                fb.set_valign(Gtk.Align.START)
+                fb.set_row_spacing(12)
 
         self.gl_area: Gtk.GLArea = Gtk.GLArea()
         self.offload: Gtk.GraphicsOffload = Gtk.GraphicsOffload(child=self.gl_area)
@@ -4127,10 +4128,14 @@ class CineWindow(Adw.ApplicationWindow):
             self.search_timeout_id = None
             self.library_stack.set_visible_child_name("search_results")
             
-            while self.search_movies_flowbox.get_first_child() is not None:
-                self.search_movies_flowbox.remove(self.search_movies_flowbox.get_first_child())
-            while self.search_series_flowbox.get_first_child() is not None:
-                self.search_series_flowbox.remove(self.search_series_flowbox.get_first_child())
+            for cat in ["movies", "series", "anime", "tv"]:
+                section = getattr(self, f"search_{cat}_section", None)
+                flowbox = getattr(self, f"search_{cat}_flowbox", None)
+                if section:
+                    section.set_visible(False)
+                if flowbox:
+                    while flowbox.get_first_child() is not None:
+                        flowbox.remove(flowbox.get_first_child())
                 
             selected_idx = self.search_catalog_dropdown.get_selected()
             target_manifest_url = None
@@ -4140,48 +4145,25 @@ class CineWindow(Adw.ApplicationWindow):
                 target_manifest_url = cat_obj["manifest_url"]
                 target_catalog_id = cat_obj["catalog_id"]
                 
-            def do_search_movies():
+            def do_search_category(media_type, section_attr, flowbox_attr):
                 try:
-                    def on_movies_batch(batch):
-                        if self._current_search_id == current_search_id:
-                            GLib.idle_add(self._append_flowbox, self.search_movies_flowbox, batch, None)
-                    fetch_items(media_type="movie", query=query, on_item_found=on_movies_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
+                    def on_batch(batch):
+                        if self._current_search_id == current_search_id and batch:
+                            def update_ui():
+                                section = getattr(self, section_attr, None)
+                                flowbox = getattr(self, flowbox_attr, None)
+                                if flowbox and section:
+                                    self._append_flowbox(flowbox, batch, None)
+                                    section.set_visible(True)
+                            GLib.idle_add(update_ui)
+                    fetch_items(media_type=media_type, query=query, on_item_found=on_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
                 except Exception as e:
-                    logger.error(f"Search error (movies): {e}")
+                    logger.error(f"Search error ({media_type}): {e}")
 
-            def do_search_series():
-                try:
-                    def on_series_batch(batch):
-                        if self._current_search_id == current_search_id:
-                            GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
-                    fetch_items(media_type="series", query=query, on_item_found=on_series_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
-                except Exception as e:
-                    logger.error(f"Search error (series): {e}")
-
-            def do_search_anime():
-                try:
-                    def on_anime_batch(batch):
-                        if self._current_search_id == current_search_id:
-                            GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
-                    fetch_items(media_type="anime", query=query, on_item_found=on_anime_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
-                except Exception as e:
-                    logger.error(f"Search error (anime): {e}")
-
-            def do_search_tv():
-                try:
-                    def on_tv_batch(batch):
-                        if self._current_search_id == current_search_id:
-                            GLib.idle_add(self._append_flowbox, self.search_series_flowbox, batch, None)
-                    fetch_items(media_type="tv", query=query, on_item_found=on_tv_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
-                except Exception as e:
-                    logger.error(f"Search error (tv): {e}")
-                    
-            threading.Thread(target=do_search_movies, daemon=True).start()
-            threading.Thread(target=do_search_series, daemon=True).start()
-            if getattr(self, "anime_supported", False):
-                threading.Thread(target=do_search_anime, daemon=True).start()
-            if getattr(self, "tv_supported", False):
-                threading.Thread(target=do_search_tv, daemon=True).start()
+            threading.Thread(target=do_search_category, args=("movie", "search_movies_section", "search_movies_flowbox"), daemon=True).start()
+            threading.Thread(target=do_search_category, args=("series", "search_series_section", "search_series_flowbox"), daemon=True).start()
+            threading.Thread(target=do_search_category, args=("anime", "search_anime_section", "search_anime_flowbox"), daemon=True).start()
+            threading.Thread(target=do_search_category, args=("tv", "search_tv_section", "search_tv_flowbox"), daemon=True).start()
             return False
 
         self.search_timeout_id = GLib.timeout_add(500, trigger_search)

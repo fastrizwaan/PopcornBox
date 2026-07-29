@@ -223,32 +223,78 @@ template $CineWindow: Adw.ApplicationWindow {
                   Box {
                     orientation: vertical;
                     margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
-                    Label {
-                      label: _("Movies");
-                      styles ["title-2"]
-                      halign: start;
-                      margin-bottom: 8;
-                      margin-start: 12;
+
+                    Box search_movies_section {
+                      orientation: vertical;
+                      visible: false;
+                      Label {
+                        label: _("Movies");
+                        styles ["title-2"]
+                        halign: start;
+                        margin-bottom: 8;
+                        margin-start: 12;
+                      }
+                      Separator { margin-bottom: 12; }
+                      FlowBox search_movies_flowbox {
+                        max-children-per-line: 20; min-children-per-line: 2;
+                        selection-mode: none; halign: center;
+                        valign: start;
+                        row-spacing: 12; column-spacing: 2;
+                      }
                     }
-                    Separator { margin-bottom: 12; }
-                    FlowBox search_movies_flowbox {
-                      max-children-per-line: 20; min-children-per-line: 2;
-                      selection-mode: none; halign: center;
-                      valign: start;
-                      row-spacing: 12; column-spacing: 2;
+
+                    Box search_series_section {
+                      orientation: vertical;
+                      visible: false;
+                      Label {
+                        label: _("Series");
+                        styles ["title-2"]
+                        halign: start;
+                        margin-top: 16; margin-bottom: 8; margin-start: 12;
+                      }
+                      Separator { margin-bottom: 12; }
+                      FlowBox search_series_flowbox {
+                        max-children-per-line: 20; min-children-per-line: 2;
+                        selection-mode: none; halign: center;
+                        valign: start;
+                        row-spacing: 12; column-spacing: 2;
+                      }
                     }
-                    Label {
-                      label: _("Series");
-                      styles ["title-2"]
-                      halign: start;
-                      margin-top: 24; margin-bottom: 8; margin-start: 12;
+
+                    Box search_anime_section {
+                      orientation: vertical;
+                      visible: false;
+                      Label {
+                        label: _("Anime");
+                        styles ["title-2"]
+                        halign: start;
+                        margin-top: 16; margin-bottom: 8; margin-start: 12;
+                      }
+                      Separator { margin-bottom: 12; }
+                      FlowBox search_anime_flowbox {
+                        max-children-per-line: 20; min-children-per-line: 2;
+                        selection-mode: none; halign: center;
+                        valign: start;
+                        row-spacing: 12; column-spacing: 2;
+                      }
                     }
-                    Separator { margin-bottom: 12; }
-                    FlowBox search_series_flowbox {
-                      max-children-per-line: 20; min-children-per-line: 2;
-                      selection-mode: none; halign: center;
-                      valign: start;
-                      row-spacing: 12; column-spacing: 2;
+
+                    Box search_tv_section {
+                      orientation: vertical;
+                      visible: false;
+                      Label {
+                        label: _("TV Channels");
+                        styles ["title-2"]
+                        halign: start;
+                        margin-top: 16; margin-bottom: 8; margin-start: 12;
+                      }
+                      Separator { margin-bottom: 12; }
+                      FlowBox search_tv_flowbox {
+                        max-children-per-line: 20; min-children-per-line: 2;
+                        selection-mode: none; halign: center;
+                        valign: start;
+                        row-spacing: 12; column-spacing: 2;
+                      }
                     }
                   }
                 };
