@@ -1071,9 +1071,10 @@ class CineWindow(Adw.ApplicationWindow):
             if page in ["favorites", "history", "watched"]:
                 self._populate_local_db_page(page)
                 
-        self.fav_search_entry.connect("search-changed", on_local_search_changed)
-        self.hist_search_entry.connect("search-changed", on_local_search_changed)
-        self.watch_search_entry.connect("search-changed", on_local_search_changed)
+        for se in [self.fav_search_entry, self.hist_search_entry, self.watch_search_entry]:
+            if hasattr(self, "fav_search_entry") and se:
+                se.connect("search-changed", on_local_search_changed)
+                se.connect("changed", on_local_search_changed)
         
         def on_active_btn_toggled(btn):
             if not btn.get_active():
@@ -4218,7 +4219,12 @@ class CineWindow(Adw.ApplicationWindow):
         query = search_entry.get_text().strip().lower() if search_entry else ""
         
         if query:
-            items = [i for i in items if query in i.get("name", "").lower()]
+            items = [
+                i for i in items 
+                if query in str(i.get("title") or "").lower() 
+                or query in str(i.get("name") or "").lower()
+                or query in str(i.get("description") or "").lower()
+            ]
             
         movies = [i for i in items if i.get("type", "movie") == "movie"]
         series = [i for i in items if i.get("type", "movie") == "series"]
