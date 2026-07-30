@@ -51,7 +51,9 @@
     <file alias="object-flip-vertical-symbolic.svg">../data/icons/scalable/actions/object-flip-vertical-symbolic.svg</file>
     <file alias="object-rotate-left-symbolic.svg">../data/icons/scalable/actions/object-rotate-left-symbolic.svg</file>
     <file alias="object-rotate-right-symbolic.svg">../data/icons/scalable/actions/object-rotate-right-symbolic.svg</file>
-    <file alias="compass2-symbolic.svg">../data/icons/scalable/actions/compass2-symbolic.svg</file>
-    <file alias="anime-manga-symbolic.svg">../data/icons/scalable/actions/anime-manga-symbolic.svg</file>
+    <file alias="popcorn-discover-symbolic.svg">../data/icons/scalable/actions/popcorn-discover-symbolic.svg</file>
+    <file alias="popcorn-anime-symbolic.svg">../data/icons/scalable/actions/popcorn-anime-symbolic.svg</file>
+    <file alias="popcorn-movies-symbolic.svg">../data/icons/scalable/actions/popcorn-movies-symbolic.svg</file>
+    <file alias="popcorn-tv-series-symbolic.svg">../data/icons/scalable/actions/popcorn-tv-series-symbolic.svg</file>
   </gresource>
 </gresources>
