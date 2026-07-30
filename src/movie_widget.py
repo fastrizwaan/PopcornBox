@@ -162,7 +162,6 @@ def _apply_pixbuf(picture_widget, pixbuf):
         picture_widget.set_can_shrink(True)
         texture = Gdk.Texture.new_for_pixbuf(pixbuf)
         picture_widget.set_paintable(texture)
-        print(f"[IMAGE APPLY SUCCESS] Successfully painted texture ({pixbuf.get_width()}x{pixbuf.get_height()}) onto picture_widget!")
     except Exception as e:
         print(f"[IMAGE APPLY ERROR] Failed to paint texture: {e}")
     return False
