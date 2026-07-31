@@ -18,6 +18,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import os
+import re
 import gi
 import mpv
 import ctypes
@@ -893,9 +894,9 @@ class CineWindow(Adw.ApplicationWindow):
     library_stack: Adw.ViewStack = Gtk.Template.Child()
     header_stack: Gtk.Stack = Gtk.Template.Child()
     category_btn_stack: Gtk.Stack = Gtk.Template.Child()
-    movies_genre_menu: Gio.Menu = Gtk.Template.Child()
-    series_genre_menu: Gio.Menu = Gtk.Template.Child()
-    anime_genre_menu: Gio.Menu = Gtk.Template.Child()
+    movies_active_btn: Gtk.MenuButton = Gtk.Template.Child()
+    series_active_btn: Gtk.MenuButton = Gtk.Template.Child()
+    anime_active_btn: Gtk.MenuButton = Gtk.Template.Child()
     anime_inactive_btn_movies: Gtk.Button = Gtk.Template.Child()
     anime_inactive_btn_series: Gtk.Button = Gtk.Template.Child()
     discover_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
@@ -3423,37 +3424,42 @@ class CineWindow(Adw.ApplicationWindow):
                 
         self.genre_dropdown.connect("notify::selected", on_genre_changed)
         
-        # Restore classic genre menus
-        movie_genres = ["All", "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "History", "Horror", "Music", "Musical", "Mystery", "Romance", "Sci-Fi", "Short", "Sport", "Thriller", "War", "Western"]
-        series_genres = ["All", "Action & Adventure", "Animation", "Family", "Kids", "Comedy", "Drama", "Crime", "Mystery", "Sci-Fi & Fantasy", "Western", "War & Politics", "Reality", "Documentary", "Talk", "News", "Soap", "Romance", "Music", "Musical", "History"]
-        anime_genres = ["All", "Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Magic", "Mecha", "Music", "Mystery", "Psychological", "Romance", "School", "Sci-Fi", "Slice of Life", "Sports", "Supernatural"]
-        for g in movie_genres:
-            self.movies_genre_menu.append(g, f"win.movies-genre-selected::{g}")
-        for g in series_genres:
-            self.series_genre_menu.append(g, f"win.series-genre-selected::{g}")
-        for g in anime_genres:
-            self.anime_genre_menu.append(g, f"win.set-anime-genre::{g}")
-        # Classic Action Handlers
-        action = Gio.SimpleAction.new("movies-genre-selected", GLib.VariantType.new("s"))
-        def on_movies_genre(action, parameter):
-            g = parameter.get_string()
-            self.current_media_type = "movie"
-            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
-            self.current_genre = None if g == "All" else g
-            self.category_btn_stack.set_visible_child_name("movies")
-            self._refresh_content()
-        action.connect("activate", on_movies_genre)
-        self.add_action(action)
-        
-        action = Gio.SimpleAction.new("series-genre-selected", GLib.VariantType.new("s"))
-        def on_series_genre(action, parameter):
-            g = parameter.get_string()
-            self.current_media_type = "series"
-            self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
-            self.current_genre = None if g == "All" else g
-            self.category_btn_stack.set_visible_child_name("series")
-            self._refresh_content()
-        action.connect("activate", on_series_genre)
+        def on_btn_active(btn, pspec):
+            if btn.get_active():
+                self._ensure_all_menus_built()
+
+        if hasattr(self, "movies_active_btn"):
+            if not self.movies_active_btn.get_menu_model():
+                self.movies_active_btn.set_menu_model(Gio.Menu.new())
+            self.movies_active_btn.connect("notify::active", on_btn_active)
+        if hasattr(self, "series_active_btn"):
+            if not self.series_active_btn.get_menu_model():
+                self.series_active_btn.set_menu_model(Gio.Menu.new())
+            self.series_active_btn.connect("notify::active", on_btn_active)
+        if hasattr(self, "anime_active_btn"):
+            if not self.anime_active_btn.get_menu_model():
+                self.anime_active_btn.set_menu_model(Gio.Menu.new())
+            self.anime_active_btn.connect("notify::active", on_btn_active)
+
+        action = Gio.SimpleAction.new("select-catalog-genre", GLib.VariantType.new("s"))
+        def on_select_catalog_genre(action, parameter):
+            val = parameter.get_string()
+            parts = val.split("|", 3)
+            if len(parts) == 4:
+                m_type, m_url, c_id, genre = parts
+                self.current_media_type = m_type
+                self.current_catalog = {"manifest_url": m_url, "catalog_id": c_id}
+                self.current_genre = None if genre == "All" else genre
+                
+                if m_type == "movie":
+                    self.category_btn_stack.set_visible_child_name("movies")
+                elif m_type == "series":
+                    self.category_btn_stack.set_visible_child_name("series")
+                elif m_type == "anime":
+                    self.category_btn_stack.set_visible_child_name("anime")
+                
+                self._refresh_content()
+        action.connect("activate", on_select_catalog_genre)
         self.add_action(action)
         
         def set_catalog_for_media_type(m_type):
@@ -3483,6 +3489,7 @@ class CineWindow(Adw.ApplicationWindow):
         
         action = Gio.SimpleAction.new("switch-to-series", None)
         def on_switch_series(action, parameter):
+            self._ensure_all_menus_built()
             set_catalog_for_media_type("series")
             self.category_btn_stack.set_visible_child_name("series")
             self._refresh_content()
@@ -3491,23 +3498,14 @@ class CineWindow(Adw.ApplicationWindow):
 
         action = Gio.SimpleAction.new("switch-to-anime", None)
         def on_switch_anime(action, parameter):
+            self._ensure_all_menus_built()
             set_catalog_for_media_type("anime")
             self.category_btn_stack.set_visible_child_name("anime")
             self._refresh_content()
         action.connect("activate", on_switch_anime)
         self.add_action(action)
         
-        # anime genre action
-        action = Gio.SimpleAction.new("set-anime-genre", GLib.VariantType.new("s"))
-        def on_anime_genre(action, parameter):
-            g = parameter.get_string()
-            set_catalog_for_media_type("anime")
-            if g != "All":
-                self.current_genre = g
-            self.category_btn_stack.set_visible_child_name("anime")
-            self._refresh_content()
-        action.connect("activate", on_anime_genre)
-        self.add_action(action)
+        # Removed redundant static anime genre action
 
         def on_discover_toggled(button, pspec):
             is_active = button.get_active()
@@ -3612,6 +3610,7 @@ class CineWindow(Adw.ApplicationWindow):
                     is_first_page = (page_to_fetch == 1)
                     if is_first_page:
                         self._populate_flowbox(self.content_flowbox, items, self.content_seen_ids)
+                        self._schedule_deferred_menu_build(1000)
                     else:
                         self._append_flowbox(self.content_flowbox, items, self.content_seen_ids)
                     self.content_page = page_to_fetch + 1
@@ -3625,6 +3624,175 @@ class CineWindow(Adw.ApplicationWindow):
             GLib.idle_add(apply_results)
 
         threading.Thread(target=fetch, daemon=True).start()
+
+    def _clean_cat_name(self, cat, addon_name, media_type):
+        raw_name = cat.get("catalog_name") or cat.get("catalog_id") or "Catalog"
+        display_name = cat.get("display_name") or ""
+        
+        name = display_name if display_name else raw_name
+        if addon_name and name.lower().startswith(addon_name.lower()):
+            name = name[len(addon_name):].lstrip(" -|:·")
+            
+        words = []
+        if media_type == "movie":
+            words = ["Movies", "Movie"]
+        elif media_type == "series":
+            words = ["Series", "TV Shows", "TV Show", "TV"]
+        elif media_type == "anime":
+            words = ["Anime"]
+            
+        for w in words:
+            name = re.sub(rf'\b{w}\b\s*[·\-:]*\s*', '', name, flags=re.IGNORECASE)
+            name = re.sub(rf'\s*[·\-:]*\s*\b{w}\b', '', name, flags=re.IGNORECASE)
+            
+        name = name.strip(" -|:·")
+        if not name:
+            cat_id = cat.get("catalog_id", "")
+            if cat_id and cat_id.lower() not in ["top", "movie", "series", "anime"]:
+                name = cat_id.title()
+            else:
+                name = (cat.get("catalog_name") or "Main").title()
+        return name
+
+    def _prepare_menu_data(self, media_type):
+        from . import api
+        catalogs = api.get_available_catalogs(media_type)
+        
+        addons_map = {}
+        for cat in catalogs:
+            addon_name = cat.get("addon_name") or "Addon"
+            m_url = cat.get("manifest_url") or ""
+            key = (addon_name, m_url)
+            if key not in addons_map:
+                addons_map[key] = []
+            addons_map[key].append(cat)
+            
+        seen_submenu_names = set()
+        result_addons = []
+
+        for (addon_name, m_url), addon_cats in addons_map.items():
+            addon_cat_items = []
+            for cat in addon_cats:
+                cat_id = cat.get("catalog_id", "")
+                clean_name = self._clean_cat_name(cat, addon_name, media_type)
+                genres = cat.get("genres") or []
+                
+                if genres:
+                    genre_items = []
+                    for g in ["All"] + genres:
+                        target_str = f"{media_type}|{m_url}|{cat_id}|{g}"
+                        genre_items.append((g, target_str))
+                        
+                    is_single_default = (len(addon_cats) == 1 and clean_name.lower() in ["top", "main", "all", "default", addon_name.lower()])
+                    
+                    unique_sub_name = clean_name
+                    while unique_sub_name in seen_submenu_names:
+                        unique_sub_name += "\u200b"
+                    seen_submenu_names.add(unique_sub_name)
+                    
+                    addon_cat_items.append({
+                        "type": "submenu",
+                        "name": unique_sub_name,
+                        "items": genre_items,
+                        "is_single_default": is_single_default
+                    })
+                else:
+                    target_str = f"{media_type}|{m_url}|{cat_id}|All"
+                    addon_cat_items.append({
+                        "type": "item",
+                        "name": clean_name,
+                        "target": target_str
+                    })
+                    
+            result_addons.append((addon_name, addon_cat_items))
+            
+        return result_addons
+
+    def _build_addon_submenu(self, addon_cat_items):
+        """Build a single addon's Gio.Menu from its prepared data. Very fast (~<1ms)."""
+        addon_menu = Gio.Menu.new()
+        for cat_data in addon_cat_items:
+            if cat_data["type"] == "submenu":
+                cat_menu = Gio.Menu.new()
+                for label, target_str in cat_data["items"]:
+                    item = Gio.MenuItem.new(label, None)
+                    item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", target_str))
+                    cat_menu.append_item(item)
+                if cat_data.get("is_single_default"):
+                    addon_menu = cat_menu
+                else:
+                    addon_menu.append_submenu(cat_data["name"], cat_menu)
+            else:
+                item = Gio.MenuItem.new(cat_data["name"], None)
+                item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", cat_data["target"]))
+                addon_menu.append_item(item)
+        return addon_menu
+
+    def _stream_menu_build(self, media_type, prepared_data, btn):
+        """Stream menu construction: append one addon per idle tick to button's menu model."""
+        menu = btn.get_menu_model()
+        if not menu or not isinstance(menu, Gio.Menu):
+            menu = Gio.Menu.new()
+            btn.set_menu_model(menu)
+
+        work = list(prepared_data)
+        def append_next():
+            if not work:
+                return False
+            addon_name, addon_cat_items = work.pop(0)
+            try:
+                addon_menu = self._build_addon_submenu(addon_cat_items)
+                menu.append_submenu(addon_name, addon_menu)
+            except Exception as e:
+                logger.error(f"Error appending addon menu '{addon_name}': {e}")
+            if work:
+                GLib.idle_add(append_next)
+            return False
+
+        GLib.idle_add(append_next)
+
+    def _ensure_all_menus_built(self):
+        if getattr(self, "_menus_building", False) or getattr(self, "_menus_built", False):
+            return
+        self._menus_building = True
+
+        btn_map = {
+            "movie": getattr(self, "movies_active_btn", None),
+            "series": getattr(self, "series_active_btn", None),
+        }
+        if getattr(self, "anime_supported", False):
+            btn_map["anime"] = getattr(self, "anime_active_btn", None)
+
+        media_types = list(btn_map.keys())
+
+        def bg_prepare():
+            all_data = {}
+            for m_type in media_types:
+                try:
+                    all_data[m_type] = self._prepare_menu_data(m_type)
+                except Exception as e:
+                    logger.error(f"Error preparing menu data for {m_type}: {e}")
+                    all_data[m_type] = []
+
+            def start_streaming():
+                for m_type in media_types:
+                    btn = btn_map.get(m_type)
+                    data = all_data.get(m_type, [])
+                    if btn and data:
+                        self._stream_menu_build(m_type, data, btn)
+                self._menus_built = True
+                self._menus_building = False
+                return False
+
+            GLib.idle_add(start_streaming)
+
+        threading.Thread(target=bg_prepare, daemon=True).start()
+
+    def _schedule_deferred_menu_build(self, delay_ms=1000):
+        if getattr(self, "_menu_build_scheduled", False) or getattr(self, "_menus_built", False):
+            return
+        self._menu_build_scheduled = True
+        GLib.timeout_add(delay_ms, self._ensure_all_menus_built)
 
     def _on_content_scroll(self, adj):
         if getattr(self, "is_fetching_content", False) or not getattr(self, "has_more_content", True):

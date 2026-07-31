@@ -41,7 +41,6 @@ template $CineWindow: Adw.ApplicationWindow {
                         styles ["linked"]
                         MenuButton movies_active_btn {
                           always-show-arrow: true;
-                          menu-model: movies_genre_menu;
                           child: Adw.ButtonContent {
                             icon-name: "popcorn-movies-symbolic";
                             label: _("Movies");
@@ -68,7 +67,6 @@ template $CineWindow: Adw.ApplicationWindow {
                         }
                         MenuButton series_active_btn {
                           always-show-arrow: true;
-                          menu-model: series_genre_menu;
                           child: Adw.ButtonContent {
                             icon-name: "popcorn-tv-series-symbolic";
                             label: _("Series");
@@ -95,7 +93,6 @@ template $CineWindow: Adw.ApplicationWindow {
                         }
                         MenuButton anime_active_btn {
                           always-show-arrow: true;
-                          menu-model: anime_genre_menu;
                           child: Adw.ButtonContent {
                             icon-name: "popcorn-anime-symbolic";
                             label: _("Anime");
@@ -1299,6 +1296,3 @@ template $CineWindow: Adw.ApplicationWindow {
   };
 }
 
-menu movies_genre_menu {}
-menu series_genre_menu {}
-menu anime_genre_menu {}
