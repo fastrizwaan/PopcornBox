@@ -10,7 +10,7 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
     from .api import _get_cached_request
     
     is_tmdb = str(imdb_id).startswith("tmdb:") or str(imdb_id).startswith("ctmdb.")
-    if not is_tmdb:
+    if not is_tmdb or str(imdb_id).startswith("ctmdb."):
         return imdb_id
         
     resolved_id = None

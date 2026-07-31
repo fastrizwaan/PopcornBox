@@ -587,7 +587,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 })
             
             true_id = cm.get("imdb_id") or imdb_id
-            if str(true_id).startswith("tmdb:") or str(true_id).startswith("ctmdb."):
+            if str(true_id).startswith("tmdb:") and not str(true_id).startswith("ctmdb.") and not cm.get("videos"):
                 m_title = cm.get("name")
                 if m_title:
                     try:
