@@ -506,11 +506,12 @@ class MovieDetailsPage(Gtk.Overlay):
         self.trailer_btn.connect("clicked", lambda x: self.on_trailer_clicked(details.get("trailer")))
         if not details.get("trailer"): self.trailer_btn.set_sensitive(False)
         
-        if self.media_type in ["series", "anime"] and details.get("videos"):
+        if details.get("videos"):
             self.row2_box.set_visible(True)
             videos = details.get("videos")
             seasons = sorted(list(set([v.get("season", 1) for v in videos])))
             self.season_dropdown.set_model(Gtk.StringList.new([f"Season {s}" for s in seasons]))
+            self.season_dropdown.set_visible(len(seasons) > 1 or self.media_type in ["series", "anime"])
             
             self._ignore_dropdown_changes = False
             
@@ -518,9 +519,10 @@ class MovieDetailsPage(Gtk.Overlay):
                 if getattr(self, '_ignore_dropdown_changes', False): return
                 idx = dropdown.get_selected()
                 if idx == Gtk.INVALID_LIST_POSITION: return
-                ep = self.current_episodes[idx].get("episode")
-                self.selected_episode = ep
-                self.fetch_torrents_async()
+                if hasattr(self, 'current_episodes') and idx < len(self.current_episodes):
+                    self.selected_video = self.current_episodes[idx]
+                    self.selected_episode = self.selected_video.get("episode")
+                    self.fetch_torrents_async()
                 
             self.episode_dropdown.connect("notify::selected", on_episode_changed)
             
@@ -528,9 +530,10 @@ class MovieDetailsPage(Gtk.Overlay):
                 if getattr(self, '_ignore_dropdown_changes', False): return
                 idx = dropdown.get_selected()
                 if idx == Gtk.INVALID_LIST_POSITION: return
+                if idx >= len(seasons): return
                 s = seasons[idx]
                 self.selected_season = s
-                eps = [v for v in videos if v.get("season") == s]
+                eps = [v for v in videos if v.get("season", 1) == s]
                 unique_eps = []
                 seen_eps = set()
                 for e in eps:
@@ -540,13 +543,18 @@ class MovieDetailsPage(Gtk.Overlay):
                         unique_eps.append(e)
                 unique_eps.sort(key=lambda x: x.get("episode", 0))
                 self.current_episodes = unique_eps
-                ep_strings = [f"Ep {e.get('episode')}: {e.get('title') or e.get('name', '')}" for e in unique_eps]
+                
+                if self.media_type in ["series", "anime"]:
+                    ep_strings = [f"Ep {e.get('episode')}: {e.get('title') or e.get('name', '')}" for e in unique_eps]
+                else:
+                    ep_strings = [f"{e.get('episode', idx+1)}. {e.get('title') or e.get('name', '')}" for idx, e in enumerate(unique_eps)]
                 
                 self._ignore_dropdown_changes = True
                 self.episode_dropdown.set_model(Gtk.StringList.new(ep_strings))
                 ep_nums = [e.get('episode') for e in unique_eps]
                 default_ep_idx = ep_nums.index(1) if 1 in ep_nums else 0
-                self.episode_dropdown.set_selected(default_ep_idx)
+                if default_ep_idx < len(ep_strings):
+                    self.episode_dropdown.set_selected(default_ep_idx)
                 self._ignore_dropdown_changes = False
                 
                 on_episode_changed(self.episode_dropdown)
@@ -569,9 +577,18 @@ class MovieDetailsPage(Gtk.Overlay):
         while child := self.quality_button_box.get_first_child():
             self.quality_button_box.remove(child)
 
-        item_id = self.movie_stub.get("id")
-        sel_season = getattr(self, 'selected_season', None)
-        sel_episode = getattr(self, 'selected_episode', None)
+        selected_video = getattr(self, 'selected_video', None)
+        video_id = selected_video.get("id") if (selected_video and isinstance(selected_video, dict)) else None
+        
+        item_id = video_id or self.movie_stub.get("id")
+        
+        req_media_type = self.media_type
+        if video_id and str(video_id).startswith("tt") and self.media_type not in ["series", "anime"]:
+            req_media_type = "movie"
+
+        sel_season = getattr(self, 'selected_season', None) if req_media_type in ["series", "anime"] else None
+        sel_episode = getattr(self, 'selected_episode', None) if req_media_type in ["series", "anime"] else None
+        target_title = (selected_video.get("title") if selected_video else None) or self.movie_stub.get("title")
         
         def on_stream_batch(torrents, is_cached=False, is_complete=False):
             if hasattr(self, 'progress_label') and self.progress_label:
@@ -619,11 +636,11 @@ class MovieDetailsPage(Gtk.Overlay):
             from . import api
             api.get_torrents_streamed(
                 item_id,
-                self.media_type,
+                req_media_type,
                 sel_season,
                 sel_episode,
                 callback=lambda t, is_cached=False, is_complete=False: GLib.idle_add(on_stream_batch, t, is_cached, is_complete),
-                title=self.movie_stub.get("title")
+                title=target_title
             )
         threading.Thread(target=fetch, daemon=True).start()
 

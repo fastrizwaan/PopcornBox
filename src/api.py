@@ -566,25 +566,6 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         if not base_url.endswith("/"): base_url += "/"
         
         meta_url = f"{base_url}meta/{matched_type}/{urllib.parse.quote(str(imdb_id))}.json"
-            
-        if addon_prefixes is not None:
-            if not any(str(imdb_id).startswith(p) for p in addon_prefixes):
-                return None
-                
-        if resources is not None:
-            has_meta = False
-            for r in resources:
-                if isinstance(r, str) and r == "meta":
-                    has_meta = True
-                elif isinstance(r, dict) and r.get("name") == "meta":
-                    has_meta = True
-            if not has_meta:
-                return None
-        
-        base_url = m_url.rsplit("manifest.json", 1)[0] if "manifest.json" in m_url else m_url
-        if not base_url.endswith("/"): base_url += "/"
-        
-        meta_url = f"{base_url}meta/{c_type}/{urllib.parse.quote(str(imdb_id))}.json"
         data = _get_cached_request(meta_url, max_age_hours=168)
         
         if data and data.get("meta"):
@@ -596,10 +577,13 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             videos = []
             for v in cm.get("videos", []):
                 videos.append({
+                    "id": v.get("id", ""),
                     "season": v.get("season", 1),
                     "episode": v.get("episode", 1),
                     "title": v.get("title", ""),
-                    "overview": v.get("overview", "")
+                    "overview": v.get("overview", ""),
+                    "released": v.get("released", ""),
+                    "thumbnail": v.get("thumbnail", "")
                 })
             
             true_id = cm.get("imdb_id") or imdb_id
