@@ -4380,6 +4380,8 @@ class CineWindow(Adw.ApplicationWindow):
                 target_catalog_id = cat_obj["catalog_id"]
                 
             def do_search_category(media_type, section_attr, flowbox_attr):
+                if self._current_search_id != current_search_id:
+                    return
                 try:
                     def on_batch(batch):
                         if self._current_search_id == current_search_id and batch:
@@ -4394,10 +4396,13 @@ class CineWindow(Adw.ApplicationWindow):
                 except Exception as e:
                     logger.error(f"Search error ({media_type}): {e}")
 
-            threading.Thread(target=do_search_category, args=("movie", "search_movies_section", "search_movies_flowbox"), daemon=True).start()
-            threading.Thread(target=do_search_category, args=("series", "search_series_section", "search_series_flowbox"), daemon=True).start()
-            threading.Thread(target=do_search_category, args=("anime", "search_anime_section", "search_anime_flowbox"), daemon=True).start()
-            threading.Thread(target=do_search_category, args=("tv", "search_tv_section", "search_tv_flowbox"), daemon=True).start()
+            if not hasattr(self, "_search_pool"):
+                self._search_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+                
+            self._search_pool.submit(do_search_category, "movie", "search_movies_section", "search_movies_flowbox")
+            self._search_pool.submit(do_search_category, "series", "search_series_section", "search_series_flowbox")
+            self._search_pool.submit(do_search_category, "anime", "search_anime_section", "search_anime_flowbox")
+            self._search_pool.submit(do_search_category, "tv", "search_tv_section", "search_tv_flowbox")
             return False
 
         self.search_timeout_id = GLib.timeout_add(500, trigger_search)
