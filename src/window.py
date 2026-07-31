@@ -327,7 +327,8 @@ class MovieDetailsPage(Gtk.Overlay):
         self.row4_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.row4_box.set_margin_top(12)
         
-        self.watch_btn = Gtk.Button(label="WATCH IT NOW")
+        watch_label = "PLAY STREAM" if self.media_type in ["music", "radio", "live"] else "WATCH IT NOW"
+        self.watch_btn = Gtk.Button(label=watch_label)
         self.watch_btn.add_css_class("suggested-action")
         self.watch_btn.add_css_class("pill")
         self.watch_btn.set_size_request(160, 42)
@@ -774,7 +775,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 if eng.is_alive() and eng.item_id == item_id:
                     player.stop_engine_explicit(h)
         self.stop_btn.set_visible(False)
-        self.watch_btn.set_label("WATCH IT NOW")
+        watch_label = "PLAY STREAM" if self.media_type in ["music", "radio", "live"] else "WATCH IT NOW"
+        self.watch_btn.set_label(watch_label)
 
     def on_watch_clicked(self, btn):
         if not getattr(self, 'selected_torrent', None):
@@ -841,7 +843,8 @@ class MovieDetailsPage(Gtk.Overlay):
                         display_title = os.path.basename(stats.get("filePath"))
                     self.window._play_stream(url, display_title)
                     GLib.idle_add(self.stop_btn.set_visible, True)
-                    GLib.idle_add(self.watch_btn.set_label, "▶ Continue Watching")
+                    continue_label = "▶ Resume Stream" if self.media_type in ["music", "radio", "live"] else "▶ Continue Watching"
+                    GLib.idle_add(self.watch_btn.set_label, continue_label)
                 elif isinstance(stats, dict):
                     status_msg = stats.get("status", "Buffering...")
                     if hasattr(self, 'progress_label') and self.progress_label:
@@ -3312,10 +3315,10 @@ class CineWindow(Adw.ApplicationWindow):
             for addon in addons:
                 if not addon.get("enabled", True): continue
                 for t in addon.get("types", []):
-                    types_found.add(t)
+                    if t: types_found.add(str(t).lower())
                 for cat in addon.get("catalogs", []):
                     if cat.get("type"):
-                        types_found.add(cat.get("type"))
+                        types_found.add(str(cat.get("type")).lower())
             return types_found
 
         supported_types = _get_supported_types()
@@ -3324,23 +3327,32 @@ class CineWindow(Adw.ApplicationWindow):
         self.anime_inactive_btn_movies.set_visible(self.anime_supported)
         self.anime_inactive_btn_series.set_visible(self.anime_supported)
         
-        # Populate media type dropdown
+        # Build dynamic media types based on Stremio addons
         media_type_labels = ["Movies", "Series"]
         media_type_keys = ["movie", "series"]
-        if "channel" in supported_types:
-            media_type_labels.append("Channel")
-            media_type_keys.append("channel")
-        if "tv" in supported_types or "tvchannel" in supported_types:
-            media_type_labels.append("TV Channels")
-            media_type_keys.append("tv")
-        elif self.tv_supported and "channel" not in media_type_keys:
-            media_type_labels.append("TV Channels")
-            media_type_keys.append("tv")
-            
-        if self.anime_supported:
-            media_type_labels.append("Anime")
-            media_type_keys.append("anime")
-            
+        
+        known_mappings = [
+            (["tv", "channel", "tvchannel"], "tv", "TV Channels"),
+            (["anime"], "anime", "Anime"),
+            (["music", "radio"], "music", "Radio / Music"),
+            (["live"], "live", "Live Streams"),
+        ]
+
+        added_keys = set(media_type_keys)
+        
+        for check_list, key_name, label_name in known_mappings:
+            if any(t in supported_types for t in check_list):
+                if key_name not in added_keys:
+                    media_type_labels.append(label_name)
+                    media_type_keys.append(key_name)
+                    added_keys.add(key_name)
+
+        for t in sorted(supported_types):
+            if t not in added_keys and t not in ["movie", "movies", "series", "tv", "channel", "tvchannel", "anime", "music", "radio", "live"]:
+                media_type_labels.append(t.title())
+                media_type_keys.append(t)
+                added_keys.add(t)
+
         self.media_type_keys = media_type_keys
         self.media_type_dropdown.set_model(Gtk.StringList.new(media_type_labels))
         

@@ -9,6 +9,7 @@ import logging
 from . import database
 from .tmdb_helper import resolve_to_imdb_id
 import concurrent.futures
+import re
 
 DEFAULT_TRACKERS = [
     "udp://tracker.opentrackr.org:1337/announce",
@@ -118,6 +119,21 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
 def fetch_genre_counts(media_type="movie"):
     return {}
 
+def is_type_match(type1, type2):
+    if not type1 or not type2:
+        return False
+    t1 = str(type1).lower().strip()
+    t2 = str(type2).lower().strip()
+    if t1 == t2:
+        return True
+    tv_group = {"tv", "channel", "tvchannel"}
+    if t1 in tv_group and t2 in tv_group:
+        return True
+    music_group = {"music", "radio"}
+    if t1 in music_group and t2 in music_group:
+        return True
+    return False
+
 def get_available_catalogs(c_type="movie"):
     from . import database
     catalogs = []
@@ -135,10 +151,7 @@ def get_available_catalogs(c_type="movie"):
         addon_catalogs = addon.get("catalogs", [])
         for cat in addon_catalogs:
             cat_type = cat.get("type")
-            is_match = (cat_type == c_type)
-            if c_type in ["tv", "channel", "tvchannel"] and cat_type in ["tv", "channel", "tvchannel"]:
-                is_match = True
-            if is_match:
+            if is_type_match(cat_type, c_type):
                 genres = []
                 extra = cat.get("extra") or []
                 for ex in extra:
@@ -182,7 +195,7 @@ def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
     search_cats = []
     for cat in catalogs:
         cat_type = cat.get("type")
-        if cat_type and cat_type != c_type:
+        if cat_type and not is_type_match(cat_type, c_type):
             continue
             
         cat_id = cat.get("id", "")
@@ -334,10 +347,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             if m_url and (m_url == catalog_url or catalog_url.startswith(m_url.rsplit("manifest.json", 1)[0])):
                 for cat in a.get("catalogs", []):
                     cat_type = cat.get("type")
-                    is_match = (cat.get("id") == catalog_id) and (cat_type == c_type)
-                    if cat.get("id") == catalog_id and c_type in ["tv", "channel", "tvchannel"] and cat_type in ["tv", "channel", "tvchannel"]:
-                        is_match = True
-                    if is_match:
+                    if str(cat.get("id")) == str(catalog_id) and is_type_match(cat_type, c_type):
                         actual_cat_type = cat_type or c_type
                         break
 
@@ -399,11 +409,11 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
         print(f"[CACHE PROTECT] Preserved existing poster for {imdb_id}: {existing_poster}")
     else:
         current_poster = res.get("medium_cover_image", "")
-        if not current_poster:
+        if not current_poster and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
             # 1. Try TMDB addon first
             try:
                 c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
-                tmdb_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{imdb_id}.json"
+                tmdb_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{urllib.parse.quote(str(imdb_id))}.json"
                 tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168, timeout=4)
                 if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
                     res["medium_cover_image"] = tmdb_data["meta"]["poster"]
@@ -416,7 +426,6 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
             # 2. Try IMDb API by title search
             if not res.get("medium_cover_image") and title:
                 try:
-                    import urllib.request, json, urllib.parse, re
                     clean_title = re.sub(r'[^a-zA-Z0-9]', '_', title).lower()
                     first_char = clean_title[0] if clean_title else "t"
                     imdb_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{urllib.parse.quote(clean_title)}.json"
@@ -445,6 +454,29 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
     return res
 
 def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True, poster=None):
+    if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
+        parts = str(imdb_id).split("||")
+        stream_url = parts[0]
+        item_title = parts[1] if len(parts) > 1 and parts[1] else (title or "Radio Stream")
+        item_genre = parts[2] if len(parts) > 2 else ""
+        item_poster = parts[3] if len(parts) > 3 and parts[3] else (poster or "")
+        
+        res = {
+            "id": imdb_id,
+            "title": item_title,
+            "year": "",
+            "medium_cover_image": item_poster,
+            "background": "",
+            "description": f"Live Radio / Stream ({item_genre})" if item_genre else "Live Radio / Stream",
+            "runtime": "Live",
+            "genre": item_genre,
+            "imdbRating": "",
+            "trailer": None,
+            "videos": []
+        }
+        database.save_cached_metadata(imdb_id, media_type, res)
+        return res
+
     # Resolve TMDB ids to IMDB format if needed
     imdb_id = resolve_to_imdb_id(imdb_id, media_type, title)
 
@@ -507,16 +539,13 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 
         matched_type = c_type
         if addon_types is not None:
-            if c_type not in addon_types:
-                if c_type in ["tv", "channel", "tvchannel"]:
-                    matched_type = next((t for t in addon_types if t in ["tv", "channel", "tvchannel"]), None)
-                    if not matched_type:
-                        return None
-                elif c_type == "anime":
-                    matched_type = next((t for t in addon_types if t in ["anime", "series", "movie"]), None)
-                    if not matched_type:
-                        return None
-                else:
+            type_match = next((t for t in addon_types if is_type_match(t, c_type)), None)
+            if type_match:
+                matched_type = type_match
+            else:
+                has_cat_match = any(is_type_match(cat.get("type"), c_type) for cat in addon.get("catalogs", []))
+                has_prefix_match = addon_prefixes and any(str(imdb_id).startswith(p) for p in addon_prefixes)
+                if not (has_cat_match or has_prefix_match):
                     return None
             
         if addon_prefixes is not None:
@@ -536,7 +565,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         base_url = m_url.rsplit("manifest.json", 1)[0] if "manifest.json" in m_url else m_url
         if not base_url.endswith("/"): base_url += "/"
         
-        meta_url = f"{base_url}meta/{matched_type}/{imdb_id}.json"
+        meta_url = f"{base_url}meta/{matched_type}/{urllib.parse.quote(str(imdb_id))}.json"
             
         if addon_prefixes is not None:
             if not any(str(imdb_id).startswith(p) for p in addon_prefixes):
@@ -555,7 +584,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         base_url = m_url.rsplit("manifest.json", 1)[0] if "manifest.json" in m_url else m_url
         if not base_url.endswith("/"): base_url += "/"
         
-        meta_url = f"{base_url}meta/{c_type}/{imdb_id}.json"
+        meta_url = f"{base_url}meta/{c_type}/{urllib.parse.quote(str(imdb_id))}.json"
         data = _get_cached_request(meta_url, max_age_hours=168)
         
         if data and data.get("meta"):
@@ -578,7 +607,6 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 m_title = cm.get("name")
                 if m_title:
                     try:
-                        import urllib.parse
                         search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(m_title)}.json"
                         search_data = _get_cached_request(search_url, max_age_hours=168)
                         if search_data and "metas" in search_data:
@@ -668,20 +696,19 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
     if cinemeta_res:
         return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
 
-    if title and title != "Loading...":
-        return {
-            "id": imdb_id,
-            "title": title,
-            "year": "",
-            "medium_cover_image": "",
-            "background": "",
-            "description": "Synopsis temporarily unavailable.",
-            "runtime": "",
-            "genre": "",
-            "imdbRating": "",
-            "trailer": None,
-            "videos": []
-        }
+    return _save_and_return_meta({
+        "id": imdb_id,
+        "title": title or "Media Item",
+        "year": "",
+        "medium_cover_image": poster or "",
+        "background": "",
+        "description": "Synopsis temporarily unavailable.",
+        "runtime": "",
+        "genre": "",
+        "imdbRating": "",
+        "trailer": None,
+        "videos": []
+    }, imdb_id, media_type, title, poster=poster)
 
     return {}
 
@@ -828,6 +855,17 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
     if not imdb_id:
         return []
         
+    if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
+        parts = str(imdb_id).split("||")
+        stream_url = parts[0]
+        item_title = parts[1] if len(parts) > 1 and parts[1] else "Live Stream"
+        return [{
+            "url": stream_url,
+            "name": "Live Stream",
+            "title": item_title,
+            "behaviorHints": {"filename": "stream.mp3"}
+        }]
+        
     cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
     if use_cache:
         cached = database.get_cached_streams(cache_key, max_age_hours=24)
@@ -901,9 +939,9 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
             base_url += '/'
             
         if actual_media == "series" and season is not None and episode is not None:
-            url = f"{base_url}stream/series/{imdb_id}:{season}:{episode}.json"
+            url = f"{base_url}stream/series/{urllib.parse.quote(str(imdb_id))}:{season}:{episode}.json"
         else:
-            url = f"{base_url}stream/{actual_media}/{imdb_id}.json"
+            url = f"{base_url}stream/{actual_media}/{urllib.parse.quote(str(imdb_id))}.json"
             
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
@@ -1004,6 +1042,19 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if callback: callback([], is_cached=False, is_complete=True)
         return []
 
+    if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
+        parts = str(imdb_id).split("||")
+        stream_url = parts[0]
+        item_title = parts[1] if len(parts) > 1 and parts[1] else (title or "Live Stream")
+        stream_obj = [{
+            "url": stream_url,
+            "name": "Live Stream",
+            "title": item_title,
+            "behaviorHints": {"filename": "stream.mp3"}
+        }]
+        if callback: callback(stream_obj, is_cached=False, is_complete=True)
+        return stream_obj
+
     imdb_id = resolve_to_imdb_id(imdb_id, media_type, title)
 
     cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
@@ -1055,16 +1106,13 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 
         matched_media_type = actual_media
         if addon_types is not None:
-            if actual_media not in addon_types:
-                if actual_media in ["tv", "channel", "tvchannel"]:
-                    matched_media_type = next((t for t in addon_types if t in ["tv", "channel", "tvchannel"]), None)
-                    if not matched_media_type:
-                        return addon.get("name", "Unknown"), []
-                elif actual_media == "anime":
-                    matched_media_type = next((t for t in addon_types if t in ["anime", "series", "movie"]), None)
-                    if not matched_media_type:
-                        return addon.get("name", "Unknown"), []
-                else:
+            type_match = next((t for t in addon_types if is_type_match(t, actual_media)), None)
+            if type_match:
+                matched_media_type = type_match
+            else:
+                has_cat_match = any(is_type_match(cat.get("type"), actual_media) for cat in addon.get("catalogs", []))
+                has_prefix_match = addon_prefixes and any(str(imdb_id).startswith(p) for p in addon_prefixes)
+                if not (has_cat_match or has_prefix_match):
                     return addon.get("name", "Unknown"), []
             
         if addon_prefixes is not None:
@@ -1089,9 +1137,9 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             base_url += '/'
             
         if matched_media_type == "series" and season is not None and episode is not None:
-            url = f"{base_url}stream/series/{imdb_id}:{season}:{episode}.json"
+            url = f"{base_url}stream/series/{urllib.parse.quote(str(imdb_id))}:{season}:{episode}.json"
         else:
-            url = f"{base_url}stream/{matched_media_type}/{imdb_id}.json"
+            url = f"{base_url}stream/{matched_media_type}/{urllib.parse.quote(str(imdb_id))}.json"
             
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
