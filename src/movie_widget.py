@@ -150,9 +150,15 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
             print(f"Failed to load image {url}: {e}")
             if on_error: GLib.idle_add(on_error)
     if os.path.exists(cache_file) and os.path.getsize(cache_file) > 0:
-        _disk_pool.submit(fetch_image)
+        try:
+            _disk_pool.submit(fetch_image)
+        except RuntimeError:
+            pass  # Pool was shut down between reference capture and submit
     else:
-        _image_pool.submit(fetch_image)
+        try:
+            _image_pool.submit(fetch_image)
+        except RuntimeError:
+            pass  # Pool was shut down between reference capture and submit
 
 def _apply_pixbuf(picture_widget, pixbuf):
     try:

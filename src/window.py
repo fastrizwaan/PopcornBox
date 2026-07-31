@@ -3314,21 +3314,10 @@ class CineWindow(Adw.ApplicationWindow):
                 self._on_search_changed(self.search_entry)
         self.search_catalog_dropdown.connect("notify::selected", on_search_catalog_changed)
         
-        # Check anime support from addons
-        def _check_anime_support():
-            addons = api.database.get_addons()
-            for addon in addons:
-                if not addon.get("enabled", True): continue
-                # check types
-                types = addon.get("types", [])
-                if "anime" in types: return True
-                # check catalogs explicitly
-                for cat in addon.get("catalogs", []):
-                    if cat.get("type") == "anime": return True
-            return False
-
-        def _get_supported_types():
-            addons = api.database.get_addons()
+        # Load addons ONCE and reuse for all checks below
+        all_addons = api.database.get_addons()
+        
+        def _get_supported_types(addons):
             types_found = set()
             for addon in addons:
                 if not addon.get("enabled", True): continue
@@ -3339,7 +3328,7 @@ class CineWindow(Adw.ApplicationWindow):
                         types_found.add(str(cat.get("type")).lower())
             return types_found
 
-        supported_types = _get_supported_types()
+        supported_types = _get_supported_types(all_addons)
         self.anime_supported = ("anime" in supported_types)
         self.tv_supported = any(t in supported_types for t in ["tv", "channel", "tvchannel"])
         self.anime_inactive_btn_movies.set_visible(self.anime_supported)

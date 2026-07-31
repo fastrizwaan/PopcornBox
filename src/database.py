@@ -9,7 +9,13 @@ _db_lock = threading.RLock()
 _cache_db_lock = threading.RLock()
 _db_corrupted = False
 
-import os
+# In-memory cache for data.json to avoid repeated file reads
+_json_cache = None
+_json_cache_valid = False
+
+# Persistent SQLite connection (reused across all cache calls)
+_cache_conn = None
+_cache_db_initialized = False
 
 if os.environ.get("FLATPAK_ID"):
     BASE_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "popcorn-box"
@@ -74,8 +80,10 @@ def _ensure_db():
             json.dump({"favorites": [], "watched": [], "history": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}, f, indent=4)
 
 def _read_db():
-    global _db_corrupted
+    global _db_corrupted, _json_cache, _json_cache_valid
     with _db_lock:
+        if _json_cache_valid and _json_cache is not None:
+            return _json_cache
         _ensure_db()
         try:
             with open(DB_FILE, "r") as f:
@@ -120,6 +128,8 @@ def _read_db():
                         migrated = True
                 if migrated:
                     _write_db(data)
+            _json_cache = data
+            _json_cache_valid = True
             return data
         except Exception as e:
             print(f"Failed to read database: {e}. Refusing future writes to prevent corruption.")
@@ -127,6 +137,7 @@ def _read_db():
             return {"favorites": [], "watched": [], "history": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}
 
 def _write_db(data):
+    global _json_cache, _json_cache_valid
     if _db_corrupted:
         print("Database read failed previously. Refusing to write to avoid overwriting with defaults.")
         return
@@ -137,7 +148,11 @@ def _write_db(data):
             with open(temp_file, "w") as f:
                 json.dump(data, f, indent=4)
             temp_file.replace(DB_FILE)
+            # Update in-memory cache with the data we just wrote
+            _json_cache = data
+            _json_cache_valid = True
         except Exception as e:
+            _json_cache_valid = False
             print(f"Error writing database: {e}")
 
 # --- Favorites ---
@@ -362,11 +377,15 @@ def set_addon_enabled(addon_id, enabled):
 # --- SQLite Metadata & Stream Cache ---
 
 def _get_cache_db():
+    """Return persistent SQLite connection, initializing schema once."""
+    global _cache_conn, _cache_db_initialized
+    if _cache_conn is not None and _cache_db_initialized:
+        return _cache_conn
     _ensure_db()
     db_path = CONFIG_DIR / "cache.db"
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("""
+    _cache_conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    _cache_conn.execute("PRAGMA journal_mode=WAL;")
+    _cache_conn.execute("""
         CREATE TABLE IF NOT EXISTS metadata_cache (
             id TEXT PRIMARY KEY,
             media_type TEXT,
@@ -374,15 +393,16 @@ def _get_cache_db():
             updated_at REAL
         )
     """)
-    conn.execute("""
+    _cache_conn.execute("""
         CREATE TABLE IF NOT EXISTS stream_cache (
             cache_key TEXT PRIMARY KEY,
             data TEXT,
             updated_at REAL
         )
     """)
-    conn.commit()
-    return conn
+    _cache_conn.commit()
+    _cache_db_initialized = True
+    return _cache_conn
 
 def get_cached_metadata(item_id, media_type=None):
     if not item_id:
@@ -393,7 +413,6 @@ def get_cached_metadata(item_id, media_type=None):
             cursor = conn.cursor()
             cursor.execute("SELECT data FROM metadata_cache WHERE id = ?", (str(item_id),))
             row = cursor.fetchone()
-            conn.close()
             if row and row[0]:
                 return json.loads(row[0])
     except Exception as e:
@@ -412,7 +431,6 @@ def save_cached_metadata(item_id, media_type, details):
                 (str(item_id), str(media_type or "movie"), json.dumps(details), time.time())
             )
             conn.commit()
-            conn.close()
     except Exception as e:
         print(f"Error saving metadata cache: {e}")
 
@@ -425,7 +443,6 @@ def get_cached_streams(cache_key, max_age_hours=24):
             cursor = conn.cursor()
             cursor.execute("SELECT data, updated_at FROM stream_cache WHERE cache_key = ?", (str(cache_key),))
             row = cursor.fetchone()
-            conn.close()
             if row and row[0]:
                 updated_at = row[1]
                 if (time.time() - updated_at) / 3600 < max_age_hours:
@@ -446,7 +463,6 @@ def save_cached_streams(cache_key, streams):
                 (str(cache_key), json.dumps(streams), time.time())
             )
             conn.commit()
-            conn.close()
     except Exception as e:
         print(f"Error saving stream cache: {e}")
 
@@ -459,7 +475,6 @@ def delete_cached_metadata(item_id):
             cursor = conn.cursor()
             cursor.execute("DELETE FROM metadata_cache WHERE id = ?", (str(item_id),))
             conn.commit()
-            conn.close()
     except Exception as e:
         print(f"Error deleting cached metadata: {e}")
 
@@ -472,7 +487,6 @@ def delete_cached_streams(cache_key):
             cursor = conn.cursor()
             cursor.execute("DELETE FROM stream_cache WHERE cache_key = ?", (str(cache_key),))
             conn.commit()
-            conn.close()
     except Exception as e:
         print(f"Error deleting cached streams: {e}")
 

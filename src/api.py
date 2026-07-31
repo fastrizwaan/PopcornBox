@@ -97,9 +97,14 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
         with urllib.request.urlopen(req, timeout=timeout) as response:
             data_str = response.read().decode('utf-8')
         data = json.loads(data_str)
-        # Save to cache
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            f.write(data_str)
+        # Save to cache atomically (temp file + rename)
+        try:
+            temp_file = cache_file + '.tmp'
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                f.write(data_str)
+            os.replace(temp_file, cache_file)
+        except Exception:
+            pass
         return data
     except urllib.error.HTTPError as e:
         print(f"HTTP Error fetching items from {url}: {e}")
@@ -332,7 +337,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                         "type": "tv"
                     })
             if genre and genre != "All":
-                movies = [m for m in movies if genre.lower() in str(ch.get("categories", [])).lower()]
+                movies = [m for m in movies if genre.lower() in str(m.get("categories", [])).lower()]
             return movies[skip:skip+100]
 
         base_url = catalog_url
@@ -514,7 +519,8 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
     c_type = media_type
 
-    def fetch_addon_meta(addon):
+    def fetch_addon_meta(addon_orig):
+        addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
         if not addon.get("enabled", True): return None
         m_url = addon.get("manifest_url", "")
         if not m_url or m_url.startswith("builtin:"): return None
@@ -693,7 +699,6 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         "trailer": None,
         "videos": []
     }, imdb_id, media_type, title, poster=poster)
-
     return {}
 
 def find_episode_file_index(files, season, episode):
@@ -750,7 +755,7 @@ def process_raw_streams(all_streams):
         return []
     import re
     valid_streams = []
-    seen_hashes = set()
+    seen_hashes = {}  # {stream_id: index in valid_streams} for O(1) duplicate lookup
     for s in all_streams:
         is_http = bool(s.get("url"))
         if not s.get("infoHash") and not is_http:
@@ -758,13 +763,11 @@ def process_raw_streams(all_streams):
             
         stream_id = s.get("infoHash", "").lower() if not is_http else hashlib.md5(s["url"].encode()).hexdigest()
         if stream_id in seen_hashes:
-            for vs in valid_streams:
-                if vs["hash"].lower() == stream_id:
-                    if s.get("addon_name") and s["addon_name"] not in vs["addon_names"]:
-                        vs["addon_names"].append(s["addon_name"])
-                    break
+            vs = valid_streams[seen_hashes[stream_id]]
+            if s.get("addon_name") and s["addon_name"] not in vs["addon_names"]:
+                vs["addon_names"].append(s["addon_name"])
             continue
-        seen_hashes.add(stream_id)
+        seen_hashes[stream_id] = len(valid_streams)
         
         desc_str = s.get("title") or s.get("description") or ""
         name_str = s.get("name") or ""
@@ -864,7 +867,8 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
         
     stremio_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://")]
     
-    def fetch_from_addon(addon):
+    def fetch_from_addon(addon_orig):
+        addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
         resources = addon.get("resources")
         manifest_url = addon.get("manifest_url", "")
         addon_types = addon.get("types")
@@ -1054,7 +1058,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         
     stremio_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://")]
 
-    def fetch_from_addon(addon):
+    def fetch_from_addon(addon_orig):
+        addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
         resources = addon.get("resources")
         manifest_url = addon.get("manifest_url", "")
         addon_types = addon.get("types")
