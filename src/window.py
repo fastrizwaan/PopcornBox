@@ -833,6 +833,13 @@ class MovieDetailsPage(Gtk.Overlay):
                 addons_suffix = f" [{addons_str}]" if addons_str else ""
                 
                 raw_title = t.get('stream_title', '').strip() or t.get('size', 'Unknown Size')
+                
+                ping_status = t.get('ping_status')
+                if ping_status is True:
+                    raw_title = f"✅ {raw_title}"
+                elif ping_status is False:
+                    raw_title = f"⛔ {raw_title}"
+                    
                 lines = [line.strip() for line in raw_title.splitlines() if line.strip()]
                 cleaned = []
                 for l in lines:
@@ -856,28 +863,27 @@ class MovieDetailsPage(Gtk.Overlay):
             
             def live_check(target_list, abort_event):
                 from . import api
-                import time
-                i = 0
-                while i < len(target_list):
-                    if abort_event.is_set():
-                        break
-                    t = target_list[i]
-                    if not t.get('is_http'):
-                        i += 1
-                        continue
-                        
-                    res = api._ping_stream_url(dict(t)) # check a copy to avoid dict modification errors
-                    if abort_event.is_set():
-                        break
-                        
-                    if res.get('is_working'):
-                        # Stream works, keep it in its sorted position and move to the next
-                        i += 1
-                    else:
-                        # Dead link, discard it from the list
-                        target_list.pop(i)
-                        GLib.idle_add(update_file_dropdown_ui, target_list)
-                        # don't increment i so the next element shifts into the current index
+                import concurrent.futures
+                
+                http_streams = [t for t in target_list if t.get('is_http')]
+                if not http_streams:
+                    return
+                    
+                def check_stream(t):
+                    if abort_event.is_set(): return
+                    res = api._ping_stream_url(dict(t))
+                    t['ping_status'] = res.get('is_working', False)
+                    
+                def do_update():
+                    target_list.sort(key=lambda x: 0 if x.get('ping_status') is True else (1 if x.get('ping_status') is None else 2))
+                    update_file_dropdown_ui(target_list)
+                    
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                    futures = [executor.submit(check_stream, t) for t in http_streams]
+                    for future in concurrent.futures.as_completed(futures):
+                        if abort_event.is_set():
+                            break
+                        GLib.idle_add(do_update)
             
             if t_list and any(t.get('is_http') for t in t_list):
                 threading.Thread(target=live_check, args=(t_list, self._live_check_abort_event), daemon=True).start()
