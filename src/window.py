@@ -4253,7 +4253,16 @@ class CineWindow(Adw.ApplicationWindow):
             
             def check_online(url, lbl):
                 from . import api
-                is_on = api.is_addon_online(url)
+                import urllib.request
+                if url.startswith("builtin:"):
+                    is_on = True
+                else:
+                    try:
+                        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                        with urllib.request.urlopen(req, timeout=3) as resp:
+                            is_on = resp.getcode() == 200
+                    except Exception:
+                        is_on = False
                 api.set_addon_online_status(url, is_on)
                 GLib.idle_add(lbl.set_label, "🟢" if is_on else "🔴")
                 
