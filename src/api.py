@@ -1064,10 +1064,29 @@ def _ping_stream_url(stream):
         for k, v in bh.get("headers", {}).items():
             headers[k] = v
     
-    # Retry up to 3 times as requested
     import time
+    import subprocess
+    import shutil
+    
+    has_ffprobe = bool(shutil.which('ffprobe'))
+    
     for attempt in range(3):
-        # 1. Try HEAD request with 3.0s timeout
+        if has_ffprobe:
+            try:
+                cmd = ['ffprobe', '-v', 'error']
+                headers_str = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
+                if headers_str:
+                    cmd.extend(['-headers', headers_str])
+                cmd.extend(['-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', url])
+                
+                res = subprocess.run(cmd, capture_output=True, timeout=3.5)
+                if res.returncode == 0:
+                    stream["is_working"] = True
+                    return stream
+            except Exception:
+                pass
+                
+        # Fallback to urllib if ffprobe fails (or isn't available)
         try:
             req = urllib.request.Request(url, headers=headers, method='HEAD')
             with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -1077,7 +1096,6 @@ def _ping_stream_url(stream):
         except Exception:
             pass
             
-        # 2. Try GET request with Range bytes=0-100 and 3.0s timeout
         try:
             req = urllib.request.Request(url, headers=dict(headers, Range='bytes=0-100'))
             with urllib.request.urlopen(req, timeout=3.0) as resp:
