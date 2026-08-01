@@ -312,7 +312,9 @@ class MovieDetailsPage(Gtk.Overlay):
         self.source_segmented_box.set_valign(Gtk.Align.CENTER)
         
         self.source_direct_btn = Gtk.ToggleButton(label="⚡ Direct Streams")
+        self.source_direct_btn.set_size_request(-1, 38)
         self.source_torrent_btn = Gtk.ToggleButton(label="🧲 Torrents")
+        self.source_torrent_btn.set_size_request(-1, 38)
         self.source_torrent_btn.set_group(self.source_direct_btn)
         
         self.source_segmented_box.append(self.source_direct_btn)
@@ -349,7 +351,8 @@ class MovieDetailsPage(Gtk.Overlay):
         
         self.quality_row_box.append(self.source_segmented_box)
         
-        self.quality_button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.quality_button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.quality_button_box.add_css_class("linked")
         self.quality_button_box.set_valign(Gtk.Align.CENTER)
         
         self.quality_row_box.append(self.quality_button_box)
@@ -857,7 +860,7 @@ class MovieDetailsPage(Gtk.Overlay):
             if t_list:
                 t_list.sort(key=_stream_sort_key, reverse=True)
                 btn = Gtk.Button(label=q_label)
-                btn.add_css_class('pill')
+                btn.set_size_request(-1, 38)
                 
                 def make_click_cb(b, label, tl):
                     def cb(*args):
