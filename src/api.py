@@ -343,6 +343,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                                     if str(imdb_id).startswith("tt") and not str(matched_item["id"]).startswith("tt"):
                                         matched_item.setdefault("alias_ids", []).insert(0, imdb_id)
                                         matched_item["id"] = imdb_id
+                                        if m.get("type"):
+                                            matched_item["type"] = m.get("type")
                                     else:
                                         matched_item.setdefault("alias_ids", []).append(imdb_id)
                                     seen_ids.add(imdb_id)
@@ -361,7 +363,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                                 "year": year,
                                 "medium_cover_image": poster_url,
                                 "poster": poster_url,
-                                "type": media_type
+                                "type": m.get("type") or media_type
                             }
                             seen_titles.setdefault(title_lower, []).append(item_obj)
                             items.append(item_obj)
@@ -446,7 +448,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     "year": year,
                     "medium_cover_image": poster,
                     "poster": poster,
-                    "type": media_type
+                    "type": m.get("type") or media_type
                 })
             return movies
 
