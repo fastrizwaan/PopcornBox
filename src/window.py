@@ -303,14 +303,16 @@ class MovieDetailsPage(Gtk.Overlay):
         self.row2_box.set_visible(False)
         self.info_vbox.append(self.row2_box)
         
-        self.source_segmented_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.quality_row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        self.quality_row_box.set_valign(Gtk.Align.CENTER)
+        self.quality_row_box.set_margin_top(12)
+        
+        self.source_segmented_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.source_segmented_box.add_css_class("linked")
         self.source_segmented_box.set_valign(Gtk.Align.CENTER)
-        self.source_segmented_box.set_margin_top(12)
         
         self.source_direct_btn = Gtk.ToggleButton(label="⚡ Direct Streams")
-        self.source_direct_btn.add_css_class("pill")
         self.source_torrent_btn = Gtk.ToggleButton(label="🧲 Torrents")
-        self.source_torrent_btn.add_css_class("pill")
         self.source_torrent_btn.set_group(self.source_direct_btn)
         
         self.source_segmented_box.append(self.source_direct_btn)
@@ -344,13 +346,14 @@ class MovieDetailsPage(Gtk.Overlay):
             
         self.source_direct_btn.connect("toggled", on_source_toggled)
         self.source_torrent_btn.connect("toggled", on_source_toggled)
-        self.info_vbox.append(self.source_segmented_box)
+        
+        self.quality_row_box.append(self.source_segmented_box)
         
         self.quality_button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.quality_button_box.set_valign(Gtk.Align.CENTER)
-        self.quality_button_box.set_margin_top(12)
-        self.quality_button_box.set_visible(False)
-        self.info_vbox.append(self.quality_button_box)
+        
+        self.quality_row_box.append(self.quality_button_box)
+        self.info_vbox.append(self.quality_row_box)
         
         self.row3_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.row3_box.set_margin_top(8)
@@ -738,7 +741,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self.quality_button_box.remove(child)
             
         if not self.torrents:
-            self.quality_button_box.set_visible(False)
+            self.quality_row_box.set_visible(False)
             self.row3_box.set_visible(False)
             self.row4_box.set_visible(True)
             self.watch_btn.set_visible(False)
@@ -756,13 +759,15 @@ class MovieDetailsPage(Gtk.Overlay):
             filtered_torrents = self.torrents
 
         if not filtered_torrents:
-            self.quality_button_box.set_visible(True)
+            self.quality_row_box.set_visible(True)
+            self.quality_button_box.set_visible(False)
             self.row3_box.set_visible(True)
             self.file_dropdown.set_model(Gtk.StringList.new(["No streams available for selected source filter"]))
             self.file_dropdown.set_selected(0)
             self.watch_btn.set_visible(False)
             return
 
+        self.quality_row_box.set_visible(True)
         self.quality_button_box.set_visible(True)
         self.row3_box.set_visible(True)
         self.row4_box.set_visible(True)
