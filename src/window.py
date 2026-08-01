@@ -4232,15 +4232,10 @@ class CineWindow(Adw.ApplicationWindow):
             manifest_url = addon.get("manifest_url", "")
             
             def check_online(url, lbl):
-                try:
-                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=3) as resp:
-                        if resp.status == 200:
-                            GLib.idle_add(lbl.set_label, "🟢")
-                            return
-                except Exception:
-                    pass
-                GLib.idle_add(lbl.set_label, "🔴")
+                from . import api
+                is_on = api.is_addon_online(url)
+                api.set_addon_online_status(url, is_on)
+                GLib.idle_add(lbl.set_label, "🟢" if is_on else "🔴")
                 
             if manifest_url:
                 threading.Thread(target=check_online, args=(manifest_url, status_label), daemon=True).start()

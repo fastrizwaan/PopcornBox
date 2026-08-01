@@ -9,6 +9,7 @@ import logging
 from . import database
 from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids
 import concurrent.futures
+import threading
 import re
 
 DEFAULT_TRACKERS = [
@@ -139,6 +140,22 @@ def is_type_match(type1, type2):
         return True
     return False
 
+_ADDON_ONLINE_STATUS = {}
+_ADDON_ONLINE_LOCK = threading.Lock()
+
+def set_addon_online_status(manifest_url, is_online):
+    if not manifest_url: return
+    with _ADDON_ONLINE_LOCK:
+        _ADDON_ONLINE_STATUS[manifest_url] = is_online
+
+def is_addon_online(manifest_url):
+    if not manifest_url or manifest_url.startswith("builtin:"):
+        return True
+    with _ADDON_ONLINE_LOCK:
+        if manifest_url in _ADDON_ONLINE_STATUS:
+            return _ADDON_ONLINE_STATUS[manifest_url]
+    return True
+
 def get_available_catalogs(c_type="movie"):
     from . import database
     catalogs = []
@@ -150,6 +167,9 @@ def get_available_catalogs(c_type="movie"):
         if not manifest_url or manifest_url.startswith("builtin:"):
             continue
             
+        if not is_addon_online(manifest_url):
+            continue
+
         base_url = manifest_url.rsplit("manifest.json", 1)[0]
         if not base_url.endswith("/"): base_url += "/"
             
@@ -188,6 +208,15 @@ def get_available_catalogs(c_type="movie"):
                     "genres": genres,
                     "type": cat_type or c_type
                 })
+    if c_type == "anime":
+        def get_anime_priority(cat):
+            n = (str(cat.get("addon_name")) + " " + str(cat.get("display_name"))).lower()
+            if "animestream" in n: return 0
+            if "anime kitsu" in n or "kitsu" in n: return 1
+            if "onlyanimes" in n: return 2
+            if "anime" in n: return 3
+            return 4
+        catalogs.sort(key=get_anime_priority)
     return catalogs
 
 def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
