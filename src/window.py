@@ -883,6 +883,9 @@ class MovieDetailsPage(Gtk.Overlay):
                 threading.Thread(target=live_check, args=(t_list, self._live_check_abort_event), daemon=True).start()
             
         saved_label = getattr(self, 'user_selected_quality', None)
+        if not saved_label:
+            from . import database
+            saved_label = database.get_setting("preferred_quality", None)
         target_btn = None
         target_t_list = None
         
@@ -907,6 +910,8 @@ class MovieDetailsPage(Gtk.Overlay):
                     def cb(*args):
                         if b.get_active():
                             self.user_selected_quality = label
+                            from . import database
+                            database.set_setting("preferred_quality", label)
                             on_quality_btn_clicked(b, tl)
                     return cb
                     
