@@ -822,8 +822,8 @@ def process_raw_streams(all_streams):
     for s in all_streams:
         stream_url = s.get("url") or s.get("externalUrl") or ""
         info_hash = (s.get("infoHash") or "").lower()
-        is_http = bool(stream_url)
-        if not info_hash and not is_http:
+        is_http = bool(stream_url) and not bool(info_hash)
+        if not info_hash and not stream_url:
             continue
 
         raw_id = info_hash if not is_http else hashlib.md5(stream_url.encode()).hexdigest()

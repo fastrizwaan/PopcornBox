@@ -327,16 +327,24 @@ class MovieDetailsPage(Gtk.Overlay):
         self.source_idx = database.get_setting("preferred_source_idx", 2)
         if self.source_idx == 1:
             self.source_direct_btn.set_active(True)
+            self.source_direct_btn.set_label("⚡ Direct Streams")
+            self.source_torrent_btn.set_label("🧲")
         else:
             self.source_idx = 2
             self.source_torrent_btn.set_active(True)
+            self.source_direct_btn.set_label("⚡")
+            self.source_torrent_btn.set_label("🧲 Torrents")
         
         def on_source_toggled(btn):
-            if not btn.get_active(): return
-            if btn == self.source_direct_btn:
+            if self.source_direct_btn.get_active():
                 self.source_idx = 1
-            elif btn == self.source_torrent_btn:
+                self.source_direct_btn.set_label("⚡ Direct Streams")
+                self.source_torrent_btn.set_label("🧲")
+            elif self.source_torrent_btn.get_active():
                 self.source_idx = 2
+                self.source_direct_btn.set_label("⚡")
+                self.source_torrent_btn.set_label("🧲 Torrents")
+            
             from . import database
             database.set_setting("preferred_source_idx", self.source_idx)
             self.update_quality_dropdown()
