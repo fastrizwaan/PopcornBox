@@ -915,9 +915,10 @@ class MovieDetailsPage(Gtk.Overlay):
                 def make_click_cb(b, label, tl):
                     def cb(*args):
                         if b.get_active():
-                            self.user_selected_quality = label
-                            from . import database
-                            database.set_setting("preferred_quality", label)
+                            if not getattr(self, '_programmatic_quality_switch', False):
+                                self.user_selected_quality = label
+                                from . import database
+                                database.set_setting("preferred_quality", label)
                             on_quality_btn_clicked(b, tl)
                     return cb
                     
@@ -939,11 +940,15 @@ class MovieDetailsPage(Gtk.Overlay):
                     target_t_list = quality_groups[q_label]
                     break
                     
-        if target_btn and target_t_list:
-            if not target_btn.get_active():
-                target_btn.set_active(True)
-            else:
-                on_quality_btn_clicked(target_btn, target_t_list)
+        self._programmatic_quality_switch = True
+        try:
+            if target_btn and target_t_list:
+                if not target_btn.get_active():
+                    target_btn.set_active(True)
+                else:
+                    on_quality_btn_clicked(target_btn, target_t_list)
+        finally:
+            self._programmatic_quality_switch = False
 
     def on_trailer_clicked(self, trailer_url):
         if not trailer_url: return
