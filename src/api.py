@@ -1058,20 +1058,20 @@ def _ping_stream_url(stream):
     # Retry up to 3 times as requested
     import time
     for attempt in range(3):
-        # 1. Try HEAD request with 2.5s timeout
+        # 1. Try HEAD request with 1.5s timeout
         try:
             req = urllib.request.Request(url, headers=headers, method='HEAD')
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
                 if resp.status < 400:
                     stream["is_working"] = True
                     return stream
         except Exception:
             pass
             
-        # 2. Try GET request with Range bytes=0-100 and 2.5s timeout
+        # 2. Try GET request with Range bytes=0-100 and 1.5s timeout
         try:
             req = urllib.request.Request(url, headers=dict(headers, Range='bytes=0-100'))
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
                 if resp.status < 400:
                     stream["is_working"] = True
                     return stream
@@ -1079,7 +1079,7 @@ def _ping_stream_url(stream):
             pass
             
         if attempt < 2:
-            time.sleep(0.5)
+            time.sleep(0.3)
 
     stream["is_working"] = False
     return stream
@@ -1091,7 +1091,7 @@ def ping_and_filter_streams(streams):
     if not http_streams:
         return streams
         
-    num_workers = min(len(http_streams), 15)
+    num_workers = min(len(http_streams), 60)
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
         results = list(executor.map(_ping_stream_url, http_streams))
         
