@@ -197,10 +197,18 @@ class DownloadItemRow(Gtk.Box):
         if not hasattr(window, '_play_stream'):
             return
             
+        title = self.download.get("name", "Downloaded Media")
+        if hasattr(window, 'show_player_loading'):
+            window.show_player_loading("Starting stream...", title)
+            
         def progress_callback(stats):
             url = stats.get("url")
             if url and hasattr(window, '_play_stream'):
-                window._play_stream(url)
+                window._play_stream(url, title)
+            elif isinstance(stats, dict) and hasattr(window, 'format_stream_stats'):
+                text = window.format_stream_stats(stats)
+                if hasattr(window, 'update_player_loading'):
+                    window.update_player_loading(text)
                 
         player.play_magnet(
             self.magnet, 

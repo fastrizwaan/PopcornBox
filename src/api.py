@@ -762,7 +762,6 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         "trailer": None,
         "videos": []
     }, imdb_id, media_type, title, poster=poster)
-    return {}
 
 def find_episode_file_index(files, season, episode):
     import re
@@ -972,10 +971,16 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
                     addon["idPrefixes"] = addon_prefixes
             except Exception:
                 pass
-                
-        if addon_types is not None and actual_media not in addon_types:
-            return addon.get("name", "Unknown"), []
-            
+
+        if addon_types is not None:
+            type_match = next((t for t in addon_types if is_type_match(t, actual_media)), None)
+            if not type_match:
+                # Allow if a catalog or idPrefix matches as fallback
+                has_cat_match = any(is_type_match(cat.get("type"), actual_media) for cat in addon.get("catalogs", []))
+                has_prefix_match = addon_prefixes and any(str(imdb_id).startswith(p) for p in addon_prefixes)
+                if not (has_cat_match or has_prefix_match):
+                    return addon.get("name", "Unknown"), []
+
         if addon_prefixes is not None:
             if not any(str(imdb_id).startswith(p) for p in addon_prefixes):
                 return addon.get("name", "Unknown"), []

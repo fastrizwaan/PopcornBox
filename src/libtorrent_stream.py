@@ -356,36 +356,36 @@ class TorrentStreamEngine:
                         except Exception:
                             pass
                             
+
                     # We have metadata, so we can select the target file immediately, even if we are verifying existing files!
-                    if True:
-                        self._select_target_file()
-                        try:
-                            self.handle.set_sequential_download(True)
-                        except Exception:
-                            pass
-                        self.ready_event.set()
+                    self._select_target_file()
+                    try:
+                        self.handle.set_sequential_download(True)
+                    except Exception:
+                        pass
+                    self.ready_event.set()
+                    
+                    # Prioritize the first 5MB and last 5MB for fast player probing/parsing and sequential start
+                    if self.target["size"] > 10 * 1024 * 1024:
+                        self.prioritize_range(0, 5 * 1024 * 1024, clear_old=False)
+                        self.prioritize_range(self.target["size"] - (5 * 1024 * 1024), self.target["size"] - 1, clear_old=False)
+                    else:
+                        self.prioritize_range(0, self.target["size"] - 1, clear_old=False)
                         
-                        # Prioritize the first 5MB and last 5MB for fast player probing/parsing and sequential start
-                        if self.target["size"] > 10 * 1024 * 1024:
-                            self.prioritize_range(0, 5 * 1024 * 1024, clear_old=False)
-                            self.prioritize_range(self.target["size"] - (5 * 1024 * 1024), self.target["size"] - 1, clear_old=False)
-                        else:
-                            self.prioritize_range(0, self.target["size"] - 1, clear_old=False)
-                            
-                        # Start strict sequential prefetcher for the front buffer
-                        threading.Thread(target=self._background_prefetcher, daemon=True).start()
+                    # Start strict sequential prefetcher for the front buffer
+                    threading.Thread(target=self._background_prefetcher, daemon=True).start()
+                    
+                    # Record this download in the database
+                    name = getattr(status, "name", "Unknown")
+                    if isinstance(name, bytes):
+                        name = name.decode('utf-8', 'replace')
                         
-                        # Record this download in the database
-                        name = getattr(status, "name", "Unknown")
-                        if isinstance(name, bytes):
-                            name = name.decode('utf-8', 'replace')
-                            
-                        if hasattr(self, 'target') and "path" in self.target:
-                            name = os.path.basename(self.target["path"])
-                            
-                        from . import database
-                        database.add_download(self.info_hash, name, self.magnet_link, self.file_index, self.item_id, self.media_type, getattr(self, 'season', None), getattr(self, 'episode', None))
-                        return
+                    if hasattr(self, 'target') and "path" in self.target:
+                        name = os.path.basename(self.target["path"])
+                        
+                    from . import database
+                    database.add_download(self.info_hash, name, self.magnet_link, self.file_index, self.item_id, self.media_type, getattr(self, 'season', None), getattr(self, 'episode', None))
+                    return
                 time.sleep(0.25)
         except Exception as exc:
             self.error = exc

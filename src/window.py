@@ -493,20 +493,40 @@ class MovieDetailsPage(Gtk.Overlay):
                 load_image_into_picture(cover, self.poster, width=360, height=540, on_error=on_poster_error)
             
         self.title_label.set_text(details.get("title", ""))
-        
+
+        # Disconnect any previously connected signal handlers before reconnecting
+        # to avoid duplicate callbacks when build_ui() is called a second time.
+        for attr in ('_copy_btn_hid', '_g_btn_hid', '_imdb_btn_hid',
+                     '_fav_btn_hid', '_seen_btn_hid', '_trailer_btn_hid'):
+            hid = getattr(self, attr, None)
+            if hid:
+                try:
+                    btn_map = {
+                        '_copy_btn_hid': self.copy_btn,
+                        '_g_btn_hid': self.g_btn,
+                        '_imdb_btn_hid': self.imdb_btn,
+                        '_fav_btn_hid': self.detail_fav_btn,
+                        '_seen_btn_hid': self.detail_seen_btn,
+                        '_trailer_btn_hid': self.trailer_btn,
+                    }[attr]
+                    btn_map.disconnect(hid)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
         def on_copy_clicked(btn):
             try:
                 clipboard = Gdk.Display.get_default().get_clipboard()
                 clipboard.set(details.get("title", ""))
             except Exception as e:
                 print(f"Failed to copy to clipboard: {e}")
-        self.copy_btn.connect("clicked", on_copy_clicked)
+        self._copy_btn_hid = self.copy_btn.connect("clicked", on_copy_clicked)
         
         def on_g_clicked(btn):
             import urllib.parse, subprocess
             q = urllib.parse.quote(details.get("title", ""))
             subprocess.Popen(["xdg-open", f"https://www.google.com/search?q={q}"])
-        self.g_btn.connect("clicked", on_g_clicked)
+        self._g_btn_hid = self.g_btn.connect("clicked", on_g_clicked)
         
         meta_str = f"{details.get('year', '')} • {details.get('runtime', '')} • {details.get('genre', '')}"
         self.meta_label.set_text(meta_str)
@@ -518,7 +538,7 @@ class MovieDetailsPage(Gtk.Overlay):
             def on_imdb_clicked(btn):
                 import subprocess
                 subprocess.Popen(["xdg-open", f"https://www.imdb.com/title/{imdb_id}/"])
-            self.imdb_btn.connect("clicked", on_imdb_clicked)
+            self._imdb_btn_hid = self.imdb_btn.connect("clicked", on_imdb_clicked)
         else:
             self.imdb_btn.set_visible(False)
             
@@ -531,12 +551,12 @@ class MovieDetailsPage(Gtk.Overlay):
             
         item_id = details.get("id")
         self.detail_fav_btn.set_label("♥ Remove from Favorites" if database.is_favorite(item_id) else "♡ Add to Favorites")
-        self.detail_fav_btn.connect("clicked", lambda x: self.toggle_favorite(details))
-        
+        self._fav_btn_hid = self.detail_fav_btn.connect("clicked", lambda x: self.toggle_favorite(details))
+
         self.detail_seen_btn.set_label("👁 Seen" if database.is_watched(item_id) else "👁 Not Seen")
-        self.detail_seen_btn.connect("clicked", lambda x: self.toggle_watched(details))
-        
-        self.trailer_btn.connect("clicked", lambda x: self.on_trailer_clicked(details.get("trailer")))
+        self._seen_btn_hid = self.detail_seen_btn.connect("clicked", lambda x: self.toggle_watched(details))
+
+        self._trailer_btn_hid = self.trailer_btn.connect("clicked", lambda x: self.on_trailer_clicked(details.get("trailer")))
         if not details.get("trailer"): self.trailer_btn.set_sensitive(False)
         
         if details.get("videos"):

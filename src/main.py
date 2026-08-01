@@ -248,6 +248,12 @@ class CineApplication(Adw.Application):
 
     def _on_shutdown(self, *args):
         for win in self.get_windows():
+            # Cleanly shut down the search thread pool if it was initialized
+            if hasattr(win, "_search_pool"):
+                try:
+                    win._search_pool.shutdown(wait=False, cancel_futures=True)
+                except TypeError:
+                    win._search_pool.shutdown(wait=False)
             win.close()
 
 
