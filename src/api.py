@@ -131,11 +131,8 @@ def is_type_match(type1, type2):
     t2 = str(type2).lower().strip()
     if t1 == t2:
         return True
-    series_group = {"series", "tv", "channel", "tvchannel", "anime"}
-    if t1 in series_group and t2 in series_group:
-        return True
-    movie_group = {"movie", "anime"}
-    if t1 in movie_group and t2 in movie_group:
+    tv_group = {"series", "tv", "channel", "tvchannel"}
+    if t1 in tv_group and t2 in tv_group:
         return True
     music_group = {"music", "radio"}
     if t1 in music_group and t2 in music_group:
@@ -159,16 +156,21 @@ def get_available_catalogs(c_type="movie"):
         addon_catalogs = addon.get("catalogs", [])
         for cat in addon_catalogs:
             cat_type = cat.get("type")
-            if is_type_match(cat_type, c_type):
+            cat_name = cat.get("name") or ""
+            cat_id = cat.get("id", "")
+
+            matched = is_type_match(cat_type, c_type)
+            if not matched and c_type == "anime":
+                if "anime" in str(cat_type).lower() or "anime" in cat_name.lower() or "anime" in cat_id.lower() or "anime" in addon_name.lower():
+                    matched = True
+
+            if matched:
                 genres = []
                 extra = cat.get("extra") or []
                 for ex in extra:
                     if isinstance(ex, dict) and ex.get("name") == "genre":
                         genres = ex.get("options", [])
                         
-                cat_name = cat.get("name") or ""
-                cat_id = cat.get("id", "")
-                
                 if not cat_name or cat_name.lower() == "catalog":
                     display_name = f"{addon_name} - {cat_id}"
                 else:

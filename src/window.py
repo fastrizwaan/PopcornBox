@@ -2006,11 +2006,13 @@ class CineWindow(Adw.ApplicationWindow):
                 pass
 
         def on_clipboard_read(clipboard, result):
-            text = clipboard.read_text_finish(result)
-
-            if text and (parsed := urlparse(text)):
-                if parsed.scheme in cast(list, self.mpv.protocol_list):
-                    entry_row.insert_text(text, 0)
+            try:
+                text = clipboard.read_text_finish(result)
+                if text and (parsed := urlparse(text)):
+                    if parsed.scheme in cast(list, self.mpv.protocol_list):
+                        entry_row.insert_text(text, 0)
+            except Exception:
+                pass
 
         if display and (clipboard := display.get_clipboard()):
             clipboard.read_text_async(None, on_clipboard_read)
