@@ -4325,6 +4325,34 @@ class CineWindow(Adw.ApplicationWindow):
                     GLib.idle_add(self.addon_url_entry.set_text, "")
             except Exception as e:
                 logger.error(f"Failed to add addon: {e}")
+                def show_force_add_dialog():
+                    dialog = Adw.MessageDialog(
+                        heading=_("Addon is Offline"),
+                        body=_("Failed to connect to the addon or invalid manifest. Do you want to force add it anyway?"),
+                        transient_for=self
+                    )
+                    dialog.add_response("cancel", _("Cancel"))
+                    dialog.add_response("add", _("Force Add"))
+                    dialog.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
+                    
+                    def on_response(dlg, response):
+                        if response == "add":
+                            addon_id = url.replace("https://", "").replace("http://", "").split("/")[0]
+                            manifest = {
+                                "id": f"offline.{addon_id}",
+                                "name": addon_id,
+                                "description": "Offline addon (Forced addition)",
+                                "manifest_url": url,
+                                "types": ["movie", "series", "anime", "tv", "other"],
+                                "catalogs": [],
+                                "resources": ["stream", "meta", "catalog"]
+                            }
+                            database.add_addon(manifest)
+                            self._populate_addons()
+                            self.addon_url_entry.set_text("")
+                    dialog.connect("response", on_response)
+                    dialog.present()
+                GLib.idle_add(show_force_add_dialog)
                 
         threading.Thread(target=fetch_and_add, daemon=True).start()
         
