@@ -340,7 +340,11 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
 
                             if matched_item:
                                 if imdb_id not in matched_item.get("alias_ids", []):
-                                    matched_item.setdefault("alias_ids", []).append(imdb_id)
+                                    if str(imdb_id).startswith("tt") and not str(matched_item["id"]).startswith("tt"):
+                                        matched_item.setdefault("alias_ids", []).insert(0, imdb_id)
+                                        matched_item["id"] = imdb_id
+                                    else:
+                                        matched_item.setdefault("alias_ids", []).append(imdb_id)
                                     seen_ids.add(imdb_id)
                                 if not matched_item["year"] and year:
                                     matched_item["year"] = year
@@ -1053,24 +1057,28 @@ def _ping_stream_url(stream):
     if not url or not isinstance(url, str) or not (url.startswith("http://") or url.startswith("https://")):
         return stream
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    bh = stream.get("behaviorHints", {})
+    if isinstance(bh, dict) and "headers" in bh:
+        for k, v in bh.get("headers", {}).items():
+            headers[k] = v
     
     # Retry up to 3 times as requested
     import time
     for attempt in range(3):
-        # 1. Try HEAD request with 1.5s timeout
+        # 1. Try HEAD request with 3.0s timeout
         try:
             req = urllib.request.Request(url, headers=headers, method='HEAD')
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
                 if resp.status < 400:
                     stream["is_working"] = True
                     return stream
         except Exception:
             pass
             
-        # 2. Try GET request with Range bytes=0-100 and 1.5s timeout
+        # 2. Try GET request with Range bytes=0-100 and 3.0s timeout
         try:
             req = urllib.request.Request(url, headers=dict(headers, Range='bytes=0-100'))
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
                 if resp.status < 400:
                     stream["is_working"] = True
                     return stream
