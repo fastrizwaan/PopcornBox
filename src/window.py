@@ -303,21 +303,14 @@ class MovieDetailsPage(Gtk.Overlay):
         self.row2_box.set_visible(False)
         self.info_vbox.append(self.row2_box)
         
-        self.quality_button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.quality_button_box.set_valign(Gtk.Align.CENTER)
-        self.quality_button_box.set_margin_top(12)
-        self.quality_button_box.set_visible(False)
-        self.info_vbox.append(self.quality_button_box)
-        
-        self.row3_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.row3_box.set_margin_top(8)
-        
-        self.source_segmented_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.source_segmented_box.add_css_class("linked")
+        self.source_segmented_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.source_segmented_box.set_valign(Gtk.Align.CENTER)
+        self.source_segmented_box.set_margin_top(12)
         
         self.source_direct_btn = Gtk.ToggleButton(label="⚡ Direct Streams")
+        self.source_direct_btn.add_css_class("pill")
         self.source_torrent_btn = Gtk.ToggleButton(label="🧲 Torrents")
+        self.source_torrent_btn.add_css_class("pill")
         self.source_torrent_btn.set_group(self.source_direct_btn)
         
         self.source_segmented_box.append(self.source_direct_btn)
@@ -351,8 +344,18 @@ class MovieDetailsPage(Gtk.Overlay):
             
         self.source_direct_btn.connect("toggled", on_source_toggled)
         self.source_torrent_btn.connect("toggled", on_source_toggled)
+        self.info_vbox.append(self.source_segmented_box)
         
-        self.row3_box.append(self.source_segmented_box)
+        self.quality_button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.quality_button_box.set_valign(Gtk.Align.CENTER)
+        self.quality_button_box.set_margin_top(12)
+        self.quality_button_box.set_visible(False)
+        self.info_vbox.append(self.quality_button_box)
+        
+        self.row3_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.row3_box.set_margin_top(8)
+        
+        # Source toggles are now appended directly to info_vbox before quality buttons
         
         self.file_dropdown = Gtk.DropDown.new_from_strings([])
         self.file_dropdown.set_valign(Gtk.Align.CENTER)
