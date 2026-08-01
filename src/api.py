@@ -1134,8 +1134,10 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     cache_key = get_stream_cache_key(primary_id, media_type, season, episode)
     cached = database.get_cached_streams(cache_key, max_age_hours=24)
-    if cached and callback:
-        callback(cached, is_cached=True, is_complete=False)
+    if cached:
+        cached = ping_and_filter_streams(cached)
+        if callback:
+            callback(cached, is_cached=True, is_complete=False)
 
     actual_media = media_type
     addons = [a for a in database.get_addons() if a.get("enabled", True)]
