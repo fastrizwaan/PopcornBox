@@ -871,15 +871,13 @@ class MovieDetailsPage(Gtk.Overlay):
                         break
                         
                     if res.get('is_working'):
-                        if i > 0:
-                            working_stream = target_list.pop(i)
-                            target_list.insert(0, working_stream)
-                            GLib.idle_add(update_file_dropdown_ui, target_list)
-                        break
+                        # Stream works, keep it in its sorted position and move to the next
+                        i += 1
                     else:
+                        # Dead link, discard it from the list
                         target_list.pop(i)
                         GLib.idle_add(update_file_dropdown_ui, target_list)
-                        # don't increment i
+                        # don't increment i so the next element shifts into the current index
             
             if t_list and any(t.get('is_http') for t in t_list):
                 threading.Thread(target=live_check, args=(t_list, self._live_check_abort_event), daemon=True).start()
