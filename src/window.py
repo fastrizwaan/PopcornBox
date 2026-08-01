@@ -316,28 +316,31 @@ class MovieDetailsPage(Gtk.Overlay):
         self.source_segmented_box.add_css_class("linked")
         self.source_segmented_box.set_valign(Gtk.Align.CENTER)
         
-        self.source_all_btn = Gtk.ToggleButton(label="All Sources")
-        self.source_all_btn.set_active(True)
-        
         self.source_direct_btn = Gtk.ToggleButton(label="⚡ Direct Streams")
-        self.source_direct_btn.set_group(self.source_all_btn)
-        
         self.source_torrent_btn = Gtk.ToggleButton(label="🧲 Torrents")
-        self.source_torrent_btn.set_group(self.source_all_btn)
+        self.source_torrent_btn.set_group(self.source_direct_btn)
         
-        self.source_segmented_box.append(self.source_all_btn)
         self.source_segmented_box.append(self.source_direct_btn)
         self.source_segmented_box.append(self.source_torrent_btn)
         
-        self.source_idx = 0
+        from . import database
+        self.source_idx = database.get_setting("preferred_source_idx", 2)
+        if self.source_idx == 1:
+            self.source_direct_btn.set_active(True)
+        else:
+            self.source_idx = 2
+            self.source_torrent_btn.set_active(True)
+        
         def on_source_toggled(btn):
             if not btn.get_active(): return
-            if btn == self.source_all_btn: self.source_idx = 0
-            elif btn == self.source_direct_btn: self.source_idx = 1
-            elif btn == self.source_torrent_btn: self.source_idx = 2
+            if btn == self.source_direct_btn:
+                self.source_idx = 1
+            elif btn == self.source_torrent_btn:
+                self.source_idx = 2
+            from . import database
+            database.set_setting("preferred_source_idx", self.source_idx)
             self.update_quality_dropdown()
             
-        self.source_all_btn.connect("toggled", on_source_toggled)
         self.source_direct_btn.connect("toggled", on_source_toggled)
         self.source_torrent_btn.connect("toggled", on_source_toggled)
         
