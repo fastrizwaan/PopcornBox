@@ -312,14 +312,36 @@ class MovieDetailsPage(Gtk.Overlay):
         self.row3_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.row3_box.set_margin_top(8)
         
-        self.source_dropdown = Gtk.DropDown.new_from_strings(["All Sources", "⚡ Direct Streams", "🧲 Torrents"])
-        self.source_dropdown.set_valign(Gtk.Align.CENTER)
+        self.source_segmented_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.source_segmented_box.add_css_class("linked")
+        self.source_segmented_box.set_valign(Gtk.Align.CENTER)
         
-        def on_source_changed(dropdown, pspec):
+        self.source_all_btn = Gtk.ToggleButton(label="All Sources")
+        self.source_all_btn.set_active(True)
+        
+        self.source_direct_btn = Gtk.ToggleButton(label="⚡ Direct Streams")
+        self.source_direct_btn.set_group(self.source_all_btn)
+        
+        self.source_torrent_btn = Gtk.ToggleButton(label="🧲 Torrents")
+        self.source_torrent_btn.set_group(self.source_all_btn)
+        
+        self.source_segmented_box.append(self.source_all_btn)
+        self.source_segmented_box.append(self.source_direct_btn)
+        self.source_segmented_box.append(self.source_torrent_btn)
+        
+        self.source_idx = 0
+        def on_source_toggled(btn):
+            if not btn.get_active(): return
+            if btn == self.source_all_btn: self.source_idx = 0
+            elif btn == self.source_direct_btn: self.source_idx = 1
+            elif btn == self.source_torrent_btn: self.source_idx = 2
             self.update_quality_dropdown()
             
-        self.source_dropdown.connect("notify::selected", on_source_changed)
-        self.row3_box.append(self.source_dropdown)
+        self.source_all_btn.connect("toggled", on_source_toggled)
+        self.source_direct_btn.connect("toggled", on_source_toggled)
+        self.source_torrent_btn.connect("toggled", on_source_toggled)
+        
+        self.row3_box.append(self.source_segmented_box)
         
         self.file_dropdown = Gtk.DropDown.new_from_strings([])
         self.file_dropdown.set_valign(Gtk.Align.CENTER)
@@ -711,7 +733,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.search_online_btn.add_css_class("suggested-action")
             return
 
-        source_idx = self.source_dropdown.get_selected() if hasattr(self, 'source_dropdown') else 0
+        source_idx = self.source_idx if hasattr(self, 'source_idx') else 0
         if source_idx == 1:  # Direct Streams
             filtered_torrents = [t for t in self.torrents if t.get('is_http')]
         elif source_idx == 2:  # Torrents
