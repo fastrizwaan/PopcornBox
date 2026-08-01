@@ -106,32 +106,32 @@ def exit_player():
 atexit.register(exit_player)
 
 def init_background_downloads():
-    # Do not start background engines if the user is already streaming a video
-    with _engines_lock:
-        if _streaming_hash is not None:
-            return
-            
-    from . import database
-    downloads = database.get_downloads()
-    
-    # Start up to 50 finished downloads, and limit active downloading to 5
-    active_count = 0
-    max_auto_start = 5
-    finished_count = 0
-    max_seeding = 50
-    
-    import time
-    for d in downloads:
-        if not d.get("paused", False):
-            if d.get("finished", False):
-                if finished_count < max_seeding:
+    def _init():
+        with _engines_lock:
+            if _streaming_hash is not None:
+                return
+                
+        from . import database
+        downloads = database.get_downloads()
+        
+        active_count = 0
+        max_auto_start = 5
+        finished_count = 0
+        max_seeding = 50
+        
+        for d in downloads:
+            if not d.get("paused", False):
+                if d.get("finished", False):
+                    if finished_count < max_seeding:
+                        download_magnet_background(d["magnet"], d.get("file_index"), d.get("item_id"), d.get("media_type"), d.get("season"), d.get("episode"))
+                        finished_count += 1
+                        time.sleep(1.0)
+                elif active_count < max_auto_start:
                     download_magnet_background(d["magnet"], d.get("file_index"), d.get("item_id"), d.get("media_type"), d.get("season"), d.get("episode"))
-                    finished_count += 1
-                    time.sleep(10.0)
-            elif active_count < max_auto_start:
-                download_magnet_background(d["magnet"], d.get("file_index"), d.get("item_id"), d.get("media_type"), d.get("season"), d.get("episode"))
-                active_count += 1
-                time.sleep(10.0)
+                    active_count += 1
+                    time.sleep(1.0)
+
+    threading.Thread(target=_init, daemon=True).start()
 
 def get_player_cmd():
     import shutil

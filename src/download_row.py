@@ -122,7 +122,7 @@ class DownloadItemRow(Gtk.Box):
         # In GTK4, widgets emit 'destroy' when disposed
         self.connect("destroy", self.on_destroy)
         
-    def on_destroy(self, widget):
+    def on_destroy(self, widget=None):
         self.is_active = False
         if hasattr(self, 'poll_id'):
             GLib.source_remove(self.poll_id)

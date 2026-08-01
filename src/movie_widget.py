@@ -315,7 +315,10 @@ class MovieWidget(Gtk.Box):
             poster_url = extract_image_url(movie_data)
         
         def trigger_fallback():
-            _image_pool.submit(fetch_fallback_poster, item_id, item_type, self.poster_image, movie_data.get("title") or movie_data.get("name"), 130, 195)
+            try:
+                _image_pool.submit(fetch_fallback_poster, item_id, item_type, self.poster_image, movie_data.get("title") or movie_data.get("name"), 130, 195)
+            except RuntimeError:
+                pass
 
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195, on_error=trigger_fallback)
