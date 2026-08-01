@@ -66,6 +66,7 @@ from .shortcuts import INTERNAL_BINDINGS, populate_shortcuts_dialog_mpv
 from .mpris import MPRIS
 import threading
 import concurrent.futures
+from . import database
 from .api import fetch_items, fetch_movie_details, get_torrents_streamed
 from .movie_widget import MovieWidget
 
