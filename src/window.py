@@ -609,6 +609,8 @@ class MovieDetailsPage(Gtk.Overlay):
             self.season_dropdown.set_visible(len(seasons) > 1 or self.media_type in ["series", "anime"])
             
             self._ignore_dropdown_changes = False
+            item_id = self.movie_stub.get("id")
+            from . import database
             
             def on_episode_changed(dropdown, *args):
                 if getattr(self, '_ignore_dropdown_changes', False): return
@@ -617,6 +619,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 if hasattr(self, 'current_episodes') and idx < len(self.current_episodes):
                     self.selected_video = self.current_episodes[idx]
                     self.selected_episode = self.selected_video.get("episode")
+                    if item_id and getattr(self, 'selected_season', None) is not None and self.selected_episode is not None:
+                        database.set_setting(f"last_ep_{item_id}_{self.selected_season}", self.selected_episode)
                     self.fetch_torrents_async()
                 
             self.episode_dropdown.connect("notify::selected", on_episode_changed)
@@ -628,6 +632,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 if idx >= len(seasons): return
                 s = seasons[idx]
                 self.selected_season = s
+                if item_id:
+                    database.set_setting(f"last_s_{item_id}", s)
                 eps = [v for v in videos if v.get("season", 1) == s]
                 unique_eps = []
                 seen_eps = set()
@@ -647,7 +653,13 @@ class MovieDetailsPage(Gtk.Overlay):
                 self._ignore_dropdown_changes = True
                 self.episode_dropdown.set_model(Gtk.StringList.new(ep_strings))
                 ep_nums = [e.get('episode') for e in unique_eps]
-                default_ep_idx = ep_nums.index(1) if 1 in ep_nums else 0
+                
+                saved_ep = database.get_setting(f"last_ep_{item_id}_{s}", None) if item_id else None
+                if saved_ep in ep_nums:
+                    default_ep_idx = ep_nums.index(saved_ep)
+                else:
+                    default_ep_idx = ep_nums.index(1) if 1 in ep_nums else 0
+                    
                 if default_ep_idx < len(ep_strings):
                     self.episode_dropdown.set_selected(default_ep_idx)
                 self._ignore_dropdown_changes = False
@@ -657,7 +669,11 @@ class MovieDetailsPage(Gtk.Overlay):
             self.season_dropdown.connect("notify::selected", on_season_changed)
             
             if seasons:
-                default_s_idx = seasons.index(1) if 1 in seasons else 0
+                saved_s = database.get_setting(f"last_s_{item_id}", None) if item_id else None
+                if saved_s in seasons:
+                    default_s_idx = seasons.index(saved_s)
+                else:
+                    default_s_idx = seasons.index(1) if 1 in seasons else 0
                 self._ignore_dropdown_changes = True
                 self.season_dropdown.set_selected(default_s_idx)
                 self._ignore_dropdown_changes = False
@@ -849,9 +865,14 @@ class MovieDetailsPage(Gtk.Overlay):
                 title = " • ".join(cleaned)
                 seed_str = f" ({t.get('seeders', 0)} seeds)" if not t.get('is_http') and t.get('seeders', 0) > 0 else ""
                 strings.append(f"{title}{seed_str}{addons_suffix}")
+            selected_idx = 0
+            curr_sel = getattr(self, 'selected_torrent', None)
+            if curr_sel and curr_sel in t_list:
+                selected_idx = t_list.index(curr_sel)
+                
             self.file_dropdown.set_model(Gtk.StringList.new(strings))
-            self.file_dropdown.set_selected(0)
-            self.selected_torrent = t_list[0]
+            self.file_dropdown.set_selected(selected_idx)
+            self.selected_torrent = t_list[selected_idx]
             
         def on_quality_btn_clicked(btn, t_list):
             self.current_t_list = t_list
@@ -3494,8 +3515,14 @@ class CineWindow(Adw.ApplicationWindow):
                 
         search_cat_names = [c["display_name"] for c in self.search_catalogs_list]
         self.search_catalog_dropdown.set_model(Gtk.StringList.new(search_cat_names))
-        
+        saved_search_cat = database.get_setting("search_catalog_idx", 0)
+        if 0 <= saved_search_cat < len(search_cat_names):
+            self.search_catalog_dropdown.set_selected(saved_search_cat)
+            
         def on_search_catalog_changed(dropdown, pspec):
+            selected = dropdown.get_selected()
+            if selected != Gtk.INVALID_LIST_POSITION:
+                database.set_setting("search_catalog_idx", selected)
             if self.search_entry.get_text().strip():
                 self._on_search_changed(self.search_entry)
         self.search_catalog_dropdown.connect("notify::selected", on_search_catalog_changed)
