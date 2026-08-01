@@ -823,8 +823,6 @@ class MovieDetailsPage(Gtk.Overlay):
             return (size_score, seeders)
 
         def on_quality_btn_clicked(btn, t_list):
-            for b in self.quality_buttons: b.remove_css_class('suggested-action')
-            btn.add_css_class('suggested-action')
             self.current_t_list = t_list
             self.selected_torrent = t_list[0]
             
@@ -855,20 +853,26 @@ class MovieDetailsPage(Gtk.Overlay):
         
         preferred_order = ["Active Pack", "1080p", "720p", "4K", "More"]
         
+        first_quality_btn = None
         for q_label in preferred_order:
             t_list = quality_groups[q_label]
             if t_list:
                 t_list.sort(key=_stream_sort_key, reverse=True)
-                btn = Gtk.Button(label=q_label)
+                btn = Gtk.ToggleButton(label=q_label)
                 btn.set_size_request(-1, 38)
+                if first_quality_btn is None:
+                    first_quality_btn = btn
+                else:
+                    btn.set_group(first_quality_btn)
                 
                 def make_click_cb(b, label, tl):
                     def cb(*args):
-                        self.user_selected_quality = label
-                        on_quality_btn_clicked(b, tl)
+                        if b.get_active():
+                            self.user_selected_quality = label
+                            on_quality_btn_clicked(b, tl)
                     return cb
                     
-                btn.connect("clicked", make_click_cb(btn, q_label, t_list))
+                btn.connect("toggled", make_click_cb(btn, q_label, t_list))
                 self.quality_buttons.append(btn)
                 self.quality_button_box.append(btn)
                 
@@ -887,7 +891,10 @@ class MovieDetailsPage(Gtk.Overlay):
                     break
                     
         if target_btn and target_t_list:
-            on_quality_btn_clicked(target_btn, target_t_list)
+            if not target_btn.get_active():
+                target_btn.set_active(True)
+            else:
+                on_quality_btn_clicked(target_btn, target_t_list)
 
     def on_trailer_clicked(self, trailer_url):
         if not trailer_url: return
