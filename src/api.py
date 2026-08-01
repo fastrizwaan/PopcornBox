@@ -1044,6 +1044,7 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
                 print("Timeout fetching streams from some addons")
             
     valid_streams = process_raw_streams(all_streams)
+    valid_streams = ping_and_filter_streams(valid_streams)
     if valid_streams:
         database.save_cached_streams(cache_key, valid_streams)
     return valid_streams
@@ -1054,25 +1055,31 @@ def _ping_stream_url(stream):
         return stream
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     
-    # 1. Try HEAD request with 2.5s timeout
-    try:
-        req = urllib.request.Request(url, headers=headers, method='HEAD')
-        with urllib.request.urlopen(req, timeout=2.5) as resp:
-            if resp.status < 400:
-                stream["is_working"] = True
-                return stream
-    except Exception:
-        pass
-        
-    # 2. Try GET request with Range bytes=0-100 and 2.5s timeout
-    try:
-        req = urllib.request.Request(url, headers=dict(headers, Range='bytes=0-100'))
-        with urllib.request.urlopen(req, timeout=2.5) as resp:
-            if resp.status < 400:
-                stream["is_working"] = True
-                return stream
-    except Exception:
-        pass
+    # Retry up to 3 times as requested
+    import time
+    for attempt in range(3):
+        # 1. Try HEAD request with 2.5s timeout
+        try:
+            req = urllib.request.Request(url, headers=headers, method='HEAD')
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
+                if resp.status < 400:
+                    stream["is_working"] = True
+                    return stream
+        except Exception:
+            pass
+            
+        # 2. Try GET request with Range bytes=0-100 and 2.5s timeout
+        try:
+            req = urllib.request.Request(url, headers=dict(headers, Range='bytes=0-100'))
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
+                if resp.status < 400:
+                    stream["is_working"] = True
+                    return stream
+        except Exception:
+            pass
+            
+        if attempt < 2:
+            time.sleep(0.5)
 
     stream["is_working"] = False
     return stream
@@ -1089,8 +1096,6 @@ def ping_and_filter_streams(streams):
         results = list(executor.map(_ping_stream_url, http_streams))
         
     working_urls = {s["url"] for s in results if s.get("is_working") is True}
-    if not working_urls:
-        return streams
         
     filtered = []
     for s in streams:
