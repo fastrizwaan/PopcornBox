@@ -826,9 +826,19 @@ def process_raw_streams(all_streams):
     valid_streams = []
     seen_keys = {}  # {dedup_key: index in valid_streams} for O(1) duplicate lookup
     for s in all_streams:
-        stream_url = s.get("url") or s.get("externalUrl") or ""
-        info_hash = (s.get("infoHash") or "").lower()
-        is_http = bool(stream_url) and not bool(info_hash)
+        stream_url = str(s.get("url") or s.get("externalUrl") or "")
+        info_hash = str(s.get("infoHash") or "").lower()
+        
+        is_http = False
+        if stream_url.startswith("magnet:"):
+            if not info_hash:
+                match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', stream_url, re.IGNORECASE)
+                if match: info_hash = match.group(1).lower()
+        elif stream_url.split('?')[0].endswith(".torrent"):
+            is_http = False
+        else:
+            is_http = bool(stream_url) and not bool(info_hash)
+            
         if not info_hash and not stream_url:
             continue
 
@@ -856,25 +866,20 @@ def process_raw_streams(all_streams):
             continue
         seen_keys[dedup_key] = len(valid_streams)
 
-        quality = "Unknown"
-        q_val = 0
-        lower_name = name_and_title.lower()
-        
-        if "2160p" in lower_name:
-            quality = "4K"
-            q_val = 4
-        elif "1080p" in lower_name: 
-            quality = "1080p"
-            q_val = 3
-        elif "720p" in lower_name: 
-            quality = "720p"
-            q_val = 2
-        elif "480p" in lower_name:
-            quality = "480p"
-            q_val = 1
-        elif re.search(r'\b4k\b', lower_name): 
-            quality = "4K"
-            q_val = 4
+        def _extract_quality(text):
+            t = str(text).lower()
+            if "2160p" in t or re.search(r'\b4k\b', t): return "4K", 4
+            if "1080p" in t or re.search(r'\b1080\b', t): return "1080p", 3
+            if "720p" in t or re.search(r'\b720\b', t): return "720p", 2
+            if "480p" in t or re.search(r'\b480\b', t): return "480p", 1
+            if "360p" in t or re.search(r'\b360\b', t): return "360p", 0
+            return None, 0
+
+        quality, q_val = _extract_quality(title_str)
+        if not quality:
+            quality, q_val = _extract_quality(name_str)
+        if not quality:
+            quality, q_val = "Unknown", 0
         
         size = ""
         size_match = re.search(r'([\d.]+)\s*(GB|MB)', title_str, re.IGNORECASE)
