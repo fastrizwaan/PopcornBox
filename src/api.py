@@ -1329,54 +1329,80 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None):
         
     actual_media = "series" if media_type == "tv" else media_type
     if actual_media == "series" and season is not None and episode is not None:
-        url = f"https://opensubtitles-v3.strem.io/subtitles/series/{imdb_id}:{season}:{episode}.json"
+        sub_path = f"series/{imdb_id}:{season}:{episode}.json"
     else:
-        url = f"https://opensubtitles-v3.strem.io/subtitles/movie/{imdb_id}.json"
+        sub_path = f"movie/{imdb_id}.json"
+        
+    url = f"https://opensubtitles-v3.strem.io/subtitles/{sub_path}"
         
     try:
-        import gi
-        gi.require_version('Gio', '2.0')
-        from gi.repository import Gio
-        
-        settings = Gio.Settings.new("io.github.fastrizwaan.PopcornBox")
-        pref_langs_str = settings.get_string("subtitle-languages")
-        pref_langs = []
-        if pref_langs_str:
-            pref_langs = [l.strip().lower() for l in pref_langs_str.split(',') if l.strip()]
+        pref_langs_str = ""
+        try:
+            import gi
+            gi.require_version('Gio', '2.0')
+            from gi.repository import Gio
+            settings = Gio.Settings.new("io.github.fastrizwaan.PopcornBox")
+            pref_langs_str = settings.get_string("subtitle-languages")
+        except Exception:
+            pass
             
+        if not pref_langs_str:
+            pref_langs_str = database.get_setting("subtitle-languages", "")
+            
+        pref_langs = [l.strip().lower() for l in pref_langs_str.split(',') if l.strip()]
         if not pref_langs:
             pref_langs = ["eng", "en", "english"]
             
-        mapping = {
-            "en": ["eng", "english"],
-            "es": ["spa", "spanish", "esp"],
-            "pt": ["por", "pob", "portuguese"],
-            "fr": ["fre", "fra", "french"],
-            "de": ["ger", "deu", "german"],
-            "it": ["ita", "italian"],
-            "ru": ["rus", "russian"],
-            "hi": ["hin", "hindi"],
-            "ar": ["ara", "arabic"],
-            "tr": ["tur", "turkish"],
-            "zh": ["chi", "zho", "chinese"]
+        language_map = {
+            "en": ["en", "eng", "english"], "eng": ["en", "eng", "english"], "english": ["en", "eng", "english"],
+            "es": ["es", "spa", "esp", "spanish"], "spa": ["es", "spa", "esp", "spanish"], "spanish": ["es", "spa", "esp", "spanish"],
+            "hi": ["hi", "hin", "hindi"], "hin": ["hi", "hin", "hindi"], "hindi": ["hi", "hin", "hindi"],
+            "pt": ["pt", "por", "pob", "portuguese"], "por": ["pt", "por", "pob", "portuguese"], "portuguese": ["pt", "por", "pob", "portuguese"],
+            "fr": ["fr", "fre", "fra", "french"], "fre": ["fr", "fre", "fra", "french"], "french": ["fr", "fre", "fra", "french"],
+            "de": ["de", "ger", "deu", "german"], "ger": ["de", "ger", "deu", "german"], "german": ["de", "ger", "deu", "german"],
+            "it": ["it", "ita", "italian"], "ita": ["it", "ita", "italian"], "italian": ["it", "ita", "italian"],
+            "ru": ["ru", "rus", "russian"], "rus": ["ru", "rus", "russian"], "russian": ["ru", "rus", "russian"],
+            "ar": ["ar", "ara", "arabic"], "ara": ["ar", "ara", "arabic"], "arabic": ["ar", "ara", "arabic"],
+            "tr": ["tr", "tur", "turkish"], "tur": ["tr", "tur", "turkish"], "turkish": ["tr", "tur", "turkish"],
+            "zh": ["zh", "chi", "zho", "chinese"], "chi": ["zh", "chi", "zho", "chinese"], "chinese": ["zh", "chi", "zho", "chinese"],
+            "ja": ["ja", "jpn", "japanese"], "jpn": ["ja", "jpn", "japanese"], "japanese": ["ja", "jpn", "japanese"],
+            "ko": ["ko", "kor", "korean"], "kor": ["ko", "kor", "korean"], "korean": ["ko", "kor", "korean"],
+            "id": ["id", "ind", "indonesian"], "ind": ["id", "ind", "indonesian"], "indonesian": ["id", "ind", "indonesian"],
+            "ml": ["ml", "mal", "malayalam"], "mal": ["ml", "mal", "malayalam"], "malayalam": ["ml", "mal", "malayalam"],
+            "ta": ["ta", "tam", "tamil"], "tam": ["ta", "tam", "tamil"], "tamil": ["ta", "tam", "tamil"],
+            "te": ["te", "tel", "telugu"], "tel": ["te", "tel", "telugu"], "telugu": ["te", "tel", "telugu"],
+            "kn": ["kn", "kan", "kannada"], "kan": ["kn", "kan", "kannada"], "kannada": ["kn", "kan", "kannada"],
+            "bn": ["bn", "ben", "bengali"], "ben": ["bn", "ben", "bengali"], "bengali": ["bn", "ben", "bengali"],
+            "pa": ["pa", "pan", "punjabi"], "pan": ["pa", "pan", "punjabi"], "punjabi": ["pa", "pan", "punjabi"],
+            "ur": ["ur", "urd", "urdu"], "urd": ["ur", "urd", "urdu"], "urdu": ["ur", "urd", "urdu"],
+            "fa": ["fa", "per", "fas", "persian"], "per": ["fa", "per", "fas", "persian"], "persian": ["fa", "per", "fas", "persian"],
+            "pl": ["pl", "pol", "polish"], "pol": ["pl", "pol", "polish"], "polish": ["pl", "pol", "polish"],
+            "nl": ["nl", "dut", "nld", "dutch"], "dut": ["nl", "dut", "nld", "dutch"], "dutch": ["nl", "dut", "nld", "dutch"]
         }
-        
-        expanded_prefs = set(pref_langs)
+
+        rank_sets = []
         for pl in pref_langs:
-            if pl in mapping:
-                expanded_prefs.update(mapping[pl])
+            codes = language_map.get(pl, [pl])
+            rank_sets.append(set(codes))
 
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode('utf-8'))
             subs = data.get("subtitles", [])
             
-            filtered_subs = []
+            matched_subs = []
             for s in subs:
-                sub_lang = s.get("lang", "").lower()
-                if sub_lang in expanded_prefs or any(sub_lang.startswith(p) for p in expanded_prefs):
-                    filtered_subs.append(s)
-            return filtered_subs
+                sub_lang = str(s.get("lang", "")).lower()
+                matched_rank = 999
+                for idx, rset in enumerate(rank_sets):
+                    if sub_lang in rset or any(sub_lang.startswith(p) for p in rset):
+                        matched_rank = idx
+                        break
+                if matched_rank < 999:
+                    matched_subs.append((matched_rank, s))
+                    
+            matched_subs.sort(key=lambda x: x[0])
+            return [item[1] for item in matched_subs]
     except urllib.error.HTTPError as e:
         print(f"HTTP Error {e.code} fetching subtitles")
         e.close()
