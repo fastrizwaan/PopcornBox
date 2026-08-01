@@ -126,6 +126,27 @@ def _read_db():
                     if not found:
                         data["addons"].append(default_addon)
                         migrated = True
+
+                # Deduplicate addons by ID or name
+                unique_addons = []
+                seen_addon_ids = set()
+                seen_addon_names = set()
+                for a in data["addons"]:
+                    aid = a.get("id")
+                    aname = a.get("name")
+                    if aid and aid in seen_addon_ids:
+                        continue
+                    if aname and aname in seen_addon_names and ("tmdb" in str(aid).lower() or "tmdb" in str(aname).lower()):
+                        continue
+                    if aid:
+                        seen_addon_ids.add(aid)
+                    if aname:
+                        seen_addon_names.add(aname)
+                    unique_addons.append(a)
+                if len(unique_addons) != len(data["addons"]):
+                    data["addons"] = unique_addons
+                    migrated = True
+
                 if migrated:
                     _write_db(data)
             _json_cache = data

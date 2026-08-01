@@ -75,7 +75,7 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("GLib", "2.0")
 gi.require_version("Gtk", "4.0")
 gi.require_version("GObject", "2.0")
-from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject
+from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject, Pango
 
 libegl = ctypes.CDLL("libEGL.so.1")
 egl_get_proc_address = libegl.eglGetProcAddress
@@ -137,7 +137,7 @@ class MovieDetailsPage(Gtk.Overlay):
         self.reload_btn.add_css_class("flat")
         def on_reload(btn):
             from . import database, api
-            item_id = self.movie_stub.get("id")
+            item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
             # Preserve the valid poster/background before deleting, so re-entry is instant
             existing = database.get_cached_metadata(item_id)
             saved_poster = None
@@ -312,8 +312,39 @@ class MovieDetailsPage(Gtk.Overlay):
         self.row3_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.row3_box.set_margin_top(8)
         
+        self.source_dropdown = Gtk.DropDown.new_from_strings(["All Sources", "⚡ Direct Streams", "🧲 Torrents"])
+        self.source_dropdown.set_valign(Gtk.Align.CENTER)
+        
+        def on_source_changed(dropdown, pspec):
+            self.update_quality_dropdown()
+            
+        self.source_dropdown.connect("notify::selected", on_source_changed)
+        self.row3_box.append(self.source_dropdown)
+        
         self.file_dropdown = Gtk.DropDown.new_from_strings([])
         self.file_dropdown.set_valign(Gtk.Align.CENTER)
+        self.file_dropdown.set_hexpand(True)
+        
+        file_factory = Gtk.SignalListItemFactory()
+        def _file_factory_setup(factory, list_item):
+            label = Gtk.Label(xalign=0.0)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            label.set_single_line_mode(True)
+            label.set_margin_start(8)
+            label.set_margin_end(8)
+            label.set_margin_top(4)
+            label.set_margin_bottom(4)
+            list_item.set_child(label)
+
+        def _file_factory_bind(factory, list_item):
+            item = list_item.get_item()
+            label = list_item.get_child()
+            if item and label:
+                label.set_text(item.get_string())
+
+        file_factory.connect("setup", _file_factory_setup)
+        file_factory.connect("bind", _file_factory_bind)
+        self.file_dropdown.set_factory(file_factory)
         
         def on_dropdown_changed(dropdown, pspec):
             idx = dropdown.get_selected()
@@ -368,18 +399,19 @@ class MovieDetailsPage(Gtk.Overlay):
         self.content_box.append(self.top_hbox)
         
         from . import database
-        item_id = self.movie_stub.get("id")
-        cached_details = database.get_cached_metadata(item_id)
+        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
+        primary_id = item_id[0] if isinstance(item_id, list) else item_id
+        cached_details = database.get_cached_metadata(primary_id)
         if cached_details:
-            print(f"[CARD CLICK Step 5] Found cached metadata in database for '{item_id}'. Building UI immediately.")
+            print(f"[CARD CLICK Step 5] Found cached metadata in database for '{primary_id}'. Building UI immediately.")
             self.build_ui(cached_details)
             self.load_details_async(force_refresh=False)
         else:
-            print(f"[CARD CLICK Step 5] No cached metadata in database for '{item_id}'. Initiating background fetch.")
+            print(f"[CARD CLICK Step 5] No cached metadata in database for '{primary_id}'. Initiating background fetch.")
             self.load_details_async(force_refresh=True)
 
     def load_details_async(self, force_refresh=False):
-        item_id = self.movie_stub.get("id")
+        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
         existing_poster = self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster")
         print(f"[CARD CLICK Step 6] load_details_async started (force_refresh={force_refresh}) for '{item_id}'")
         def fetch():
@@ -387,7 +419,7 @@ class MovieDetailsPage(Gtk.Overlay):
             details = api.fetch_movie_details(item_id, self.media_type, title=self.movie_stub.get("title"), use_cache=not force_refresh, poster=existing_poster)
             if details:
                 poster = details.get("medium_cover_image")
-                print(f"[CARD CLICK Step 7] api.fetch_movie_details completed for '{item_id}'. Poster URL: {poster}")
+                print(f"[CARD CLICK Step 7] api.fetch_movie_details completed. Poster URL: {poster}")
                 GLib.idle_add(self.build_ui, details)
             else:
                 print(f"[CARD CLICK Step 7 WARNING] api.fetch_movie_details returned None for '{item_id}'")
@@ -581,7 +613,7 @@ class MovieDetailsPage(Gtk.Overlay):
         selected_video = getattr(self, 'selected_video', None)
         video_id = selected_video.get("id") if (selected_video and isinstance(selected_video, dict)) else None
         
-        item_id = video_id or self.movie_stub.get("id")
+        item_id = video_id or self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
         
         req_media_type = self.media_type
         if video_id and str(video_id).startswith("tt") and self.media_type not in ["series", "anime"]:
@@ -658,7 +690,23 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.search_online_btn.set_visible(True)
                 self.search_online_btn.add_css_class("suggested-action")
             return
-            
+
+        source_idx = self.source_dropdown.get_selected() if hasattr(self, 'source_dropdown') else 0
+        if source_idx == 1:  # Direct Streams
+            filtered_torrents = [t for t in self.torrents if t.get('is_http')]
+        elif source_idx == 2:  # Torrents
+            filtered_torrents = [t for t in self.torrents if not t.get('is_http')]
+        else:
+            filtered_torrents = self.torrents
+
+        if not filtered_torrents:
+            self.quality_button_box.set_visible(True)
+            self.row3_box.set_visible(True)
+            self.file_dropdown.set_model(Gtk.StringList.new(["No streams available for selected source filter"]))
+            self.file_dropdown.set_selected(0)
+            self.watch_btn.set_visible(False)
+            return
+
         self.quality_button_box.set_visible(True)
         self.row3_box.set_visible(True)
         self.row4_box.set_visible(True)
@@ -668,19 +716,20 @@ class MovieDetailsPage(Gtk.Overlay):
             self.search_online_btn.set_visible(True)
             self.search_online_btn.remove_css_class("suggested-action")
         
-        quality_groups = {"Active Pack": [], "4K": [], "1080p": [], "720p": [], "More": [], "Direct": []}
-        for t in self.torrents:
+        quality_groups = {"Active Pack": [], "4K": [], "1080p": [], "720p": [], "More": []}
+        for t in filtered_torrents:
             if t.get('quality') == "Active Pack":
                 quality_groups["Active Pack"].append(t)
                 continue
-            if t.get('is_http'):
-                quality_groups["Direct"].append(t)
-                continue
             q = t.get('quality', 'Unknown').upper()
-            if "4K" in q or "2160" in q: quality_groups["4K"].append(t)
-            elif "1080" in q: quality_groups["1080p"].append(t)
-            elif "720" in q: quality_groups["720p"].append(t)
-            else: quality_groups["More"].append(t)
+            if "4K" in q or "2160" in q:
+                quality_groups["4K"].append(t)
+            elif "1080" in q:
+                quality_groups["1080p"].append(t)
+            elif "720" in q:
+                quality_groups["720p"].append(t)
+            else:
+                quality_groups["More"].append(t)
             
         self.quality_buttons = []
         
@@ -717,9 +766,19 @@ class MovieDetailsPage(Gtk.Overlay):
             
             strings = []
             for t in t_list:
-                title = t.get('stream_title', '').strip() or t.get('size', 'Unknown Size')
-                seed_str = f" ({t.get('seeders', 0)} seeds)" if not t.get('is_http') else ""
-                strings.append(f"{title}{seed_str}")
+                addons_str = ", ".join(t.get("addon_names", []))
+                addons_suffix = f" [{addons_str}]" if addons_str else ""
+                
+                raw_title = t.get('stream_title', '').strip() or t.get('size', 'Unknown Size')
+                lines = [line.strip() for line in raw_title.splitlines() if line.strip()]
+                cleaned = []
+                for l in lines:
+                    if len(l) > 45:
+                        l = l[:42] + "..."
+                    cleaned.append(l)
+                title = " • ".join(cleaned)
+                seed_str = f" ({t.get('seeders', 0)} seeds)" if not t.get('is_http') and t.get('seeders', 0) > 0 else ""
+                strings.append(f"{title}{seed_str}{addons_suffix}")
             self.file_dropdown.set_model(Gtk.StringList.new(strings))
             self.file_dropdown.set_selected(0)
             
@@ -730,7 +789,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if quality_groups.get("Active Pack"):
             saved_label = "Active Pack"
         
-        preferred_order = ["Active Pack", "1080p", "720p", "4K", "More", "Direct"]
+        preferred_order = ["Active Pack", "1080p", "720p", "4K", "More"]
         
         for q_label in preferred_order:
             t_list = quality_groups[q_label]
@@ -3657,6 +3716,7 @@ class CineWindow(Adw.ApplicationWindow):
             addons_map[key].append(cat)
             
         seen_submenu_names = set()
+        seen_addon_names = set()
         result_addons = []
 
         for (addon_name, m_url), addon_cats in addons_map.items():
@@ -3693,7 +3753,11 @@ class CineWindow(Adw.ApplicationWindow):
                         "target": target_str
                     })
                     
-            result_addons.append((addon_name, addon_cat_items))
+            unique_addon_name = addon_name
+            while unique_addon_name in seen_addon_names:
+                unique_addon_name += "\u200b"
+            seen_addon_names.add(unique_addon_name)
+            result_addons.append((unique_addon_name, addon_cat_items))
             
         return result_addons
 

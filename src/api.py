@@ -7,7 +7,7 @@ import time
 import hashlib
 import logging
 from . import database
-from .tmdb_helper import resolve_to_imdb_id
+from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids
 import concurrent.futures
 import re
 
@@ -131,8 +131,11 @@ def is_type_match(type1, type2):
     t2 = str(type2).lower().strip()
     if t1 == t2:
         return True
-    tv_group = {"tv", "channel", "tvchannel"}
-    if t1 in tv_group and t2 in tv_group:
+    series_group = {"series", "tv", "channel", "tvchannel", "anime"}
+    if t1 in series_group and t2 in series_group:
+        return True
+    movie_group = {"movie", "anime"}
+    if t1 in movie_group and t2 in movie_group:
         return True
     music_group = {"music", "radio"}
     if t1 in music_group and t2 in music_group:
@@ -243,6 +246,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         import concurrent.futures
         items = []
         seen_ids = set()
+        seen_titles = {}
+
         
         def fetch_addon_search(addon):
             if not addon.get("enabled", True): return []
@@ -265,7 +270,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 
             addon_items = []
             for cat_id in search_catalogs:
-                search_url = f"{base_url}catalog/{c_type}/{cat_id}/search={urllib.parse.quote(query)}.json"
+                search_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(query)}.json"
                 data = _get_cached_request(search_url, max_age_hours=2, cache_only=cache_only, timeout=3)
                 if data and isinstance(data.get("metas"), list):
                     addon_items.extend(data["metas"])
@@ -289,21 +294,43 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                                 continue
                                 
                             imdb_id = m.get("imdb_id") or m.get("id")
-                            if imdb_id and imdb_id not in seen_ids:
-                                seen_ids.add(imdb_id)
-                                poster_url = m.get("poster") or m.get("medium_cover_image") or m.get("logo") or m.get("banner") or m.get("background") or m.get("icon") or m.get("thumbnail") or ""
-                                if poster_url and poster_url.startswith("//"):
-                                    poster_url = "https:" + poster_url
-                                item_obj = {
-                                    "id": imdb_id,
-                                    "title": title,
-                                    "year": str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else "",
-                                    "medium_cover_image": poster_url,
-                                    "poster": poster_url,
-                                    "type": media_type
-                                }
-                                items.append(item_obj)
-                                new_batch.append(item_obj)
+                            if not imdb_id or imdb_id in seen_ids:
+                                continue
+
+                            title_lower = title.lower().strip()
+                            year = str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else ""
+                            
+                            matched_item = None
+                            if title_lower in seen_titles:
+                                for existing in seen_titles[title_lower]:
+                                    if existing["year"] == year or not existing["year"] or not year:
+                                        matched_item = existing
+                                        break
+
+                            if matched_item:
+                                if imdb_id not in matched_item.get("alias_ids", []):
+                                    matched_item.setdefault("alias_ids", []).append(imdb_id)
+                                    seen_ids.add(imdb_id)
+                                if not matched_item["year"] and year:
+                                    matched_item["year"] = year
+                                continue
+
+                            seen_ids.add(imdb_id)
+                            poster_url = m.get("poster") or m.get("medium_cover_image") or m.get("logo") or m.get("banner") or m.get("background") or m.get("icon") or m.get("thumbnail") or ""
+                            if poster_url and poster_url.startswith("//"):
+                                poster_url = "https:" + poster_url
+                            item_obj = {
+                                "id": imdb_id,
+                                "alias_ids": [imdb_id],
+                                "title": title,
+                                "year": year,
+                                "medium_cover_image": poster_url,
+                                "poster": poster_url,
+                                "type": media_type
+                            }
+                            seen_titles.setdefault(title_lower, []).append(item_obj)
+                            items.append(item_obj)
+                            new_batch.append(item_obj)
                         if new_batch and on_item_found:
                             on_item_found(new_batch)
                     except Exception:
@@ -418,7 +445,7 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
             # 1. Try TMDB addon first
             try:
                 c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
-                tmdb_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{urllib.parse.quote(str(imdb_id))}.json"
+                tmdb_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
                 tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168, timeout=4)
                 if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
                     res["medium_cover_image"] = tmdb_data["meta"]["poster"]
@@ -459,6 +486,11 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
     return res
 
 def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True, poster=None):
+    if isinstance(imdb_id, list):
+        if not imdb_id: return {}
+        primary_id = next((i for i in imdb_id if str(i).startswith('tt')), imdb_id[0])
+        return fetch_movie_details(primary_id, media_type, title, use_cache, poster)
+
     if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
         parts = str(imdb_id).split("||")
         stream_url = parts[0]
@@ -571,7 +603,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         base_url = m_url.rsplit("manifest.json", 1)[0] if "manifest.json" in m_url else m_url
         if not base_url.endswith("/"): base_url += "/"
         
-        meta_url = f"{base_url}meta/{matched_type}/{urllib.parse.quote(str(imdb_id))}.json"
+        meta_url = f"{base_url}meta/{matched_type}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
         data = _get_cached_request(meta_url, max_age_hours=168)
         
         if data and data.get("meta"):
@@ -746,40 +778,48 @@ def find_episode_file_index(files, season, episode):
     return None
 
 def get_stream_cache_key(imdb_id, media_type="movie", season=None, episode=None):
+    primary = imdb_id[0] if isinstance(imdb_id, list) else imdb_id
     if season is not None and episode is not None:
-        return f"{imdb_id}:S{season}:E{episode}"
-    return f"{imdb_id}:{media_type}"
+        return f"{primary}:S{season}:E{episode}"
+    return f"{primary}:{media_type}"
 
 def process_raw_streams(all_streams):
     if not all_streams:
         return []
     import re
     valid_streams = []
-    seen_hashes = {}  # {stream_id: index in valid_streams} for O(1) duplicate lookup
+    seen_keys = {}  # {dedup_key: index in valid_streams} for O(1) duplicate lookup
     for s in all_streams:
-        is_http = bool(s.get("url"))
-        if not s.get("infoHash") and not is_http:
+        stream_url = s.get("url") or s.get("externalUrl") or ""
+        info_hash = (s.get("infoHash") or "").lower()
+        is_http = bool(stream_url)
+        if not info_hash and not is_http:
             continue
-            
-        stream_id = s.get("infoHash", "").lower() if not is_http else hashlib.md5(s["url"].encode()).hexdigest()
-        if stream_id in seen_hashes:
-            vs = valid_streams[seen_hashes[stream_id]]
-            if s.get("addon_name") and s["addon_name"] not in vs["addon_names"]:
-                vs["addon_names"].append(s["addon_name"])
-            continue
-        seen_hashes[stream_id] = len(valid_streams)
+
+        raw_id = info_hash if not is_http else hashlib.md5(stream_url.encode()).hexdigest()
         
         desc_str = s.get("title") or s.get("description") or ""
         name_str = s.get("name") or ""
         
-        if desc_str and name_str and name_str not in desc_str:
-            full_title = f"{name_str}\n{desc_str}"
+        desc_clean = " • ".join([line.strip() for line in desc_str.splitlines() if line.strip()])
+        name_clean = " • ".join([line.strip() for line in name_str.splitlines() if line.strip()])
+        
+        if desc_clean and name_clean and name_clean not in desc_clean:
+            full_title = f"{name_clean} - {desc_clean}"
         else:
-            full_title = desc_str or name_str
+            full_title = desc_clean or name_clean
             
         title_str = desc_str
         name_and_title = (name_str + " " + title_str)
-        
+
+        dedup_key = f"{raw_id}:{full_title}"
+        if dedup_key in seen_keys:
+            vs = valid_streams[seen_keys[dedup_key]]
+            if s.get("addon_name") and s["addon_name"] not in vs["addon_names"]:
+                vs["addon_names"].append(s["addon_name"])
+            continue
+        seen_keys[dedup_key] = len(valid_streams)
+
         quality = "Unknown"
         q_val = 0
         lower_name = name_and_title.lower()
@@ -821,8 +861,8 @@ def process_raw_streams(all_streams):
             filename = name_and_title.replace('/', '_')
             
         valid_streams.append({
-            "hash": stream_id,
-            "url": s.get("url"),
+            "hash": raw_id,
+            "url": stream_url,
             "is_http": is_http,
             "quality": quality,
             "q_val": q_val,
@@ -927,9 +967,9 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
             base_url += '/'
             
         if actual_media == "series" and season is not None and episode is not None:
-            url = f"{base_url}stream/series/{urllib.parse.quote(str(imdb_id))}:{season}:{episode}.json"
+            url = f"{base_url}stream/series/{urllib.parse.quote(str(imdb_id), safe=':')}:{season}:{episode}.json"
         else:
-            url = f"{base_url}stream/{actual_media}/{urllib.parse.quote(str(imdb_id))}.json"
+            url = f"{base_url}stream/{actual_media}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
             
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
@@ -1030,8 +1070,16 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if callback: callback([], is_cached=False, is_complete=True)
         return []
 
-    if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
-        parts = str(imdb_id).split("||")
+    ids_to_fetch = resolve_all_provider_ids(imdb_id, media_type, title)
+
+    if not ids_to_fetch:
+        if callback: callback([], is_cached=False, is_complete=True)
+        return []
+
+    primary_id = ids_to_fetch[0]
+
+    if str(primary_id).startswith("http://") or str(primary_id).startswith("https://"):
+        parts = str(primary_id).split("||")
         stream_url = parts[0]
         item_title = parts[1] if len(parts) > 1 and parts[1] else (title or "Live Stream")
         stream_obj = [{
@@ -1043,9 +1091,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if callback: callback(stream_obj, is_cached=False, is_complete=True)
         return stream_obj
 
-    imdb_id = resolve_to_imdb_id(imdb_id, media_type, title)
-
-    cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
+    cache_key = get_stream_cache_key(primary_id, media_type, season, episode)
     cached = database.get_cached_streams(cache_key, max_age_hours=24)
     if cached and callback:
         callback(cached, is_cached=True, is_complete=False)
@@ -1058,7 +1104,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         
     stremio_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://")]
 
-    def fetch_from_addon(addon_orig):
+    def fetch_from_addon(addon_orig, cur_id):
         addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
         resources = addon.get("resources")
         manifest_url = addon.get("manifest_url", "")
@@ -1067,7 +1113,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         
         if addon.get("id") == "local.iptv-org":
             streams_data = _get_cached_request("https://iptv-org.github.io/api/streams.json", max_age_hours=24)
-            strms = [s for s in streams_data if s.get("channel") == imdb_id] if streams_data else []
+            strms = [s for s in streams_data if s.get("channel") == cur_id] if streams_data else []
             valid_strms = []
             for s in strms:
                 height = s.get("height", "")
@@ -1100,12 +1146,13 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 matched_media_type = type_match
             else:
                 has_cat_match = any(is_type_match(cat.get("type"), actual_media) for cat in addon.get("catalogs", []))
-                has_prefix_match = addon_prefixes and any(str(imdb_id).startswith(p) for p in addon_prefixes)
+                has_prefix_match = addon_prefixes and any(str(cur_id).startswith(p) for p in addon_prefixes)
                 if not (has_cat_match or has_prefix_match):
                     return addon.get("name", "Unknown"), []
             
         if addon_prefixes is not None:
-            if not any(str(imdb_id).startswith(p) for p in addon_prefixes):
+            is_custom_id = ":" in str(cur_id) or not str(cur_id).startswith("tt")
+            if not is_custom_id and not any(str(cur_id).startswith(p) for p in addon_prefixes):
                 return addon.get("name", "Unknown"), []
                 
         if resources is not None:
@@ -1125,14 +1172,22 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if not base_url.endswith('/'):
             base_url += '/'
             
+        clean_cur_id = str(cur_id)
+        if ":" in clean_cur_id:
+            parts = clean_cur_id.split(":")
+            if len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit():
+                clean_cur_id = ":".join(parts[:-2])
+            elif len(parts) == 2 and parts[-1].isdigit() and parts[0].startswith("tt"):
+                clean_cur_id = parts[0]
+
         if matched_media_type == "series" and season is not None and episode is not None:
-            url = f"{base_url}stream/series/{urllib.parse.quote(str(imdb_id))}:{season}:{episode}.json"
+            url = f"{base_url}stream/series/{urllib.parse.quote(clean_cur_id, safe=':')}:{season}:{episode}.json"
         else:
-            url = f"{base_url}stream/{matched_media_type}/{urllib.parse.quote(str(imdb_id))}.json"
+            url = f"{base_url}stream/{matched_media_type}/{urllib.parse.quote(str(cur_id), safe=':')}.json"
             
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-            with urllib.request.urlopen(req, timeout=15) as response:
+            with urllib.request.urlopen(req, timeout=8) as response:
                 data = json.loads(response.read().decode('utf-8'))
             if isinstance(data, dict):
                 return addon.get("name", "Unknown"), data.get("streams", [])
@@ -1148,12 +1203,28 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             return addon.get("name", "Unknown"), []
 
     all_raw_streams = []
-    num_workers = min(len(stremio_addons), 30) if stremio_addons else 1
+    if cached:
+        for c in cached:
+            raw = {
+                "infoHash": c.get("hash"),
+                "url": c.get("url"),
+                "name": c.get("title"),
+                "description": c.get("stream_title"),
+                "fileIdx": c.get("file_index"),
+                "behaviorHints": {"filename": c.get("filename")},
+                "addon_name": c.get("addon_names")[0] if c.get("addon_names") else "Cache"
+            }
+            all_raw_streams.append(raw)
+
+    num_workers = min(len(stremio_addons) * max(1, len(ids_to_fetch)), 60) if stremio_addons else 1
     if num_workers > 0 and stremio_addons:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            future_to_addon = {executor.submit(fetch_from_addon, addon): addon for addon in stremio_addons}
+            future_to_addon = {}
+            for addon in stremio_addons:
+                for cur_id in ids_to_fetch:
+                    future_to_addon[executor.submit(fetch_from_addon, addon, cur_id)] = (addon, cur_id)
             try:
-                for future in concurrent.futures.as_completed(future_to_addon, timeout=20):
+                for future in concurrent.futures.as_completed(future_to_addon, timeout=25):
                     try:
                         addon_name, streams = future.result()
                         if streams:
@@ -1169,8 +1240,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 print("Timeout fetching streams from some addons")
 
     final_streams = process_raw_streams(all_raw_streams)
-    if actual_media == "tv" and final_streams:
-        final_streams = ping_and_filter_streams(final_streams)
 
     if final_streams:
         database.save_cached_streams(cache_key, final_streams)
