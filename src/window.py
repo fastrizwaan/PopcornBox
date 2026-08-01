@@ -822,10 +822,11 @@ class MovieDetailsPage(Gtk.Overlay):
                 size_score = 0
             return (size_score, seeders)
 
-        def on_quality_btn_clicked(btn, t_list):
-            self.current_t_list = t_list
-            self.selected_torrent = t_list[0]
-            
+        def update_file_dropdown_ui(t_list):
+            if not t_list:
+                self.file_dropdown.set_model(Gtk.StringList.new(["No working streams"]))
+                self.selected_torrent = None
+                return
             strings = []
             for t in t_list:
                 addons_str = ", ".join(t.get("addon_names", []))
@@ -843,6 +844,45 @@ class MovieDetailsPage(Gtk.Overlay):
                 strings.append(f"{title}{seed_str}{addons_suffix}")
             self.file_dropdown.set_model(Gtk.StringList.new(strings))
             self.file_dropdown.set_selected(0)
+            self.selected_torrent = t_list[0]
+            
+        def on_quality_btn_clicked(btn, t_list):
+            self.current_t_list = t_list
+            update_file_dropdown_ui(t_list)
+            
+            if hasattr(self, '_live_check_abort_event'):
+                self._live_check_abort_event.set()
+            self._live_check_abort_event = threading.Event()
+            
+            def live_check(target_list, abort_event):
+                from . import api
+                import time
+                i = 0
+                while i < len(target_list):
+                    if abort_event.is_set():
+                        break
+                    t = target_list[i]
+                    if not t.get('is_http'):
+                        i += 1
+                        continue
+                        
+                    res = api._ping_stream_url(dict(t)) # check a copy to avoid dict modification errors
+                    if abort_event.is_set():
+                        break
+                        
+                    if res.get('is_working'):
+                        if i > 0:
+                            working_stream = target_list.pop(i)
+                            target_list.insert(0, working_stream)
+                            GLib.idle_add(update_file_dropdown_ui, target_list)
+                        break
+                    else:
+                        target_list.pop(i)
+                        GLib.idle_add(update_file_dropdown_ui, target_list)
+                        # don't increment i
+            
+            if t_list and any(t.get('is_http') for t in t_list):
+                threading.Thread(target=live_check, args=(t_list, self._live_check_abort_event), daemon=True).start()
             
         saved_label = getattr(self, 'user_selected_quality', None)
         target_btn = None
