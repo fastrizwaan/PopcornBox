@@ -830,14 +830,13 @@ def process_raw_streams(all_streams):
         info_hash = str(s.get("infoHash") or "").lower()
         
         is_http = False
-        if stream_url.startswith("magnet:"):
-            if not info_hash:
-                match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', stream_url, re.IGNORECASE)
-                if match: info_hash = match.group(1).lower()
-        elif stream_url.split('?')[0].endswith(".torrent"):
-            is_http = False
-        else:
-            is_http = bool(stream_url) and not bool(info_hash)
+        if stream_url.startswith("http://") or stream_url.startswith("https://"):
+            if not stream_url.split('?')[0].endswith(".torrent"):
+                is_http = True
+        elif stream_url.startswith("magnet:") and not info_hash:
+            match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', stream_url, re.IGNORECASE)
+            if match:
+                info_hash = match.group(1).lower()
             
         if not info_hash and not stream_url:
             continue
@@ -875,9 +874,9 @@ def process_raw_streams(all_streams):
             if "360p" in t or re.search(r'\b360\b', t): return "360p", 0
             return None, 0
 
-        quality, q_val = _extract_quality(title_str)
+        quality, q_val = _extract_quality(name_str)
         if not quality:
-            quality, q_val = _extract_quality(name_str)
+            quality, q_val = _extract_quality(title_str)
         if not quality:
             quality, q_val = "Unknown", 0
         
