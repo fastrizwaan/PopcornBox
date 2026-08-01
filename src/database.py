@@ -189,11 +189,11 @@ def add_favorite(item):
 
 def remove_favorite(item_id):
     db = _read_db()
-    db["favorites"] = [f for f in db.get("favorites", []) if f.get("id") != item_id]
+    db["favorites"] = [f for f in db.get("favorites", []) if f.get("id") != item_id and f.get("imdb_id") != item_id]
     _write_db(db)
 
 def is_favorite(item_id):
-    return any(f.get("id") == item_id for f in _read_db().get("favorites", []))
+    return any(f.get("id") == item_id or f.get("imdb_id") == item_id for f in _read_db().get("favorites", []))
 
 # --- Watched ---
 
@@ -203,18 +203,19 @@ def get_watched():
 def add_watched(item):
     db = _read_db()
     watched = db.setdefault("watched", [])
-    watched = [w for w in watched if w.get("id") != item.get("id")]
+    item_id = item.get("id") or item.get("imdb_id")
+    watched = [w for w in watched if w.get("id") != item_id and w.get("imdb_id") != item_id]
     watched.insert(0, item)
     db["watched"] = watched
     _write_db(db)
 
 def remove_watched(item_id):
     db = _read_db()
-    db["watched"] = [f for f in db.get("watched", []) if f.get("id") != item_id]
+    db["watched"] = [f for f in db.get("watched", []) if f.get("id") != item_id and f.get("imdb_id") != item_id]
     _write_db(db)
 
 def is_watched(item_id):
-    return any(f.get("id") == item_id for f in _read_db().get("watched", []))
+    return any(f.get("id") == item_id or f.get("imdb_id") == item_id for f in _read_db().get("watched", []))
 
 # --- History ---
 
@@ -225,8 +226,9 @@ def add_history(item):
     """Add item to top of history, moving it if already present. Capped at HISTORY_LIMIT."""
     db = _read_db()
     history = db.setdefault("history", [])
+    item_id = item.get("id") or item.get("imdb_id")
     # Remove existing entry if present (so it moves to the top)
-    history = [h for h in history if h.get("id") != item.get("id")]
+    history = [h for h in history if h.get("id") != item_id and h.get("imdb_id") != item_id]
     history.insert(0, item)
     # Enforce cap
     db["history"] = history[:HISTORY_LIMIT]
@@ -239,7 +241,7 @@ def clear_history():
 
 def remove_history(item_id):
     db = _read_db()
-    db["history"] = [h for h in db.get("history", []) if h.get("id") != item_id]
+    db["history"] = [h for h in db.get("history", []) if h.get("id") != item_id and h.get("imdb_id") != item_id]
     _write_db(db)
 
 # --- Downloads ---

@@ -318,6 +318,25 @@ flowboxchild:selected {
   color: rgba(255, 255, 255, 0.5);
 }
 
+.card-remove-btn {
+  background-color: rgba(0, 0, 0, 0.75);
+  color: #ffffff;
+  border-radius: 9999px;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+  transition: all 150ms ease-in-out;
+}
+
+.card-remove-btn:hover {
+  background-color: #e01b24;
+  color: #ffffff;
+  border-color: #e01b24;
+  transform: scale(1.1);
+}
+
 cine-spinbutton {
   background: none;
   outline: none;

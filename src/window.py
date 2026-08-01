@@ -4009,21 +4009,21 @@ class CineWindow(Adw.ApplicationWindow):
             if getattr(self, "current_catalog", None):
                 self._fetch_content_page()
 
-    def _populate_flowbox(self, flowbox, items, seen_ids=None):
+    def _populate_flowbox(self, flowbox, items, seen_ids=None, on_remove_clicked=None):
         while flowbox.get_first_child() is not None:
             flowbox.remove(flowbox.get_first_child())
         if seen_ids is not None:
             seen_ids.clear()
-        self._append_flowbox(flowbox, items, seen_ids)
+        self._append_flowbox(flowbox, items, seen_ids, on_remove_clicked=on_remove_clicked)
 
-    def _append_flowbox(self, flowbox, items, seen_ids=None):
+    def _append_flowbox(self, flowbox, items, seen_ids=None, on_remove_clicked=None):
         for item in items:
-            item_id = item.get("id")
+            item_id = item.get("id") or item.get("imdb_id")
             if seen_ids is not None and item_id:
                 if item_id in seen_ids:
                     continue
                 seen_ids.add(item_id)
-            flowbox.append(MovieWidget(item, self._on_movie_clicked))
+            flowbox.append(MovieWidget(item, self._on_movie_clicked, on_remove_clicked=on_remove_clicked))
 
     def _on_movie_clicked(self, movie_data):
         item_id = movie_data.get("id") or movie_data.get("imdb_id")
@@ -4709,6 +4709,24 @@ class CineWindow(Adw.ApplicationWindow):
         anime = [i for i in items if i.get("type", "movie") == "anime"]
         tv = [i for i in items if i.get("type", "movie") in ["tv", "channel", "tvchannel"]]
         
+        def _on_remove_local_item(item_data, card_widget):
+            item_id = item_data.get("id") or item_data.get("imdb_id")
+            if not item_id: return
+            if page_name == "favorites":
+                database.remove_favorite(item_id)
+            elif page_name == "history":
+                database.remove_history(item_id)
+            elif page_name == "watched":
+                database.remove_watched(item_id)
+                
+            parent = card_widget.get_parent()
+            if parent and isinstance(parent, Gtk.FlowBoxChild):
+                flowbox = parent.get_parent()
+                if flowbox:
+                    flowbox.remove(parent)
+            elif parent:
+                parent.remove(card_widget)
+
         def _add_section(title, data):
             if not data: return
             lbl = Gtk.Label(label=title, halign=Gtk.Align.START)
@@ -4723,7 +4741,7 @@ class CineWindow(Adw.ApplicationWindow):
                 valign=Gtk.Align.START,
                 row_spacing=12, column_spacing=2
             )
-            self._populate_flowbox(flowbox, data)
+            self._populate_flowbox(flowbox, data, on_remove_clicked=_on_remove_local_item)
             container.append(flowbox)
 
         if m_type in ["all", "movie"]:
