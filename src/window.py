@@ -3854,9 +3854,10 @@ class CineWindow(Adw.ApplicationWindow):
                     catalog_url=cat_url, 
                     genre=genre, 
                     page=page_to_fetch
-                ) or []
+                )
             except Exception as e:
                 logger.error(f"Error fetching content: {e}")
+                items = None
                 
             def apply_results():
                 # Race condition guard: ignore if user selected another tab or catalog
@@ -3865,7 +3866,10 @@ class CineWindow(Adw.ApplicationWindow):
                     
                 self.is_fetching_content = False
                 
-                if items:
+                if items is None:
+                    # Transient error, do not stop pagination
+                    pass
+                elif items:
                     is_first_page = (page_to_fetch == 1)
                     if is_first_page:
                         self._populate_flowbox(self.content_flowbox, items, self.content_seen_ids)

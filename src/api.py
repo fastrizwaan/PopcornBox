@@ -487,7 +487,10 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             url += ".json"
             
         data = _get_cached_request(url, max_age_hours=2, cache_only=cache_only)
-        if data and isinstance(data.get("metas"), list):
+        if data is None:
+            return None
+            
+        if isinstance(data.get("metas"), list):
             from .movie_widget import extract_image_url
             movies = []
             for m in data["metas"]:
@@ -506,6 +509,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     "type": m.get("type") or media_type
                 })
             return movies
+        return []
+
+    return []
 
     return []
 
