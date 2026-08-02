@@ -72,6 +72,7 @@ class Preferences(Adw.Dialog):
     cmd_label: Gtk.Label = Gtk.Template.Child()
     copy_cmd_button: Gtk.Button = Gtk.Template.Child()
     open_new_row: Adw.SwitchRow = Gtk.Template.Child()
+    hide_adult_content_row: Adw.SwitchRow = Gtk.Template.Child()
     auto_play_next_row: Adw.SwitchRow = Gtk.Template.Child()
     thumb_preview_row: Adw.SwitchRow = Gtk.Template.Child()
     hwdec_row: Adw.SwitchRow = Gtk.Template.Child()
@@ -134,6 +135,7 @@ class Preferences(Adw.Dialog):
     def _bind_ui(self):
         bindings = [
             ("open-new-windows", self.open_new_row, "active"),
+            ("hide-adult-content", self.hide_adult_content_row, "active"),
             ("auto-play-next", self.auto_play_next_row, "active"),
             ("thumbnail-preview", self.thumb_preview_row, "active"),
             ("normalize-volume", self.normalize_volume_row, "active"),
@@ -153,6 +155,7 @@ class Preferences(Adw.Dialog):
 
     def _setup_mpv_updates(self):
         handlers = {
+            "hide-adult-content": self._on_hide_adult_content_changed,
             "subtitle-color": self._on_sub_color_changed,
             "subtitle-scale": self._on_sub_scale_changed,
             "subtitle-font": self._on_sub_font_changed,
@@ -174,6 +177,11 @@ class Preferences(Adw.Dialog):
     def _disconnect_settings(self, *a):
         for connection_id in self._setting_ids:
             settings.disconnect(connection_id)
+
+    def _on_hide_adult_content_changed(self, settings, key):
+        val = settings.get_boolean(key)
+        from . import database
+        database.set_adult_content_hidden(val)
 
     def _on_sub_color_changed(self, settings, key):
         self.mpv["sub-color"] = settings.get_string(key)

@@ -393,6 +393,12 @@ class MovieDetailsPage(Gtk.Overlay):
             idx = dropdown.get_selected()
             if hasattr(self, 'current_t_list') and idx != Gtk.INVALID_LIST_POSITION and idx < len(self.current_t_list):
                 self.selected_torrent = self.current_t_list[idx]
+                if hasattr(self, 'download_btn'):
+                    self.download_btn.set_sensitive(True)
+                    if self.selected_torrent.get("is_http"):
+                        self.download_btn.set_tooltip_text("Download Direct Stream (Opens in Browser)")
+                    else:
+                        self.download_btn.set_tooltip_text("Download Torrent")
                 
         self.file_dropdown.connect("notify::selected", on_dropdown_changed)
         self.row3_box.append(self.file_dropdown)
@@ -409,6 +415,12 @@ class MovieDetailsPage(Gtk.Overlay):
         self.watch_btn.set_size_request(160, 42)
         self.watch_btn.connect("clicked", self.on_watch_clicked)
         self.row4_box.append(self.watch_btn)
+
+        self.download_btn = Gtk.Button(label="Download")
+        self.download_btn.add_css_class("pill")
+        self.download_btn.set_valign(Gtk.Align.CENTER)
+        self.download_btn.connect("clicked", self.on_download_clicked)
+        self.row4_box.append(self.download_btn)
         
         self.stop_btn = Gtk.Button(label="■ Stop")
         self.stop_btn.add_css_class("destructive-action")
@@ -571,7 +583,17 @@ class MovieDetailsPage(Gtk.Overlay):
             subprocess.Popen(["xdg-open", f"https://www.google.com/search?q={q}"])
         self._g_btn_hid = self.g_btn.connect("clicked", on_g_clicked)
         
-        meta_str = f"{details.get('year', '')} • {details.get('runtime', '')} • {details.get('genre', '')}"
+        meta_parts = []
+        if details.get("year"):
+            meta_parts.append(str(details.get("year")))
+        if details.get("certification"):
+            meta_parts.append(f"[{details.get('certification')}]")
+        if details.get("runtime"):
+            meta_parts.append(str(details.get("runtime")))
+        if details.get("genre"):
+            meta_parts.append(str(details.get("genre")))
+            
+        meta_str = " • ".join(meta_parts) if meta_parts else f"{details.get('year', '')} • {details.get('runtime', '')} • {details.get('genre', '')}"
         self.meta_label.set_text(meta_str)
         
         imdb_id = details.get("imdb_id") or details.get("id")
@@ -843,6 +865,8 @@ class MovieDetailsPage(Gtk.Overlay):
             if not t_list:
                 self.file_dropdown.set_model(Gtk.StringList.new(["No working streams"]))
                 self.selected_torrent = None
+                if hasattr(self, 'download_btn'):
+                    self.download_btn.set_sensitive(False)
                 return
             strings = []
             for t in t_list:
@@ -874,6 +898,12 @@ class MovieDetailsPage(Gtk.Overlay):
             self.file_dropdown.set_model(Gtk.StringList.new(strings))
             self.file_dropdown.set_selected(selected_idx)
             self.selected_torrent = t_list[selected_idx]
+            if hasattr(self, 'download_btn'):
+                self.download_btn.set_sensitive(True)
+                if self.selected_torrent.get("is_http"):
+                    self.download_btn.set_tooltip_text("Download Direct Stream (Opens in Browser)")
+                else:
+                    self.download_btn.set_tooltip_text("Download Torrent")
             
         def on_quality_btn_clicked(btn, t_list):
             self.current_t_list = t_list
@@ -1036,6 +1066,32 @@ class MovieDetailsPage(Gtk.Overlay):
                 magnet = api.build_magnet(torrent.get("hash"), self.movie_stub.get("title", ""))
             file_index = torrent.get("file_index")
             self._start_streaming(magnet, file_index)
+
+    def on_download_clicked(self, btn):
+        if hasattr(self, 'file_dropdown') and hasattr(self, 'current_t_list') and self.current_t_list:
+            idx = self.file_dropdown.get_selected()
+            if idx != Gtk.INVALID_LIST_POSITION and idx < len(self.current_t_list):
+                self.selected_torrent = self.current_t_list[idx]
+                
+        if not hasattr(self, 'selected_torrent') or not self.selected_torrent:
+            if hasattr(self, 'progress_label') and self.progress_label:
+                self.progress_label.set_text("Please select a stream first.")
+            return
+            
+        torrent = self.selected_torrent
+        url = torrent.get("url") or torrent.get("magnet")
+        if not url and torrent.get("hash"):
+            from . import api
+            url = api.build_magnet(torrent.get("hash"), self.movie_stub.get("title", ""))
+            
+        if url:
+            import subprocess
+            try:
+                subprocess.Popen(['xdg-open', url])
+            except Exception as e:
+                print("xdg-open error:", e)
+            if hasattr(self, 'progress_label') and self.progress_label:
+                self.progress_label.set_text("Opening stream URL...")
 
     def _start_streaming(self, magnet, file_index):
         if not magnet: return

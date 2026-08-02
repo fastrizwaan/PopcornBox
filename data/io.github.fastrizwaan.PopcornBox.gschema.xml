@@ -58,5 +58,8 @@
 		<key name="auto-play-next" type="b">
 			<default>true</default>
 		</key>
+		<key name="hide-adult-content" type="b">
+			<default>true</default>
+		</key>
 	</schema>
 </schemalist>

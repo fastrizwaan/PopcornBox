@@ -140,6 +140,57 @@ def is_type_match(type1, type2):
         return True
     return False
 
+ADULT_GENRES_TAGS = {
+    "adult", "erotica", "ecchi", "hentai", "softcore", "pinku eiga",
+    "pink film", "sex", "sexuality", "porn", "pornography", "nudity",
+    "explicit nudity", "nsfw", "sploitation", "bdsm", "sm", "r18", "r-18"
+}
+
+ADULT_RATINGS = {
+    "18", "18+", "R18", "R-18", "R18+", "NC-17", "XXX", "X", "TV-MA",
+    "RX", "AV", "ADULT", "PORN", "R21", "OVER 18", "A"
+}
+
+ADULT_KEYWORD_REGEX = re.compile(
+    r'\b(18\+|xxx|hentai|ecchi|erotica|softcore|pinku eiga|pink film|sex video|jav|adult movie|nude|nudity|hatsuj[ôo]|dirty couple exchange|horny couple|groper train|futariecci|futari ecchi|incha couple)\b',
+    re.IGNORECASE
+)
+
+def is_adult_item(item):
+    if not item or not isinstance(item, dict):
+        return False
+
+    if item.get("adult") is True or item.get("isAdult") is True:
+        return True
+
+    rating = str(item.get("certification") or item.get("contentRating") or item.get("rating") or "").strip().upper()
+    if rating in ADULT_RATINGS or any(r in rating for r in ["R18", "NC-17", "XXX", "18+"]):
+        return True
+
+    genres = item.get("genres") or item.get("genre") or []
+    if isinstance(genres, str):
+        genre_list = [g.strip().lower() for g in genres.split(",")]
+    elif isinstance(genres, list):
+        genre_list = [str(g).strip().lower() for g in genres]
+    else:
+        genre_list = []
+
+    for g in genre_list:
+        if g in ADULT_GENRES_TAGS:
+            return True
+
+    title = str(item.get("name") or item.get("title") or "")
+    desc = str(item.get("description") or item.get("overview") or "")
+
+    if ADULT_KEYWORD_REGEX.search(title) or ADULT_KEYWORD_REGEX.search(desc):
+        return True
+
+    genres_str = " ".join(genre_list)
+    if ADULT_KEYWORD_REGEX.search(genres_str):
+        return True
+
+    return False
+
 _ADDON_ONLINE_STATUS = {}
 _ADDON_ONLINE_LOCK = threading.Lock()
 
@@ -319,6 +370,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                         new_batch = []
                         q_lower = query.lower()
                         for m in addon_items:
+                            if database.is_adult_content_hidden() and is_adult_item(m):
+                                continue
                             title = m.get("name") or ""
                             desc = m.get("description") or ""
                             if q_lower not in str(title).lower() and q_lower not in str(desc).lower():
@@ -438,6 +491,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             from .movie_widget import extract_image_url
             movies = []
             for m in data["metas"]:
+                if database.is_adult_content_hidden() and is_adult_item(m):
+                    continue
                 imdb_id = m.get("imdb_id") or m.get("id")
                 poster = extract_image_url(m)
                 title = m.get("name", "")
@@ -703,6 +758,9 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             if not extracted_trailer and isinstance(cm.get("trailer"), str):
                 extracted_trailer = cm.get("trailer")
                 
+            cert = cm.get("certification") or cm.get("contentRating") or cm.get("rating") or cm.get("mpaa") or cm.get("ageRating") or cm.get("certification_badge") or ""
+            if isinstance(cert, list): cert = ", ".join(cert)
+
             res_dict = {
                 "id": true_id,
                 "title": cm.get("name", ""),
@@ -711,12 +769,18 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 "background": cm.get("background", ""),
                 "description": cm.get("description", "No synopsis available."),
                 "runtime": cm.get("runtime", ""),
-                "genre": ", ".join(cm.get("genres", [])),
+                "genre": ", ".join(cm.get("genres", [])) if isinstance(cm.get("genres"), list) else str(cm.get("genres", "")),
+                "certification": str(cert).strip(),
                 "imdbRating": str(cm.get("imdbRating", "")),
                 "trailer": extracted_trailer,
                 "videos": videos,
-                "cast": cm.get("cast", [])
+                "cast": cm.get("cast", []),
+                "genres": cm.get("genres", []),
+                "adult": cm.get("adult") or cm.get("isAdult") or False
             }
+            if database.is_adult_content_hidden() and is_adult_item(res_dict):
+                print(f"[SAFE SEARCH] Adult content blocked: {res_dict.get('title')}")
+                return None
             return res_dict
             
         return None
@@ -1333,83 +1397,105 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None):
     else:
         sub_path = f"movie/{imdb_id}.json"
         
-    url = f"https://opensubtitles-v3.strem.io/subtitles/{sub_path}"
-        
+    pref_langs_str = ""
     try:
-        pref_langs_str = ""
-        try:
-            import gi
-            gi.require_version('Gio', '2.0')
-            from gi.repository import Gio
+        import gi
+        gi.require_version('Gio', '2.0')
+        from gi.repository import Gio
+        schema_source = Gio.SettingsSchemaSource.get_default()
+        if schema_source and schema_source.lookup("io.github.fastrizwaan.PopcornBox", True):
             settings = Gio.Settings.new("io.github.fastrizwaan.PopcornBox")
             pref_langs_str = settings.get_string("subtitle-languages")
-        except Exception:
-            pass
-            
-        if not pref_langs_str:
-            pref_langs_str = database.get_setting("subtitle-languages", "")
-            
-        pref_langs = [l.strip().lower() for l in pref_langs_str.split(',') if l.strip()]
-        if not pref_langs:
-            pref_langs = ["eng", "en", "english"]
-            
-        language_map = {
-            "en": ["en", "eng", "english"], "eng": ["en", "eng", "english"], "english": ["en", "eng", "english"],
-            "es": ["es", "spa", "esp", "spanish"], "spa": ["es", "spa", "esp", "spanish"], "spanish": ["es", "spa", "esp", "spanish"],
-            "hi": ["hi", "hin", "hindi"], "hin": ["hi", "hin", "hindi"], "hindi": ["hi", "hin", "hindi"],
-            "pt": ["pt", "por", "pob", "portuguese"], "por": ["pt", "por", "pob", "portuguese"], "portuguese": ["pt", "por", "pob", "portuguese"],
-            "fr": ["fr", "fre", "fra", "french"], "fre": ["fr", "fre", "fra", "french"], "french": ["fr", "fre", "fra", "french"],
-            "de": ["de", "ger", "deu", "german"], "ger": ["de", "ger", "deu", "german"], "german": ["de", "ger", "deu", "german"],
-            "it": ["it", "ita", "italian"], "ita": ["it", "ita", "italian"], "italian": ["it", "ita", "italian"],
-            "ru": ["ru", "rus", "russian"], "rus": ["ru", "rus", "russian"], "russian": ["ru", "rus", "russian"],
-            "ar": ["ar", "ara", "arabic"], "ara": ["ar", "ara", "arabic"], "arabic": ["ar", "ara", "arabic"],
-            "tr": ["tr", "tur", "turkish"], "tur": ["tr", "tur", "turkish"], "turkish": ["tr", "tur", "turkish"],
-            "zh": ["zh", "chi", "zho", "chinese"], "chi": ["zh", "chi", "zho", "chinese"], "chinese": ["zh", "chi", "zho", "chinese"],
-            "ja": ["ja", "jpn", "japanese"], "jpn": ["ja", "jpn", "japanese"], "japanese": ["ja", "jpn", "japanese"],
-            "ko": ["ko", "kor", "korean"], "kor": ["ko", "kor", "korean"], "korean": ["ko", "kor", "korean"],
-            "id": ["id", "ind", "indonesian"], "ind": ["id", "ind", "indonesian"], "indonesian": ["id", "ind", "indonesian"],
-            "ml": ["ml", "mal", "malayalam"], "mal": ["ml", "mal", "malayalam"], "malayalam": ["ml", "mal", "malayalam"],
-            "ta": ["ta", "tam", "tamil"], "tam": ["ta", "tam", "tamil"], "tamil": ["ta", "tam", "tamil"],
-            "te": ["te", "tel", "telugu"], "tel": ["te", "tel", "telugu"], "telugu": ["te", "tel", "telugu"],
-            "kn": ["kn", "kan", "kannada"], "kan": ["kn", "kan", "kannada"], "kannada": ["kn", "kan", "kannada"],
-            "bn": ["bn", "ben", "bengali"], "ben": ["bn", "ben", "bengali"], "bengali": ["bn", "ben", "bengali"],
-            "pa": ["pa", "pan", "punjabi"], "pan": ["pa", "pan", "punjabi"], "punjabi": ["pa", "pan", "punjabi"],
-            "ur": ["ur", "urd", "urdu"], "urd": ["ur", "urd", "urdu"], "urdu": ["ur", "urd", "urdu"],
-            "fa": ["fa", "per", "fas", "persian"], "per": ["fa", "per", "fas", "persian"], "persian": ["fa", "per", "fas", "persian"],
-            "pl": ["pl", "pol", "polish"], "pol": ["pl", "pol", "polish"], "polish": ["pl", "pol", "polish"],
-            "nl": ["nl", "dut", "nld", "dutch"], "dut": ["nl", "dut", "nld", "dutch"], "dutch": ["nl", "dut", "nld", "dutch"]
-        }
-
-        rank_sets = []
-        for pl in pref_langs:
-            codes = language_map.get(pl, [pl])
-            rank_sets.append(set(codes))
-
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-        with urllib.request.urlopen(req, timeout=10) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            subs = data.get("subtitles", [])
-            
-            matched_subs = []
-            for s in subs:
-                sub_lang = str(s.get("lang", "")).lower()
-                matched_rank = 999
-                for idx, rset in enumerate(rank_sets):
-                    if sub_lang in rset or any(sub_lang.startswith(p) for p in rset):
-                        matched_rank = idx
-                        break
-                if matched_rank < 999:
-                    matched_subs.append((matched_rank, s))
-                    
-            matched_subs.sort(key=lambda x: x[0])
-            return [item[1] for item in matched_subs]
-    except urllib.error.HTTPError as e:
-        print(f"HTTP Error {e.code} fetching subtitles")
-        e.close()
-    except Exception as e:
-        print(f"Error fetching subtitles: {e}")
+    except Exception:
+        pass
         
-    return []
+    if not pref_langs_str:
+        pref_langs_str = database.get_setting("subtitle-languages", "") or database.get_setting("subtitle_languages", "")
+        
+    pref_langs = [l.strip().lower() for l in pref_langs_str.split(',') if l.strip()]
+    if not pref_langs:
+        pref_langs = ["en", "eng", "english"]
+        
+    language_map = {
+        "en": ["en", "eng", "english"], "eng": ["en", "eng", "english"], "english": ["en", "eng", "english"],
+        "es": ["es", "spa", "esp", "spanish"], "spa": ["es", "spa", "esp", "spanish"], "spanish": ["es", "spa", "esp", "spanish"],
+        "hi": ["hi", "hin", "hindi"], "hin": ["hi", "hin", "hindi"], "hindi": ["hi", "hin", "hindi"],
+        "pt": ["pt", "por", "pob", "portuguese"], "por": ["pt", "por", "pob", "portuguese"], "portuguese": ["pt", "por", "pob", "portuguese"],
+        "fr": ["fr", "fre", "fra", "french"], "fre": ["fr", "fre", "fra", "french"], "french": ["fr", "fre", "fra", "french"],
+        "de": ["de", "ger", "deu", "german"], "ger": ["de", "ger", "deu", "german"], "german": ["de", "ger", "deu", "german"],
+        "it": ["it", "ita", "italian"], "ita": ["it", "ita", "italian"], "italian": ["it", "ita", "italian"],
+        "ru": ["ru", "rus", "russian"], "rus": ["ru", "rus", "russian"], "russian": ["ru", "rus", "russian"],
+        "ar": ["ar", "ara", "arabic"], "ara": ["ar", "ara", "arabic"], "arabic": ["ar", "ara", "arabic"],
+        "tr": ["tr", "tur", "turkish"], "tur": ["tr", "tur", "turkish"], "turkish": ["tr", "tur", "turkish"],
+        "zh": ["zh", "chi", "zho", "chinese"], "chi": ["zh", "chi", "zho", "chinese"], "chinese": ["zh", "chi", "zho", "chinese"],
+        "ja": ["ja", "jpn", "japanese"], "jpn": ["ja", "jpn", "japanese"], "japanese": ["ja", "jpn", "japanese"],
+        "ko": ["ko", "kor", "korean"], "kor": ["ko", "kor", "korean"], "korean": ["ko", "kor", "korean"],
+        "id": ["id", "ind", "indonesian"], "ind": ["id", "ind", "indonesian"], "indonesian": ["id", "ind", "indonesian"],
+        "ml": ["ml", "mal", "malayalam"], "mal": ["ml", "mal", "malayalam"], "malayalam": ["ml", "mal", "malayalam"],
+        "ta": ["ta", "tam", "tamil"], "tam": ["ta", "tam", "tamil"], "tamil": ["ta", "tam", "tamil"],
+        "te": ["te", "tel", "telugu"], "tel": ["te", "tel", "telugu"], "telugu": ["te", "tel", "telugu"],
+        "kn": ["kn", "kan", "kannada"], "kan": ["kn", "kan", "kannada"], "kannada": ["kn", "kan", "kannada"],
+        "bn": ["bn", "ben", "bengali"], "ben": ["bn", "ben", "bengali"], "bengali": ["bn", "ben", "bengali"],
+        "pa": ["pa", "pan", "punjabi"], "pan": ["pa", "pan", "punjabi"], "punjabi": ["pa", "pan", "punjabi"],
+        "ur": ["ur", "urd", "urdu"], "urd": ["ur", "urd", "urdu"], "urdu": ["ur", "urd", "urdu"],
+        "fa": ["fa", "per", "fas", "persian"], "per": ["fa", "per", "fas", "persian"], "persian": ["fa", "per", "fas", "persian"],
+        "pl": ["pl", "pol", "polish"], "pol": ["pl", "pol", "polish"], "polish": ["pl", "pol", "polish"],
+        "nl": ["nl", "dut", "nld", "dutch"], "dut": ["nl", "dut", "nld", "dutch"], "dutch": ["nl", "dut", "nld", "dutch"]
+    }
+
+    rank_sets = []
+    for pl in pref_langs:
+        codes = language_map.get(pl, [pl])
+        rank_sets.append(set(codes))
+
+    urls_to_try = [f"https://opensubtitles-v3.strem.io/subtitles/{sub_path}"]
+    try:
+        installed_addons = database.get_addons()
+        for addon in installed_addons:
+            resources = addon.get("resources", [])
+            has_subs = False
+            for r in resources:
+                if isinstance(r, dict) and r.get("name") == "subtitles":
+                    has_subs = True
+                    break
+                elif isinstance(r, str) and r == "subtitles":
+                    has_subs = True
+                    break
+            if has_subs:
+                base_url = addon.get("url", "").rsplit("/manifest.json", 1)[0]
+                if base_url:
+                    urls_to_try.append(f"{base_url}/subtitles/{sub_path}")
+    except Exception:
+        pass
+
+    all_subs = []
+    for sub_url in urls_to_try:
+        try:
+            req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+            with urllib.request.urlopen(req, timeout=8) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                items = data.get("subtitles", [])
+                all_subs.extend(items)
+        except Exception as e:
+            print(f"Error fetching subtitles from {sub_url}: {e}")
+
+    matched_subs = []
+    for s in all_subs:
+        sub_lang = str(s.get("lang", "")).lower()
+        matched_rank = 999
+        for idx, rset in enumerate(rank_sets):
+            if sub_lang in rset or any(sub_lang.startswith(p) for p in rset) or any(p in sub_lang for p in rset):
+                matched_rank = idx
+                break
+        if matched_rank < 999:
+            matched_subs.append((matched_rank, s))
+            
+    if not matched_subs and all_subs:
+        # Fallback to returning all available subtitles if preferred language doesn't match
+        return all_subs
+
+    matched_subs.sort(key=lambda x: x[0])
+    return [item[1] for item in matched_subs]
 
 def download_subtitle(sub_url, filename):
     import gi

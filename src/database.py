@@ -95,6 +95,8 @@ def _read_db():
                 data["downloads"] = []
             if "settings" not in data:
                 data["settings"] = {}
+            if "hide_adult_content" not in data["settings"]:
+                data["settings"]["hide_adult_content"] = True
             if "addons" not in data:
                 data["addons"] = DEFAULT_ADDONS
             else:
@@ -336,6 +338,13 @@ def set_setting(key, value):
     settings = db.setdefault("settings", {})
     settings[key] = value
     _write_db(db)
+
+def is_adult_content_hidden():
+    return get_setting("hide_adult_content", True)
+
+def set_adult_content_hidden(enabled):
+    set_setting("hide_adult_content", bool(enabled))
+
 
 # --- Progress ---
 
