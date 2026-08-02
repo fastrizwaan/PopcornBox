@@ -76,89 +76,117 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
     Returns a list of all distinct provider IDs (IMDB tt..., TMDB, DesiFlix dsf:...)
     for the given media item so all stream addons (Torrentio, Castle, DesiFlix, etc.) can be queried.
     """
-    ids = []
+    import concurrent.futures
+    ids = set()
     if isinstance(item_id, list):
         for i in item_id:
-            if i and str(i) not in ids:
-                ids.append(str(i))
+            if i: ids.add(str(i))
     elif item_id:
-        ids.append(str(item_id))
+        ids.add(str(item_id))
 
-    # 1. Resolve TMDB / alias to IMDB ID if possible
-    resolved = resolve_to_imdb_id(item_id, media_type, title)
-    if isinstance(resolved, list):
-        for r in resolved:
-            if r and str(r) not in ids:
-                ids.append(str(r))
-    elif resolved and str(resolved) not in ids:
-        ids.append(str(resolved))
+    def task_imdb():
+        res = resolve_to_imdb_id(item_id, media_type, title)
+        if isinstance(res, list): return res
+        return [res] if res else []
 
-    # 2. If title is available and we don't have a dsf: ID yet, lookup DesiFlix ID
-    has_dsf = any(i.startswith("dsf:") for i in ids)
-    if not has_dsf and title and title != "Loading...":
-        try:
-            from .api import _get_cached_request
-            c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
-            search_url = f"https://desiflix.stremioaddon.workers.dev/catalog/{c_type}/desiflix/search={urllib.parse.quote(title)}.json"
-            data = _get_cached_request(search_url, max_age_hours=168)
-            if data and "metas" in data:
-                for m in data["metas"]:
-                    m_id = m.get("id")
-                    if m_id and str(m_id).startswith("dsf:") and str(m_id) not in ids:
-                        ids.append(str(m_id))
-                        break
-        except Exception:
-            pass
-
-    # 3. If title is available and we don't have a tt: ID yet, lookup Cinemeta IMDB ID
-    has_tt = any(i.startswith("tt") for i in ids)
-    if not has_tt and title and title != "Loading...":
-        try:
-            from .api import _get_cached_request
-            c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
-            search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(title)}.json"
-            data = _get_cached_request(search_url, max_age_hours=168)
-            if data and "metas" in data:
-                for m in data["metas"]:
-                    m_id = m.get("imdb_id") or m.get("id", "")
-                    if str(m_id).startswith("tt") and str(m_id) not in ids:
-                        ids.append(str(m_id))
-                        break
-        except Exception:
-            pass
-
-    # 4. If we don't have a tmdb: ID yet and we have a tt: ID or title, lookup TMDB ID
-    has_tmdb = any(i.startswith("tmdb:") for i in ids)
-    if not has_tmdb:
-        tt_id = next((i for i in ids if str(i).startswith("tt")), None)
-        root_tt_id = tt_id.split(":")[0] if tt_id else None
-        if root_tt_id:
+    def task_dsf():
+        has_dsf = any(i.startswith("dsf:") for i in ids)
+        if not has_dsf and title and title != "Loading...":
             try:
                 from .api import _get_cached_request
                 c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
-                meta_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{root_tt_id}.json"
-                meta_data = _get_cached_request(meta_url, max_age_hours=168)
-                if meta_data and "meta" in meta_data:
-                    t_id = meta_data["meta"].get("id")
-                    if t_id and str(t_id).startswith("tmdb:") and str(t_id) not in ids:
-                        ids.append(str(t_id))
-                        has_tmdb = True
-            except Exception:
-                pass
-
-        if not has_tmdb and title and title != "Loading...":
-            try:
-                from .api import _get_cached_request
-                c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
-                search_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/catalog/{c_type}/tmdb.top/search={urllib.parse.quote(title)}.json"
-                search_data = _get_cached_request(search_url, max_age_hours=168)
-                if search_data and "metas" in search_data:
-                    for m in search_data["metas"]:
+                search_url = f"https://desiflix.stremioaddon.workers.dev/catalog/{c_type}/desiflix/search={urllib.parse.quote(title)}.json"
+                data = _get_cached_request(search_url, max_age_hours=168)
+                if data and "metas" in data:
+                    for m in data["metas"]:
                         m_id = m.get("id")
-                        if m_id and str(m_id).startswith("tmdb:") and str(m_id) not in ids:
-                            ids.append(str(m_id))
-                            break
+                        if m_id and str(m_id).startswith("dsf:"):
+                            return [str(m_id)]
+            except Exception:
+                pass
+        return []
+
+    def task_tt():
+        has_tt = any(i.startswith("tt") for i in ids)
+        if not has_tt and title and title != "Loading...":
+            try:
+                from .api import _get_cached_request
+                c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
+                search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(title)}.json"
+                data = _get_cached_request(search_url, max_age_hours=168)
+                if data and "metas" in data:
+                    for m in data["metas"]:
+                        m_id = m.get("imdb_id") or m.get("id", "")
+                        if str(m_id).startswith("tt"):
+                            return [str(m_id)]
+            except Exception:
+                pass
+        return []
+
+    def task_tmdb(current_ids):
+        res = []
+        has_tmdb = any(i.startswith("tmdb:") for i in current_ids)
+        if not has_tmdb:
+            tt_id = next((i for i in current_ids if str(i).startswith("tt")), None)
+            root_tt_id = tt_id.split(":")[0] if tt_id else None
+            if root_tt_id:
+                try:
+                    from .api import _get_cached_request
+                    c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
+                    meta_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{root_tt_id}.json"
+                    meta_data = _get_cached_request(meta_url, max_age_hours=168)
+                    if meta_data and "meta" in meta_data:
+                        t_id = meta_data["meta"].get("id")
+                        if t_id and str(t_id).startswith("tmdb:"):
+                            res.append(str(t_id))
+                except Exception:
+                    pass
+            if not res and title and title != "Loading...":
+                try:
+                    from .api import _get_cached_request
+                    c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
+                    search_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/catalog/{c_type}/tmdb.top/search={urllib.parse.quote(title)}.json"
+                    search_data = _get_cached_request(search_url, max_age_hours=168)
+                    if search_data and "metas" in search_data:
+                        for m in search_data["metas"]:
+                            m_id = m.get("id")
+                            if m_id and str(m_id).startswith("tmdb:"):
+                                res.append(str(m_id))
+                                break
+                except Exception:
+                    pass
+        return res
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        f1 = executor.submit(task_imdb)
+        f2 = executor.submit(task_dsf)
+        f3 = executor.submit(task_tt)
+
+        for f in [f1, f2, f3]:
+            try:
+                for r in f.result():
+                    if r: ids.add(str(r))
             except Exception:
                 pass
 
-    return ids
+        if not any(i.startswith("tmdb:") for i in ids):
+            f4 = executor.submit(task_tmdb, list(ids))
+            try:
+                for r in f4.result():
+                    if r: ids.add(str(r))
+            except Exception:
+                pass
+
+    result_list = []
+    if isinstance(item_id, list):
+        for i in item_id:
+            if str(i) in ids and str(i) not in result_list:
+                result_list.append(str(i))
+    elif item_id and str(item_id) in ids:
+        result_list.append(str(item_id))
+
+    for i in ids:
+        if i not in result_list:
+            result_list.append(i)
+
+    return result_list

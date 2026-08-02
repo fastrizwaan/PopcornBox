@@ -16,7 +16,7 @@ _engines_lock = threading.Lock()
 _trailer_process = None
 _trailer_lock = threading.Lock()
 
-import os
+
 if os.environ.get("FLATPAK_ID"):
     DOWNLOAD_BASE = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "popcorn-box", "torrents")
 else:

@@ -513,8 +513,6 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
 
     return []
 
-    return []
-
 def is_valid_meta(res):
     if not res or not isinstance(res, dict):
         return False
@@ -889,10 +887,19 @@ def get_stream_cache_key(imdb_id, media_type="movie", season=None, episode=None)
         return f"{primary}:S{season}:E{episode}"
     return f"{primary}:{media_type}"
 
+def _extract_quality(text):
+    """Extract video quality label and numeric rank from text. Hoisted to avoid re-creation per stream."""
+    t = str(text).lower()
+    if "2160p" in t or re.search(r'\b4k\b', t): return "4K", 4
+    if "1080p" in t or re.search(r'\b1080\b', t): return "1080p", 3
+    if "720p" in t or re.search(r'\b720\b', t): return "720p", 2
+    if "480p" in t or re.search(r'\b480\b', t): return "480p", 1
+    if "360p" in t or re.search(r'\b360\b', t): return "360p", 0
+    return None, 0
+
 def process_raw_streams(all_streams):
     if not all_streams:
         return []
-    import re
     valid_streams = []
     seen_keys = {}  # {dedup_key: index in valid_streams} for O(1) duplicate lookup
     for s in all_streams:
@@ -934,15 +941,6 @@ def process_raw_streams(all_streams):
                 vs["addon_names"].append(s["addon_name"])
             continue
         seen_keys[dedup_key] = len(valid_streams)
-
-        def _extract_quality(text):
-            t = str(text).lower()
-            if "2160p" in t or re.search(r'\b4k\b', t): return "4K", 4
-            if "1080p" in t or re.search(r'\b1080\b', t): return "1080p", 3
-            if "720p" in t or re.search(r'\b720\b', t): return "720p", 2
-            if "480p" in t or re.search(r'\b480\b', t): return "480p", 1
-            if "360p" in t or re.search(r'\b360\b', t): return "360p", 0
-            return None, 0
 
         quality, q_val = _extract_quality(name_str)
         if not quality:
@@ -1128,6 +1126,11 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
         database.save_cached_streams(cache_key, valid_streams)
     return valid_streams
 
+# Pre-cache ffprobe availability once at module level
+import shutil as _shutil
+import subprocess as _subprocess
+_has_ffprobe = bool(_shutil.which('ffprobe'))
+
 def _ping_stream_url(stream):
     url = stream.get("url")
     if not url or not isinstance(url, str) or not (url.startswith("http://") or url.startswith("https://")):
@@ -1137,29 +1140,23 @@ def _ping_stream_url(stream):
     if isinstance(bh, dict) and "headers" in bh:
         for k, v in bh.get("headers", {}).items():
             headers[k] = v
-    
-    import time
-    import subprocess
-    import shutil
-    
-    has_ffprobe = bool(shutil.which('ffprobe'))
-    
-    for attempt in range(3):
-        if has_ffprobe:
+
+    for attempt in range(2):
+        if _has_ffprobe:
             try:
                 cmd = ['ffprobe', '-v', 'error']
                 headers_str = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
                 if headers_str:
                     cmd.extend(['-headers', headers_str])
                 cmd.extend(['-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', url])
-                
-                res = subprocess.run(cmd, capture_output=True, timeout=3.5)
+
+                res = _subprocess.run(cmd, capture_output=True, timeout=3.5)
                 if res.returncode == 0:
                     stream["is_working"] = True
                     return stream
             except Exception:
                 pass
-                
+
         # Fallback to urllib if ffprobe fails (or isn't available)
         try:
             req = urllib.request.Request(url, headers=headers, method='HEAD')
@@ -1169,7 +1166,7 @@ def _ping_stream_url(stream):
                     return stream
         except Exception:
             pass
-            
+
         try:
             req = urllib.request.Request(url, headers=dict(headers, Range='bytes=0-100'))
             with urllib.request.urlopen(req, timeout=3.0) as resp:
@@ -1178,8 +1175,8 @@ def _ping_stream_url(stream):
                     return stream
         except Exception:
             pass
-            
-        if attempt < 2:
+
+        if attempt < 1:
             time.sleep(0.3)
 
     stream["is_working"] = False
@@ -1212,16 +1209,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if callback: callback([], is_cached=False, is_complete=True)
         return []
 
-    ids_to_fetch = resolve_all_provider_ids(imdb_id, media_type, title)
-
-    if not ids_to_fetch:
-        if callback: callback([], is_cached=False, is_complete=True)
-        return []
-
-    primary_id = ids_to_fetch[0]
-
-    if str(primary_id).startswith("http://") or str(primary_id).startswith("https://"):
-        parts = str(primary_id).split("||")
+    if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
+        parts = str(imdb_id).split("||")
         stream_url = parts[0]
         item_title = parts[1] if len(parts) > 1 and parts[1] else (title or "Live Stream")
         stream_obj = [{
@@ -1233,7 +1222,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if callback: callback(stream_obj, is_cached=False, is_complete=True)
         return stream_obj
 
-    cache_key = get_stream_cache_key(primary_id, media_type, season, episode)
+    # Check cache immediately using the provided ID
+    cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
     cached = database.get_cached_streams(cache_key, max_age_hours=24)
     if cached and callback:
         callback(cached, is_cached=True, is_complete=False)
@@ -1347,43 +1337,77 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     all_raw_streams = []
     if cached:
         for c in cached:
+            # Reconstitute the raw stream structure carefully.
             raw = {
                 "infoHash": c.get("hash"),
                 "url": c.get("url"),
-                "name": c.get("title"),
-                "description": c.get("stream_title"),
+                "name": c.get("title") or "",
+                "title": c.get("stream_title") or "",
                 "fileIdx": c.get("file_index"),
                 "behaviorHints": {"filename": c.get("filename")},
                 "addon_name": c.get("addon_names")[0] if c.get("addon_names") else "Cache"
             }
             all_raw_streams.append(raw)
 
-    num_workers = min(len(stremio_addons) * max(1, len(ids_to_fetch)), 60) if stremio_addons else 1
+    final_streams = process_raw_streams(all_raw_streams)
+
+    import concurrent.futures
+    num_workers = min(len(stremio_addons) * 4, 60) if stremio_addons else 1
     if num_workers > 0 and stremio_addons:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
             future_to_addon = {}
+            
+            # Submit immediately for the known item_id
             for addon in stremio_addons:
-                for cur_id in ids_to_fetch:
-                    future_to_addon[executor.submit(fetch_from_addon, addon, cur_id)] = (addon, cur_id)
-            try:
-                for future in concurrent.futures.as_completed(future_to_addon, timeout=25):
-                    try:
-                        addon_name, streams = future.result()
-                        if streams:
-                            for s in streams:
-                                s["addon_name"] = addon_name
-                                all_raw_streams.append(s)
-                            if callback:
-                                current_parsed = process_raw_streams(all_raw_streams)
-                                callback(current_parsed, is_cached=False, is_complete=False)
-                    except Exception as e:
-                        print(f"Error in addon future: {e}")
-            except concurrent.futures.TimeoutError:
-                print("Timeout fetching streams from some addons")
+                future_to_addon[executor.submit(fetch_from_addon, addon, imdb_id)] = (addon, imdb_id)
+                
+            # Fire off ID resolution in the background
+            def resolve_and_submit():
+                from .tmdb_helper import resolve_all_provider_ids
+                ids_to_fetch = resolve_all_provider_ids(imdb_id, media_type, title)
+                return [i for i in ids_to_fetch if i != imdb_id]
+                
+            resolve_future = executor.submit(resolve_and_submit)
+            
+            futures = set(future_to_addon.keys())
+            futures.add(resolve_future)
+            
+            while futures:
+                done, futures = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED, timeout=25)
+                if not done:
+                    print("Timeout fetching streams")
+                    break
+                    
+                for future in done:
+                    if future == resolve_future:
+                        try:
+                            resolved_ids = future.result()
+                            if resolved_ids:
+                                for addon in stremio_addons:
+                                    for cur_id in resolved_ids:
+                                        new_fut = executor.submit(fetch_from_addon, addon, cur_id)
+                                        future_to_addon[new_fut] = (addon, cur_id)
+                                        futures.add(new_fut)
+                        except Exception as e:
+                            print(f"Error resolving IDs: {e}")
+                    else:
+                        try:
+                            addon_name, streams = future.result()
+                            if streams:
+                                for s in streams:
+                                    s["addon_name"] = addon_name
+                                    all_raw_streams.append(s)
+                                if callback:
+                                    current_parsed = process_raw_streams(all_raw_streams)
+                                    callback(current_parsed, is_cached=False, is_complete=False)
+                        except Exception as e:
+                            print(f"Error in addon future: {e}")
 
     final_streams = process_raw_streams(all_raw_streams)
 
     if final_streams:
+        # Recompute the cache key for saving just in case resolve found a better primary ID, 
+        # but storing it under imdb_id is also completely fine.
         database.save_cached_streams(cache_key, final_streams)
     elif stremio_addons:
         database.delete_cached_streams(cache_key)

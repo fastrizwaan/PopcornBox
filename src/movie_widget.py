@@ -87,7 +87,7 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                     url,
                     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                 )
-                for attempt in range(1):
+                for attempt in range(2):
                     try:
                         with urllib.request.urlopen(req, timeout=6) as response:
                             data = response.read()
@@ -97,7 +97,11 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                                 FAILED_IMAGE_URLS.discard(url)
                             break
                     except Exception as e:
-                        FAILED_IMAGE_URLS.add(url)
+                        if attempt == 1:
+                            FAILED_IMAGE_URLS.add(url)
+                        else:
+                            import time
+                            time.sleep(0.5)
                 
             if not data:
                 if on_error: GLib.idle_add(on_error)

@@ -552,7 +552,8 @@ class MovieDetailsPage(Gtk.Overlay):
         # Disconnect any previously connected signal handlers before reconnecting
         # to avoid duplicate callbacks when build_ui() is called a second time.
         for attr in ('_copy_btn_hid', '_g_btn_hid', '_imdb_btn_hid',
-                     '_fav_btn_hid', '_seen_btn_hid', '_trailer_btn_hid'):
+                     '_fav_btn_hid', '_seen_btn_hid', '_trailer_btn_hid',
+                     '_ep_dropdown_hid', '_season_dropdown_hid'):
             hid = getattr(self, attr, None)
             if hid:
                 try:
@@ -563,6 +564,8 @@ class MovieDetailsPage(Gtk.Overlay):
                         '_fav_btn_hid': self.detail_fav_btn,
                         '_seen_btn_hid': self.detail_seen_btn,
                         '_trailer_btn_hid': self.trailer_btn,
+                        '_ep_dropdown_hid': self.episode_dropdown,
+                        '_season_dropdown_hid': self.season_dropdown,
                     }[attr]
                     btn_map.disconnect(hid)
                 except Exception:
@@ -627,9 +630,11 @@ class MovieDetailsPage(Gtk.Overlay):
         if details.get("videos"):
             self.row2_box.set_visible(True)
             videos = details.get("videos")
+            self.videos = videos
             seasons = sorted(list(set([v.get("season", 1) for v in videos])))
-            self.season_dropdown.set_model(Gtk.StringList.new([f"Season {s}" for s in seasons]))
-            self.season_dropdown.set_visible(len(seasons) > 1 or self.media_type in ["series", "anime"])
+            self.seasons = seasons
+            self.season_dropdown.set_model(Gtk.StringList.new([f"Season {s}" for s in self.seasons]))
+            self.season_dropdown.set_visible(len(self.seasons) > 1 or self.media_type in ["series", "anime"])
             
             self._ignore_dropdown_changes = False
             item_id = self.movie_stub.get("id")
@@ -646,18 +651,18 @@ class MovieDetailsPage(Gtk.Overlay):
                         database.set_setting(f"last_ep_{item_id}_{self.selected_season}", self.selected_episode)
                     self.fetch_torrents_async()
                 
-            self.episode_dropdown.connect("notify::selected", on_episode_changed)
+            self._ep_dropdown_hid = self.episode_dropdown.connect("notify::selected", on_episode_changed)
             
             def on_season_changed(dropdown, *args):
                 if getattr(self, '_ignore_dropdown_changes', False): return
                 idx = dropdown.get_selected()
                 if idx == Gtk.INVALID_LIST_POSITION: return
-                if idx >= len(seasons): return
-                s = seasons[idx]
+                if idx >= len(self.seasons): return
+                s = self.seasons[idx]
                 self.selected_season = s
                 if item_id:
                     database.set_setting(f"last_s_{item_id}", s)
-                eps = [v for v in videos if v.get("season", 1) == s]
+                eps = [v for v in self.videos if v.get("season", 1) == s]
                 unique_eps = []
                 seen_eps = set()
                 for e in eps:
@@ -689,14 +694,14 @@ class MovieDetailsPage(Gtk.Overlay):
                 
                 on_episode_changed(self.episode_dropdown)
                 
-            self.season_dropdown.connect("notify::selected", on_season_changed)
+            self._season_dropdown_hid = self.season_dropdown.connect("notify::selected", on_season_changed)
             
-            if seasons:
+            if self.seasons:
                 saved_s = database.get_setting(f"last_s_{item_id}", None) if item_id else None
-                if saved_s in seasons:
-                    default_s_idx = seasons.index(saved_s)
+                if saved_s in self.seasons:
+                    default_s_idx = self.seasons.index(saved_s)
                 else:
-                    default_s_idx = seasons.index(1) if 1 in seasons else 0
+                    default_s_idx = self.seasons.index(1) if 1 in self.seasons else 0
                 self._ignore_dropdown_changes = True
                 self.season_dropdown.set_selected(default_s_idx)
                 self._ignore_dropdown_changes = False
@@ -710,6 +715,9 @@ class MovieDetailsPage(Gtk.Overlay):
         
         while child := self.quality_button_box.get_first_child():
             self.quality_button_box.remove(child)
+
+        self._fetch_gen = getattr(self, '_fetch_gen', 0) + 1
+        current_gen = self._fetch_gen
 
         selected_video = getattr(self, 'selected_video', None)
         video_id = selected_video.get("id") if (selected_video and isinstance(selected_video, dict)) else None
@@ -725,6 +733,9 @@ class MovieDetailsPage(Gtk.Overlay):
         target_title = (selected_video.get("title") if selected_video else None) or self.movie_stub.get("title")
         
         def on_stream_batch(torrents, is_cached=False, is_complete=False):
+            if getattr(self, '_fetch_gen', 0) != current_gen:
+                return
+
             if hasattr(self, 'progress_label') and self.progress_label:
                 if is_complete:
                     if not torrents: self.progress_label.set_text("No streams available.")
@@ -4321,6 +4332,16 @@ class CineWindow(Adw.ApplicationWindow):
         self.hide_player_loading()
         logger.warning("No direct HTTP streams found for this item.")
 
+    def _get_videos_for_current_page(self, page):
+        if not page: return []
+        videos = getattr(page, 'videos', None) or (getattr(page, 'movie_details', {}) or {}).get("videos") or (getattr(page, 'movie_stub', {}) or {}).get("videos") or []
+        if not videos and hasattr(page, 'movie_stub'):
+            from . import database
+            cached = database.get_cached_metadata(page.movie_stub.get("id"))
+            if cached:
+                videos = cached.get("videos", [])
+        return videos
+
     def _has_next_episode(self):
         page = self.details_box.get_first_child()
         if not page or getattr(page, 'media_type', '') not in ["series", "anime", "tv"]:
@@ -4329,12 +4350,7 @@ class CineWindow(Adw.ApplicationWindow):
         current_episode = getattr(page, 'selected_episode', None)
         if current_season is None or current_episode is None:
             return False
-        videos = getattr(page, 'videos', None) or (getattr(page, 'movie_details', {}) or {}).get("videos") or (getattr(page, 'movie_stub', {}) or {}).get("videos") or []
-        if not videos and hasattr(page, 'movie_stub'):
-            from . import database
-            cached = database.get_cached_metadata(page.movie_stub.get("id"))
-            if cached:
-                videos = cached.get("videos", [])
+        videos = self._get_videos_for_current_page(page)
         if not videos:
             return False
         next_ep = current_episode + 1
@@ -4359,6 +4375,7 @@ class CineWindow(Adw.ApplicationWindow):
             self.next_episode_revealer.set_reveal_child(False)
 
     def _try_play_next_episode(self):
+        self.next_ep_auto_triggered = False
         page = self.details_box.get_first_child()
         if not page or getattr(page, 'media_type', '') not in ["series", "anime", "tv"]:
             return False
@@ -4368,12 +4385,7 @@ class CineWindow(Adw.ApplicationWindow):
         if current_season is None or current_episode is None:
             return False
             
-        videos = getattr(page, 'videos', None) or (getattr(page, 'movie_details', {}) or {}).get("videos") or (getattr(page, 'movie_stub', {}) or {}).get("videos") or []
-        if not videos and hasattr(page, 'movie_stub'):
-            from . import database
-            cached = database.get_cached_metadata(page.movie_stub.get("id"))
-            if cached:
-                videos = cached.get("videos", [])
+        videos = self._get_videos_for_current_page(page)
                 
         if not videos:
             return False
