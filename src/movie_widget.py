@@ -68,9 +68,11 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
     
     url_hash = hashlib.md5(url.encode()).hexdigest()
     cache_file = os.path.join(IMAGE_CACHE_DIR, url_hash)
+    setattr(picture_widget, "_popcornbox_image_url", url)
 
     if url in FAILED_IMAGE_URLS and not (os.path.exists(cache_file) and os.path.getsize(cache_file) > 0):
-        if on_error: GLib.idle_add(on_error)
+        if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
+            GLib.idle_add(on_error)
         return
 
     def fetch_image():
@@ -104,7 +106,8 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                             time.sleep(0.5)
                 
             if not data:
-                if on_error: GLib.idle_add(on_error)
+                if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
+                    GLib.idle_add(on_error)
                 return
                 
             loader = GdkPixbuf.PixbufLoader()
@@ -147,12 +150,14 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                             pixbuf = sub_pixbuf.scale_simple(width, height, GdkPixbuf.InterpType.BILINEAR)
                         except Exception:
                             pixbuf = pixbuf.scale_simple(width, height, GdkPixbuf.InterpType.BILINEAR)
-                GLib.idle_add(_apply_pixbuf, picture_widget, pixbuf)
+                GLib.idle_add(_apply_pixbuf, picture_widget, pixbuf, url)
             else:
-                if on_error: GLib.idle_add(on_error)
+                if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
+                    GLib.idle_add(on_error)
         except Exception as e:
             print(f"Failed to load image {url}: {e}")
-            if on_error: GLib.idle_add(on_error)
+            if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
+                GLib.idle_add(on_error)
     if os.path.exists(cache_file) and os.path.getsize(cache_file) > 0:
         try:
             _disk_pool.submit(fetch_image)
@@ -164,10 +169,12 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
         except RuntimeError:
             pass  # Pool was shut down between reference capture and submit
 
-def _apply_pixbuf(picture_widget, pixbuf):
+def _apply_pixbuf(picture_widget, pixbuf, requested_url=None):
     try:
         if not picture_widget or not pixbuf:
             print("[IMAGE APPLY WARNING] picture_widget or pixbuf is None.")
+            return False
+        if requested_url and getattr(picture_widget, "_popcornbox_image_url", None) != requested_url:
             return False
         picture_widget.set_can_shrink(True)
         texture = Gdk.Texture.new_for_pixbuf(pixbuf)

@@ -145,6 +145,8 @@ class CineApplication(Adw.Application):
         for gfile in files:
             path = gfile.get_path() or gfile.get_uri()
             if path:
+                if hasattr(win, "_clear_stream_failover"):
+                    win._clear_stream_failover()
                 win.mpv.loadfile(path, "append-play")
 
         for window in self.get_windows():

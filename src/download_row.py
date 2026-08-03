@@ -5,6 +5,7 @@ gi.require_version('Pango', '1.0')
 from gi.repository import Gtk, GLib, Pango, Gdk
 from . import player
 from . import database
+from .utils import open_uri
 
 class DownloadItemRow(Gtk.Box):
     def __init__(self, download):
@@ -227,8 +228,7 @@ class DownloadItemRow(Gtk.Box):
         if hasattr(self, 'popover'): self.popover.popdown()
         path = os.path.join(player.DOWNLOAD_BASE, self.info_hash)
         os.makedirs(path, exist_ok=True)
-        import subprocess
-        subprocess.Popen(['xdg-open', path])
+        open_uri(GLib.filename_to_uri(path, None), self.get_root())
             
     def on_copy_clicked(self, btn):
         if hasattr(self, 'popover'): self.popover.popdown()

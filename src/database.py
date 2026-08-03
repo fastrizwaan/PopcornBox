@@ -163,7 +163,7 @@ def _write_db(data):
     global _json_cache, _json_cache_valid
     if _db_corrupted:
         print("Database read failed previously. Refusing to write to avoid overwriting with defaults.")
-        return
+        return False
     with _db_lock:
         _ensure_db()
         temp_file = DB_FILE.with_suffix(".tmp")
@@ -174,9 +174,16 @@ def _write_db(data):
             # Update in-memory cache with the data we just wrote
             _json_cache = data
             _json_cache_valid = True
+            return True
         except Exception as e:
+            try:
+                if temp_file.exists():
+                    temp_file.unlink()
+            except Exception:
+                pass
             _json_cache_valid = False
             print(f"Error writing database: {e}")
+            return False
 
 # --- Favorites ---
 
@@ -184,15 +191,17 @@ def get_favorites():
     return _read_db().get("favorites", [])
 
 def add_favorite(item):
-    db = _read_db()
-    if not any(f.get("id") == item.get("id") for f in db.get("favorites", [])):
-        db.setdefault("favorites", []).insert(0, item)
-        _write_db(db)
+    with _db_lock:
+        db = _read_db()
+        if not any(f.get("id") == item.get("id") for f in db.get("favorites", [])):
+            db.setdefault("favorites", []).insert(0, item)
+            _write_db(db)
 
 def remove_favorite(item_id):
-    db = _read_db()
-    db["favorites"] = [f for f in db.get("favorites", []) if f.get("id") != item_id and f.get("imdb_id") != item_id]
-    _write_db(db)
+    with _db_lock:
+        db = _read_db()
+        db["favorites"] = [f for f in db.get("favorites", []) if f.get("id") != item_id and f.get("imdb_id") != item_id]
+        _write_db(db)
 
 def is_favorite(item_id):
     return any(f.get("id") == item_id or f.get("imdb_id") == item_id for f in _read_db().get("favorites", []))
@@ -203,18 +212,20 @@ def get_watched():
     return _read_db().get("watched", [])
 
 def add_watched(item):
-    db = _read_db()
-    watched = db.setdefault("watched", [])
-    item_id = item.get("id") or item.get("imdb_id")
-    watched = [w for w in watched if w.get("id") != item_id and w.get("imdb_id") != item_id]
-    watched.insert(0, item)
-    db["watched"] = watched
-    _write_db(db)
+    with _db_lock:
+        db = _read_db()
+        watched = db.setdefault("watched", [])
+        item_id = item.get("id") or item.get("imdb_id")
+        watched = [w for w in watched if w.get("id") != item_id and w.get("imdb_id") != item_id]
+        watched.insert(0, item)
+        db["watched"] = watched
+        _write_db(db)
 
 def remove_watched(item_id):
-    db = _read_db()
-    db["watched"] = [f for f in db.get("watched", []) if f.get("id") != item_id and f.get("imdb_id") != item_id]
-    _write_db(db)
+    with _db_lock:
+        db = _read_db()
+        db["watched"] = [f for f in db.get("watched", []) if f.get("id") != item_id and f.get("imdb_id") != item_id]
+        _write_db(db)
 
 def is_watched(item_id):
     return any(f.get("id") == item_id or f.get("imdb_id") == item_id for f in _read_db().get("watched", []))
@@ -226,25 +237,28 @@ def get_history():
 
 def add_history(item):
     """Add item to top of history, moving it if already present. Capped at HISTORY_LIMIT."""
-    db = _read_db()
-    history = db.setdefault("history", [])
-    item_id = item.get("id") or item.get("imdb_id")
-    # Remove existing entry if present (so it moves to the top)
-    history = [h for h in history if h.get("id") != item_id and h.get("imdb_id") != item_id]
-    history.insert(0, item)
-    # Enforce cap
-    db["history"] = history[:HISTORY_LIMIT]
-    _write_db(db)
+    with _db_lock:
+        db = _read_db()
+        history = db.setdefault("history", [])
+        item_id = item.get("id") or item.get("imdb_id")
+        # Remove existing entry if present (so it moves to the top)
+        history = [h for h in history if h.get("id") != item_id and h.get("imdb_id") != item_id]
+        history.insert(0, item)
+        # Enforce cap
+        db["history"] = history[:HISTORY_LIMIT]
+        _write_db(db)
 
 def clear_history():
-    db = _read_db()
-    db["history"] = []
-    _write_db(db)
+    with _db_lock:
+        db = _read_db()
+        db["history"] = []
+        _write_db(db)
 
 def remove_history(item_id):
-    db = _read_db()
-    db["history"] = [h for h in db.get("history", []) if h.get("id") != item_id and h.get("imdb_id") != item_id]
-    _write_db(db)
+    with _db_lock:
+        db = _read_db()
+        db["history"] = [h for h in db.get("history", []) if h.get("id") != item_id and h.get("imdb_id") != item_id]
+        _write_db(db)
 
 # --- Downloads ---
 
@@ -334,10 +348,11 @@ def get_setting(key, default=None):
     return _read_db().get("settings", {}).get(key, default)
 
 def set_setting(key, value):
-    db = _read_db()
-    settings = db.setdefault("settings", {})
-    settings[key] = value
-    _write_db(db)
+    with _db_lock:
+        db = _read_db()
+        settings = db.setdefault("settings", {})
+        settings[key] = value
+        _write_db(db)
 
 def is_adult_content_hidden():
     return get_setting("hide_adult_content", True)
@@ -356,28 +371,33 @@ def save_progress(key, position):
     """Buffer progress in memory, flush to disk at most every 10 seconds."""
     global _progress_last_flush
     import time as _time
-    _progress_buffer[key] = position
-    now = _time.time()
-    if now - _progress_last_flush >= _PROGRESS_FLUSH_INTERVAL:
+    with _db_lock:
+        _progress_buffer[key] = position
+        now = _time.time()
+        should_flush = now - _progress_last_flush >= _PROGRESS_FLUSH_INTERVAL
+    if should_flush:
         flush_progress()
 
 def flush_progress():
     """Write all buffered progress to disk immediately."""
     global _progress_last_flush
     import time as _time
-    if not _progress_buffer:
-        return
-    db = _read_db()
-    progress = db.setdefault("progress", {})
-    progress.update(_progress_buffer)
-    _write_db(db)
-    _progress_last_flush = _time.time()
+    with _db_lock:
+        if not _progress_buffer:
+            return
+        db = _read_db()
+        progress = db.setdefault("progress", {})
+        progress.update(_progress_buffer)
+        if _write_db(db):
+            _progress_buffer.clear()
+            _progress_last_flush = _time.time()
 
 def get_progress(key):
     # Check in-memory buffer first (most recent), then disk
-    if key in _progress_buffer:
-        return _progress_buffer[key]
-    return _read_db().get("progress", {}).get(key, 0)
+    with _db_lock:
+        if key in _progress_buffer:
+            return _progress_buffer[key]
+        return _read_db().get("progress", {}).get(key, 0)
 
 
 # --- Addons ---
@@ -386,25 +406,28 @@ def get_addons():
     return _read_db().get("addons", [])
 
 def add_addon(addon):
-    db = _read_db()
-    addons = db.setdefault("addons", [])
-    # Remove existing addon with same ID or manifest_url
-    addons = [a for a in addons if a.get("id") != addon.get("id") and a.get("manifest_url") != addon.get("manifest_url")]
-    addons.append(addon)
-    db["addons"] = addons
-    _write_db(db)
+    with _db_lock:
+        db = _read_db()
+        addons = db.setdefault("addons", [])
+        # Remove existing addon with same ID or manifest_url
+        addons = [a for a in addons if a.get("id") != addon.get("id") and a.get("manifest_url") != addon.get("manifest_url")]
+        addons.append(addon)
+        db["addons"] = addons
+        _write_db(db)
 
 def remove_addon(addon_id):
-    db = _read_db()
-    db["addons"] = [a for a in db.get("addons", []) if a.get("id") != addon_id]
-    _write_db(db)
+    with _db_lock:
+        db = _read_db()
+        db["addons"] = [a for a in db.get("addons", []) if a.get("id") != addon_id]
+        _write_db(db)
 
 def set_addon_enabled(addon_id, enabled):
-    db = _read_db()
-    for a in db.get("addons", []):
-        if a.get("id") == addon_id:
-            a["enabled"] = enabled
-    _write_db(db)
+    with _db_lock:
+        db = _read_db()
+        for a in db.get("addons", []):
+            if a.get("id") == addon_id:
+                a["enabled"] = enabled
+        _write_db(db)
 
 # --- SQLite Metadata & Stream Cache ---
 
@@ -521,5 +544,3 @@ def delete_cached_streams(cache_key):
             conn.commit()
     except Exception as e:
         print(f"Error deleting cached streams: {e}")
-
-

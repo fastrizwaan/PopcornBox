@@ -42,6 +42,7 @@ from .utils import (
     get_gpu_vendor,
     format_time,
     get_display_param,
+    open_uri,
     idle_add_once,
     timeout_add_once,
     timeout_add_seconds_once,
@@ -107,6 +108,9 @@ class MovieDetailsPage(Gtk.Overlay):
         self._last_played_magnet = None
         self._last_played_file_index = None
         self._auto_play_next = False
+        self._details_fetch_id = 0
+        self._fetch_gen = 0
+        self._last_fetch_key = None
         
         self.backdrop_pic = Gtk.Picture()
         self.backdrop_pic.set_can_shrink(True)
@@ -139,8 +143,9 @@ class MovieDetailsPage(Gtk.Overlay):
         def on_reload(btn):
             from . import database, api
             item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
+            primary_id = item_id[0] if isinstance(item_id, list) else item_id
             # Preserve the valid poster/background before deleting, so re-entry is instant
-            existing = database.get_cached_metadata(item_id)
+            existing = database.get_cached_metadata(primary_id)
             saved_poster = None
             saved_bg = None
             if existing:
@@ -150,7 +155,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     saved_poster = p
                 if b:
                     saved_bg = b
-            database.delete_cached_metadata(item_id)
+            database.delete_cached_metadata(primary_id)
             # Re-save a stub with the preserved poster so re-entry is instant
             if saved_poster or saved_bg:
                 stub = existing.copy() if existing else {}
@@ -158,14 +163,14 @@ class MovieDetailsPage(Gtk.Overlay):
                     stub["medium_cover_image"] = saved_poster
                 if saved_bg:
                     stub["background"] = saved_bg
-                stub["id"] = item_id
-                database.save_cached_metadata(item_id, self.media_type, stub)
+                stub["id"] = primary_id
+                database.save_cached_metadata(primary_id, self.media_type, stub)
                 print(f"[RELOAD] Preserved poster in cache: {saved_poster}")
-            cache_key = api.get_stream_cache_key(item_id, self.media_type, getattr(self, 'selected_season', None), getattr(self, 'selected_episode', None))
+            cache_key = api.get_stream_cache_key(primary_id, self.media_type, getattr(self, 'selected_season', None), getattr(self, 'selected_episode', None))
             database.delete_cached_streams(cache_key)
             self._ui_built = False
             self.load_details_async(force_refresh=True)
-            self.fetch_torrents_async()
+            self.fetch_torrents_async(force=True)
         self.reload_btn.connect("clicked", on_reload)
         header_box.append(self.reload_btn)
         
@@ -436,12 +441,12 @@ class MovieDetailsPage(Gtk.Overlay):
         self.search_online_btn.add_css_class("pill")
         self.search_online_btn.set_valign(Gtk.Align.CENTER)
         def on_search_online_clicked(btn):
-            import urllib.parse, subprocess
+            import urllib.parse
             title = self.movie_stub.get("title", "")
             year = self.movie_stub.get("year", "")
             query = f'"{title}" {year} watch online stream' if year else f'"{title}" watch online stream'
             encoded_query = urllib.parse.quote(query)
-            subprocess.Popen(["xdg-open", f"https://www.google.com/search?q={encoded_query}"])
+            open_uri(f"https://www.google.com/search?q={encoded_query}", self.window)
         self.search_online_btn.connect("clicked", on_search_online_clicked)
         self.row4_box.append(self.search_online_btn)
         
@@ -467,9 +472,22 @@ class MovieDetailsPage(Gtk.Overlay):
             print(f"[CARD CLICK Step 5] No cached metadata in database for '{primary_id}'. Initiating background fetch.")
             self.load_details_async(force_refresh=True)
 
+    def _is_current_details_page(self):
+        if self._destroyed:
+            return False
+        if not self.window:
+            return True
+        try:
+            current = self.window.details_box.get_first_child()
+            return current is self or (current is None and self.get_parent() is None)
+        except Exception:
+            return False
+
     def load_details_async(self, force_refresh=False):
         item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
         existing_poster = self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster")
+        self._details_fetch_id += 1
+        fetch_id = self._details_fetch_id
         print(f"[CARD CLICK Step 6] load_details_async started (force_refresh={force_refresh}) for '{item_id}'")
         def fetch():
             from . import api
@@ -477,7 +495,11 @@ class MovieDetailsPage(Gtk.Overlay):
             if details:
                 poster = details.get("medium_cover_image")
                 print(f"[CARD CLICK Step 7] api.fetch_movie_details completed. Poster URL: {poster}")
-                GLib.idle_add(self.build_ui, details)
+                def apply_details():
+                    if fetch_id == self._details_fetch_id and self._is_current_details_page():
+                        self.build_ui(details)
+                    return False
+                GLib.idle_add(apply_details)
             else:
                 print(f"[CARD CLICK Step 7 WARNING] api.fetch_movie_details returned None for '{item_id}'")
         threading.Thread(target=fetch, daemon=True).start()
@@ -583,9 +605,9 @@ class MovieDetailsPage(Gtk.Overlay):
         self._copy_btn_hid = self.copy_btn.connect("clicked", on_copy_clicked)
         
         def on_g_clicked(btn):
-            import urllib.parse, subprocess
+            import urllib.parse
             q = urllib.parse.quote(details.get("title", ""))
-            subprocess.Popen(["xdg-open", f"https://www.google.com/search?q={q}"])
+            open_uri(f"https://www.google.com/search?q={q}", self.window)
         self._g_btn_hid = self.g_btn.connect("clicked", on_g_clicked)
         
         meta_parts = []
@@ -606,8 +628,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if imdb_id:
             self.imdb_btn.set_label(f"IMDb {imdb_rating}")
             def on_imdb_clicked(btn):
-                import subprocess
-                subprocess.Popen(["xdg-open", f"https://www.imdb.com/title/{imdb_id}/"])
+                open_uri(f"https://www.imdb.com/title/{imdb_id}/", self.window)
             self._imdb_btn_hid = self.imdb_btn.connect("clicked", on_imdb_clicked)
         else:
             self.imdb_btn.set_visible(False)
@@ -711,7 +732,7 @@ class MovieDetailsPage(Gtk.Overlay):
         else:
             self.fetch_torrents_async()
 
-    def fetch_torrents_async(self):
+    def fetch_torrents_async(self, force=False):
         selected_video = getattr(self, 'selected_video', None)
         video_id = selected_video.get("id") if (selected_video and isinstance(selected_video, dict)) else None
         
@@ -725,7 +746,7 @@ class MovieDetailsPage(Gtk.Overlay):
         sel_episode = getattr(self, 'selected_episode', None) if req_media_type in ["series", "anime"] else None
         
         fetch_key = f"{item_id}_{sel_season}_{sel_episode}"
-        if getattr(self, '_last_fetch_key', None) == fetch_key:
+        if not force and getattr(self, '_last_fetch_key', None) == fetch_key:
             return
         self._last_fetch_key = fetch_key
 
@@ -740,6 +761,8 @@ class MovieDetailsPage(Gtk.Overlay):
         target_title = (selected_video.get("title") if selected_video else None) or self.movie_stub.get("title")
         
         def on_stream_batch(torrents, is_cached=False, is_complete=False):
+            if not self._is_current_details_page():
+                return
             if getattr(self, '_fetch_gen', 0) != current_gen:
                 return
 
@@ -801,10 +824,14 @@ class MovieDetailsPage(Gtk.Overlay):
             self.quality_button_box.remove(child)
             
         if not self.torrents:
+            self.current_t_list = []
+            self.selected_torrent = None
             self.quality_row_box.set_visible(False)
             self.row3_box.set_visible(False)
             self.row4_box.set_visible(True)
             self.watch_btn.set_visible(False)
+            if hasattr(self, 'download_btn'):
+                self.download_btn.set_sensitive(False)
             if hasattr(self, 'search_online_btn'):
                 self.search_online_btn.set_visible(True)
                 self.search_online_btn.add_css_class("suggested-action")
@@ -819,12 +846,16 @@ class MovieDetailsPage(Gtk.Overlay):
             filtered_torrents = self.torrents
 
         if not filtered_torrents:
+            self.current_t_list = []
+            self.selected_torrent = None
             self.quality_row_box.set_visible(True)
             self.quality_button_box.set_visible(False)
             self.row3_box.set_visible(True)
             self.file_dropdown.set_model(Gtk.StringList.new(["No streams available for selected source filter"]))
             self.file_dropdown.set_selected(0)
             self.watch_btn.set_visible(False)
+            if hasattr(self, 'download_btn'):
+                self.download_btn.set_sensitive(False)
             return
 
         self.quality_row_box.set_visible(True)
@@ -950,8 +981,11 @@ class MovieDetailsPage(Gtk.Overlay):
                     t['ping_status'] = res.get('is_working', False)
                     
                 def do_update():
+                    if abort_event.is_set() or not self._is_current_details_page():
+                        return False
                     target_list.sort(key=lambda x: 0 if x.get('ping_status') is True else (1 if x.get('ping_status') is None else 2))
                     update_file_dropdown_ui(target_list)
+                    return False
                     
                 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
                     futures = [executor.submit(check_stream, t) for t in http_streams]
@@ -1105,11 +1139,10 @@ class MovieDetailsPage(Gtk.Overlay):
             url = api.build_magnet(torrent.get("hash"), self.movie_stub.get("title", ""))
             
         if url:
-            import subprocess
             try:
-                subprocess.Popen(['xdg-open', url])
+                open_uri(url, self.window)
             except Exception as e:
-                print("xdg-open error:", e)
+                print("Open URL error:", e)
             if hasattr(self, 'progress_label') and self.progress_label:
                 self.progress_label.set_text("Opening stream URL...")
 
@@ -1160,8 +1193,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 file_index=file_index,
                 item_id=self.movie_stub.get("id"),
                 media_type=self.media_type,
-                season=self.selected_season,
-                episode=self.selected_episode
+                season=getattr(self, "selected_season", None),
+                episode=getattr(self, "selected_episode", None)
             )
 
 
@@ -1408,7 +1441,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.space_pressed: bool = False
         self.click_delay_id: int = 0
         ck_time: int = gtk_setts.props.gtk_double_click_time if gtk_setts else 400
-        self.click_time: int = max(ck_time, min(200, 425))
+        self.click_time: int = max(200, min(ck_time, 425))
         self.click_holding: bool = False
         self.prev_speed: float = 1.0
         self.wheel_accum_x: float = 0.0
@@ -1427,6 +1460,9 @@ class CineWindow(Adw.ApplicationWindow):
         self.is_inactive: bool = False
         self.next_ep_dismissed: bool = False
         self.next_ep_auto_triggered: bool = False
+        self.stream_queue = []
+        self.stream_queue_index = 0
+        self.stream_request_id = 0
         self.mpv_ctx: mpv.MpvRenderContext
 
         self.mpv = mpv.MPV(
@@ -1536,8 +1572,6 @@ class CineWindow(Adw.ApplicationWindow):
         )
         self._create_action("clear-session", self._on_clear_session)
         self._create_action("search-addons", self._on_search_addons)
-        self._create_action("switch-to-movies", lambda *a: self.library_stack.set_visible_child_name("content"))
-        self._create_action("switch-to-series", lambda *a: self.library_stack.set_visible_child_name("content"))
         self._create_action("open-search", self._open_search)
         self._create_action("close-search", self._close_search)
         self._create_action("open-favorites", lambda *a: self._open_local_page("favorites"))
@@ -1991,6 +2025,7 @@ class CineWindow(Adw.ApplicationWindow):
                     self.shuffle_toggle_btn.set_active(False)
 
                 path = folder.get_path()
+                self._clear_stream_failover()
                 self.mpv.loadfile(path, "append-play")
 
             except GLib.Error as e:
@@ -2132,6 +2167,7 @@ class CineWindow(Adw.ApplicationWindow):
                 elif mode == "audio-add":
                     self.mpv.audio_add(path)
                 else:
+                    self._clear_stream_failover()
                     self.mpv.loadfile(path, "append-play")
 
             if mode == "clear-and-add":
@@ -2238,6 +2274,7 @@ class CineWindow(Adw.ApplicationWindow):
         def open_url(*args):
             dialog.close()
             try:
+                self._clear_stream_failover()
                 self.mpv.loadfile(self.url, mode)
                 if mode == "replace":
                     self.mpv.pause = False
@@ -2527,8 +2564,8 @@ class CineWindow(Adw.ApplicationWindow):
         self.prev_prog_time = curr_time
 
     def _update_chapter_marks_and_menu(self, chapters):
+        self.video_progress_scale.clear_marks()
         if not chapters:
-            self.video_progress_scale.clear_marks()
             self.chapters_menu_btn.set_visible(False)
             return
 
@@ -2674,7 +2711,7 @@ class CineWindow(Adw.ApplicationWindow):
         try:
             count: int = cast(int, self.mpv.playlist_count) or 0
             pos: int = cast(int, self.mpv.playlist_pos) or 0
-            loop_list_enabled: bool = self.mpv.loop_playlist is not False
+            loop_list_enabled: bool = self.mpv.loop_playlist == "inf"
 
             has_multiple: bool = count > 1
 
@@ -2755,6 +2792,7 @@ class CineWindow(Adw.ApplicationWindow):
                 is_url = not is_local_path(path)  # URL Thumbnail
 
                 if is_url:
+                    self._clear_stream_failover()
                     self.mpv.loadfile(path, mode)
                     first_file = False
                     continue
@@ -2774,6 +2812,7 @@ class CineWindow(Adw.ApplicationWindow):
                 mime_type = info.get_content_type() or ""
 
                 if file_type == Gio.FileType.DIRECTORY:
+                    self._clear_stream_failover()
                     self.mpv.loadfile(path, mode)
                     first_file = False
                     continue
@@ -2785,10 +2824,12 @@ class CineWindow(Adw.ApplicationWindow):
                     continue
 
                 if mime_type.startswith(("video/", "audio/", "image/")) or is_url:
+                    self._clear_stream_failover()
                     self.mpv.loadfile(path, mode)
                     first_file = False
 
             elif isinstance(item, str):  # URL string
+                self._clear_stream_failover()
                 self.mpv.loadfile(item, mode)
                 first_file = False
 
@@ -3005,8 +3046,11 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _cancel_click_hold(self, *args):
         if self.click_holding:
-            self.mpv["speed"] = self.prev_speed
-            self.mpv.show_text(f"{self.mpv['speed']:g}×")
+            try:
+                self.mpv["speed"] = self.prev_speed
+                self.mpv.show_text(f"{self.mpv['speed']:g}×")
+            except mpv.ShutdownError:
+                pass
             self.click_holding = False
 
     def _on_mouse_scroll(self, controller, dx, dy):
@@ -3112,9 +3156,10 @@ class CineWindow(Adw.ApplicationWindow):
                     "fbo": self.fbo.value,
                 },
             )
+            return True
         except Exception as e:
             logger.error(f"Render error: {e}", exc_info=True)
-            return
+            return False
 
     def _set_window_size(self, width, height):
         if width <= 0 or height <= 0:
@@ -3164,6 +3209,9 @@ class CineWindow(Adw.ApplicationWindow):
 
     def do_close_request(self) -> bool:
         try:
+            if self.preview_player:
+                self.preview_player.terminate()
+                self.preview_player = None
             same_playlist = is_same_playlist(self.mpv.playlist)
             save_pos = settings.get_boolean("save-video-position")
             if same_playlist or save_pos:
@@ -4097,7 +4145,11 @@ class CineWindow(Adw.ApplicationWindow):
         if getattr(self, "_menu_build_scheduled", False) or getattr(self, "_menus_built", False):
             return
         self._menu_build_scheduled = True
-        GLib.timeout_add(delay_ms, self._ensure_all_menus_built)
+        def run_build():
+            self._menu_build_scheduled = False
+            self._ensure_all_menus_built()
+            return False
+        GLib.timeout_add(delay_ms, run_build)
 
     def _on_content_scroll(self, adj):
         if getattr(self, "is_fetching_content", False) or not getattr(self, "has_more_content", True):
@@ -4133,6 +4185,10 @@ class CineWindow(Adw.ApplicationWindow):
         database.add_history(movie_data)
         
         while child := self.details_box.get_first_child():
+            if hasattr(child, "_destroyed"):
+                child._destroyed = True
+            if hasattr(child, "_live_check_abort_event"):
+                child._live_check_abort_event.set()
             self.details_box.remove(child)
             
         def on_back():
@@ -4216,7 +4272,14 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "player_loading_box"):
             self.player_loading_box.set_visible(False)
 
-    def _play_stream(self, url, title=None, headers=None):
+    def _clear_stream_failover(self):
+        self.stream_request_id += 1
+        self.stream_queue = []
+        self.stream_queue_index = 0
+
+    def _play_stream(self, url, title=None, headers=None, preserve_queue=False):
+        if not preserve_queue:
+            self._clear_stream_failover()
         self.hide_player_loading()
         self.main_stack.set_visible_child_name("player")
         
@@ -4334,13 +4397,18 @@ class CineWindow(Adw.ApplicationWindow):
             logger.error(f"Failed to add pending subtitles: {e}")
 
     def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page="details"):
+        self.stream_request_id += 1
         self.stream_queue = list(queue)
-        self.stream_queue_index = initial_index
+        self.stream_queue_index = max(0, min(int(initial_index or 0), len(self.stream_queue) - 1)) if self.stream_queue else 0
         self.stream_queue_title = title
         self.previous_page_before_player = previous_page
-        self._play_current_stream_from_queue()
+        self._play_current_stream_from_queue(self.stream_request_id)
 
-    def _play_current_stream_from_queue(self):
+    def _play_current_stream_from_queue(self, request_id=None):
+        if request_id is None:
+            request_id = getattr(self, "stream_request_id", 0)
+        if request_id != getattr(self, "stream_request_id", 0):
+            return
         if not getattr(self, 'stream_queue', None) or len(self.stream_queue) == 0:
             return
         if self.stream_queue_index >= len(self.stream_queue):
@@ -4380,20 +4448,22 @@ class CineWindow(Adw.ApplicationWindow):
                     headers[key] = query_params[key][0]
 
         if magnet and (magnet.startswith("http://") or magnet.startswith("https://")):
-            self._play_stream(magnet, display_title, headers=headers)
+            self._play_stream(magnet, display_title, headers=headers, preserve_queue=True)
         elif magnet:
             from . import player
             file_index = torrent.get("file_index")
             if file_index is None:
                 file_index = torrent.get("fileIdx")
             def progress_callback(stats):
+                if request_id != getattr(self, "stream_request_id", 0):
+                    return
                 url = stats.get("url") if isinstance(stats, dict) else None
                 if url:
                     t = display_title
                     if isinstance(stats, dict) and stats.get("filePath"):
                         import os
                         t = os.path.basename(stats.get("filePath"))
-                    self._play_stream(url, t)
+                    self._play_stream(url, t, preserve_queue=True)
                 elif isinstance(stats, dict):
                     text = self.format_stream_stats(stats)
                     self.update_player_loading(text)
@@ -4402,6 +4472,7 @@ class CineWindow(Adw.ApplicationWindow):
             self._try_next_stream_in_queue()
 
     def _try_next_stream_in_queue(self):
+        request_id = getattr(self, "stream_request_id", 0)
         if not getattr(self, 'stream_queue', None):
             return
         self.stream_queue_index += 1
@@ -4409,7 +4480,7 @@ class CineWindow(Adw.ApplicationWindow):
             msg = f"Stream failed. Trying next stream ({self.stream_queue_index + 1}/{len(self.stream_queue)})..."
             logger.info(msg)
             self._show_toast(msg)
-            self._play_current_stream_from_queue()
+            self._play_current_stream_from_queue(request_id)
         else:
             self._handle_all_streams_exhausted()
 
@@ -4597,8 +4668,7 @@ class CineWindow(Adw.ApplicationWindow):
                 def on_config(btn, m_url=manifest_url, pop=popover):
                     pop.popdown()
                     c_url = m_url.replace("/manifest.json", "/configure") if m_url.endswith("/manifest.json") else m_url
-                    from gi.repository import Gio
-                    Gio.AppInfo.launch_default_for_uri(c_url, None)
+                    open_uri(c_url, self)
                 config_btn.connect("clicked", on_config)
                 popover_box.append(config_btn)
             
@@ -4809,11 +4879,14 @@ class CineWindow(Adw.ApplicationWindow):
                     def on_batch(batch):
                         if self._current_search_id == current_search_id and batch:
                             def update_ui():
+                                if self._current_search_id != current_search_id:
+                                    return False
                                 section = getattr(self, section_attr, None)
                                 flowbox = getattr(self, flowbox_attr, None)
                                 if flowbox and section:
                                     self._append_flowbox(flowbox, batch, None)
                                     section.set_visible(True)
+                                return False
                             GLib.idle_add(update_ui)
                     fetch_items(media_type=media_type, query=query, on_item_found=on_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
                 except Exception as e:

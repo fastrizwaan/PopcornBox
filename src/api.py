@@ -100,12 +100,16 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
         data = json.loads(data_str)
         # Save to cache atomically (temp file + rename)
         try:
-            temp_file = cache_file + '.tmp'
+            temp_file = f"{cache_file}.{os.getpid()}.{threading.get_ident()}.tmp"
             with open(temp_file, 'w', encoding='utf-8') as f:
                 f.write(data_str)
             os.replace(temp_file, cache_file)
         except Exception:
-            pass
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except Exception:
+                pass
         return data
     except urllib.error.HTTPError as e:
         print(f"HTTP Error fetching items from {url}: {e}")
@@ -361,72 +365,75 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             return addon_items
 
         addons_to_search = [a for a in database.get_addons() if not target_manifest_url or a.get("manifest_url") == target_manifest_url]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            future_to_addon = {executor.submit(fetch_addon_search, addon): addon for addon in addons_to_search}
-            try:
-                for future in concurrent.futures.as_completed(future_to_addon, timeout=8):
-                    try:
-                        addon_items = future.result()
-                        new_batch = []
-                        q_lower = query.lower()
-                        for m in addon_items:
-                            if database.is_adult_content_hidden() and is_adult_item(m):
-                                continue
-                            title = m.get("name") or ""
-                            desc = m.get("description") or ""
-                            if q_lower not in str(title).lower() and q_lower not in str(desc).lower():
-                                continue
-                                
-                            imdb_id = m.get("imdb_id") or m.get("id")
-                            if not imdb_id or imdb_id in seen_ids:
-                                continue
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+        future_to_addon = {executor.submit(fetch_addon_search, addon): addon for addon in addons_to_search}
+        try:
+            for future in concurrent.futures.as_completed(future_to_addon, timeout=8):
+                try:
+                    addon_items = future.result()
+                    new_batch = []
+                    q_lower = query.lower()
+                    for m in addon_items:
+                        if database.is_adult_content_hidden() and is_adult_item(m):
+                            continue
+                        title = m.get("name") or ""
+                        desc = m.get("description") or ""
+                        if q_lower not in str(title).lower() and q_lower not in str(desc).lower():
+                            continue
 
-                            title_lower = title.lower().strip()
-                            year = str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else ""
-                            
-                            matched_item = None
-                            if title_lower in seen_titles:
-                                for existing in seen_titles[title_lower]:
-                                    if existing["year"] == year or not existing["year"] or not year:
-                                        matched_item = existing
-                                        break
+                        imdb_id = m.get("imdb_id") or m.get("id")
+                        if not imdb_id or imdb_id in seen_ids:
+                            continue
 
-                            if matched_item:
-                                if imdb_id not in matched_item.get("alias_ids", []):
-                                    if str(imdb_id).startswith("tt") and not str(matched_item["id"]).startswith("tt"):
-                                        matched_item.setdefault("alias_ids", []).insert(0, imdb_id)
-                                        matched_item["id"] = imdb_id
-                                        if m.get("type"):
-                                            matched_item["type"] = m.get("type")
-                                    else:
-                                        matched_item.setdefault("alias_ids", []).append(imdb_id)
-                                    seen_ids.add(imdb_id)
-                                if not matched_item["year"] and year:
-                                    matched_item["year"] = year
-                                continue
+                        title_lower = title.lower().strip()
+                        year = str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else ""
 
-                            seen_ids.add(imdb_id)
-                            poster_url = m.get("poster") or m.get("medium_cover_image") or m.get("logo") or m.get("banner") or m.get("background") or m.get("icon") or m.get("thumbnail") or ""
-                            if poster_url and poster_url.startswith("//"):
-                                poster_url = "https:" + poster_url
-                            item_obj = {
-                                "id": imdb_id,
-                                "alias_ids": [imdb_id],
-                                "title": title,
-                                "year": year,
-                                "medium_cover_image": poster_url,
-                                "poster": poster_url,
-                                "type": m.get("type") or media_type
-                            }
-                            seen_titles.setdefault(title_lower, []).append(item_obj)
-                            items.append(item_obj)
-                            new_batch.append(item_obj)
-                        if new_batch and on_item_found:
-                            on_item_found(new_batch)
-                    except Exception:
-                        pass
-            except concurrent.futures.TimeoutError:
-                pass
+                        matched_item = None
+                        if title_lower in seen_titles:
+                            for existing in seen_titles[title_lower]:
+                                if existing["year"] == year or not existing["year"] or not year:
+                                    matched_item = existing
+                                    break
+
+                        if matched_item:
+                            if imdb_id not in matched_item.get("alias_ids", []):
+                                if str(imdb_id).startswith("tt") and not str(matched_item["id"]).startswith("tt"):
+                                    matched_item.setdefault("alias_ids", []).insert(0, imdb_id)
+                                    matched_item["id"] = imdb_id
+                                    if m.get("type"):
+                                        matched_item["type"] = m.get("type")
+                                else:
+                                    matched_item.setdefault("alias_ids", []).append(imdb_id)
+                                seen_ids.add(imdb_id)
+                            if not matched_item["year"] and year:
+                                matched_item["year"] = year
+                            continue
+
+                        seen_ids.add(imdb_id)
+                        poster_url = m.get("poster") or m.get("medium_cover_image") or m.get("logo") or m.get("banner") or m.get("background") or m.get("icon") or m.get("thumbnail") or ""
+                        if poster_url and poster_url.startswith("//"):
+                            poster_url = "https:" + poster_url
+                        item_obj = {
+                            "id": imdb_id,
+                            "alias_ids": [imdb_id],
+                            "title": title,
+                            "year": year,
+                            "medium_cover_image": poster_url,
+                            "poster": poster_url,
+                            "type": m.get("type") or media_type
+                        }
+                        seen_titles.setdefault(title_lower, []).append(item_obj)
+                        items.append(item_obj)
+                        new_batch.append(item_obj)
+                    if new_batch and on_item_found:
+                        on_item_found(new_batch)
+                except Exception:
+                    pass
+        except concurrent.futures.TimeoutError:
+            for future in future_to_addon:
+                future.cancel()
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
                     
         return items
 
@@ -803,22 +810,25 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
     other_addons = [a for a in addons if a != cinemeta_addon]
     if other_addons:
         import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(other_addons), 8)) as executor:
-            future_to_addon = {executor.submit(fetch_addon_meta, addon): addon for addon in other_addons}
-            try:
-                for future in concurrent.futures.as_completed(future_to_addon, timeout=15):
-                    res = future.result()
-                    if res and is_valid_meta(res):
-                        if cinemeta_res and not cinemeta_res.get("trailer") and res.get("trailer"):
-                            cinemeta_res["trailer"] = res.get("trailer")
-                            if not cinemeta_res.get("background") and res.get("background"):
-                                cinemeta_res["background"] = res.get("background")
-                            return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
-                            
-                        if not cinemeta_res:
-                            return _save_and_return_meta(res, imdb_id, media_type, title, poster=poster)
-            except concurrent.futures.TimeoutError:
-                pass
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(other_addons), 8))
+        future_to_addon = {executor.submit(fetch_addon_meta, addon): addon for addon in other_addons}
+        try:
+            for future in concurrent.futures.as_completed(future_to_addon, timeout=15):
+                res = future.result()
+                if res and is_valid_meta(res):
+                    if cinemeta_res and not cinemeta_res.get("trailer") and res.get("trailer"):
+                        cinemeta_res["trailer"] = res.get("trailer")
+                        if not cinemeta_res.get("background") and res.get("background"):
+                            cinemeta_res["background"] = res.get("background")
+                        return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
+
+                    if not cinemeta_res:
+                        return _save_and_return_meta(res, imdb_id, media_type, title, poster=poster)
+        except concurrent.futures.TimeoutError:
+            for future in future_to_addon:
+                future.cancel()
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     if cinemeta_res:
         return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)

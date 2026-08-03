@@ -24,10 +24,11 @@ import logging
 from urllib.parse import urlparse
 
 gi.require_version("Gdk", "4.0")
+gi.require_version("Gio", "2.0")
 gi.require_version("GLib", "2.0")
 gi.require_version("GdkX11", "4.0")
 gi.require_version("GdkWayland", "4.0")
-from gi.repository import Gdk, GLib
+from gi.repository import Gdk, Gio, GLib
 from gi.repository import (
     GdkX11,
     GdkWayland,  # pyright: ignore[reportAttributeAccessIssue]
@@ -133,6 +134,15 @@ def is_local_path(path):
     if not parsed.scheme or parsed.scheme == "file" or len(parsed.scheme) == 1:
         return True
     return False
+
+
+def open_uri(uri, parent=None):
+    try:
+        Gio.AppInfo.launch_default_for_uri(str(uri), None)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to open URI {uri}: {e}", exc_info=True)
+        return False
 
 
 def idle_add_once(function, *args, **kwargs) -> int:
