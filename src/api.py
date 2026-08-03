@@ -1144,7 +1144,7 @@ def _ping_stream_url(stream):
     for attempt in range(2):
         if _has_ffprobe:
             try:
-                cmd = ['ffprobe', '-v', 'error']
+                cmd = ['ffprobe', '-v', 'error', '-threads', '1', '-analyzeduration', '1000000', '-probesize', '1000000']
                 headers_str = "".join([f"{k}: {v}\r\n" for k, v in headers.items()])
                 if headers_str:
                     cmd.extend(['-headers', headers_str])
