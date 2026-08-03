@@ -73,7 +73,10 @@ def is_same_playlist(mpv_playlist):
     """Compares current playlist with the saved file from last session."""
 
     if not settings.get_boolean("save-session"):
-        return
+        return False
+
+    if not os.path.exists(LAST_PLAYLIST_FILE):
+        return False
 
     try:
         with open(LAST_PLAYLIST_FILE, "r", encoding="utf-8") as f:

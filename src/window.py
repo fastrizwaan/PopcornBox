@@ -1534,6 +1534,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action(
             "save-session-close", lambda *a: self._on_save_session(close=True)
         )
+        self._create_action("clear-session", self._on_clear_session)
         self._create_action("search-addons", self._on_search_addons)
         self._create_action("switch-to-movies", lambda *a: self.library_stack.set_visible_child_name("content"))
         self._create_action("switch-to-series", lambda *a: self.library_stack.set_visible_child_name("content"))
@@ -2162,6 +2163,22 @@ class CineWindow(Adw.ApplicationWindow):
             self.close()
         else:
             idle_add_once(self._show_toast, _("Session Saved"))
+
+    def _on_clear_session(self, *args):
+        from .utils import LAST_PLAYLIST_FILE, CONFIG_DIR
+        import os
+        import shutil
+        try:
+            if os.path.exists(LAST_PLAYLIST_FILE):
+                os.remove(LAST_PLAYLIST_FILE)
+            
+            watch_later_dir = os.path.join(CONFIG_DIR, "watch_later")
+            if os.path.exists(watch_later_dir):
+                shutil.rmtree(watch_later_dir)
+                
+            self._show_toast(_("Saved session cleared"))
+        except Exception as e:
+            logger.error(f"Error clearing session: {e}")
 
     def _on_open_url(self, *args, add=False):
         mode = "append-play" if add else "replace"

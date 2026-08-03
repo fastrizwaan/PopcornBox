@@ -240,11 +240,17 @@ class Preferences(Adw.Dialog):
         self.mpv["save-position-on-quit"] = settings.get_boolean("save-video-position")
 
     def _on_clear_session_clicked(self, btn):
-        from .utils import LAST_PLAYLIST_FILE
+        from .utils import LAST_PLAYLIST_FILE, CONFIG_DIR
         import os
+        import shutil
         try:
             if os.path.exists(LAST_PLAYLIST_FILE):
                 os.remove(LAST_PLAYLIST_FILE)
+            
+            watch_later_dir = os.path.join(CONFIG_DIR, "watch_later")
+            if os.path.exists(watch_later_dir):
+                shutil.rmtree(watch_later_dir)
+                
             self.win._show_toast(_("Saved session cleared"))
         except Exception as e:
             logger.error(f"Error clearing session: {e}")
