@@ -980,6 +980,7 @@ def process_raw_streams(all_streams):
             "stream_title": full_title,
             "file_index": s.get("fileIdx"),
             "filename": filename,
+            "behaviorHints": behavior_hints,
             "addon_names": [s.get("addon_name")] if s.get("addon_name") else []
         })
     

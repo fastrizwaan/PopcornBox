@@ -4199,12 +4199,21 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "player_loading_box"):
             self.player_loading_box.set_visible(False)
 
-    def _play_stream(self, url, title=None):
+    def _play_stream(self, url, title=None, headers=None):
         self.hide_player_loading()
         self.main_stack.set_visible_child_name("player")
         
         if title:
             self.mpv["force-media-title"] = title
+            
+        if headers:
+            header_fields = [f"{k}: {v}" for k, v in headers.items()]
+            self.mpv["http-header-fields"] = header_fields
+            if "User-Agent" in headers:
+                self.mpv["user-agent"] = headers["User-Agent"]
+        else:
+            self.mpv["http-header-fields"] = []
+            self.mpv["user-agent"] = "PopcornBox"
             
         self.next_ep_dismissed = False
         self.next_ep_auto_triggered = False
@@ -4288,8 +4297,21 @@ class CineWindow(Adw.ApplicationWindow):
             display_title
         )
 
+        headers = {}
+        behavior_hints = torrent.get("behaviorHints", {})
+        if behavior_hints and "headers" in behavior_hints:
+            headers.update(behavior_hints["headers"])
+            
+        if magnet:
+            import urllib.parse
+            parsed_url = urllib.parse.urlparse(magnet)
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            for key in ["User-Agent", "Referer", "Origin"]:
+                if key in query_params and query_params[key]:
+                    headers[key] = query_params[key][0]
+
         if magnet and (magnet.startswith("http://") or magnet.startswith("https://")):
-            self._play_stream(magnet, display_title)
+            self._play_stream(magnet, display_title, headers=headers)
         elif magnet:
             from . import player
             file_index = torrent.get("file_index")
