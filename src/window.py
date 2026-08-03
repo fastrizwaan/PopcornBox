@@ -393,6 +393,8 @@ class MovieDetailsPage(Gtk.Overlay):
             idx = dropdown.get_selected()
             if hasattr(self, 'current_t_list') and idx != Gtk.INVALID_LIST_POSITION and idx < len(self.current_t_list):
                 self.selected_torrent = self.current_t_list[idx]
+                if not getattr(self, '_programmatic_dropdown_switch', False):
+                    self._user_interacted_dropdown = True
                 if hasattr(self, 'download_btn'):
                     self.download_btn.set_sensitive(True)
                     if self.selected_torrent.get("is_http"):
@@ -710,15 +712,6 @@ class MovieDetailsPage(Gtk.Overlay):
             self.fetch_torrents_async()
 
     def fetch_torrents_async(self):
-        if hasattr(self, 'progress_label') and self.progress_label:
-            self.progress_label.set_text("Loading streams...")
-        
-        while child := self.quality_button_box.get_first_child():
-            self.quality_button_box.remove(child)
-
-        self._fetch_gen = getattr(self, '_fetch_gen', 0) + 1
-        current_gen = self._fetch_gen
-
         selected_video = getattr(self, 'selected_video', None)
         video_id = selected_video.get("id") if (selected_video and isinstance(selected_video, dict)) else None
         
@@ -730,6 +723,20 @@ class MovieDetailsPage(Gtk.Overlay):
 
         sel_season = getattr(self, 'selected_season', None) if req_media_type in ["series", "anime"] else None
         sel_episode = getattr(self, 'selected_episode', None) if req_media_type in ["series", "anime"] else None
+        
+        fetch_key = f"{item_id}_{sel_season}_{sel_episode}"
+        if getattr(self, '_last_fetch_key', None) == fetch_key:
+            return
+        self._last_fetch_key = fetch_key
+
+        if hasattr(self, 'progress_label') and self.progress_label:
+            self.progress_label.set_text("Loading streams...")
+        
+        while child := self.quality_button_box.get_first_child():
+            self.quality_button_box.remove(child)
+
+        self._fetch_gen = getattr(self, '_fetch_gen', 0) + 1
+        current_gen = self._fetch_gen
         target_title = (selected_video.get("title") if selected_video else None) or self.movie_stub.get("title")
         
         def on_stream_batch(torrents, is_cached=False, is_complete=False):
@@ -903,12 +910,16 @@ class MovieDetailsPage(Gtk.Overlay):
                 strings.append(f"{title}{seed_str}{addons_suffix}")
             selected_idx = 0
             curr_sel = getattr(self, 'selected_torrent', None)
-            if curr_sel and curr_sel in t_list:
+            if curr_sel and curr_sel in t_list and getattr(self, '_user_interacted_dropdown', False):
                 selected_idx = t_list.index(curr_sel)
                 
-            self.file_dropdown.set_model(Gtk.StringList.new(strings))
-            self.file_dropdown.set_selected(selected_idx)
-            self.selected_torrent = t_list[selected_idx]
+            self._programmatic_dropdown_switch = True
+            try:
+                self.file_dropdown.set_model(Gtk.StringList.new(strings))
+                self.file_dropdown.set_selected(selected_idx)
+                self.selected_torrent = t_list[selected_idx]
+            finally:
+                self._programmatic_dropdown_switch = False
             if hasattr(self, 'download_btn'):
                 self.download_btn.set_sensitive(True)
                 if self.selected_torrent.get("is_http"):
@@ -918,6 +929,7 @@ class MovieDetailsPage(Gtk.Overlay):
             
         def on_quality_btn_clicked(btn, t_list):
             self.current_t_list = t_list
+            self._user_interacted_dropdown = False
             update_file_dropdown_ui(t_list)
             
             if hasattr(self, '_live_check_abort_event'):
@@ -963,48 +975,45 @@ class MovieDetailsPage(Gtk.Overlay):
         
         preferred_order = ["Active Pack", "1080p", "720p", "4K", "More"]
         
-        first_quality_btn = None
-        for q_label in preferred_order:
-            t_list = quality_groups[q_label]
-            if t_list:
-                t_list.sort(key=_stream_sort_key, reverse=True)
-                btn = Gtk.ToggleButton(label=q_label)
-                btn.set_size_request(-1, 38)
-                if first_quality_btn is None:
-                    first_quality_btn = btn
-                else:
-                    btn.set_group(first_quality_btn)
-                
-                def make_click_cb(b, label, tl):
-                    def cb(*args):
-                        if b.get_active():
-                            if not getattr(self, '_programmatic_quality_switch', False):
-                                self.user_selected_quality = label
-                                from . import database
-                                database.set_setting("preferred_quality", label)
-                            on_quality_btn_clicked(b, tl)
-                    return cb
-                    
-                btn.connect("toggled", make_click_cb(btn, q_label, t_list))
-                self.quality_buttons.append(btn)
-                self.quality_button_box.append(btn)
-                
-                if saved_label and q_label == saved_label:
-                    target_btn = btn
-                    target_t_list = t_list
-                elif not target_btn and not saved_label:
-                    target_btn = btn
-                    target_t_list = t_list
-                    
-        if not target_btn and self.quality_buttons:
-            target_btn = self.quality_buttons[0]
-            for q_label in preferred_order:
-                if quality_groups[q_label]:
-                    target_t_list = quality_groups[q_label]
-                    break
-                    
         self._programmatic_quality_switch = True
         try:
+            first_quality_btn = None
+            for q_label in preferred_order:
+                t_list = quality_groups[q_label]
+                if t_list:
+                    t_list.sort(key=_stream_sort_key, reverse=True)
+                    btn = Gtk.ToggleButton(label=q_label)
+                    btn.set_size_request(-1, 38)
+                    if first_quality_btn is None:
+                        first_quality_btn = btn
+                    else:
+                        btn.set_group(first_quality_btn)
+                    
+                    def make_click_cb(b, label, tl):
+                        def cb(*args):
+                            if b.get_active():
+                                if not getattr(self, '_programmatic_quality_switch', False):
+                                    self.user_selected_quality = label
+                                    from . import database
+                                    database.set_setting("preferred_quality", label)
+                                on_quality_btn_clicked(b, tl)
+                        return cb
+                        
+                    btn.connect("toggled", make_click_cb(btn, q_label, t_list))
+                    self.quality_buttons.append(btn)
+                    self.quality_button_box.append(btn)
+                    
+                    if saved_label and q_label == saved_label:
+                        target_btn = btn
+                        target_t_list = t_list
+                        
+            if not target_btn and self.quality_buttons:
+                target_btn = self.quality_buttons[0]
+                for q_label in preferred_order:
+                    if quality_groups[q_label]:
+                        target_t_list = quality_groups[q_label]
+                        break
+                        
             if target_btn and target_t_list:
                 if not target_btn.get_active():
                     target_btn.set_active(True)
