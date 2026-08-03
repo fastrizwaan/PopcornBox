@@ -137,6 +137,19 @@ template $Preferences: Adw.Dialog {
 					Switch save_session_switch {
 						valign: center;
 					}
+
+					[suffix]
+					Button clear_session_btn {
+						valign: center;
+						icon-name: "user-trash-symbolic";
+						tooltip-text: _("Clear Saved Session");
+						margin-start: 8;
+
+						styles [
+							"circular",
+							"flat",
+						]
+					}
 				}
 
 				Adw.ActionRow {

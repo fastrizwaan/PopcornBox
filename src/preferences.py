@@ -78,6 +78,7 @@ class Preferences(Adw.Dialog):
     hwdec_row: Adw.SwitchRow = Gtk.Template.Child()
     normalize_volume_row: Adw.SwitchRow = Gtk.Template.Child()
     save_session_switch: Gtk.Switch = Gtk.Template.Child()
+    clear_session_btn: Gtk.Button = Gtk.Template.Child()
     save_position_switch: Gtk.Switch = Gtk.Template.Child()
     sub_color_row: Adw.ActionRow = Gtk.Template.Child()
     reset_sub_color: Gtk.Button = Gtk.Template.Child()
@@ -100,6 +101,8 @@ class Preferences(Adw.Dialog):
 
         self._bind_ui()
         self._setup_mpv_updates()
+        
+        self.clear_session_btn.connect("clicked", self._on_clear_session_clicked)
 
         font = settings.get_string("subtitle-font")
         self.font_label.set_label(font)
@@ -235,6 +238,16 @@ class Preferences(Adw.Dialog):
 
     def _on_save_pos_changed(self, settings, _key):
         self.mpv["save-position-on-quit"] = settings.get_boolean("save-video-position")
+
+    def _on_clear_session_clicked(self, btn):
+        from .utils import LAST_PLAYLIST_FILE
+        import os
+        try:
+            if os.path.exists(LAST_PLAYLIST_FILE):
+                os.remove(LAST_PLAYLIST_FILE)
+            self.win._show_toast(_("Saved session cleared"))
+        except Exception as e:
+            logger.error(f"Error clearing session: {e}")
 
     def _on_norm_volume_changed(self, settings, key):
         norm_enabled = settings.get_boolean(key)
