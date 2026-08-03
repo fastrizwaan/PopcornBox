@@ -4206,14 +4206,49 @@ class CineWindow(Adw.ApplicationWindow):
         if title:
             self.mpv["force-media-title"] = title
             
+        all_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         if headers:
-            header_fields = [f"{k}: {v}" for k, v in headers.items()]
+            all_headers.update(headers)
+            
+        if url and isinstance(url, str):
+            try:
+                import urllib.parse
+                parsed = urllib.parse.urlparse(url)
+                params = urllib.parse.parse_qs(parsed.query)
+                for k_target in ["User-Agent", "Referer", "Origin", "Cookie"]:
+                    for p_key, p_val in params.items():
+                        if p_key.lower() == k_target.lower() and p_val:
+                            all_headers[k_target] = p_val[0]
+            except Exception:
+                pass
+                
+        user_agent = None
+        referrer = None
+        custom_headers = {}
+
+        for k, v in all_headers.items():
+            if k.lower() == "user-agent":
+                user_agent = v
+            elif k.lower() == "referer":
+                referrer = v
+            else:
+                custom_headers[k] = v
+
+        if user_agent:
+            self.mpv["user-agent"] = user_agent
+        else:
+            self.mpv["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+        if referrer:
+            self.mpv["referrer"] = referrer
+        else:
+            self.mpv["referrer"] = ""
+
+        if custom_headers:
+            header_fields = [f"{k}: {v}" for k, v in custom_headers.items()]
             self.mpv["http-header-fields"] = header_fields
-            if "User-Agent" in headers:
-                self.mpv["user-agent"] = headers["User-Agent"]
         else:
             self.mpv["http-header-fields"] = []
-            self.mpv["user-agent"] = "PopcornBox"
             
         self.next_ep_dismissed = False
         self.next_ep_auto_triggered = False

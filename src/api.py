@@ -1142,6 +1142,17 @@ def _ping_stream_url(stream):
         for k, v in bh.get("headers", {}).items():
             headers[k] = v
 
+    try:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(url)
+        params = urllib.parse.parse_qs(parsed.query)
+        for k_target in ["User-Agent", "Referer", "Origin", "Cookie"]:
+            for p_key, p_val in params.items():
+                if p_key.lower() == k_target.lower() and p_val:
+                    headers[k_target] = p_val[0]
+    except Exception:
+        pass
+
     for attempt in range(2):
         if _has_ffprobe:
             try:
