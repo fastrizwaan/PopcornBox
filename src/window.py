@@ -4250,6 +4250,23 @@ class CineWindow(Adw.ApplicationWindow):
         else:
             self.mpv["http-header-fields"] = []
             
+        # Optimize network stream loading speed
+        if url and isinstance(url, str) and (url.startswith("http://") or url.startswith("https://")):
+            # Bypass yt-dlp resolution delay (5-10s) for direct media streams
+            is_direct_stream = any(k in url.lower() for k in [".m3u8", ".mp4", ".mkv", ".avi", ".ts", ".m4s", "workers.dev"])
+            if is_direct_stream:
+                self.mpv["ytdl"] = False
+            else:
+                self.mpv["ytdl"] = True
+
+            try:
+                self.mpv["demuxer-lavf-o"] = "probesize=1000000,analyzeduration=1000000"
+                self.mpv["demuxer-readahead-secs"] = 2
+            except Exception:
+                pass
+        else:
+            self.mpv["ytdl"] = True
+
         self.next_ep_dismissed = False
         self.next_ep_auto_triggered = False
         if hasattr(self, "next_episode_revealer"):
