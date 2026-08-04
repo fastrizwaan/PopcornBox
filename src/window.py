@@ -775,31 +775,6 @@ class MovieDetailsPage(Gtk.Overlay):
 
             torrents = torrents or []
             
-            if is_complete and torrents:
-                from . import player, api
-                active_hash = player.get_active_info_hash()
-                if active_hash:
-                    with player._engines_lock:
-                        engine = player._engines.get(active_hash)
-                        if engine and hasattr(engine, '_files'):
-                            try:
-                                files_data = [{"name": f["path"], "size": f["size"]} for f in engine._files()]
-                                found_idx = api.find_episode_file_index(files_data, sel_season, sel_episode)
-                                if found_idx is not None:
-                                    torrents = [t for t in torrents if t.get("infoHash") != active_hash and (not t.get("hash") or t.get("hash").lower() != active_hash)]
-                                    active_stream = {
-                                        "infoHash": active_hash,
-                                        "magnet": getattr(engine, "magnet_link", ""),
-                                        "fileIdx": found_idx,
-                                        "quality": "Active Pack",
-                                        "stream_title": "[Active Pack] " + str(getattr(engine, "name", "Season Pack")),
-                                        "size": files_data[found_idx]["size"],
-                                        "seeders": 999999,
-                                    }
-                                    torrents.insert(0, active_stream)
-                            except Exception:
-                                pass
-
             self.torrents = torrents
             self.update_quality_dropdown()
             
@@ -868,11 +843,8 @@ class MovieDetailsPage(Gtk.Overlay):
             self.search_online_btn.set_visible(True)
             self.search_online_btn.remove_css_class("suggested-action")
         
-        quality_groups = {"Active Pack": [], "4K": [], "1080p": [], "720p": [], "More": []}
+        quality_groups = {"4K": [], "1080p": [], "720p": [], "More": []}
         for t in filtered_torrents:
-            if t.get('quality') == "Active Pack":
-                quality_groups["Active Pack"].append(t)
-                continue
             q = t.get('quality', 'Unknown').upper()
             if "4K" in q or "2160" in q:
                 quality_groups["4K"].append(t)
@@ -1004,10 +976,7 @@ class MovieDetailsPage(Gtk.Overlay):
         target_btn = None
         target_t_list = None
         
-        if quality_groups.get("Active Pack"):
-            saved_label = "Active Pack"
-        
-        preferred_order = ["Active Pack", "1080p", "720p", "4K", "More"]
+        preferred_order = ["1080p", "720p", "4K", "More"]
         
         self._programmatic_quality_switch = True
         try:
@@ -1111,13 +1080,21 @@ class MovieDetailsPage(Gtk.Overlay):
             self.window.fetch_and_add_subtitles(imdb_id, self.media_type, season, episode)
 
         if self.window and hasattr(self.window, 'play_stream_with_failover'):
-            self.window.play_stream_with_failover(queue, initial_index=init_idx, title=media_title, previous_page="details")
+            self.window.play_stream_with_failover(
+                queue,
+                initial_index=init_idx,
+                title=media_title,
+                previous_page="details",
+                season=getattr(self, "selected_season", None),
+                episode=getattr(self, "selected_episode", None)
+            )
         else:
             torrent = self.selected_torrent
             magnet = torrent.get("url") or torrent.get("magnet")
             if not magnet and torrent.get("hash"):
                 from . import api
-                magnet = api.build_magnet(torrent.get("hash"), self.movie_stub.get("title", ""))
+                t_name = torrent.get("stream_title") or torrent.get("filename") or torrent.get("name") or torrent.get("title") or self.movie_stub.get("title", "")
+                magnet = api.build_magnet(torrent.get("hash"), t_name)
             file_index = torrent.get("file_index")
             self._start_streaming(magnet, file_index)
 
@@ -1136,7 +1113,8 @@ class MovieDetailsPage(Gtk.Overlay):
         url = torrent.get("url") or torrent.get("magnet")
         if not url and torrent.get("hash"):
             from . import api
-            url = api.build_magnet(torrent.get("hash"), self.movie_stub.get("title", ""))
+            t_name = torrent.get("stream_title") or torrent.get("filename") or torrent.get("name") or torrent.get("title") or self.movie_stub.get("title", "")
+            url = api.build_magnet(torrent.get("hash"), t_name)
             
         if url:
             try:
@@ -4396,7 +4374,11 @@ class CineWindow(Adw.ApplicationWindow):
         except Exception as e:
             logger.error(f"Failed to add pending subtitles: {e}")
 
-    def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page="details"):
+    def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page="details", season=None, episode=None):
+        if season is not None:
+            self.selected_season = season
+        if episode is not None:
+            self.selected_episode = episode
         self.stream_request_id += 1
         self.stream_queue = list(queue)
         self.stream_queue_index = max(0, min(int(initial_index or 0), len(self.stream_queue) - 1)) if self.stream_queue else 0
@@ -4420,10 +4402,11 @@ class CineWindow(Adw.ApplicationWindow):
         hash_val = torrent.get("hash") or torrent.get("infoHash")
         if not magnet and hash_val:
             from . import api
-            magnet = api.build_magnet(hash_val, self.stream_queue_title or "")
+            t_name = torrent.get("filename") or torrent.get("stream_title") or torrent.get("name") or torrent.get("title") or self.stream_queue_title or ""
+            magnet = api.build_magnet(hash_val, t_name)
 
         title_text = self.stream_queue_title or "Stream"
-        stream_name = torrent.get("name") or torrent.get("stream_title") or ""
+        stream_name = torrent.get("filename") or torrent.get("name") or torrent.get("stream_title") or ""
         if stream_name:
             display_title = f"{title_text} ({stream_name})"
         else:
@@ -4467,7 +4450,7 @@ class CineWindow(Adw.ApplicationWindow):
                 elif isinstance(stats, dict):
                     text = self.format_stream_stats(stats)
                     self.update_player_loading(text)
-            player.play_magnet(magnet, file_index=file_index, progress_callback=progress_callback, item_id=torrent.get("id"))
+            player.play_magnet(magnet, file_index=file_index, progress_callback=progress_callback, item_id=torrent.get("id"), season=getattr(self, "selected_season", None), episode=getattr(self, "selected_episode", None))
         else:
             self._try_next_stream_in_queue()
 

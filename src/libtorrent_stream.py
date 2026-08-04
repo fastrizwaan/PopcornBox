@@ -133,6 +133,31 @@ class TorrentStreamEngine:
     def is_alive(self):
         return not self.stopped.is_set() and self.http_thread is not None and self.http_thread.is_alive()
 
+    def _get_torrent_name(self, status=None):
+        if hasattr(self, 'handle') and self.handle:
+            try:
+                info = None
+                if hasattr(self.handle, 'torrent_file'):
+                    info = self.handle.torrent_file()
+                if not info and hasattr(self.handle, 'get_torrent_info'):
+                    info = self.handle.get_torrent_info()
+                if info and hasattr(info, 'is_valid') and info.is_valid():
+                    n = info.name()
+                    if isinstance(n, bytes):
+                        n = n.decode('utf-8', 'replace')
+                    if n:
+                        return n
+            except Exception:
+                pass
+        if status is None and hasattr(self, 'handle') and self.handle:
+            status = self._status()
+        if status:
+            n = getattr(status, "name", "") or ""
+            if isinstance(n, bytes):
+                n = n.decode('utf-8', 'replace')
+            return n
+        return ""
+
     def stats(self):
         with self.lock:
             if self.error:
@@ -151,7 +176,7 @@ class TorrentStreamEngine:
             total_ul = max(session_ul, self._stored_ul)
 
             data = {
-                "name": getattr(status, "name", "") or "",
+                "name": self._get_torrent_name(status),
                 "infoHash": self.info_hash or "",
                 "filePath": self.target["path"] if self.target else "",
                 "ready": self.ready_event.is_set(),
@@ -170,12 +195,6 @@ class TorrentStreamEngine:
 
             if self.target:
                 downloaded = self._target_downloaded()
-                
-                # Force 100% if libtorrent state indicates completion
-                state_str = str(getattr(status, "state", "")).lower()
-                if "finished" in state_str or "seeding" in state_str:
-                    downloaded = self.target["size"]
-                    
                 data["downloaded"] = downloaded
                 data["progress"] = downloaded / self.target["size"] if self.target["size"] else 0
                 data["bufferedFromStart"] = self._buffered_from_start()
@@ -375,13 +394,14 @@ class TorrentStreamEngine:
                     # Start strict sequential prefetcher for the front buffer
                     threading.Thread(target=self._background_prefetcher, daemon=True).start()
                     
-                    # Record this download in the database
-                    name = getattr(status, "name", "Unknown")
-                    if isinstance(name, bytes):
-                        name = name.decode('utf-8', 'replace')
-                        
-                    if hasattr(self, 'target') and "path" in self.target:
-                        name = os.path.basename(self.target["path"])
+                    # Record this download in the database with the true torrent name
+                    name = self._get_torrent_name(status)
+                    if not name or name.startswith("🌐") or "·" in name:
+                        fallback_name = getattr(status, "name", "Unknown")
+                        if isinstance(fallback_name, bytes):
+                            fallback_name = fallback_name.decode('utf-8', 'replace')
+                        if fallback_name:
+                            name = fallback_name
                         
                     from . import database
                     database.add_download(self.info_hash, name, self.magnet_link, self.file_index, self.item_id, self.media_type, getattr(self, 'season', None), getattr(self, 'episode', None))
@@ -483,9 +503,8 @@ class TorrentStreamEngine:
             if not files:
                 raise RuntimeError("Torrent metadata has no files")
 
-            idx = self.file_index if self.file_index is not None else None
-            
-            if idx is None and getattr(self, 'season', None) is not None and getattr(self, 'episode', None) is not None:
+            idx = None
+            if getattr(self, 'season', None) is not None and getattr(self, 'episode', None) is not None:
                 try:
                     from . import api
                     files_data = [{"name": f["path"], "size": f["size"]} for f in files]
@@ -494,6 +513,9 @@ class TorrentStreamEngine:
                         idx = found
                 except Exception:
                     pass
+
+            if idx is None and self.file_index is not None:
+                idx = self.file_index
 
             if idx is None or idx < 0 or idx >= len(files):
                 idx = max(range(len(files)), key=lambda i: files[i]["size"])
@@ -518,8 +540,6 @@ class TorrentStreamEngine:
         if new_file_index is not None:
             new_file_index = int(new_file_index)
         with self.lock:
-            if self.file_index == new_file_index:
-                return
             self.file_index = new_file_index
             if self.ready_event.is_set():
                 self._select_target_file()
@@ -720,30 +740,8 @@ class TorrentStreamEngine:
         try:
             progress = self.handle.file_progress()
             downloaded = int(progress[self.target["index"]])
-            if downloaded >= self.target["size"]:
-                return self.target["size"]
+            return downloaded
         except Exception:
-            pass
-            
-        try:
-            status = self.handle.status()
-            state_str = str(getattr(status, "state", "")).lower()
-            
-            if "finished" in state_str or "seeding" in state_str:
-                return self.target["size"]
-                
-            # Only use physical block validation during 'checking' phase.
-            # For new active downloads, pre-allocation can cause st_blocks to equal total size, 
-            # leading to a false 100% read.
-            if "checking" in state_str:
-                path = self._target_path()
-                if os.path.exists(path):
-                    st = os.stat(path)
-                    if hasattr(st, 'st_blocks'):
-                        physical_size = st.st_blocks * 512
-                        if physical_size >= self.target["size"]:
-                            return self.target["size"]
-        except Exception as e:
             pass
             
         return self._downloaded_by_piece_scan()
@@ -800,24 +798,21 @@ class TorrentStreamEngine:
     def is_buffering_finished(self):
         if not self.target or not self.handle:
             return False
-        total_size = self.target["size"]
+        total_size = self.target.get("size", 0)
         if total_size == 0:
             return False
         if self._target_downloaded() == total_size:
             return True
         # Small files: wait until fully downloaded
-        if total_size <= 15 * 1024 * 1024:
+        if total_size <= 10 * 1024 * 1024:
             return self._target_downloaded() == total_size
         
-        # Check first 5MB and last 5MB
-        first_parts_done = self._has_range_downloaded(0, 5 * 1024 * 1024)
-        last_parts_done = self._has_range_downloaded(total_size - 5 * 1024 * 1024, total_size - 1)
+        # Check first 2MB or 1% (capped at 5MB) for instant player startup
+        req_bytes = min(5 * 1024 * 1024, max(2 * 1024 * 1024, total_size * 0.01))
+        first_parts_done = self._has_range_downloaded(0, req_bytes - 1)
+        sequential_done = self._buffered_from_start() >= req_bytes
         
-        # Check sequential buffer (at least 15MB or 1% of total size, capped at 50MB)
-        min_seq = min(50 * 1024 * 1024, max(15 * 1024 * 1024, total_size * 0.01))
-        sequential_done = self._buffered_from_start() >= min_seq
-        
-        return first_parts_done and last_parts_done and sequential_done
+        return first_parts_done or sequential_done
 
     def _target_path(self):
         rel_path = os.path.normpath(self.target["path"])

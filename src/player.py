@@ -308,33 +308,40 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
     with _engines_lock:
         engine = _engines.get(info_hash)
         if engine and engine.is_alive():
-            if file_index is None and season is not None and episode is not None:
+            target_file_index = file_index
+            if season is not None and episode is not None:
                 try:
-                    if engine.ready_event.is_set() and hasattr(engine, '_files'):
+                    if hasattr(engine, '_files'):
                         from . import api
                         files_data = [{"name": f["path"], "size": f["size"]} for f in engine._files()]
                         found = api.find_episode_file_index(files_data, season, episode)
                         if found is not None:
-                            file_index = found
+                            target_file_index = found
                 except Exception as e:
                     print(f"Error resolving file_index: {e}")
 
-            if file_index is not None:
-                file_index = int(file_index)
-            if engine.file_index == file_index or file_index is None:
-                print("Reusing existing libtorrent engine")
-                engine.item_id = item_id
-                engine.media_type = media_type
+            if target_file_index is not None:
+                target_file_index = int(target_file_index)
                 engine.season = season
                 engine.episode = episode
-                _streaming_hash = info_hash
-                database.set_download_paused(info_hash, False)
-                if hasattr(engine, 'resume'):
-                    engine.resume()
+                if engine.file_index != target_file_index:
+                    print(f"Switching engine target file from index {engine.file_index} to {target_file_index} for S{season}E{episode}")
+                    engine.switch_target_file(target_file_index)
+            elif season is not None and episode is not None:
+                engine.season = season
+                engine.episode = episode
+
+            print("Reusing existing libtorrent engine")
+            engine.item_id = item_id
+            engine.media_type = media_type
+            _streaming_hash = info_hash
+            database.set_download_paused(info_hash, False)
+            if hasattr(engine, 'resume'):
+                engine.resume()
                 def resume_stream():
                     print("Phase 3: Waiting for playable buffer (reused engine)...")
                     last_nonzero_time = time.time()
-                    for i in range(300):
+                    for i in range(1500):
                         with _engines_lock:
                             if _streaming_hash != info_hash: return
                         stats = engine.stats()
@@ -350,7 +357,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                             break
                         if (time.time() - last_nonzero_time) > 30:
                             break
-                        time.sleep(1)
+                        time.sleep(0.1)
                     launch_player_only(engine)
                 threading.Thread(target=resume_stream, daemon=True).start()
                 if progress_callback: GLib.idle_add(progress_callback, {"status": "Resuming stream..."})
@@ -440,7 +447,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                     if engine.is_buffering_finished():
                         break
                     if (time.time() - last_nonzero_time) > 30: break
-                    time.sleep(1)
+                    time.sleep(0.1)
                     
                 with _engines_lock:
                     if _engines.get(info_hash) != engine or not engine.is_alive(): return

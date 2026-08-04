@@ -865,7 +865,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         "videos": []
     }, imdb_id, media_type, title, poster=poster)
 
-def find_episode_file_index(files, season, episode):
+def find_episode_file_index(files, season, episode, strict=False):
     import re
     patterns = [
         rf"s{season:02d}e{episode:02d}",
@@ -895,6 +895,9 @@ def find_episode_file_index(files, season, episode):
         for p in patterns[4:]:
             if re.search(p, fname): return idx
                 
+    if strict:
+        return None
+        
     video_files = []
     for idx, f in enumerate(files):
         fname_list = f.get("name")

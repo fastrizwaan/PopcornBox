@@ -21,14 +21,17 @@ class DownloadItemRow(Gtk.Box):
         self.magnet = download.get("magnet") or ""
         self.file_index = download.get("file_index")
         
+        self.display_title = download.get("name") or "Unknown"
+        self.actual_filename = download.get("name") or ""
+        
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         vbox.set_hexpand(True)
         
-        title = Gtk.Label(label=download.get("name") or "Unknown")
-        title.set_halign(Gtk.Align.START)
-        title.add_css_class('title-2')
-        title.set_ellipsize(Pango.EllipsizeMode.END)
-        vbox.append(title)
+        self.title_label = Gtk.Label(label=self.display_title)
+        self.title_label.set_halign(Gtk.Align.START)
+        self.title_label.add_css_class('title-2')
+        self.title_label.set_ellipsize(Pango.EllipsizeMode.END)
+        vbox.append(self.title_label)
         
         self.progress_bar = Gtk.ProgressBar()
         vbox.append(self.progress_bar)
@@ -36,6 +39,7 @@ class DownloadItemRow(Gtk.Box):
         self.status_label = Gtk.Label(label="Checking...")
         self.status_label.set_halign(Gtk.Align.START)
         self.status_label.add_css_class('dim-label')
+        self.status_label.set_ellipsize(Pango.EllipsizeMode.END)
         vbox.append(self.status_label)
         
         self.append(vbox)
@@ -133,7 +137,26 @@ class DownloadItemRow(Gtk.Box):
         if not self.is_active:
             return False
             
+        suffix = ""
+        season = self.download.get("season")
+        episode = self.download.get("episode")
+        if season is not None and episode is not None:
+            suffix += f" | S{int(season):02d}E{int(episode):02d}"
+            
         stats = player.get_engine_stats(self.info_hash)
+        if stats and stats.get("name") and stats.get("name") != "Unknown":
+            engine_name = stats.get("name")
+            if engine_name != self.display_title and not engine_name.startswith("http"):
+                self.display_title = engine_name
+                self.title_label.set_text(self.display_title)
+                
+        display_filename = self.actual_filename
+        if stats and stats.get("filePath"):
+            display_filename = os.path.basename(stats.get("filePath"))
+            
+        if display_filename and display_filename != "Unknown" and display_filename != self.display_title:
+            suffix += f" | {display_filename}"
+            
         if stats:
             dl = stats.get("downloaded", 0)
             tot = stats.get("totalLength", 0)
@@ -152,7 +175,7 @@ class DownloadItemRow(Gtk.Box):
                 status_text += f" ({dl/(1024*1024):.1f} MB / {tot/(1024*1024*1024):.2f} GB)"
                 
             status_desc = stats.get("status", "")
-            if "seeding" in status_desc.lower() or "finished" in status_desc.lower():
+            if ("seeding" in status_desc.lower() or "finished" in status_desc.lower()) and prog >= 1.0:
                 status_text = f"Seeding - {status_text}"
                 
             ratio = stats.get("ratio", 0)
@@ -164,7 +187,7 @@ class DownloadItemRow(Gtk.Box):
             if peers > 0 or seeds > 0:
                 status_text += f" | Peers: {peers} / Seeds: {seeds}"
                 
-            self.status_label.set_text(status_text)
+            self.status_label.set_text(status_text + suffix)
             
             self.play_btn.set_visible(False)
             self.stop_btn.set_visible(True)
@@ -174,9 +197,9 @@ class DownloadItemRow(Gtk.Box):
             
             path = os.path.join(player.DOWNLOAD_BASE, self.info_hash)
             if os.path.exists(path):
-                self.status_label.set_text("Paused")
+                self.status_label.set_text("Paused" + suffix)
             else:
-                self.status_label.set_text("Not Downloaded")
+                self.status_label.set_text("Not Downloaded" + suffix)
                 self.progress_bar.set_fraction(0.0)
                 
         return True
@@ -216,7 +239,9 @@ class DownloadItemRow(Gtk.Box):
             progress_callback=progress_callback,
             file_index=self.file_index, 
             item_id=self.download.get("item_id"), 
-            media_type=self.download.get("media_type", "movie")
+            media_type=self.download.get("media_type", "movie"),
+            season=self.download.get("season"),
+            episode=self.download.get("episode")
         )
         
     def on_stop_clicked(self, btn):
