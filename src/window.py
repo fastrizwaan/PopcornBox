@@ -376,12 +376,13 @@ class MovieDetailsPage(Gtk.Overlay):
         file_factory = Gtk.SignalListItemFactory()
         def _file_factory_setup(factory, list_item):
             label = Gtk.Label(xalign=0.0)
-            label.set_ellipsize(Pango.EllipsizeMode.END)
-            label.set_single_line_mode(True)
+            label.set_wrap(True)
+            label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            label.set_single_line_mode(False)
             label.set_margin_start(8)
             label.set_margin_end(8)
-            label.set_margin_top(4)
-            label.set_margin_bottom(4)
+            label.set_margin_top(6)
+            label.set_margin_bottom(6)
             list_item.set_child(label)
 
         def _file_factory_bind(factory, list_item):
@@ -897,20 +898,22 @@ class MovieDetailsPage(Gtk.Overlay):
                 raw_title = t.get('stream_title', '').strip() or t.get('size', 'Unknown Size')
                 
                 ping_status = t.get('ping_status')
+                status_prefix = ""
                 if ping_status is True:
-                    raw_title = f"✅ {raw_title}"
+                    status_prefix = "✅ "
                 elif ping_status is False:
-                    raw_title = f"⛔ {raw_title}"
+                    status_prefix = "⛔ "
                     
                 lines = [line.strip() for line in raw_title.splitlines() if line.strip()]
-                cleaned = []
-                for l in lines:
-                    if len(l) > 45:
-                        l = l[:42] + "..."
-                    cleaned.append(l)
-                title = " • ".join(cleaned)
                 seed_str = f" ({t.get('seeders', 0)} seeds)" if not t.get('is_http') and t.get('seeders', 0) > 0 else ""
-                strings.append(f"{title}{seed_str}{addons_suffix}")
+                suffix = f"{seed_str}{addons_suffix}"
+                
+                if lines:
+                    lines[0] = f"{status_prefix}{lines[0]}{suffix}"
+                    full_item_str = "\n".join(lines)
+                else:
+                    full_item_str = f"{status_prefix}{raw_title}{suffix}"
+                strings.append(full_item_str)
             selected_idx = 0
             curr_sel = getattr(self, 'selected_torrent', None)
             if curr_sel and curr_sel in t_list and getattr(self, '_user_interacted_dropdown', False):
