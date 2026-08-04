@@ -21,8 +21,16 @@ import os
 import gi
 import sys
 import subprocess
+import resource
 from typing import cast
 from gettext import gettext as _
+
+try:
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft < hard:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 8192), hard))
+except Exception:
+    pass
 
 gi.require_version("Adw", "1")
 gi.require_version("Gio", "2.0")
@@ -40,6 +48,7 @@ os.environ["GSK_RENDERER"] = "gl"
 
 # Set the icon shown in gnome sound settings
 os.environ["PIPEWIRE_PROPS"] = '{application.icon-name="io.github.fastrizwaan.PopcornBox"}'
+
 
 
 class CineApplication(Adw.Application):

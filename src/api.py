@@ -6,11 +6,24 @@ import os
 import time
 import hashlib
 import logging
+import ssl
 from . import database
 from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids
 import concurrent.futures
 import threading
 import re
+
+def _create_ssl_context():
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    except Exception:
+        return None
+
+_SSL_CONTEXT = _create_ssl_context()
+
 
 DEFAULT_TRACKERS = [
     "udp://tracker.opentrackr.org:1337/announce",
@@ -95,7 +108,7 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
     # Fetch from network
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as response:
             data_str = response.read().decode('utf-8')
         data = json.loads(data_str)
         # Save to cache atomically (temp file + rename)
@@ -112,8 +125,13 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
                 pass
         return data
     except urllib.error.HTTPError as e:
-        print(f"HTTP Error fetching items from {url}: {e}")
-        e.close()
+        print(f"HTTP Error {e.code} fetching from {url}")
+        try:
+            e.close()
+        except Exception:
+            pass
+    except urllib.error.URLError as e:
+        print(f"URL/SSL Error fetching from {url}: {e.reason}")
     except Exception as e:
         print(f"Error fetching items from {url}: {e}")
         
@@ -1182,7 +1200,7 @@ def _ping_stream_url(stream):
         # Fallback to urllib if ffprobe fails (or isn't available)
         try:
             req = urllib.request.Request(url, headers=headers, method='HEAD')
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
+            with urllib.request.urlopen(req, timeout=3.0, context=_SSL_CONTEXT) as resp:
                 if resp.status < 400:
                     stream["is_working"] = True
                     return stream
@@ -1191,7 +1209,7 @@ def _ping_stream_url(stream):
 
         try:
             req = urllib.request.Request(url, headers=dict(headers, Range='bytes=0-100'))
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
+            with urllib.request.urlopen(req, timeout=3.0, context=_SSL_CONTEXT) as resp:
                 if resp.status < 400:
                     stream["is_working"] = True
                     return stream
@@ -1211,7 +1229,7 @@ def ping_and_filter_streams(streams):
     if not http_streams:
         return streams
         
-    num_workers = min(len(http_streams), 60)
+    num_workers = min(len(http_streams), 12)
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
         results = list(executor.map(_ping_stream_url, http_streams))
         
@@ -1341,7 +1359,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-            with urllib.request.urlopen(req, timeout=8) as response:
+            with urllib.request.urlopen(req, timeout=8, context=_SSL_CONTEXT) as response:
                 data = json.loads(response.read().decode('utf-8'))
             if isinstance(data, dict):
                 return addon.get("name", "Unknown"), data.get("streams", [])
@@ -1350,7 +1368,13 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             return addon.get("name", "Unknown"), []
         except urllib.error.HTTPError as e:
             print(f"HTTP Error {e.code} fetching from addon {addon.get('name')}")
-            e.close()
+            try:
+                e.close()
+            except Exception:
+                pass
+            return addon.get("name", "Unknown"), []
+        except urllib.error.URLError as e:
+            print(f"Error fetching from addon {addon.get('name')}: {e.reason}")
             return addon.get("name", "Unknown"), []
         except Exception as e:
             print(f"Error fetching from addon {addon.get('name')}: {e}")
@@ -1374,7 +1398,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     final_streams = process_raw_streams(all_raw_streams)
 
     import concurrent.futures
-    num_workers = min(len(stremio_addons) * 4, 60) if stremio_addons else 1
+    num_workers = min(len(stremio_addons) * 2, 16) if stremio_addons else 1
     if num_workers > 0 and stremio_addons:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
             future_to_addon = {}
