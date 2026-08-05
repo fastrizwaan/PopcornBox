@@ -79,6 +79,32 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("GObject", "2.0")
 from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject, Pango
 
+def _streams_match(s1, s2):
+    if not s1 or not s2: return False
+    if s1 is s2: return True
+    u1, u2 = s1.get("url") or "", s2.get("url") or ""
+    if u1 and u2 and u1.startswith("http") and u2.startswith("http"):
+        return u1 == u2
+    h1 = (s1.get("hash") or s1.get("infoHash") or "").lower()
+    h2 = (s2.get("hash") or s2.get("infoHash") or "").lower()
+    if h1 and h2 and h1 == h2:
+        idx1 = s1.get("file_index") if s1.get("file_index") is not None else s1.get("fileIdx")
+        idx2 = s2.get("file_index") if s2.get("file_index") is not None else s2.get("fileIdx")
+        if idx1 == idx2:
+            return True
+    t1 = (s1.get("stream_title") or s1.get("title") or s1.get("filename") or "").strip()
+    t2 = (s2.get("stream_title") or s2.get("title") or s2.get("filename") or "").strip()
+    if t1 and t2 and t1 == t2:
+        return True
+    return False
+
+def _find_stream_index(stream, stream_list):
+    if not stream or not stream_list: return 0
+    for idx, item in enumerate(stream_list):
+        if _streams_match(stream, item):
+            return idx
+    return 0
+
 libegl = ctypes.CDLL("libEGL.so.1")
 egl_get_proc_address = libegl.eglGetProcAddress
 egl_get_proc_address.restype = ctypes.c_void_p
@@ -871,17 +897,12 @@ class MovieDetailsPage(Gtk.Overlay):
             return 0.0
 
         def _stream_sort_key(t):
-            size_gb = _parse_size_gb(t.get('size', ''))
             seeders = t.get('seeders', 0)
-            if 2.0 <= size_gb <= 4.5:
-                size_score = 3
-            elif 1.0 <= size_gb <= 8.0:
-                size_score = 2
-            elif size_gb > 0:
-                size_score = 1
-            else:
-                size_score = 0
-            return (size_score, seeders)
+            q_val = t.get('q_val', 0)
+            size_gb = _parse_size_gb(t.get('size', ''))
+            return (seeders, q_val, size_gb)
+
+
 
         def update_file_dropdown_ui(t_list):
             if not t_list:
@@ -916,8 +937,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 strings.append(full_item_str)
             selected_idx = 0
             curr_sel = getattr(self, 'selected_torrent', None)
-            if curr_sel and curr_sel in t_list and getattr(self, '_user_interacted_dropdown', False):
-                selected_idx = t_list.index(curr_sel)
+            if curr_sel and t_list:
+                selected_idx = _find_stream_index(curr_sel, t_list)
                 
             self._programmatic_dropdown_switch = True
             try:
@@ -1059,6 +1080,11 @@ class MovieDetailsPage(Gtk.Overlay):
         self.watch_btn.set_label(watch_label)
 
     def on_watch_clicked(self, btn):
+        if hasattr(self, 'file_dropdown') and hasattr(self, 'current_t_list') and self.current_t_list:
+            idx = self.file_dropdown.get_selected()
+            if idx != Gtk.INVALID_LIST_POSITION and idx < len(self.current_t_list):
+                self.selected_torrent = self.current_t_list[idx]
+
         if not getattr(self, 'selected_torrent', None):
             if hasattr(self, 'progress_label') and self.progress_label:
                 self.progress_label.set_text("Please select a stream first.")
@@ -1074,7 +1100,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 media_title = f"{media_title} (S{self.selected_season}E{self.selected_episode})"
             
         queue = getattr(self, 'current_t_list', None) or getattr(self, 'torrents', None) or [self.selected_torrent]
-        init_idx = queue.index(self.selected_torrent) if self.selected_torrent in queue else 0
+        init_idx = _find_stream_index(self.selected_torrent, queue)
 
         if self.window and hasattr(self.window, "fetch_and_add_subtitles"):
             imdb_id = self.movie_stub.get("id")

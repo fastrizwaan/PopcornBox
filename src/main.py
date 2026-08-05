@@ -104,7 +104,7 @@ class CineApplication(Adw.Application):
                 if first_video_path:
                     break
 
-            if first_video_path:
+            if first_video_path and not first_video_path.lower().endswith(('.torrent', '.srt', '.sub', '.txt', '.nfo', '.json')):
                 try:
                     cmd = [
                         "ffprobe",
@@ -185,7 +185,8 @@ class CineApplication(Adw.Application):
             f_type = info.get_file_type()
 
             if f_type == Gio.FileType.REGULAR:
-                return path
+                if not path.lower().endswith(('.torrent', '.srt', '.sub', '.txt', '.nfo', '.json')):
+                    return path
 
             if f_type == Gio.FileType.DIRECTORY:
                 enumerator = gfile.enumerate_children(

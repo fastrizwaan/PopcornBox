@@ -309,7 +309,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
         engine = _engines.get(info_hash)
         if engine and engine.is_alive():
             target_file_index = file_index
-            if season is not None and episode is not None:
+            if target_file_index is None and season is not None and episode is not None:
                 try:
                     if hasattr(engine, '_files'):
                         from . import api

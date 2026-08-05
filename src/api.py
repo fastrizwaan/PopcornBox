@@ -1015,7 +1015,7 @@ def process_raw_streams(all_streams):
             "addon_names": [s.get("addon_name")] if s.get("addon_name") else []
         })
     
-    valid_streams.sort(key=lambda x: (x["q_val"], x["seeders"]), reverse=True)
+    valid_streams.sort(key=lambda x: (x.get("seeders", 0), x.get("q_val", 0)), reverse=True)
     return valid_streams
 
 def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cache=True):

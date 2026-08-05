@@ -503,8 +503,8 @@ class TorrentStreamEngine:
             if not files:
                 raise RuntimeError("Torrent metadata has no files")
 
-            idx = None
-            if getattr(self, 'season', None) is not None and getattr(self, 'episode', None) is not None:
+            idx = self.file_index
+            if idx is None and getattr(self, 'season', None) is not None and getattr(self, 'episode', None) is not None:
                 try:
                     from . import api
                     files_data = [{"name": f["path"], "size": f["size"]} for f in files]
@@ -513,9 +513,6 @@ class TorrentStreamEngine:
                         idx = found
                 except Exception:
                     pass
-
-            if idx is None and self.file_index is not None:
-                idx = self.file_index
 
             if idx is None or idx < 0 or idx >= len(files):
                 idx = max(range(len(files)), key=lambda i: files[i]["size"])
