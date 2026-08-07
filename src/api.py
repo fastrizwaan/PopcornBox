@@ -154,7 +154,10 @@ def is_type_match(type1, type2):
     t2 = str(type2).lower().strip()
     if t1 == t2:
         return True
-    tv_group = {"series", "tv", "channel", "tvchannel"}
+    series_group = {"series", "tvshow", "tv_series"}
+    if t1 in series_group and t2 in series_group:
+        return True
+    tv_group = {"tv", "channel", "tvchannel"}
     if t1 in tv_group and t2 in tv_group:
         return True
     music_group = {"music", "radio"}
@@ -470,11 +473,11 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             country_code = catalog_id.upper()
             movies = []
             for ch in channels_data:
-                if ch.get("country") == country_code:
+                if country_code == "ALL" or ch.get("country") == country_code:
                     movies.append({
                         "id": ch.get("id"),
                         "title": ch.get("name"),
-                        "year": "",
+                        "year": ch.get("country", ""),
                         "medium_cover_image": ch.get("logo", ""),
                         "type": "tv"
                     })
@@ -548,6 +551,38 @@ def is_valid_meta(res):
     if "error getting meta" in lower_title or lower_title.startswith("error ") or lower_title == "failed to load details":
         return False
     return True
+
+def has_meta_resource(addon):
+    """Return True if the addon explicitly supports metadata ('meta') resource."""
+    if not isinstance(addon, dict): return False
+    m_url = addon.get("manifest_url", "")
+    if addon.get("id") == "cinemeta" or "cinemeta" in m_url.lower():
+        return True
+    resources = addon.get("resources")
+    if resources is None:
+        return True
+    for r in resources:
+        name = r.get("name") if isinstance(r, dict) else r
+        if name == "meta":
+            return True
+    return False
+
+def has_stream_resource(addon):
+    """Return True if the addon explicitly supports stream ('stream') resource."""
+    if not isinstance(addon, dict): return False
+    m_url = addon.get("manifest_url", "")
+    if addon.get("id") == "cinemeta" or "cinemeta" in m_url.lower():
+        return False  # Cinemeta is metadata/catalog only
+    if addon.get("id") == "local.iptv-org":
+        return True
+    resources = addon.get("resources")
+    if resources is None:
+        return True
+    for r in resources:
+        name = r.get("name") if isinstance(r, dict) else r
+        if name == "stream":
+            return True
+    return False
 
 def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=None):
     if not res or not isinstance(res, dict):
@@ -821,17 +856,16 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
     if cinemeta_addon:
         cinemeta_res = fetch_addon_meta(cinemeta_addon)
         if cinemeta_res and is_valid_meta(cinemeta_res):
-            if cinemeta_res.get("trailer"):
-                return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
+            return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
 
-    # If Cinemeta had no trailer, or failed, fallback to other addons
-    other_addons = [a for a in addons if a != cinemeta_addon]
+    # If Cinemeta failed, fallback to other metadata-supporting addons
+    other_addons = [a for a in addons if a != cinemeta_addon and has_meta_resource(a)]
     if other_addons:
         import concurrent.futures
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(other_addons), 8))
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(other_addons), 4))
         future_to_addon = {executor.submit(fetch_addon_meta, addon): addon for addon in other_addons}
         try:
-            for future in concurrent.futures.as_completed(future_to_addon, timeout=15):
+            for future in concurrent.futures.as_completed(future_to_addon, timeout=3.0):
                 res = future.result()
                 if res and is_valid_meta(res):
                     if cinemeta_res and not cinemeta_res.get("trailer") and res.get("trailer"):
@@ -928,6 +962,9 @@ def _extract_quality(text):
     if "360p" in t or re.search(r'\b360\b', t): return "360p", 0
     return None, 0
 
+_RE_SIZE = re.compile(r'([\d.]+)\s*([GgMm][Bb])')
+_RE_SEED = re.compile(r'(?:👤|👥|[Ss]eeders?[:\s]*)\s*(\d+)')
+
 def process_raw_streams(all_streams):
     if not all_streams:
         return []
@@ -980,12 +1017,19 @@ def process_raw_streams(all_streams):
             quality, q_val = "Unknown", 0
         
         size = ""
-        size_match = re.search(r'([\d.]+)\s*(GB|MB)', title_str, re.IGNORECASE)
+        size_gb = 0.0
+        size_match = _RE_SIZE.search(title_str)
         if size_match:
-            size = f"{size_match.group(1)} {size_match.group(2).upper()}"
+            unit = size_match.group(2).upper()
+            try:
+                val = float(size_match.group(1))
+                size = f"{size_match.group(1)} {unit}"
+                size_gb = val / 1024.0 if unit == "MB" else val
+            except ValueError:
+                pass
             
         seeders = 0
-        seed_match = re.search(r'👤\s*(\d+)', title_str)
+        seed_match = _RE_SEED.search(title_str)
         if seed_match:
             try:
                 seeders = int(seed_match.group(1))
@@ -1006,6 +1050,7 @@ def process_raw_streams(all_streams):
             "quality": quality,
             "q_val": q_val,
             "size": size,
+            "size_gb": size_gb,
             "seeders": seeders,
             "title": s.get("name") or "",
             "stream_title": full_title,
@@ -1015,7 +1060,7 @@ def process_raw_streams(all_streams):
             "addon_names": [s.get("addon_name")] if s.get("addon_name") else []
         })
     
-    valid_streams.sort(key=lambda x: (x.get("seeders", 0), x.get("q_val", 0)), reverse=True)
+    valid_streams.sort(key=lambda x: (x.get("seeders", 0), x.get("q_val", 0), x.get("size_gb", 0.0)), reverse=True)
     return valid_streams
 
 def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cache=True):
@@ -1045,7 +1090,7 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
     if not addons:
         return []
         
-    stremio_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://")]
+    stremio_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://") and has_stream_resource(a)]
     
     def fetch_from_addon(addon_orig):
         addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
@@ -1277,7 +1322,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if callback: callback(cached or [], is_cached=False, is_complete=True)
         return cached or []
         
-    stremio_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://")]
+    stremio_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://") and has_stream_resource(a)]
 
     def fetch_from_addon(addon_orig, cur_id):
         addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
@@ -1401,7 +1446,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     final_streams = process_raw_streams(all_raw_streams)
 
     import concurrent.futures
-    num_workers = min(len(stremio_addons) * 2, 16) if stremio_addons else 1
+    num_workers = min(len(stremio_addons), 8) if stremio_addons else 1
     if num_workers > 0 and stremio_addons:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
             future_to_addon = {}
@@ -1422,7 +1467,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             futures.add(resolve_future)
             
             while futures:
-                done, futures = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED, timeout=25)
+                done, futures = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED, timeout=12)
                 if not done:
                     print("Timeout fetching streams")
                     break
@@ -1433,7 +1478,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                             resolved_ids = future.result()
                             if resolved_ids:
                                 for addon in stremio_addons:
-                                    for cur_id in resolved_ids:
+                                    for cur_id in resolved_ids[:1]:
                                         new_fut = executor.submit(fetch_from_addon, addon, cur_id)
                                         future_to_addon[new_fut] = (addon, cur_id)
                                         futures.add(new_fut)

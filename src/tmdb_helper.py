@@ -164,7 +164,7 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
 
         for f in [f1, f2, f3]:
             try:
-                for r in f.result():
+                for r in f.result(timeout=1.5):
                     if r: ids.add(str(r))
             except Exception:
                 pass
@@ -172,7 +172,7 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
         if not any(i.startswith("tmdb:") for i in ids):
             f4 = executor.submit(task_tmdb, list(ids))
             try:
-                for r in f4.result():
+                for r in f4.result(timeout=1.5):
                     if r: ids.add(str(r))
             except Exception:
                 pass

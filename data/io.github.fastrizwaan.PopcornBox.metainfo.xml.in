@@ -69,6 +69,16 @@
   </requires>
 
   <releases>
+    <release version="2.1.0" date="2026-08-07">
+      <description translate="no">
+        <ul>
+          <li>Modernized stream detail layout with contextual stacked action buttons</li>
+          <li>Refined badges: size, quality, provider, and seeders</li>
+          <li>Added live TV channels support to Discover</li>
+          <li>Fixed sidebar layout width and scrollbar alignment</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.7.4" date="2026-07-18">
       <description translate="no">
         <ul>

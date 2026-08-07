@@ -1,8 +1,8 @@
-# Popcorn Box  2.0
+# Popcorn Box 2.1
 
 Watch movies, series, and stream videos seamlessly
 
-This is version 2.0 beta WIP, to make nvida+wayland+gnome video player works; now using Cine player instead of basic mpv.
+This is version 2.1, using Cine player instead of basic mpv.
 
 
 ![Popcorn Box Screenshot](https://github.com/fastrizwaan/WineCharm/releases/download/1.3/1.png)

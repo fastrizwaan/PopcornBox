@@ -69,6 +69,21 @@ DEFAULT_ADDONS = [
                 "extra": [{"name": "genre", "options": ["Action","Adventure","Cars","Comedy","Dementia","Demons","Drama","Ecchi","Fantasy","Game","Harem","Historical","Horror","Josei","Kids","Magic","Martial Arts","Mecha","Military","Music","Mystery","Parody","Police","Psychological","Romance","Samurai","School","Sci-Fi","Seinen","Shoujo","Shounen","Slice of Life","Space","Sports","Super Power","Supernatural","Thriller","Vampire"]}, {"name": "skip"}]
             }
         ]
+    },
+    {
+        "id": "local.iptv-org",
+        "name": "IPTV Org TV Channels",
+        "version": "1.0.0",
+        "description": "Free worldwide live TV channels.",
+        "manifest_url": "https://iptv-org.github.io/manifest.json",
+        "enabled": True,
+        "catalogs": [
+            {"type": "tv", "id": "US", "name": "USA TV Channels"},
+            {"type": "tv", "id": "UK", "name": "UK TV Channels"},
+            {"type": "tv", "id": "IN", "name": "India TV Channels"},
+            {"type": "tv", "id": "CA", "name": "Canada TV Channels"},
+            {"type": "tv", "id": "ALL", "name": "All World Channels"}
+        ]
     }
 ]
 

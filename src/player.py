@@ -467,18 +467,38 @@ def play_trailer(youtube_id, progress_callback=None):
     """Yield trailer URL for embedded playback."""
     stop_player()
     
-    if youtube_id.startswith("http://") or youtube_id.startswith("https://"):
-        url = youtube_id
-    else:
-        url = f"https://www.youtube.com/watch?v={youtube_id}"
+    clean_id = str(youtube_id or "").strip()
+    if "v=" in clean_id:
+        clean_id = clean_id.split("v=")[-1].split("&")[0]
+    elif "youtu.be/" in clean_id:
+        clean_id = clean_id.split("youtu.be/")[-1].split("?")[0]
+
+    url = f"https://www.youtube.com/watch?v={clean_id}"
     
     def launch():
+        stream_url = url
+        try:
+            import urllib.request, json
+            req = urllib.request.Request(
+                f"https://pipedapi.kavin.rocks/streams/{clean_id}",
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read().decode())
+                streams = data.get("videoStreams", [])
+                for s in streams:
+                    if s.get("url") and not s.get("videoOnly"):
+                        stream_url = s["url"]
+                        break
+        except Exception:
+            pass
+
         try:
             import gi
             from gi.repository import GLib
             if progress_callback:
                 GLib.idle_add(lambda: progress_callback({"status": "Resolving YouTube link..."}))
-                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": url}))
+                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": stream_url}))
             
         except Exception as e:
             print(f"Error launching trailer: {e}")

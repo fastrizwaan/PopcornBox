@@ -129,6 +129,10 @@ class MovieDetailsPage(Gtk.Overlay):
         self.selected_season = None
         self.selected_episode = None
         self.torrents = []
+        self.videos = []
+        self.seasons = []
+        self.current_episodes = []
+        self.selected_torrent = None
         self._restoring_state = False
         self._destroyed = False
         self._last_played_magnet = None
@@ -170,28 +174,21 @@ class MovieDetailsPage(Gtk.Overlay):
             from . import database, api
             item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
             primary_id = item_id[0] if isinstance(item_id, list) else item_id
-            # Preserve the valid poster/background before deleting, so re-entry is instant
             existing = database.get_cached_metadata(primary_id)
             saved_poster = None
             saved_bg = None
             if existing:
                 p = existing.get("medium_cover_image", "")
                 b = existing.get("background", "")
-                if p:
-                    saved_poster = p
-                if b:
-                    saved_bg = b
+                if p: saved_poster = p
+                if b: saved_bg = b
             database.delete_cached_metadata(primary_id)
-            # Re-save a stub with the preserved poster so re-entry is instant
             if saved_poster or saved_bg:
                 stub = existing.copy() if existing else {}
-                if saved_poster:
-                    stub["medium_cover_image"] = saved_poster
-                if saved_bg:
-                    stub["background"] = saved_bg
+                if saved_poster: stub["medium_cover_image"] = saved_poster
+                if saved_bg: stub["background"] = saved_bg
                 stub["id"] = primary_id
                 database.save_cached_metadata(primary_id, self.media_type, stub)
-                print(f"[RELOAD] Preserved poster in cache: {saved_poster}")
             cache_key = api.get_stream_cache_key(primary_id, self.media_type, getattr(self, 'selected_season', None), getattr(self, 'selected_episode', None))
             database.delete_cached_streams(cache_key)
             self._ui_built = False
@@ -201,41 +198,35 @@ class MovieDetailsPage(Gtk.Overlay):
         header_box.append(self.reload_btn)
         
         self.main_box.append(header_box)
-        
-        self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
-        self.content_box.set_margin_start(32)
-        self.content_box.set_margin_end(32)
-        self.content_box.set_margin_top(16)
-        self.content_box.set_margin_bottom(16)
-        
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_vexpand(True)
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scrolled.set_child(self.content_box)
-        
-        self.main_box.append(scrolled)
-        
-        self.top_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24)
+
+        # Split Layout Container (Left: Overview, Right: Fixed Sidebar)
+        self.split_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        self.split_hbox.set_margin_start(24)
+        self.split_hbox.set_margin_end(24)
+        self.split_hbox.set_margin_top(12)
+        self.split_hbox.set_margin_bottom(24)
+        self.split_hbox.set_vexpand(True)
+        self.split_hbox.set_hexpand(True)
+        self.main_box.append(self.split_hbox)
+
+        # Left Overview Column inside ScrolledWindow
+        left_scroll = Gtk.ScrolledWindow()
+        left_scroll.set_hexpand(True)
+        left_scroll.set_vexpand(True)
+        left_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        self.info_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.info_vbox.set_margin_end(12)
+        left_scroll.set_child(self.info_vbox)
+
+        left_meta_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=20)
         
         self.poster = Gtk.Picture()
         self.poster.set_can_shrink(True)
-        self.poster.set_size_request(360, 540)
-        self.poster.set_valign(Gtk.Align.START)
-        self.poster.set_halign(Gtk.Align.START)
-        self.poster.set_hexpand(False)
-        self.poster.set_content_fit(Gtk.ContentFit.COVER)
-        self.poster.add_css_class("pt-card")
-        self.top_hbox.append(self.poster)
-        
-        from .movie_widget import load_image_into_picture
-        poster_url = self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster")
-        if poster_url:
-            self._loaded_poster_url = poster_url
-            load_image_into_picture(poster_url, self.poster, width=360, height=540)
-            
-        self.info_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.info_vbox.set_hexpand(True)
-        
+
+        meta_detail_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        meta_detail_vbox.set_hexpand(True)
+
         title_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         title_hbox.set_valign(Gtk.Align.CENTER)
         
@@ -245,259 +236,722 @@ class MovieDetailsPage(Gtk.Overlay):
         self.title_label.set_halign(Gtk.Align.START)
         self.title_label.set_wrap(True)
         title_hbox.append(self.title_label)
-        
+
         self.copy_btn = Gtk.Button(icon_name="edit-copy-symbolic")
         self.copy_btn.set_tooltip_text("Copy Title")
         self.copy_btn.add_css_class("flat")
         self.copy_btn.add_css_class("circular")
-        self.copy_btn.set_valign(Gtk.Align.CENTER)
         title_hbox.append(self.copy_btn)
-        
-        self.g_btn = Gtk.Button(label="Google Search")
+
+        self.g_btn = Gtk.Button(label="Google")
         self.g_btn.set_tooltip_text("Search Google")
         self.g_btn.add_css_class("flat")
-        self.g_btn.set_valign(Gtk.Align.CENTER)
         title_hbox.append(self.g_btn)
-        
-        self.info_vbox.append(title_hbox)
-        
+
+        meta_detail_vbox.append(title_hbox)
+
         meta_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         meta_hbox.set_valign(Gtk.Align.CENTER)
-        
+
         year_str = self.movie_stub.get("year", "")
         self.meta_label = Gtk.Label(label=str(year_str) if year_str else "")
         self.meta_label.set_halign(Gtk.Align.START)
         self.meta_label.set_wrap(True)
         self.meta_label.add_css_class("dim-label")
         meta_hbox.append(self.meta_label)
-        
+
         self.imdb_btn = Gtk.Button(label="IMDb 0.0")
         self.imdb_btn.add_css_class("flat")
-        self.imdb_btn.set_valign(Gtk.Align.CENTER)
         meta_hbox.append(self.imdb_btn)
-        
-        self.info_vbox.append(meta_hbox)
-        
+
+        meta_detail_vbox.append(meta_hbox)
+
         self.desc_label = Gtk.Label(label="")
         self.desc_label.set_wrap(True)
         self.desc_label.set_halign(Gtk.Align.START)
         self.desc_label.set_max_width_chars(80)
-        self.desc_label.set_margin_top(8)
-        self.desc_label.set_margin_bottom(8)
-        self.info_vbox.append(self.desc_label)
-        
+        self.desc_label.set_margin_top(4)
+        meta_detail_vbox.append(self.desc_label)
+
         self.cast_label = Gtk.Label(label="")
         self.cast_label.set_wrap(True)
         self.cast_label.set_halign(Gtk.Align.START)
         self.cast_label.set_max_width_chars(80)
         self.cast_label.add_css_class("dim-label")
         self.cast_label.set_visible(False)
-        self.info_vbox.append(self.cast_label)
-        
-        self.row1_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        meta_detail_vbox.append(self.cast_label)
+
+        self.row1_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self.row1_box.set_margin_top(8)
-        
+
         self.detail_fav_btn = Gtk.Button(label="♡ Add to Favorites")
         self.detail_fav_btn.add_css_class("pill")
         self.row1_box.append(self.detail_fav_btn)
-        
+
         self.detail_seen_btn = Gtk.Button(label="👁 Not Seen")
         self.detail_seen_btn.add_css_class("pill")
         self.row1_box.append(self.detail_seen_btn)
-        
+
         self.trailer_btn = Gtk.Button()
         trailer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         trailer_box.append(Gtk.Image.new_from_icon_name("media-playback-start-symbolic"))
-        trailer_box.append(Gtk.Label(label="Watch Trailer"))
+        trailer_box.append(Gtk.Label(label="Trailer"))
         self.trailer_btn.set_child(trailer_box)
         self.trailer_btn.add_css_class("pill")
         self.row1_box.append(self.trailer_btn)
-        
-        self.info_vbox.append(self.row1_box)
-        
-        self.row2_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.row2_box.set_margin_top(8)
-        
-        self.season_dropdown = Gtk.DropDown.new_from_strings([])
-        self.season_dropdown.set_valign(Gtk.Align.CENTER)
-        self.row2_box.append(self.season_dropdown)
-        
-        self.episode_dropdown = Gtk.DropDown.new_from_strings([])
-        self.episode_dropdown.set_valign(Gtk.Align.CENTER)
-        self.row2_box.append(self.episode_dropdown)
 
-        self.play_next_check = Gtk.CheckButton(label="Play Next Episode")
-        self.play_next_check.set_valign(Gtk.Align.CENTER)
-        from .preferences import settings
-        settings.bind("auto-play-next", self.play_next_check, "active", Gio.SettingsBindFlags.DEFAULT)
-        self.row2_box.append(self.play_next_check)
-        
-        self.row2_box.set_visible(False)
-        self.info_vbox.append(self.row2_box)
-        
-        self.quality_row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
-        self.quality_row_box.set_valign(Gtk.Align.CENTER)
-        self.quality_row_box.set_margin_top(12)
-        
-        self.source_segmented_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.source_segmented_box.add_css_class("linked")
-        self.source_segmented_box.set_valign(Gtk.Align.CENTER)
-        
-        self.source_direct_btn = Gtk.ToggleButton(label="⚡ Direct Streams")
-        self.source_direct_btn.set_size_request(-1, 38)
-        self.source_torrent_btn = Gtk.ToggleButton(label="🧲 Torrents")
-        self.source_torrent_btn.set_size_request(-1, 38)
-        self.source_torrent_btn.set_group(self.source_direct_btn)
-        
-        self.source_segmented_box.append(self.source_direct_btn)
-        self.source_segmented_box.append(self.source_torrent_btn)
-        
-        from . import database
-        self.source_idx = database.get_setting("preferred_source_idx", 2)
-        if self.source_idx == 1:
-            self.source_direct_btn.set_active(True)
-            self.source_direct_btn.set_label("⚡ Direct Streams")
-            self.source_torrent_btn.set_label("🧲")
-        else:
-            self.source_idx = 2
-            self.source_torrent_btn.set_active(True)
-            self.source_direct_btn.set_label("⚡")
-            self.source_torrent_btn.set_label("🧲 Torrents")
-        
-        def on_source_toggled(btn):
-            if self.source_direct_btn.get_active():
-                self.source_idx = 1
-                self.source_direct_btn.set_label("⚡ Direct Streams")
-                self.source_torrent_btn.set_label("🧲")
-            elif self.source_torrent_btn.get_active():
-                self.source_idx = 2
-                self.source_direct_btn.set_label("⚡")
-                self.source_torrent_btn.set_label("🧲 Torrents")
-            
-            from . import database
-            database.set_setting("preferred_source_idx", self.source_idx)
-            self.update_quality_dropdown()
-            
-        self.source_direct_btn.connect("toggled", on_source_toggled)
-        self.source_torrent_btn.connect("toggled", on_source_toggled)
-        
-        self.quality_row_box.append(self.source_segmented_box)
-        
-        self.quality_button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.quality_button_box.add_css_class("linked")
-        self.quality_button_box.set_valign(Gtk.Align.CENTER)
-        
-        self.quality_row_box.append(self.quality_button_box)
-        self.info_vbox.append(self.quality_row_box)
-        
-        self.row3_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.row3_box.set_margin_top(8)
-        
-        # Source toggles are now appended directly to info_vbox before quality buttons
-        
-        self.file_dropdown = Gtk.DropDown.new_from_strings([])
-        self.file_dropdown.set_valign(Gtk.Align.CENTER)
-        self.file_dropdown.set_hexpand(True)
-        
-        file_factory = Gtk.SignalListItemFactory()
-        def _file_factory_setup(factory, list_item):
-            label = Gtk.Label(xalign=0.0)
-            label.set_wrap(True)
-            label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-            label.set_single_line_mode(False)
-            label.set_margin_start(8)
-            label.set_margin_end(8)
-            label.set_margin_top(6)
-            label.set_margin_bottom(6)
-            list_item.set_child(label)
+        meta_detail_vbox.append(self.row1_box)
 
-        def _file_factory_bind(factory, list_item):
-            item = list_item.get_item()
-            label = list_item.get_child()
-            if item and label:
-                label.set_text(item.get_string())
+        action_row2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        action_row2.set_margin_top(4)
 
-        file_factory.connect("setup", _file_factory_setup)
-        file_factory.connect("bind", _file_factory_bind)
-        self.file_dropdown.set_factory(file_factory)
-        
-        def on_dropdown_changed(dropdown, pspec):
-            idx = dropdown.get_selected()
-            if hasattr(self, 'current_t_list') and idx != Gtk.INVALID_LIST_POSITION and idx < len(self.current_t_list):
-                self.selected_torrent = self.current_t_list[idx]
-                if not getattr(self, '_programmatic_dropdown_switch', False):
-                    self._user_interacted_dropdown = True
-                if hasattr(self, 'download_btn'):
-                    self.download_btn.set_sensitive(True)
-                    if self.selected_torrent.get("is_http"):
-                        self.download_btn.set_tooltip_text("Download Direct Stream (Opens in Browser)")
-                    else:
-                        self.download_btn.set_tooltip_text("Download Torrent")
-                
-        self.file_dropdown.connect("notify::selected", on_dropdown_changed)
-        self.row3_box.append(self.file_dropdown)
-        self.row3_box.set_visible(False)
-        self.info_vbox.append(self.row3_box)
-        
-        self.row4_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.row4_box.set_margin_top(12)
-        
-        watch_label = "PLAY STREAM" if self.media_type in ["music", "radio", "live"] else "WATCH IT NOW"
-        self.watch_btn = Gtk.Button(label=watch_label)
-        self.watch_btn.add_css_class("suggested-action")
-        self.watch_btn.add_css_class("pill")
-        self.watch_btn.set_size_request(160, 42)
-        self.watch_btn.connect("clicked", self.on_watch_clicked)
-        self.row4_box.append(self.watch_btn)
-
-        self.download_btn = Gtk.Button(label="Download")
-        self.download_btn.add_css_class("pill")
-        self.download_btn.set_valign(Gtk.Align.CENTER)
-        self.download_btn.connect("clicked", self.on_download_clicked)
-        self.row4_box.append(self.download_btn)
-        
-        self.stop_btn = Gtk.Button(label="■ Stop")
-        self.stop_btn.add_css_class("destructive-action")
-        self.stop_btn.add_css_class("pill")
-        self.stop_btn.set_valign(Gtk.Align.CENTER)
-        self.stop_btn.connect("clicked", self.on_stop_clicked)
-        self.stop_btn.set_visible(False)
-        self.row4_box.append(self.stop_btn)
-        
         self.search_online_btn = Gtk.Button(label="🔍 Search Online")
         self.search_online_btn.add_css_class("pill")
-        self.search_online_btn.set_valign(Gtk.Align.CENTER)
         def on_search_online_clicked(btn):
             import urllib.parse
             title = self.movie_stub.get("title", "")
             year = self.movie_stub.get("year", "")
             query = f'"{title}" {year} watch online stream' if year else f'"{title}" watch online stream'
-            encoded_query = urllib.parse.quote(query)
-            open_uri(f"https://www.google.com/search?q={encoded_query}", self.window)
+            open_uri(f"https://www.google.com/search?q={urllib.parse.quote(query)}", self.window)
         self.search_online_btn.connect("clicked", on_search_online_clicked)
-        self.row4_box.append(self.search_online_btn)
-        
-        self.row4_box.set_visible(False)
-        self.info_vbox.append(self.row4_box)
-        
+        action_row2.append(self.search_online_btn)
+
+        self.play_next_check = Gtk.CheckButton(label="Play Next Ep")
+        self.play_next_check.set_valign(Gtk.Align.CENTER)
+        from .preferences import settings
+        settings.bind("auto-play-next", self.play_next_check, "active", Gio.SettingsBindFlags.DEFAULT)
+        self.play_next_check.set_visible(self.media_type in ["series", "anime"])
+        action_row2.append(self.play_next_check)
+
+        meta_detail_vbox.append(action_row2)
+
+        left_meta_hbox.append(meta_detail_vbox)
+        self.info_vbox.append(left_meta_hbox)
+        self.split_hbox.append(left_scroll)
+
+        # Right Column (Fixed Glassmorphism Sidebar)
+        self.sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.sidebar_box.set_size_request(420, -1)
+        self.sidebar_box.set_hexpand(False)
+        self.sidebar_box.set_vexpand(True)
+        self.sidebar_box.add_css_class("details-sidebar")
+        self.split_hbox.append(self.sidebar_box)
+
+        self.sidebar_stack = Gtk.Stack()
+        self.sidebar_stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+        self.sidebar_stack.set_transition_duration(250)
+        self.sidebar_box.append(self.sidebar_stack)
+
+        # Page 1: Episodes Browser
+        self.episodes_page_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.sidebar_stack.add_named(self.episodes_page_vbox, "episodes")
+
+        # Season Nav Box
+        self.season_nav_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.season_nav_box.add_css_class("season-nav-box")
+
+        self.prev_season_btn = Gtk.Button(icon_name="go-previous-symbolic")
+        self.prev_season_btn.set_tooltip_text("Previous Season")
+        self.prev_season_btn.add_css_class("circular")
+        self.prev_season_btn.add_css_class("flat")
+        self.prev_season_btn.connect("clicked", lambda b: self._change_season_delta(-1))
+        self.season_nav_box.append(self.prev_season_btn)
+
+        self.season_dropdown = Gtk.DropDown.new_from_strings([])
+        self.season_dropdown.set_valign(Gtk.Align.CENTER)
+        self.season_dropdown.set_hexpand(True)
+        self.season_nav_box.append(self.season_dropdown)
+
+        self.next_season_btn = Gtk.Button(icon_name="go-next-symbolic")
+        self.next_season_btn.set_tooltip_text("Next Season")
+        self.next_season_btn.add_css_class("circular")
+        self.next_season_btn.add_css_class("flat")
+        self.next_season_btn.connect("clicked", lambda b: self._change_season_delta(1))
+        self.season_nav_box.append(self.next_season_btn)
+
+        self.episodes_page_vbox.append(self.season_nav_box)
+
+        # Search Entry for Episodes
+        self.ep_search_entry = Gtk.SearchEntry()
+        self.ep_search_entry.set_placeholder_text("Search videos / episodes...")
+        self.ep_search_entry.add_css_class("ep-search-entry")
+        self.ep_search_entry.connect("search-changed", lambda e: self.render_episodes_list())
+        self.episodes_page_vbox.append(self.ep_search_entry)
+
+        # Episodes List Scrolled Box
+        episodes_scroll = Gtk.ScrolledWindow()
+        episodes_scroll.set_vexpand(True)
+        episodes_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.episodes_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        episodes_scroll.set_child(self.episodes_list_box)
+        self.episodes_page_vbox.append(episodes_scroll)
+
+        # Page 2: Streams Selector
+        self.streams_page_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.sidebar_stack.add_named(self.streams_page_vbox, "streams")
+
+        # Streams Header
+        self.stream_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.stream_header_box.set_valign(Gtk.Align.CENTER)
+
+        self.stream_back_btn = Gtk.Button(icon_name="go-previous-symbolic")
+        self.stream_back_btn.set_tooltip_text("Back to Episodes")
+        self.stream_back_btn.add_css_class("circular")
+        self.stream_back_btn.add_css_class("flat")
+        self.stream_back_btn.connect("clicked", lambda b: self.sidebar_stack.set_visible_child_name("episodes"))
+        self.stream_header_box.append(self.stream_back_btn)
+
+        # Source Filter Toggle Box (All / Direct / Torrents)
+        self.source_segmented_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.source_segmented_box.add_css_class("linked")
+        self.source_segmented_box.set_hexpand(True)
+        self.source_segmented_box.set_halign(Gtk.Align.START)
+
+        self.source_all_btn = Gtk.ToggleButton(label="All")
+        self.source_direct_btn = Gtk.ToggleButton(label="⚡ Direct")
+        self.source_torrent_btn = Gtk.ToggleButton(label="🧲 Torrents")
+        self.source_direct_btn.set_group(self.source_all_btn)
+        self.source_torrent_btn.set_group(self.source_all_btn)
+
+        self.source_segmented_box.append(self.source_all_btn)
+        self.source_segmented_box.append(self.source_direct_btn)
+        self.source_segmented_box.append(self.source_torrent_btn)
+
+        self.source_idx = 0  # 0: All, 1: Direct, 2: Torrents
+        self.source_all_btn.set_active(True)
+
+        def on_source_toggled(btn):
+            if getattr(self, '_ignore_source_toggle_signals', False):
+                return
+            if self.source_all_btn.get_active(): self.source_idx = 0
+            elif self.source_direct_btn.get_active(): self.source_idx = 1
+            elif self.source_torrent_btn.get_active(): self.source_idx = 2
+            
+            if hasattr(self, 'check_live_btn'):
+                self.check_live_btn.set_visible(self.source_idx == 1)
+
+            self.update_quality_dropdown()
+
+        self.source_all_btn.connect("toggled", on_source_toggled)
+        self.source_direct_btn.connect("toggled", on_source_toggled)
+        self.source_torrent_btn.connect("toggled", on_source_toggled)
+
+        self.stream_header_box.append(self.source_segmented_box)
+
+        # Provider Filter Dropdown
+        self.provider_dropdown = Gtk.DropDown.new_from_strings(["All Providers"])
+        self.provider_dropdown.set_valign(Gtk.Align.CENTER)
+
+        def on_provider_changed(dd, pspec):
+            if getattr(self, '_ignore_provider_signals', False):
+                return
+
+            model = self.provider_dropdown.get_model()
+            sel_idx = self.provider_dropdown.get_selected()
+            if model and sel_idx != Gtk.INVALID_LIST_POSITION and sel_idx < model.get_n_items():
+                sel_prov = model.get_string(sel_idx)
+                if sel_prov != "All Providers":
+                    matching = [t for t in getattr(self, 'torrents', []) if sel_prov in t.get("addon_names", [])]
+                    if matching:
+                        all_http = all(t.get('is_http') for t in matching)
+                        all_torrent = all(not t.get('is_http') for t in matching)
+                        if all_http and getattr(self, 'source_idx', 0) != 1:
+                            self._ignore_source_toggle_signals = True
+                            try:
+                                self.source_idx = 1
+                                self.source_direct_btn.set_active(True)
+                                if hasattr(self, 'check_live_btn'):
+                                    self.check_live_btn.set_visible(True)
+                            finally:
+                                self._ignore_source_toggle_signals = False
+                        elif all_torrent and getattr(self, 'source_idx', 0) != 2:
+                            self._ignore_source_toggle_signals = True
+                            try:
+                                self.source_idx = 2
+                                self.source_torrent_btn.set_active(True)
+                                if hasattr(self, 'check_live_btn'):
+                                    self.check_live_btn.set_visible(False)
+                            finally:
+                                self._ignore_source_toggle_signals = False
+
+            self.render_streams_list()
+
+        self.provider_dropdown.connect("notify::selected", on_provider_changed)
+        self.stream_header_box.append(self.provider_dropdown)
+
+        self.streams_page_vbox.append(self.stream_header_box)
+
+        # Quality Row Box (Quality Pills & Check Live Button)
+        self.quality_row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+
+        self.quality_row_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.quality_row_hbox.set_valign(Gtk.Align.CENTER)
+
+        self.quality_button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.quality_button_box.add_css_class("linked")
+        self.quality_row_hbox.append(self.quality_button_box)
+
+        self.check_live_btn = Gtk.Button(label="⚡ Check Direct")
+        self.check_live_btn.add_css_class("pill")
+        self.check_live_btn.set_valign(Gtk.Align.CENTER)
+        self.check_live_btn.set_size_request(-1, 32)
+        self.check_live_btn.set_visible(False)
+        self.check_live_btn.set_tooltip_text("Verify live availability of direct HTTP stream links")
+        self.check_live_btn.connect("clicked", lambda b: self.run_live_stream_check())
+        self.quality_row_hbox.append(self.check_live_btn)
+
+        self.quality_row_box.append(self.quality_row_hbox)
+
+        self.streams_page_vbox.append(self.quality_row_box)
+
+        # Dropdown compatibility placeholders
+        self.file_dropdown = Gtk.DropDown.new_from_strings([])
+        self.episode_dropdown = Gtk.DropDown.new_from_strings([])
+
+        # Streams List Scrolled Box
+        streams_scroll = Gtk.ScrolledWindow()
+        streams_scroll.set_vexpand(True)
+        streams_scroll.set_overlay_scrolling(False)
+        streams_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        self.streams_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.streams_list_box.set_margin_end(8)
+        self.streams_list_box.set_margin_start(2)
+        streams_scroll.set_child(self.streams_list_box)
+        self.streams_page_vbox.append(streams_scroll)
+
+        # Stream Action Buttons
+        self.row4_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+        watch_label = "PLAY STREAM" if self.media_type in ["music", "radio", "live"] else "WATCH IT NOW"
+        self.watch_btn = Gtk.Button(label=watch_label)
+        self.watch_btn.add_css_class("suggested-action")
+        self.watch_btn.add_css_class("pill")
+        self.watch_btn.set_hexpand(True)
+        self.watch_btn.connect("clicked", self.on_watch_clicked)
+        self.row4_box.append(self.watch_btn)
+
+        self.download_btn = Gtk.Button(label="Download")
+        self.download_btn.add_css_class("pill")
+        self.download_btn.connect("clicked", self.on_download_clicked)
+        self.row4_box.append(self.download_btn)
+
+        self.stop_btn = Gtk.Button(label="■ Stop")
+        self.stop_btn.add_css_class("destructive-action")
+        self.stop_btn.add_css_class("pill")
+        self.stop_btn.connect("clicked", self.on_stop_clicked)
+        self.stop_btn.set_visible(False)
+        self.row4_box.append(self.stop_btn)
+
+        self.streams_page_vbox.append(self.row4_box)
+
         self.progress_label = Gtk.Label(label="")
         self.progress_label.set_halign(Gtk.Align.START)
-        self.info_vbox.append(self.progress_label)
-        
-        self.top_hbox.append(self.info_vbox)
-        self.content_box.append(self.top_hbox)
-        
-        from . import database
+        self.progress_label.add_css_class("dim-label")
+        self.streams_page_vbox.append(self.progress_label)
+
+        # Set default stack page based on media_type
+        if self.media_type in ["series", "anime"]:
+            self.sidebar_stack.set_visible_child_name("episodes")
+            self.stream_back_btn.set_visible(True)
+        else:
+            self.sidebar_stack.set_visible_child_name("streams")
+            self.stream_back_btn.set_visible(False)
+
+        # Initial Metadata Loading
         item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
         primary_id = item_id[0] if isinstance(item_id, list) else item_id
         cached_details = database.get_cached_metadata(primary_id)
         if cached_details:
-            print(f"[CARD CLICK Step 5] Found cached metadata in database for '{primary_id}'. Building UI immediately.")
             self.build_ui(cached_details)
             self.load_details_async(force_refresh=False)
         else:
-            print(f"[CARD CLICK Step 5] No cached metadata in database for '{primary_id}'. Initiating background fetch.")
             self.load_details_async(force_refresh=True)
+
+    def _change_season_delta(self, delta):
+        if not hasattr(self, 'seasons') or not self.seasons: return
+        curr_idx = self.season_dropdown.get_selected()
+        if curr_idx == Gtk.INVALID_LIST_POSITION: curr_idx = 0
+        new_idx = curr_idx + delta
+        if 0 <= new_idx < len(self.seasons):
+            self.season_dropdown.set_selected(new_idx)
+
+    def render_episodes_list(self):
+        while child := self.episodes_list_box.get_first_child():
+            self.episodes_list_box.remove(child)
+
+        if not hasattr(self, 'current_episodes') or not self.current_episodes:
+            empty_lbl = Gtk.Label(label="No episodes available")
+            empty_lbl.add_css_class("dim-label")
+            empty_lbl.set_margin_top(16)
+            self.episodes_list_box.append(empty_lbl)
+            return
+
+        query = self.ep_search_entry.get_text().strip().lower() if hasattr(self, 'ep_search_entry') else ""
+        from .movie_widget import load_image_into_picture
+        from . import database
+        item_id = self.movie_stub.get("id")
+        backdrop_cover = (self.movie_details.get("background") or self.movie_details.get("medium_cover_image")) if hasattr(self, 'movie_details') else None
+
+        filtered_eps = []
+        for ep in self.current_episodes:
+            ep_num = ep.get("episode", 1)
+            ep_title = ep.get("title") or ep.get("name") or f"Episode {ep_num}"
+            overview = ep.get("overview") or ""
+            if query:
+                match_q = (query in ep_title.lower() or query in str(ep_num) or query in overview.lower())
+                if not match_q: continue
+            filtered_eps.append(ep)
+
+        if not filtered_eps:
+            empty_lbl = Gtk.Label(label="No matching episodes found")
+            empty_lbl.add_css_class("dim-label")
+            empty_lbl.set_margin_top(16)
+            self.episodes_list_box.append(empty_lbl)
+            return
+
+        self._ep_render_gen = getattr(self, '_ep_render_gen', 0) + 1
+        render_gen = self._ep_render_gen
+
+        def build_ep_card(ep):
+            ep_num = ep.get("episode", 1)
+            ep_title = ep.get("title") or ep.get("name") or f"Episode {ep_num}"
+            overview = ep.get("overview") or ""
+            released = ep.get("released") or ""
+
+            btn = Gtk.Button()
+            btn.add_css_class("ep-card-row")
+            if getattr(self, 'selected_episode', None) == ep_num:
+                btn.add_css_class("selected")
+
+            hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            
+            thumb_pic = Gtk.Picture()
+            thumb_pic.set_can_shrink(True)
+            thumb_pic.set_size_request(130, 75)
+            thumb_pic.set_content_fit(Gtk.ContentFit.COVER)
+            thumb_pic.add_css_class("ep-card-thumb")
+
+            thumb_url = ep.get("thumbnail") or backdrop_cover
+            if thumb_url:
+                load_image_into_picture(thumb_url, thumb_pic, width=130, height=75)
+
+            hbox.append(thumb_pic)
+
+            vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            vbox.set_hexpand(True)
+            vbox.set_valign(Gtk.Align.CENTER)
+
+            title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            ep_name_lbl = Gtk.Label(label=f"{ep_num}. {ep_title}")
+            ep_name_lbl.add_css_class("ep-card-title")
+            ep_name_lbl.set_halign(Gtk.Align.START)
+            ep_name_lbl.set_wrap(True)
+            ep_name_lbl.set_hexpand(True)
+            title_row.append(ep_name_lbl)
+
+            if database.is_watched(f"{item_id}_S{getattr(self, 'selected_season', 1)}E{ep_num}"):
+                w_badge = Gtk.Label(label="👁 Watched")
+                w_badge.add_css_class("ep-watched-badge")
+                title_row.append(w_badge)
+
+            vbox.append(title_row)
+
+            if released:
+                date_lbl = Gtk.Label(label=str(released).split('T')[0])
+                date_lbl.add_css_class("ep-card-date")
+                date_lbl.set_halign(Gtk.Align.START)
+                vbox.append(date_lbl)
+
+            if overview:
+                short_ov = overview[:80] + "..." if len(overview) > 80 else overview
+                ov_lbl = Gtk.Label(label=short_ov)
+                ov_lbl.add_css_class("ep-card-overview")
+                ov_lbl.set_halign(Gtk.Align.START)
+                ov_lbl.set_wrap(True)
+                vbox.append(ov_lbl)
+
+            hbox.append(vbox)
+            btn.set_child(hbox)
+
+            def make_ep_cb(episode_item, episode_num):
+                def cb(b):
+                    self.selected_video = episode_item
+                    self.selected_episode = episode_num
+                    s_val = getattr(self, 'selected_season', 1)
+                    if item_id:
+                        database.set_setting(f"last_ep_{item_id}_{s_val}", episode_num)
+                    if hasattr(self, 'stream_ep_title_label'):
+                        self.stream_ep_title_label.set_text(f"S{s_val}E{episode_num}: {ep_title}")
+                    self.sidebar_stack.set_visible_child_name("streams")
+                    self.render_episodes_list()
+                    self.fetch_torrents_async()
+                return cb
+
+            btn.connect("clicked", make_ep_cb(ep, ep_num))
+            return btn
+
+        batch_size = 10
+        def append_batch(start_idx):
+            if render_gen != getattr(self, '_ep_render_gen', 0) or getattr(self, '_destroyed', False):
+                return False
+            end_idx = min(start_idx + batch_size, len(filtered_eps))
+            for i in range(start_idx, end_idx):
+                card = build_ep_card(filtered_eps[i])
+                self.episodes_list_box.append(card)
+            if end_idx < len(filtered_eps):
+                GLib.idle_add(append_batch, end_idx)
+            return False
+
+        append_batch(0)
+
+    def run_live_stream_check(self):
+        t_list = getattr(self, 'current_t_list', []) or []
+        http_streams = [t for t in t_list if t.get('is_http')]
+        if not http_streams:
+            if hasattr(self, 'progress_label') and self.progress_label:
+                self.progress_label.set_text("No direct streams available to check.")
+            return
+
+        if hasattr(self, 'check_live_btn'):
+            self.check_live_btn.set_sensitive(False)
+            self.check_live_btn.set_label("⏳ Checking...")
+
+        if hasattr(self, '_live_check_abort_event'):
+            self._live_check_abort_event.set()
+        self._live_check_abort_event = threading.Event()
+        abort_event = self._live_check_abort_event
+
+        def live_check():
+            from . import api
+            import concurrent.futures
+
+            def check_stream(t):
+                if abort_event.is_set(): return
+                res = api._ping_stream_url(dict(t))
+                t['ping_status'] = res.get('is_working', False)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+                futures = [executor.submit(check_stream, t) for t in http_streams]
+                concurrent.futures.wait(futures)
+
+            if abort_event.is_set() or not self._is_current_details_page():
+                return
+
+            def on_complete():
+                if hasattr(self, 'check_live_btn'):
+                    self.check_live_btn.set_sensitive(True)
+                    self.check_live_btn.set_label("⚡ Check Direct")
+                t_list.sort(key=lambda x: (0 if (x.get('is_http') and x.get('ping_status') is True) else (1 if x.get('is_http') and x.get('ping_status') is None else (2 if x.get('is_http') else 3))))
+                self.render_streams_list()
+                return False
+
+            GLib.idle_add(on_complete)
+
+        threading.Thread(target=live_check, daemon=True).start()
+
+    def update_provider_dropdown_model(self):
+        if not hasattr(self, 'provider_dropdown'): return
+        all_addons = set()
+        source_idx = getattr(self, 'source_idx', 0)
+        
+        streams = getattr(self, 'torrents', [])
+        if source_idx == 1:
+            streams = [t for t in streams if t.get('is_http')]
+        elif source_idx == 2:
+            streams = [t for t in streams if not t.get('is_http')]
+
+        for t in streams:
+            for a in t.get("addon_names", []):
+                if a: all_addons.add(a)
+        provider_strings = ["All Providers"] + sorted(list(all_addons))
+        
+        curr_model = self.provider_dropdown.get_model()
+        curr_strings = []
+        if curr_model:
+            for i in range(curr_model.get_n_items()):
+                curr_strings.append(curr_model.get_string(i))
+                
+        if curr_strings != provider_strings:
+            curr_sel = self.provider_dropdown.get_selected()
+            curr_name = curr_strings[curr_sel] if (curr_strings and curr_sel < len(curr_strings)) else "All Providers"
+            
+            self._ignore_provider_signals = True
+            try:
+                self.provider_dropdown.set_model(Gtk.StringList.new(provider_strings))
+                if curr_name in provider_strings:
+                    self.provider_dropdown.set_selected(provider_strings.index(curr_name))
+                else:
+                    self.provider_dropdown.set_selected(0)
+            finally:
+                self._ignore_provider_signals = False
+
+    def render_streams_list(self):
+        while child := self.streams_list_box.get_first_child():
+            self.streams_list_box.remove(child)
+
+        t_list = getattr(self, 'current_t_list', []) or []
+
+        sel_prov_name = "All Providers"
+        if hasattr(self, 'provider_dropdown'):
+            model = self.provider_dropdown.get_model()
+            sel_idx = self.provider_dropdown.get_selected()
+            if model and sel_idx != Gtk.INVALID_LIST_POSITION and sel_idx < model.get_n_items():
+                sel_prov_name = model.get_string(sel_idx)
+
+        filtered_streams = t_list
+        source_idx = getattr(self, 'source_idx', 0)
+        if source_idx == 1:
+            filtered_streams = [t for t in filtered_streams if t.get('is_http')]
+        elif source_idx == 2:
+            filtered_streams = [t for t in filtered_streams if not t.get('is_http')]
+
+        if sel_prov_name != "All Providers":
+            filtered_streams = [t for t in filtered_streams if sel_prov_name in t.get("addon_names", [])]
+
+        if not filtered_streams:
+            no_s_lbl = Gtk.Label(label="No streams match active provider/source filters")
+            no_s_lbl.add_css_class("dim-label")
+            no_s_lbl.set_margin_top(16)
+            self.streams_list_box.append(no_s_lbl)
+            return
+
+        if len(filtered_streams) > 40:
+            filtered_streams = filtered_streams[:40]
+
+        for idx, t in enumerate(filtered_streams):
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            row_box.add_css_class("stream-card-row")
+
+            is_selected = getattr(self, 'selected_torrent', None) and _streams_match(t, self.selected_torrent)
+            if not getattr(self, 'selected_torrent', None) and idx == 0:
+                is_selected = True
+                self.selected_torrent = t
+
+            if is_selected:
+                row_box.add_css_class("selected")
+
+            badge_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            badge_vbox.set_valign(Gtk.Align.CENTER)
+
+            if t.get("size"):
+                sz_lbl = Gtk.Label(label=t.get("size"))
+                sz_lbl.add_css_class("size-badge")
+                badge_vbox.append(sz_lbl)
+
+            q_str = t.get("quality", "1080p")
+            q_lbl = Gtk.Label(label=q_str)
+            q_lbl.add_css_class("quality-pill")
+            if "4K" in q_str or "2160" in q_str: q_lbl.add_css_class("q-4k")
+            elif "1080" in q_str: q_lbl.add_css_class("q-1080p")
+            else: q_lbl.add_css_class("q-720p")
+            badge_vbox.append(q_lbl)
+
+            addons_list = t.get("addon_names", [])
+            if addons_list:
+                a_lbl = Gtk.Label(label=addons_list[0])
+                a_lbl.add_css_class("addon-badge")
+                badge_vbox.append(a_lbl)
+
+            if not t.get("is_http") and t.get("seeders", 0) > 0:
+                seed_lbl = Gtk.Label(label=f"👤 {t.get('seeders')}")
+                seed_lbl.add_css_class("seeders-badge")
+                badge_vbox.append(seed_lbl)
+
+            row_box.append(badge_vbox)
+
+            mid_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            mid_vbox.set_hexpand(True)
+
+            raw_title = t.get("stream_title", "").strip() or t.get("filename", "") or t.get("title", "")
+            ping_status = t.get("ping_status")
+            status_prefix = "✅ " if ping_status is True else ("⛔ " if ping_status is False else "")
+
+            title_lbl = Gtk.Label(label=f"{status_prefix}{raw_title.splitlines()[0] if raw_title else 'Stream'}")
+            title_lbl.add_css_class("ep-card-title")
+            title_lbl.set_halign(Gtk.Align.START)
+            title_lbl.set_wrap(True)
+            title_lbl.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            mid_vbox.append(title_lbl)
+
+            meta_parts = []
+            if t.get("is_http"):
+                meta_parts.append("⚡ Direct Stream")
+            else:
+                meta_parts.append("🧲 Torrent")
+
+            if meta_parts:
+                meta_lbl = Gtk.Label(label=" • ".join(meta_parts))
+                meta_lbl.add_css_class("ep-card-date")
+                meta_lbl.set_halign(Gtk.Align.START)
+                mid_vbox.append(meta_lbl)
+
+            row_box.append(mid_vbox)
+
+            actions_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            actions_vbox.set_valign(Gtk.Align.CENTER)
+            actions_vbox.set_visible(is_selected)
+
+            play_btn = Gtk.Button()
+            play_btn.set_icon_name("media-playback-start-symbolic")
+            play_btn.add_css_class("suggested-action")
+            play_btn.add_css_class("circular")
+            play_btn.set_tooltip_text("Play Stream")
+
+            def make_play_cb(st):
+                def on_play_clicked(b):
+                    self.selected_torrent = st
+                    self.on_watch_clicked(None)
+                return on_play_clicked
+
+            play_btn.connect("clicked", make_play_cb(t))
+            actions_vbox.append(play_btn)
+
+            dl_btn = Gtk.Button()
+            dl_btn.set_icon_name("folder-download-symbolic")
+            dl_btn.add_css_class("flat")
+            dl_btn.add_css_class("circular")
+            dl_btn_tooltip = "Download Direct Stream" if t.get("is_http") else "Download Torrent"
+            dl_btn.set_tooltip_text(dl_btn_tooltip)
+
+            def make_dl_cb(st):
+                def on_dl_clicked(b):
+                    self.selected_torrent = st
+                    self._download_stream_item(st)
+                return on_dl_clicked
+
+            dl_btn.connect("clicked", make_dl_cb(t))
+            actions_vbox.append(dl_btn)
+
+            row_box.append(actions_vbox)
+            row_box._actions_vbox = actions_vbox
+
+            row_gesture = Gtk.GestureClick()
+            row_gesture.set_button(1)
+            row_gesture.set_propagation_phase(Gtk.PropagationPhase.BUBBLE)
+
+            def make_row_click_cb(stream_item, curr_row_box):
+                def on_pressed(gesture, n_press, x, y):
+                    self.selected_torrent = stream_item
+                    if not curr_row_box.has_css_class("selected"):
+                        child = self.streams_list_box.get_first_child()
+                        while child:
+                            child.remove_css_class("selected")
+                            if hasattr(child, '_actions_vbox'):
+                                child._actions_vbox.set_visible(False)
+                            child = child.get_next_sibling()
+
+                        curr_row_box.add_css_class("selected")
+                        if hasattr(curr_row_box, '_actions_vbox'):
+                            curr_row_box._actions_vbox.set_visible(True)
+
+                    if n_press >= 2:
+                        self.on_watch_clicked(None)
+                return on_pressed
+
+            row_gesture.connect("pressed", make_row_click_cb(t, row_box))
+            row_box.add_controller(row_gesture)
+            self.streams_list_box.append(row_box)
 
     def _is_current_details_page(self):
         if self._destroyed:
@@ -674,11 +1128,22 @@ class MovieDetailsPage(Gtk.Overlay):
         self.detail_seen_btn.set_label("👁 Seen" if database.is_watched(item_id) else "👁 Not Seen")
         self._seen_btn_hid = self.detail_seen_btn.connect("clicked", lambda x: self.toggle_watched(details))
 
-        self._trailer_btn_hid = self.trailer_btn.connect("clicked", lambda x: self.on_trailer_clicked(details.get("trailer")))
-        if not details.get("trailer"): self.trailer_btn.set_sensitive(False)
+        trailer_url = details.get("trailer")
+        if trailer_url:
+            self.trailer_btn.set_sensitive(True)
+            self._trailer_btn_hid = self.trailer_btn.connect("clicked", lambda x: self.on_trailer_clicked(trailer_url))
+        else:
+            self.trailer_btn.set_sensitive(False)
+
+        if hasattr(self, 'play_next_check'):
+            has_multiple_eps = self.media_type in ["series", "anime"] or (bool(details.get("videos")) and len(details.get("videos", [])) > 1)
+            self.play_next_check.set_visible(has_multiple_eps)
         
         if details.get("videos"):
-            self.row2_box.set_visible(True)
+            if hasattr(self, 'row2_box'):
+                self.row2_box.set_visible(True)
+            if hasattr(self, 'season_nav_box'):
+                self.season_nav_box.set_visible(True)
             videos = details.get("videos")
             self.videos = videos
             seasons = sorted(list(set([v.get("season", 1) for v in videos])))
@@ -729,20 +1194,23 @@ class MovieDetailsPage(Gtk.Overlay):
                     ep_strings = [f"{e.get('episode', idx+1)}. {e.get('title') or e.get('name', '')}" for idx, e in enumerate(unique_eps)]
                 
                 self._ignore_dropdown_changes = True
-                self.episode_dropdown.set_model(Gtk.StringList.new(ep_strings))
-                ep_nums = [e.get('episode') for e in unique_eps]
-                
-                saved_ep = database.get_setting(f"last_ep_{item_id}_{s}", None) if item_id else None
-                if saved_ep in ep_nums:
-                    default_ep_idx = ep_nums.index(saved_ep)
-                else:
-                    default_ep_idx = ep_nums.index(1) if 1 in ep_nums else 0
+                try:
+                    self.episode_dropdown.set_model(Gtk.StringList.new(ep_strings))
+                    ep_nums = [e.get('episode') for e in unique_eps]
                     
-                if default_ep_idx < len(ep_strings):
-                    self.episode_dropdown.set_selected(default_ep_idx)
-                self._ignore_dropdown_changes = False
-                
+                    saved_ep = database.get_setting(f"last_ep_{item_id}_{s}", None) if item_id else None
+                    if saved_ep in ep_nums:
+                        default_ep_idx = ep_nums.index(saved_ep)
+                    else:
+                        default_ep_idx = ep_nums.index(1) if 1 in ep_nums else 0
+                        
+                    if default_ep_idx < len(ep_strings):
+                        self.episode_dropdown.set_selected(default_ep_idx)
+                finally:
+                    self._ignore_dropdown_changes = False
+
                 on_episode_changed(self.episode_dropdown)
+                self.render_episodes_list()
                 
             self._season_dropdown_hid = self.season_dropdown.connect("notify::selected", on_season_changed)
             
@@ -787,11 +1255,16 @@ class MovieDetailsPage(Gtk.Overlay):
         current_gen = self._fetch_gen
         target_title = (selected_video.get("title") if selected_video else None) or self.movie_stub.get("title")
         
-        def on_stream_batch(torrents, is_cached=False, is_complete=False):
-            if not self._is_current_details_page():
-                return
-            if getattr(self, '_fetch_gen', 0) != current_gen:
-                return
+        batch_timer = [None]
+        latest_batch = [None]
+
+        def process_batch():
+            batch_timer[0] = None
+            if not latest_batch[0]:
+                return False
+            torrents, is_cached, is_complete = latest_batch[0]
+            if not self._is_current_details_page() or getattr(self, '_fetch_gen', 0) != current_gen:
+                return False
 
             if hasattr(self, 'progress_label') and self.progress_label:
                 if is_complete:
@@ -800,14 +1273,25 @@ class MovieDetailsPage(Gtk.Overlay):
                 elif is_cached:
                     self.progress_label.set_text("Loaded cached streams...")
 
-            torrents = torrents or []
-            
-            self.torrents = torrents
+            self.torrents = torrents or []
             self.update_quality_dropdown()
-            
+
             if is_complete and self.torrents and getattr(self, '_auto_play_next', False):
                 self._auto_play_next = False
                 GLib.idle_add(self.on_watch_clicked, self.watch_btn)
+            return False
+
+        def on_stream_batch(torrents, is_cached=False, is_complete=False):
+            if not self._is_current_details_page() or getattr(self, '_fetch_gen', 0) != current_gen:
+                return
+            latest_batch[0] = (torrents, is_cached, is_complete)
+            if is_complete or is_cached:
+                if batch_timer[0]:
+                    GLib.source_remove(batch_timer[0])
+                    batch_timer[0] = None
+                process_batch()
+            elif not batch_timer[0]:
+                batch_timer[0] = GLib.timeout_add(300, process_batch)
 
         def fetch():
             from . import api
@@ -825,12 +1309,14 @@ class MovieDetailsPage(Gtk.Overlay):
         while child := self.quality_button_box.get_first_child():
             self.quality_button_box.remove(child)
             
+        self.update_provider_dropdown_model()
+            
         if not self.torrents:
             self.current_t_list = []
             self.selected_torrent = None
             self.quality_row_box.set_visible(False)
-            self.row3_box.set_visible(False)
-            self.row4_box.set_visible(True)
+            if hasattr(self, 'row3_box'): self.row3_box.set_visible(False)
+            if hasattr(self, 'row4_box'): self.row4_box.set_visible(True)
             self.watch_btn.set_visible(False)
             if hasattr(self, 'download_btn'):
                 self.download_btn.set_sensitive(False)
@@ -839,20 +1325,14 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.search_online_btn.add_css_class("suggested-action")
             return
 
-        source_idx = self.source_idx if hasattr(self, 'source_idx') else 0
-        if source_idx == 1:  # Direct Streams
-            filtered_torrents = [t for t in self.torrents if t.get('is_http')]
-        elif source_idx == 2:  # Torrents
-            filtered_torrents = [t for t in self.torrents if not t.get('is_http')]
-        else:
-            filtered_torrents = self.torrents
+        filtered_torrents = self.torrents
 
         if not filtered_torrents:
             self.current_t_list = []
             self.selected_torrent = None
             self.quality_row_box.set_visible(True)
             self.quality_button_box.set_visible(False)
-            self.row3_box.set_visible(True)
+            if hasattr(self, 'row3_box'): self.row3_box.set_visible(True)
             self.file_dropdown.set_model(Gtk.StringList.new(["No streams available for selected source filter"]))
             self.file_dropdown.set_selected(0)
             self.watch_btn.set_visible(False)
@@ -862,8 +1342,8 @@ class MovieDetailsPage(Gtk.Overlay):
 
         self.quality_row_box.set_visible(True)
         self.quality_button_box.set_visible(True)
-        self.row3_box.set_visible(True)
-        self.row4_box.set_visible(True)
+        if hasattr(self, 'row3_box'): self.row3_box.set_visible(True)
+        if hasattr(self, 'row4_box'): self.row4_box.set_visible(False)
         self.watch_btn.set_visible(True)
         self.watch_btn.set_sensitive(True)
         if hasattr(self, 'search_online_btn'):
@@ -884,23 +1364,8 @@ class MovieDetailsPage(Gtk.Overlay):
             
         self.quality_buttons = []
         
-        def _parse_size_gb(size_str):
-            if not size_str: return 0.0
-            import re
-            m = re.search(r'([\d.]+)\s*(GB|MB)', str(size_str), re.IGNORECASE)
-            if m:
-                try:
-                    val = float(m.group(1))
-                    return val / 1024.0 if m.group(2).upper() == 'MB' else val
-                except ValueError:
-                    return 0.0
-            return 0.0
-
         def _stream_sort_key(t):
-            seeders = t.get('seeders', 0)
-            q_val = t.get('q_val', 0)
-            size_gb = _parse_size_gb(t.get('size', ''))
-            return (seeders, q_val, size_gb)
+            return (t.get('seeders', 0), t.get('q_val', 0), t.get('size_gb', 0.0))
 
 
 
@@ -910,6 +1375,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.selected_torrent = None
                 if hasattr(self, 'download_btn'):
                     self.download_btn.set_sensitive(False)
+                self.render_streams_list()
                 return
             strings = []
             for t in t_list:
@@ -953,45 +1419,12 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.download_btn.set_tooltip_text("Download Direct Stream (Opens in Browser)")
                 else:
                     self.download_btn.set_tooltip_text("Download Torrent")
+            self.render_streams_list()
             
         def on_quality_btn_clicked(btn, t_list):
             self.current_t_list = t_list
             self._user_interacted_dropdown = False
             update_file_dropdown_ui(t_list)
-            
-            if hasattr(self, '_live_check_abort_event'):
-                self._live_check_abort_event.set()
-            self._live_check_abort_event = threading.Event()
-            
-            def live_check(target_list, abort_event):
-                from . import api
-                import concurrent.futures
-                
-                http_streams = [t for t in target_list if t.get('is_http')]
-                if not http_streams:
-                    return
-                    
-                def check_stream(t):
-                    if abort_event.is_set(): return
-                    res = api._ping_stream_url(dict(t))
-                    t['ping_status'] = res.get('is_working', False)
-                    
-                def do_update():
-                    if abort_event.is_set() or not self._is_current_details_page():
-                        return False
-                    target_list.sort(key=lambda x: 0 if x.get('ping_status') is True else (1 if x.get('ping_status') is None else 2))
-                    update_file_dropdown_ui(target_list)
-                    return False
-                    
-                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                    futures = [executor.submit(check_stream, t) for t in http_streams]
-                    for future in concurrent.futures.as_completed(futures):
-                        if abort_event.is_set():
-                            break
-                        GLib.idle_add(do_update)
-            
-            if t_list and any(t.get('is_http') for t in t_list):
-                threading.Thread(target=live_check, args=(t_list, self._live_check_abort_event), daemon=True).start()
             
         saved_label = getattr(self, 'user_selected_quality', None)
         if not saved_label:
@@ -1010,7 +1443,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 if t_list:
                     t_list.sort(key=_stream_sort_key, reverse=True)
                     btn = Gtk.ToggleButton(label=q_label)
-                    btn.set_size_request(-1, 38)
+                    btn.set_size_request(-1, 32)
                     if first_quality_btn is None:
                         first_quality_btn = btn
                     else:
@@ -1080,16 +1513,31 @@ class MovieDetailsPage(Gtk.Overlay):
         self.watch_btn.set_label(watch_label)
 
     def on_watch_clicked(self, btn):
-        if hasattr(self, 'file_dropdown') and hasattr(self, 'current_t_list') and self.current_t_list:
-            idx = self.file_dropdown.get_selected()
-            if idx != Gtk.INVALID_LIST_POSITION and idx < len(self.current_t_list):
-                self.selected_torrent = self.current_t_list[idx]
+        t_list = getattr(self, 'current_t_list', []) or []
+        source_idx = getattr(self, 'source_idx', 0)
+        if source_idx == 1:
+            t_list = [t for t in t_list if t.get('is_http')]
+        elif source_idx == 2:
+            t_list = [t for t in t_list if not t.get('is_http')]
 
-        if not getattr(self, 'selected_torrent', None):
-            if hasattr(self, 'progress_label') and self.progress_label:
-                self.progress_label.set_text("Please select a stream first.")
-            return
-            
+        sel_prov_name = "All Providers"
+        if hasattr(self, 'provider_dropdown'):
+            model = self.provider_dropdown.get_model()
+            sel_idx = self.provider_dropdown.get_selected()
+            if model and sel_idx != Gtk.INVALID_LIST_POSITION and sel_idx < model.get_n_items():
+                sel_prov_name = model.get_string(sel_idx)
+
+        if sel_prov_name != "All Providers":
+            t_list = [t for t in t_list if sel_prov_name in t.get("addon_names", [])]
+
+        if not getattr(self, 'selected_torrent', None) or (t_list and self.selected_torrent not in t_list):
+            if t_list:
+                self.selected_torrent = t_list[0]
+            else:
+                if hasattr(self, 'progress_label') and self.progress_label:
+                    self.progress_label.set_text("Please select a stream first.")
+                return
+
         media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
         if self.media_type == "series" and getattr(self, "selected_season", None) is not None:
             try:
@@ -1099,7 +1547,15 @@ class MovieDetailsPage(Gtk.Overlay):
             except (ValueError, TypeError):
                 media_title = f"{media_title} (S{self.selected_season}E{self.selected_episode})"
             
-        queue = getattr(self, 'current_t_list', None) or getattr(self, 'torrents', None) or [self.selected_torrent]
+        is_direct = bool(self.selected_torrent.get("is_http"))
+        if is_direct:
+            queue = [t for t in (t_list if t_list else [self.selected_torrent]) if t.get("is_http")]
+        else:
+            queue = [t for t in (t_list if t_list else [self.selected_torrent]) if not t.get("is_http")]
+
+        if not queue:
+            queue = [self.selected_torrent]
+
         init_idx = _find_stream_index(self.selected_torrent, queue)
 
         if self.window and hasattr(self.window, "fetch_and_add_subtitles"):
@@ -1127,18 +1583,8 @@ class MovieDetailsPage(Gtk.Overlay):
             file_index = torrent.get("file_index")
             self._start_streaming(magnet, file_index)
 
-    def on_download_clicked(self, btn):
-        if hasattr(self, 'file_dropdown') and hasattr(self, 'current_t_list') and self.current_t_list:
-            idx = self.file_dropdown.get_selected()
-            if idx != Gtk.INVALID_LIST_POSITION and idx < len(self.current_t_list):
-                self.selected_torrent = self.current_t_list[idx]
-                
-        if not hasattr(self, 'selected_torrent') or not self.selected_torrent:
-            if hasattr(self, 'progress_label') and self.progress_label:
-                self.progress_label.set_text("Please select a stream first.")
-            return
-            
-        torrent = self.selected_torrent
+    def _download_stream_item(self, torrent):
+        if not torrent: return
         url = torrent.get("url") or torrent.get("magnet")
         if not url and torrent.get("hash"):
             from . import api
@@ -1152,6 +1598,41 @@ class MovieDetailsPage(Gtk.Overlay):
                 print("Open URL error:", e)
             if hasattr(self, 'progress_label') and self.progress_label:
                 self.progress_label.set_text("Opening stream URL...")
+
+    def _copy_stream_url(self, torrent):
+        if not torrent: return
+        url = torrent.get("url") or torrent.get("magnet")
+        if not url and torrent.get("hash"):
+            from . import api
+            t_name = torrent.get("stream_title") or torrent.get("filename") or torrent.get("name") or torrent.get("title") or self.movie_stub.get("title", "")
+            url = api.build_magnet(torrent.get("hash"), t_name)
+            
+        if url:
+            try:
+                display = Gdk.Display.get_default()
+                clipboard = display.get_clipboard()
+                clipboard.set(url)
+                
+                toast = Adw.Toast.new("Stream URL copied to clipboard")
+                toast.set_timeout(2)
+                if hasattr(self.window, 'toast_overlay'):
+                    self.window.toast_overlay.add_toast(toast)
+                elif hasattr(self, 'toast_overlay'):
+                    self.toast_overlay.add_toast(toast)
+            except Exception as e:
+                print("Copy stream URL error:", e)
+
+    def on_download_clicked(self, btn):
+        t_list = getattr(self, 'current_t_list', []) or []
+        if not getattr(self, 'selected_torrent', None):
+            if t_list:
+                self.selected_torrent = t_list[0]
+            else:
+                if hasattr(self, 'progress_label') and self.progress_label:
+                    self.progress_label.set_text("Please select a stream first.")
+                return
+
+        self._download_stream_item(self.selected_torrent)
 
     def _start_streaming(self, magnet, file_index):
         if not magnet: return
@@ -4339,18 +4820,21 @@ class CineWindow(Adw.ApplicationWindow):
             
         # Optimize network stream loading speed
         if url and isinstance(url, str) and (url.startswith("http://") or url.startswith("https://")):
-            # Bypass yt-dlp resolution delay (5-10s) for direct media streams
+            # Bypass yt-dlp resolution delay for direct media streams
             is_direct_stream = any(k in url.lower() for k in [".m3u8", ".mp4", ".mkv", ".avi", ".ts", ".m4s", "workers.dev"])
             if is_direct_stream:
                 self.mpv["ytdl"] = False
+                try:
+                    self.mpv["demuxer-lavf-o"] = "probesize=1000000,analyzeduration=1000000"
+                    self.mpv["demuxer-readahead-secs"] = 2
+                except Exception:
+                    pass
             else:
                 self.mpv["ytdl"] = True
-
-            try:
-                self.mpv["demuxer-lavf-o"] = "probesize=1000000,analyzeduration=1000000"
-                self.mpv["demuxer-readahead-secs"] = 2
-            except Exception:
-                pass
+                try:
+                    self.mpv["demuxer-lavf-o"] = ""
+                except Exception:
+                    pass
         else:
             self.mpv["ytdl"] = True
 

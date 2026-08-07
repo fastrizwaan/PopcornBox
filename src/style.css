@@ -537,3 +537,161 @@ button.category-filter-btn:checked {
   backdrop-filter: blur(12px);
 }
 
+/* Details Interactive Sidebar & Panels */
+.details-sidebar {
+  background: rgba(15, 15, 20, 0.38);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  backdrop-filter: blur(24px);
+  padding: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+/* Season Navigation Bar */
+.season-nav-box {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 4px;
+}
+
+/* Episode Search Entry */
+.ep-search-entry {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  color: #ffffff;
+  padding: 4px 8px;
+}
+
+.ep-search-entry:focus-within {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+/* Episode Card List Row */
+.ep-card-row {
+  background: rgba(30, 30, 36, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 8px;
+  margin-bottom: 8px;
+  transition: all 180ms ease-in-out;
+}
+
+.ep-card-row:hover {
+  background: rgba(45, 45, 55, 0.85);
+  border-color: rgba(147, 112, 219, 0.5);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.ep-card-row.selected {
+  background: rgba(40, 35, 60, 0.9);
+  border: 1.5px solid #8a2be2;
+  box-shadow: 0 0 12px rgba(138, 43, 226, 0.35);
+}
+
+.ep-card-thumb picture img,
+.ep-card-thumb picture {
+  border-radius: 8px;
+}
+
+.ep-card-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #f1f1f1;
+}
+
+.ep-card-date {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.ep-card-overview {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.ep-watched-badge {
+  background: rgba(46, 204, 113, 0.2);
+  color: #2ecc71;
+  border-radius: 8px;
+  font-size: 11px;
+  padding: 2px 6px;
+  font-weight: 600;
+}
+
+/* Stream Source Row Cards */
+.stream-card-row {
+  background: rgba(26, 26, 32, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  transition: all 150ms ease;
+}
+
+.stream-card-row:hover {
+  background: rgba(42, 42, 54, 0.9);
+  border-color: rgba(255, 255, 255, 0.25);
+  transform: translateX(2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.stream-card-row.selected {
+  background: rgba(30, 45, 75, 0.9);
+  border: 1.5px solid #3b82f6;
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);
+}
+
+.quality-pill {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+}
+
+.quality-pill.q-4k {
+  background: linear-gradient(135deg, #e65100, #ff9800);
+  color: #ffffff;
+}
+
+.quality-pill.q-1080p {
+  background: linear-gradient(135deg, #1565c0, #1e88e5);
+  color: #ffffff;
+}
+
+.quality-pill.q-720p {
+  background: rgba(255, 255, 255, 0.18);
+  color: #e0e0e0;
+}
+
+.addon-badge {
+  background: rgba(138, 43, 226, 0.25);
+  color: #d8b4fe;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+}
+
+.size-badge {
+  background: rgba(255, 255, 255, 0.08);
+  color: #cccccc;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+}
+
+.seeders-badge {
+  background: rgba(34, 197, 94, 0.2);
+  color: #4ade80;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+}
+
+
