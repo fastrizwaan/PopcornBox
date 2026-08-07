@@ -1525,13 +1525,21 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
     resolved_imdb = resolve_to_imdb_id(imdb_id, media_type) if imdb_id else None
     
     actual_media = "series" if media_type in ["series", "tv", "anime"] else media_type
+    if season is not None and episode is not None:
+        actual_media = "series"
+
     if resolved_imdb and str(resolved_imdb).startswith("tt"):
+        clean_imdb = str(resolved_imdb).split(":")[0]
         if actual_media == "series" and season is not None and episode is not None:
-            sub_path = f"series/{resolved_imdb}:{season}:{episode}.json"
+            sub_path = f"series/{clean_imdb}:{int(season)}:{int(episode)}.json"
         else:
-            sub_path = f"movie/{resolved_imdb}.json"
+            sub_path = f"movie/{clean_imdb}.json"
             
-        urls_to_try = [f"https://opensubtitles-v3.strem.io/subtitles/{sub_path}"]
+        urls_to_try = [
+            f"https://opensubtitles-v3.strem.io/subtitles/{sub_path}",
+            f"https://subtitles.strem.io/subtitles/{sub_path}",
+            f"https://opensubtitles.strem.io/subtitles/{sub_path}"
+        ]
         try:
             installed_addons = database.get_addons()
             for addon in installed_addons:
@@ -1547,15 +1555,31 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
                 if has_subs:
                     base_url = addon.get("url", "").rsplit("/manifest.json", 1)[0]
                     if base_url:
-                        urls_to_try.append(f"{base_url}/subtitles/{sub_path}")
+                        u = f"{base_url}/subtitles/{sub_path}"
+                        if u not in urls_to_try:
+                            urls_to_try.append(u)
         except Exception:
             pass
 
         for sub_url in urls_to_try:
             try:
-                req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+                req = urllib.request.Request(
+                    sub_url,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept-Encoding': 'gzip, deflate'
+                    }
+                )
                 with urllib.request.urlopen(req, timeout=8, context=_SSL_CONTEXT) as response:
-                    data = json.loads(response.read().decode('utf-8'))
+                    raw_data = response.read()
+                    encoding = response.headers.get("Content-Encoding", "").lower()
+                    if encoding == "gzip" or raw_data.startswith(b"\x1f\x8b"):
+                        import gzip
+                        try:
+                            raw_data = gzip.decompress(raw_data)
+                        except Exception:
+                            pass
+                    data = json.loads(raw_data.decode('utf-8'))
                     items = data.get("subtitles", [])
                     all_subs.extend(items)
             except Exception as e:
@@ -1632,25 +1656,40 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
     return [item[1] for item in matched_subs]
 
 def download_subtitle(sub_url, filename):
-    import gi
-    gi.require_version('GLib', '2.0')
-    from gi.repository import GLib
-    download_dir = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD)
-    if not download_dir:
-        download_dir = os.path.expanduser("~/Downloads")
-    os.makedirs(download_dir, exist_ok=True)
+    sub_dir = os.path.join(CONFIG_DIR, "subtitles")
+    os.makedirs(sub_dir, exist_ok=True)
         
-    if not filename.endswith('.srt'):
+    if not filename.endswith('.srt') and not filename.endswith('.vtt'):
         filename += '.srt'
         
     filename = "".join([c for c in filename if c.isalpha() or c.isdigit() or c in (' ', '-', '_', '.')]).rstrip()
-    file_path = os.path.join(download_dir, filename)
+    file_path = os.path.join(sub_dir, filename)
     
     try:
-        req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+        req = urllib.request.Request(
+            sub_url,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Encoding': 'gzip, deflate'
+            }
+        )
         with urllib.request.urlopen(req, timeout=10, context=_SSL_CONTEXT) as response:
+            data = response.read()
+            encoding = response.headers.get("Content-Encoding", "").lower()
+            if encoding == "gzip" or data.startswith(b"\x1f\x8b"):
+                import gzip
+                try:
+                    data = gzip.decompress(data)
+                except Exception as ge:
+                    logging.debug(f"Gzip decompression error: {ge}")
+            elif encoding == "deflate":
+                import zlib
+                try:
+                    data = zlib.decompress(data)
+                except Exception:
+                    pass
             with open(file_path, 'wb') as f:
-                f.write(response.read())
+                f.write(data)
         return file_path
     except urllib.error.HTTPError as e:
         logging.debug(f"HTTP Error {e.code} downloading subtitle")

@@ -4,17 +4,24 @@ from . import database
 
 def resolve_to_imdb_id(imdb_id, media_type, title=None):
     """
-    Resolves a TMDB ID to an IMDB ID using multiple fallback strategies.
-    If the ID is already an IMDB ID, returns it immediately.
+    Resolves a TMDB ID or raw ID to an IMDB ID using multiple fallback strategies.
+    If the ID is already an IMDB ID, returns it clean (tt...).
     """
     if isinstance(imdb_id, list):
         return [resolve_to_imdb_id(i, media_type, title) for i in imdb_id]
         
+    if not imdb_id:
+        return None
+
+    str_id = str(imdb_id).strip()
+    if str_id.startswith("tt"):
+        return str_id.split(":")[0]
+
     from .api import _get_cached_request
     
-    is_tmdb = str(imdb_id).startswith("tmdb:") or str(imdb_id).startswith("ctmdb.")
-    if not is_tmdb or str(imdb_id).startswith("ctmdb."):
-        return imdb_id
+    is_tmdb = str_id.startswith("tmdb:") or str_id.startswith("ctmdb.") or str_id.isdigit()
+    if not is_tmdb:
+        return str_id
         
     resolved_id = None
     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
