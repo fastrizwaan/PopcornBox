@@ -424,8 +424,21 @@ class MovieDetailsPage(Gtk.Overlay):
         self.source_segmented_box.append(self.source_direct_btn)
         self.source_segmented_box.append(self.source_torrent_btn)
 
-        self.source_idx = 0  # 0: All, 1: Direct, 2: Torrents
-        self.source_all_btn.set_active(True)
+        from . import database
+        saved_source = database.get_setting("default_source_idx", 0)
+        try:
+            self.source_idx = int(saved_source)
+        except Exception:
+            self.source_idx = 0
+
+        self._ignore_source_toggle_signals = True
+        if self.source_idx == 1:
+            self.source_direct_btn.set_active(True)
+        elif self.source_idx == 2:
+            self.source_torrent_btn.set_active(True)
+        else:
+            self.source_all_btn.set_active(True)
+        self._ignore_source_toggle_signals = False
 
         def on_source_toggled(btn):
             if getattr(self, '_ignore_source_toggle_signals', False):
@@ -433,6 +446,9 @@ class MovieDetailsPage(Gtk.Overlay):
             if self.source_all_btn.get_active(): self.source_idx = 0
             elif self.source_direct_btn.get_active(): self.source_idx = 1
             elif self.source_torrent_btn.get_active(): self.source_idx = 2
+            
+            from . import database
+            database.set_setting("default_source_idx", self.source_idx)
             
             if hasattr(self, 'check_live_btn'):
                 self.check_live_btn.set_visible(self.source_idx == 1)
