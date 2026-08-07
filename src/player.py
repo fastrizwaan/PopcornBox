@@ -35,11 +35,26 @@ def stop_player(keep_downloading=False):
                 stats = engine.stats()
                 prog = stats.get("progress", 0)
                 if prog < 1.0 and not keep_downloading:
-                    print(f"Pausing partially downloaded engine: {_streaming_hash}")
-                    if hasattr(engine, 'pause'):
-                        import threading
-                        threading.Thread(target=engine.pause, daemon=True).start()
-                    database.set_download_paused(_streaming_hash, True)
+                    print(f"Stopping and deleting partially downloaded engine: {_streaming_hash}")
+                    info_hash_to_delete = _streaming_hash
+                    import threading
+                    threading.Thread(target=engine.stop, daemon=True).start()
+                    del _engines[info_hash_to_delete]
+                    
+                    database.remove_download(info_hash_to_delete)
+                    
+                    import shutil
+                    import os
+                    import time
+                    def _delete_files():
+                        time.sleep(1.5) # Wait for libtorrent to release file locks
+                        path = os.path.join(DOWNLOAD_BASE, info_hash_to_delete)
+                        if os.path.exists(path):
+                            try:
+                                shutil.rmtree(path, ignore_errors=True)
+                            except Exception as e:
+                                print(f"Error deleting partial torrent {info_hash_to_delete}: {e}")
+                    threading.Thread(target=_delete_files, daemon=True).start()
                 else:
                     print(f"Leaving engine running: {_streaming_hash} (progress={prog:.2f}, keep_downloading={keep_downloading})")
                     if prog >= 1.0:
