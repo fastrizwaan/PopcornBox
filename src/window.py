@@ -4931,7 +4931,7 @@ class CineWindow(Adw.ApplicationWindow):
         try:
             for path, lang, select in list(self.pending_subtitles):
                 mode = "select" if select else "auto"
-                self.mpv.command("sub-add", path, mode, lang)
+                self.mpv.command("sub-add", path, mode, f"External ({lang})", lang)
             self.pending_subtitles.clear()
         except Exception as e:
             logger.error(f"Failed to add pending subtitles: {e}")
