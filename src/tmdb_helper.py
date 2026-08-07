@@ -10,18 +10,22 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
     if isinstance(imdb_id, list):
         return [resolve_to_imdb_id(i, media_type, title) for i in imdb_id]
         
-    if not imdb_id:
+    if not imdb_id and not title:
         return None
 
-    str_id = str(imdb_id).strip()
-    if str_id.startswith("tt"):
-        return str_id.split(":")[0]
+    if imdb_id:
+        str_id = str(imdb_id).strip()
+        if str_id.startswith("tt"):
+            return str_id.split(":")[0]
 
     from .api import _get_cached_request
     
-    is_tmdb = str_id.startswith("tmdb:") or str_id.startswith("ctmdb.") or str_id.isdigit()
-    if not is_tmdb:
-        return str_id
+    is_tmdb = False
+    if imdb_id:
+        str_id = str(imdb_id).strip()
+        is_tmdb = str_id.startswith("tmdb:") or str_id.startswith("ctmdb.") or str_id.isdigit()
+        if not is_tmdb and not title:
+            return str_id
         
     resolved_id = None
     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"

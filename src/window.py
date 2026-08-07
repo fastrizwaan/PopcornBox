@@ -1692,6 +1692,17 @@ class MovieDetailsPage(Gtk.Overlay):
         if magnet.startswith("http://") or magnet.startswith("https://"):
             if self.window:
                 self.window.show_player_loading("Opening direct stream...", media_title)
+                imdb_id = (
+                    getattr(self, "movie_details", {}).get("imdb_id")
+                    or getattr(self, "movie_details", {}).get("id")
+                    or self.movie_stub.get("imdb_id")
+                    or self.movie_stub.get("id")
+                )
+                season = getattr(self, "selected_season", None)
+                episode = getattr(self, "selected_episode", None)
+                stream_subs = self.selected_torrent.get("subtitles") if hasattr(self, "selected_torrent") and isinstance(self.selected_torrent, dict) else None
+                if hasattr(self.window, "fetch_and_add_subtitles"):
+                    self.window.fetch_and_add_subtitles(imdb_id, self.media_type, season, episode, stream_subtitles=stream_subs, stream_title=media_title)
                 self.window._play_stream(magnet, media_title)
         else:
             from . import player
@@ -3132,9 +3143,15 @@ class CineWindow(Adw.ApplicationWindow):
         self._navigate_playlist(+1)
 
     def _on_subtitle_selected(self, action, parameter):
-        self.mpv.command("set", "sub-visibility", "yes")
         track_id = parameter.get_int32()
-        self.mpv.sid = track_id if track_id > 0 else "no"
+        if track_id > 0:
+            try:
+                self.mpv["sub-visibility"] = "yes"
+            except Exception:
+                pass
+            self.mpv.sid = track_id
+        else:
+            self.mpv.sid = "no"
         action.set_state(parameter)
 
     def _on_audio_selected(self, action, parameter):
@@ -4895,20 +4912,52 @@ class CineWindow(Adw.ApplicationWindow):
         self.mpv.pause = False
         self.is_inactive = False
 
-    def fetch_and_add_subtitles(self, imdb_id, media_type, season, episode, stream_subtitles=None):
+    def fetch_and_add_subtitles(self, imdb_id, media_type, season, episode, stream_subtitles=None, stream_title=None):
         self.pending_subtitles = []
         
+        parse_target = str(stream_title or "")
+        if (season is None or episode is None) and parse_target:
+            import re
+            m = re.search(r'[sS](\d+)[eE](\d+)', parse_target)
+            if m:
+                if season is None: season = int(m.group(1))
+                if episode is None: episode = int(m.group(2))
+                media_type = "series"
+            else:
+                m2 = re.search(r'(\d+)x(\d+)', parse_target)
+                if m2:
+                    if season is None: season = int(m2.group(1))
+                    if episode is None: episode = int(m2.group(2))
+                    media_type = "series"
+
+        extracted_title = None
+        if stream_title and not (imdb_id and str(imdb_id).startswith("tt")):
+            import re
+            t_clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', stream_title)
+            t_clean = re.sub(r'[sS]\d+[eE]\d+.*', '', t_clean)
+            t_clean = re.sub(r'\b\d{3,4}p\b.*', '', t_clean)
+            t_clean = t_clean.replace(".", " ").replace("_", " ").strip()
+            if t_clean:
+                extracted_title = t_clean
+
         def fetch():
             from . import api
             import time
-            subs = api.get_subtitles(imdb_id, media_type, season, episode, stream_subtitles=stream_subtitles)
+            subs = api.get_subtitles(
+                imdb_id,
+                media_type,
+                season,
+                episode,
+                stream_subtitles=stream_subtitles,
+                title=extracted_title
+            )
             if subs:
                 downloaded_count = 0
                 for idx, s in enumerate(subs):
                     url = s.get("url")
                     lang = s.get("lang", "en")
                     if url:
-                        clean_id = str(imdb_id or 'sub').replace(":", "_").replace("/", "_")
+                        clean_id = str(imdb_id or extracted_title or 'sub').replace(":", "_").replace("/", "_").replace(" ", "_")
                         filename = f"{clean_id}_{int(time.time())}_{idx}_{lang}.srt"
                         path = api.download_subtitle(url, filename)
                         if path:
@@ -4946,6 +4995,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._show_toast(msg)
                 try:
                     self.mpv.show_text(msg)
+                    self.mpv["sub-visibility"] = "yes"
                 except Exception:
                     pass
         except Exception as e:
@@ -4964,10 +5014,10 @@ class CineWindow(Adw.ApplicationWindow):
 
         current_stream = self.stream_queue[self.stream_queue_index] if self.stream_queue and self.stream_queue_index < len(self.stream_queue) else {}
         stream_subs = current_stream.get("subtitles") if isinstance(current_stream, dict) else None
-        if stream_subs and hasattr(self, "fetch_and_add_subtitles"):
+        if hasattr(self, "fetch_and_add_subtitles"):
             item_id = getattr(self, "movie_stub", {}).get("id") or getattr(self, "movie_details", {}).get("id")
             media_t = getattr(self, "current_media_type", "movie")
-            self.fetch_and_add_subtitles(item_id, media_t, season, episode, stream_subtitles=stream_subs)
+            self.fetch_and_add_subtitles(item_id, media_t, season, episode, stream_subtitles=stream_subs, stream_title=title)
 
         self._play_current_stream_from_queue(self.stream_request_id)
 

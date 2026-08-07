@@ -1515,14 +1515,14 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     return final_streams
 
-def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream_subtitles=None):
+def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream_subtitles=None, title=None):
     all_subs = []
     if stream_subtitles and isinstance(stream_subtitles, list):
         for s in stream_subtitles:
             if isinstance(s, dict) and s.get("url"):
                 all_subs.append(s)
 
-    resolved_imdb = resolve_to_imdb_id(imdb_id, media_type) if imdb_id else None
+    resolved_imdb = resolve_to_imdb_id(imdb_id, media_type, title=title) if (imdb_id or title) else None
     
     actual_media = "series" if media_type in ["series", "tv", "anime"] else media_type
     if season is not None and episode is not None:
