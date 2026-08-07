@@ -4903,6 +4903,7 @@ class CineWindow(Adw.ApplicationWindow):
             import time
             subs = api.get_subtitles(imdb_id, media_type, season, episode, stream_subtitles=stream_subtitles)
             if subs:
+                downloaded_count = 0
                 for idx, s in enumerate(subs):
                     url = s.get("url")
                     lang = s.get("lang", "en")
@@ -4911,6 +4912,7 @@ class CineWindow(Adw.ApplicationWindow):
                         filename = f"{clean_id}_{int(time.time())}_{idx}_{lang}.srt"
                         path = api.download_subtitle(url, filename)
                         if path:
+                            downloaded_count += 1
                             def _queue(p=path, l=lang, is_first=(idx == 0)):
                                 if not hasattr(self, 'pending_subtitles'):
                                     self.pending_subtitles = []
@@ -4918,6 +4920,10 @@ class CineWindow(Adw.ApplicationWindow):
                                 self._try_add_pending_subtitles()
                                 return False
                             GLib.idle_add(_queue)
+                if downloaded_count == 0:
+                    GLib.idle_add(lambda: self._show_toast(_("Subtitle download failed")))
+            else:
+                GLib.idle_add(lambda: self._show_toast(_("No external subtitles found")))
                             
         threading.Thread(target=fetch, daemon=True).start()
 
@@ -4929,10 +4935,19 @@ class CineWindow(Adw.ApplicationWindow):
             return
             
         try:
+            added_count = 0
             for path, lang, select in list(self.pending_subtitles):
                 mode = "select" if select else "auto"
                 self.mpv.command("sub-add", path, mode, f"External ({lang})", lang)
+                added_count += 1
             self.pending_subtitles.clear()
+            if added_count > 0:
+                msg = _("Subtitles loaded") if added_count == 1 else _(f"Subtitles loaded ({added_count})")
+                self._show_toast(msg)
+                try:
+                    self.mpv.show_text(msg)
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"Failed to add pending subtitles: {e}")
 
