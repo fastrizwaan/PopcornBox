@@ -110,6 +110,8 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as response:
             data_str = response.read().decode('utf-8')
+        if not data_str or not data_str.strip():
+            return None
         data = json.loads(data_str)
         # Save to cache atomically (temp file + rename)
         try:
@@ -125,15 +127,17 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
                 pass
         return data
     except urllib.error.HTTPError as e:
-        print(f"HTTP Error {e.code} fetching from {url}")
+        logging.debug(f"HTTP Error {e.code} fetching from {url}")
         try:
             e.close()
         except Exception:
             pass
     except urllib.error.URLError as e:
-        print(f"URL/SSL Error fetching from {url}: {e.reason}")
+        logging.debug(f"URL/SSL Error fetching from {url}: {e.reason}")
+    except json.JSONDecodeError as e:
+        logging.debug(f"JSON decode error from {url}: {e}")
     except Exception as e:
-        print(f"Error fetching items from {url}: {e}")
+        logging.debug(f"Error fetching items from {url}: {e}")
         
     # Return stale cache if network fails
     if os.path.exists(cache_file):

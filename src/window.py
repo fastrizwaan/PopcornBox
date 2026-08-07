@@ -4426,6 +4426,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.content_request_id = getattr(self, "content_request_id", 0) + 1
         self.is_fetching_content = False
         self.content_page = 1
+        self.content_error_count = 0
         self.content_seen_ids.clear()
         self.has_more_content = True
         
@@ -4477,9 +4478,12 @@ class CineWindow(Adw.ApplicationWindow):
                 self.is_fetching_content = False
                 
                 if items is None:
-                    # Transient error, do not stop pagination
-                    pass
+                    err_count = getattr(self, "content_error_count", 0) + 1
+                    self.content_error_count = err_count
+                    if err_count >= 2:
+                        self.has_more_content = False
                 elif items:
+                    self.content_error_count = 0
                     is_first_page = (page_to_fetch == 1)
                     if is_first_page:
                         self._populate_flowbox(self.content_flowbox, items, self.content_seen_ids)
@@ -4488,6 +4492,7 @@ class CineWindow(Adw.ApplicationWindow):
                         self._append_flowbox(self.content_flowbox, items, self.content_seen_ids)
                     self.content_page = page_to_fetch + 1
                 else:
+                    self.content_error_count = 0
                     self.has_more_content = False
 
                 if getattr(self, "has_more_content", True) and hasattr(self, "content_scrolled"):
