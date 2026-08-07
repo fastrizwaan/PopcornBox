@@ -1515,16 +1515,52 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     return final_streams
 
-def get_subtitles(imdb_id, media_type="movie", season=None, episode=None):
-    if not imdb_id:
-        return []
-        
-    actual_media = "series" if media_type == "tv" else media_type
-    if actual_media == "series" and season is not None and episode is not None:
-        sub_path = f"series/{imdb_id}:{season}:{episode}.json"
-    else:
-        sub_path = f"movie/{imdb_id}.json"
-        
+def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream_subtitles=None):
+    all_subs = []
+    if stream_subtitles and isinstance(stream_subtitles, list):
+        for s in stream_subtitles:
+            if isinstance(s, dict) and s.get("url"):
+                all_subs.append(s)
+
+    resolved_imdb = resolve_to_imdb_id(imdb_id, media_type) if imdb_id else None
+    
+    actual_media = "series" if media_type in ["series", "tv", "anime"] else media_type
+    if resolved_imdb and str(resolved_imdb).startswith("tt"):
+        if actual_media == "series" and season is not None and episode is not None:
+            sub_path = f"series/{resolved_imdb}:{season}:{episode}.json"
+        else:
+            sub_path = f"movie/{resolved_imdb}.json"
+            
+        urls_to_try = [f"https://opensubtitles-v3.strem.io/subtitles/{sub_path}"]
+        try:
+            installed_addons = database.get_addons()
+            for addon in installed_addons:
+                resources = addon.get("resources", [])
+                has_subs = False
+                for r in resources:
+                    if isinstance(r, dict) and r.get("name") == "subtitles":
+                        has_subs = True
+                        break
+                    elif isinstance(r, str) and r == "subtitles":
+                        has_subs = True
+                        break
+                if has_subs:
+                    base_url = addon.get("url", "").rsplit("/manifest.json", 1)[0]
+                    if base_url:
+                        urls_to_try.append(f"{base_url}/subtitles/{sub_path}")
+        except Exception:
+            pass
+
+        for sub_url in urls_to_try:
+            try:
+                req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+                with urllib.request.urlopen(req, timeout=8, context=_SSL_CONTEXT) as response:
+                    data = json.loads(response.read().decode('utf-8'))
+                    items = data.get("subtitles", [])
+                    all_subs.extend(items)
+            except Exception as e:
+                logging.debug(f"Error fetching subtitles from {sub_url}: {e}")
+
     pref_langs_str = ""
     try:
         import gi
@@ -1540,9 +1576,9 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None):
     if not pref_langs_str:
         pref_langs_str = database.get_setting("subtitle-languages", "") or database.get_setting("subtitle_languages", "")
         
-    pref_langs = [l.strip().lower() for l in pref_langs_str.split(',') if l.strip()]
-    if not pref_langs:
-        pref_langs = ["en", "eng", "english"]
+    raw_langs = [l.strip().lower() for l in pref_langs_str.replace(";", ",").split(',') if l.strip()]
+    if not raw_langs:
+        raw_langs = ["en", "eng", "english"]
         
     language_map = {
         "en": ["en", "eng", "english"], "eng": ["en", "eng", "english"], "english": ["en", "eng", "english"],
@@ -1572,54 +1608,24 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None):
     }
 
     rank_sets = []
-    for pl in pref_langs:
-        codes = language_map.get(pl, [pl])
+    for pl in raw_langs:
+        clean_pl = pl.split("-")[0].split("_")[0]
+        codes = language_map.get(clean_pl, language_map.get(pl, [clean_pl, pl]))
         rank_sets.append(set(codes))
-
-    urls_to_try = [f"https://opensubtitles-v3.strem.io/subtitles/{sub_path}"]
-    try:
-        installed_addons = database.get_addons()
-        for addon in installed_addons:
-            resources = addon.get("resources", [])
-            has_subs = False
-            for r in resources:
-                if isinstance(r, dict) and r.get("name") == "subtitles":
-                    has_subs = True
-                    break
-                elif isinstance(r, str) and r == "subtitles":
-                    has_subs = True
-                    break
-            if has_subs:
-                base_url = addon.get("url", "").rsplit("/manifest.json", 1)[0]
-                if base_url:
-                    urls_to_try.append(f"{base_url}/subtitles/{sub_path}")
-    except Exception:
-        pass
-
-    all_subs = []
-    for sub_url in urls_to_try:
-        try:
-            req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
-            with urllib.request.urlopen(req, timeout=8) as response:
-                data = json.loads(response.read().decode('utf-8'))
-                items = data.get("subtitles", [])
-                all_subs.extend(items)
-        except Exception as e:
-            print(f"Error fetching subtitles from {sub_url}: {e}")
 
     matched_subs = []
     for s in all_subs:
-        sub_lang = str(s.get("lang", "")).lower()
+        raw_sub_lang = str(s.get("lang", "")).lower()
+        sub_lang_clean = raw_sub_lang.split("-")[0].split("_")[0]
         matched_rank = 999
         for idx, rset in enumerate(rank_sets):
-            if sub_lang in rset or any(sub_lang.startswith(p) for p in rset) or any(p in sub_lang for p in rset):
+            if raw_sub_lang in rset or sub_lang_clean in rset or any(raw_sub_lang.startswith(p) for p in rset) or any(p in raw_sub_lang for p in rset):
                 matched_rank = idx
                 break
         if matched_rank < 999:
             matched_subs.append((matched_rank, s))
             
     if not matched_subs and all_subs:
-        # Fallback to returning all available subtitles if preferred language doesn't match
         return all_subs
 
     matched_subs.sort(key=lambda x: x[0])
@@ -1632,7 +1638,7 @@ def download_subtitle(sub_url, filename):
     download_dir = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD)
     if not download_dir:
         download_dir = os.path.expanduser("~/Downloads")
-        os.makedirs(download_dir, exist_ok=True)
+    os.makedirs(download_dir, exist_ok=True)
         
     if not filename.endswith('.srt'):
         filename += '.srt'
@@ -1642,16 +1648,19 @@ def download_subtitle(sub_url, filename):
     
     try:
         req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=10, context=_SSL_CONTEXT) as response:
             with open(file_path, 'wb') as f:
                 f.write(response.read())
         return file_path
     except urllib.error.HTTPError as e:
-        print(f"HTTP Error {e.code} downloading subtitle")
-        e.close()
+        logging.debug(f"HTTP Error {e.code} downloading subtitle")
+        try:
+            e.close()
+        except Exception:
+            pass
         return None
     except Exception as e:
-        print(f"Error downloading subtitle: {e}")
+        logging.debug(f"Error downloading subtitle: {e}")
         return None
 
 def download_subtitle_to_path(sub_url, file_path):

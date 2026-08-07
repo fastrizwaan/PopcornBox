@@ -1596,10 +1596,16 @@ class MovieDetailsPage(Gtk.Overlay):
         init_idx = _find_stream_index(self.selected_torrent, queue)
 
         if self.window and hasattr(self.window, "fetch_and_add_subtitles"):
-            imdb_id = self.movie_stub.get("id")
+            imdb_id = (
+                getattr(self, "movie_details", {}).get("imdb_id")
+                or getattr(self, "movie_details", {}).get("id")
+                or self.movie_stub.get("imdb_id")
+                or self.movie_stub.get("id")
+            )
             season = getattr(self, "selected_season", None)
             episode = getattr(self, "selected_episode", None)
-            self.window.fetch_and_add_subtitles(imdb_id, self.media_type, season, episode)
+            stream_subs = self.selected_torrent.get("subtitles") if hasattr(self, "selected_torrent") and isinstance(self.selected_torrent, dict) else None
+            self.window.fetch_and_add_subtitles(imdb_id, self.media_type, season, episode, stream_subtitles=stream_subs)
 
         if self.window and hasattr(self.window, 'play_stream_with_failover'):
             self.window.play_stream_with_failover(
@@ -4889,19 +4895,20 @@ class CineWindow(Adw.ApplicationWindow):
         self.mpv.pause = False
         self.is_inactive = False
 
-    def fetch_and_add_subtitles(self, imdb_id, media_type, season, episode):
+    def fetch_and_add_subtitles(self, imdb_id, media_type, season, episode, stream_subtitles=None):
         self.pending_subtitles = []
         
         def fetch():
             from . import api
             import time
-            subs = api.get_subtitles(imdb_id, media_type, season, episode)
+            subs = api.get_subtitles(imdb_id, media_type, season, episode, stream_subtitles=stream_subtitles)
             if subs:
                 for idx, s in enumerate(subs):
                     url = s.get("url")
                     lang = s.get("lang", "en")
                     if url:
-                        filename = f"{imdb_id}_{int(time.time())}_{idx}_{lang}.srt"
+                        clean_id = str(imdb_id or 'sub').replace(":", "_").replace("/", "_")
+                        filename = f"{clean_id}_{int(time.time())}_{idx}_{lang}.srt"
                         path = api.download_subtitle(url, filename)
                         if path:
                             def _queue(p=path, l=lang, is_first=(idx == 0)):
@@ -4939,6 +4946,14 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue_index = max(0, min(int(initial_index or 0), len(self.stream_queue) - 1)) if self.stream_queue else 0
         self.stream_queue_title = title
         self.previous_page_before_player = previous_page
+
+        current_stream = self.stream_queue[self.stream_queue_index] if self.stream_queue and self.stream_queue_index < len(self.stream_queue) else {}
+        stream_subs = current_stream.get("subtitles") if isinstance(current_stream, dict) else None
+        if stream_subs and hasattr(self, "fetch_and_add_subtitles"):
+            item_id = getattr(self, "movie_stub", {}).get("id") or getattr(self, "movie_details", {}).get("id")
+            media_t = getattr(self, "current_media_type", "movie")
+            self.fetch_and_add_subtitles(item_id, media_t, season, episode, stream_subtitles=stream_subs)
+
         self._play_current_stream_from_queue(self.stream_request_id)
 
     def _play_current_stream_from_queue(self, request_id=None):
