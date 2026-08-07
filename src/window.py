@@ -153,22 +153,24 @@ class MovieDetailsPage(Gtk.Overlay):
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add_overlay(self.main_box)
         
-        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        header_box.set_margin_start(16)
-        header_box.set_margin_top(16)
-        
+        self.header_bar = Adw.HeaderBar()
+        self.header_bar.add_css_class("flat")
+        self.header_bar.add_css_class("details-headerbar")
+        self.header_bar.set_show_end_title_buttons(True)
+
+        self.header_title = Adw.WindowTitle(title="PopcornBox")
+        self.header_bar.set_title_widget(self.header_title)
+
         back_btn = Gtk.Button(icon_name="go-previous-symbolic")
         back_btn.set_tooltip_text("Back")
-        back_btn.add_css_class("circular")
         back_btn.add_css_class("flat")
         def on_back_clicked(btn):
             on_back()
         back_btn.connect("clicked", on_back_clicked)
-        header_box.append(back_btn)
-        
+        self.header_bar.pack_start(back_btn)
+
         self.reload_btn = Gtk.Button(icon_name="view-refresh-symbolic")
         self.reload_btn.set_tooltip_text("Reload Details & Streams")
-        self.reload_btn.add_css_class("circular")
         self.reload_btn.add_css_class("flat")
         def on_reload(btn):
             from . import database, api
@@ -195,9 +197,29 @@ class MovieDetailsPage(Gtk.Overlay):
             self.load_details_async(force_refresh=True)
             self.fetch_torrents_async(force=True)
         self.reload_btn.connect("clicked", on_reload)
-        header_box.append(self.reload_btn)
-        
-        self.main_box.append(header_box)
+        self.header_bar.pack_start(self.reload_btn)
+
+        self.detail_fav_btn = Gtk.Button(icon_name="starred-symbolic")
+        self.detail_fav_btn.set_tooltip_text("Add to Favorites")
+        self.detail_fav_btn.add_css_class("flat")
+        self.header_bar.pack_start(self.detail_fav_btn)
+
+        self.detail_seen_btn = Gtk.Button(icon_name="eye-open-negative-filled-symbolic")
+        self.detail_seen_btn.set_tooltip_text("Mark as Seen")
+        self.detail_seen_btn.add_css_class("flat")
+        self.header_bar.pack_start(self.detail_seen_btn)
+
+        menu_btn = Gtk.MenuButton()
+        menu_btn.set_icon_name("open-menu-symbolic")
+        menu_btn.set_tooltip_text("Menu")
+        menu_btn.add_css_class("flat")
+        if self.window and hasattr(self.window, "primary_menu_btn") and self.window.primary_menu_btn:
+            menu_model = self.window.primary_menu_btn.get_menu_model()
+            if menu_model:
+                menu_btn.set_menu_model(menu_model)
+        self.header_bar.pack_end(menu_btn)
+
+        self.main_box.append(self.header_bar)
 
         # Split Layout Container (Left: Overview, Right: Fixed Sidebar)
         self.split_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
@@ -223,6 +245,10 @@ class MovieDetailsPage(Gtk.Overlay):
         
         self.poster = Gtk.Picture()
         self.poster.set_can_shrink(True)
+        self.poster.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.poster.set_size_request(220, 330)
+        self.poster.set_halign(Gtk.Align.START)
+        self.poster.set_margin_top(12)
 
         meta_detail_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         meta_detail_vbox.set_hexpand(True)
@@ -244,13 +270,21 @@ class MovieDetailsPage(Gtk.Overlay):
         title_hbox.append(self.copy_btn)
 
         self.g_btn = Gtk.Button(label="Google")
-        self.g_btn.set_tooltip_text("Search Google")
+        self.g_btn.set_tooltip_text("Search Online")
         self.g_btn.add_css_class("flat")
         title_hbox.append(self.g_btn)
 
+        self.trailer_btn = Gtk.Button()
+        trailer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        trailer_box.append(Gtk.Image.new_from_icon_name("media-playback-start-symbolic"))
+        trailer_box.append(Gtk.Label(label="Trailer"))
+        self.trailer_btn.set_child(trailer_box)
+        self.trailer_btn.add_css_class("flat")
+        title_hbox.append(self.trailer_btn)
+
         meta_detail_vbox.append(title_hbox)
 
-        meta_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        meta_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         meta_hbox.set_valign(Gtk.Align.CENTER)
 
         year_str = self.movie_stub.get("year", "")
@@ -259,6 +293,10 @@ class MovieDetailsPage(Gtk.Overlay):
         self.meta_label.set_wrap(True)
         self.meta_label.add_css_class("dim-label")
         meta_hbox.append(self.meta_label)
+
+        self.meta_dot = Gtk.Label(label="•")
+        self.meta_dot.add_css_class("dim-label")
+        meta_hbox.append(self.meta_dot)
 
         self.imdb_btn = Gtk.Button(label="IMDb 0.0")
         self.imdb_btn.add_css_class("flat")
@@ -281,40 +319,8 @@ class MovieDetailsPage(Gtk.Overlay):
         self.cast_label.set_visible(False)
         meta_detail_vbox.append(self.cast_label)
 
-        self.row1_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        self.row1_box.set_margin_top(8)
-
-        self.detail_fav_btn = Gtk.Button(label="♡ Add to Favorites")
-        self.detail_fav_btn.add_css_class("pill")
-        self.row1_box.append(self.detail_fav_btn)
-
-        self.detail_seen_btn = Gtk.Button(label="👁 Not Seen")
-        self.detail_seen_btn.add_css_class("pill")
-        self.row1_box.append(self.detail_seen_btn)
-
-        self.trailer_btn = Gtk.Button()
-        trailer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        trailer_box.append(Gtk.Image.new_from_icon_name("media-playback-start-symbolic"))
-        trailer_box.append(Gtk.Label(label="Trailer"))
-        self.trailer_btn.set_child(trailer_box)
-        self.trailer_btn.add_css_class("pill")
-        self.row1_box.append(self.trailer_btn)
-
-        meta_detail_vbox.append(self.row1_box)
-
         action_row2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         action_row2.set_margin_top(4)
-
-        self.search_online_btn = Gtk.Button(label="🔍 Search Online")
-        self.search_online_btn.add_css_class("pill")
-        def on_search_online_clicked(btn):
-            import urllib.parse
-            title = self.movie_stub.get("title", "")
-            year = self.movie_stub.get("year", "")
-            query = f'"{title}" {year} watch online stream' if year else f'"{title}" watch online stream'
-            open_uri(f"https://www.google.com/search?q={urllib.parse.quote(query)}", self.window)
-        self.search_online_btn.connect("clicked", on_search_online_clicked)
-        action_row2.append(self.search_online_btn)
 
         self.play_next_check = Gtk.CheckButton(label="Play Next Ep")
         self.play_next_check.set_valign(Gtk.Align.CENTER)
@@ -324,6 +330,7 @@ class MovieDetailsPage(Gtk.Overlay):
         action_row2.append(self.play_next_check)
 
         meta_detail_vbox.append(action_row2)
+        meta_detail_vbox.append(self.poster)
 
         left_meta_hbox.append(meta_detail_vbox)
         self.info_vbox.append(left_meta_hbox)
@@ -990,7 +997,9 @@ class MovieDetailsPage(Gtk.Overlay):
         item_id = details.get("id")
         if database.is_favorite(item_id):
             database.remove_favorite(item_id)
-            self.detail_fav_btn.set_label("♡ Add to Favorites")
+            self.detail_fav_btn.set_tooltip_text("Add to Favorites")
+            self.detail_fav_btn.set_icon_name("starred-symbolic")
+            self.detail_fav_btn.remove_css_class("suggested-action")
         else:
             database.add_favorite({
                 "id": item_id,
@@ -999,14 +1008,17 @@ class MovieDetailsPage(Gtk.Overlay):
                 "medium_cover_image": details.get("medium_cover_image"),
                 "type": self.media_type
             })
-            self.detail_fav_btn.set_label("♥ Remove from Favorites")
+            self.detail_fav_btn.set_tooltip_text("Remove from Favorites")
+            self.detail_fav_btn.set_icon_name("emblem-favorite-symbolic")
+            self.detail_fav_btn.add_css_class("suggested-action")
 
     def toggle_watched(self, details):
         from . import database
         item_id = details.get("id")
         if database.is_watched(item_id):
             database.remove_watched(item_id)
-            self.detail_seen_btn.set_label("👁 Not Seen")
+            self.detail_seen_btn.set_tooltip_text("Mark as Seen")
+            self.detail_seen_btn.remove_css_class("suggested-action")
         else:
             database.add_watched({
                 "id": item_id,
@@ -1015,7 +1027,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 "medium_cover_image": details.get("medium_cover_image"),
                 "type": self.media_type
             })
-            self.detail_seen_btn.set_label("👁 Seen")
+            self.detail_seen_btn.set_tooltip_text("Marked as Seen")
+            self.detail_seen_btn.add_css_class("suggested-action")
 
     def build_ui(self, details):
         if not details: return
@@ -1087,8 +1100,10 @@ class MovieDetailsPage(Gtk.Overlay):
         
         def on_g_clicked(btn):
             import urllib.parse
-            q = urllib.parse.quote(details.get("title", ""))
-            open_uri(f"https://www.google.com/search?q={q}", self.window)
+            title = details.get("title", "")
+            year = details.get("year", "")
+            query = f'"{title}" {year} watch online stream' if year else f'"{title}" watch online stream'
+            open_uri(f"https://www.google.com/search?q={urllib.parse.quote(query)}", self.window)
         self._g_btn_hid = self.g_btn.connect("clicked", on_g_clicked)
         
         meta_parts = []
@@ -1106,13 +1121,23 @@ class MovieDetailsPage(Gtk.Overlay):
         
         imdb_id = details.get("imdb_id") or details.get("id")
         imdb_rating = details.get("imdbRating", "")
-        if imdb_id:
+        if imdb_id and imdb_rating:
             self.imdb_btn.set_label(f"IMDb {imdb_rating}")
+            self.imdb_btn.set_visible(True)
+            self.meta_dot.set_visible(True)
+            def on_imdb_clicked(btn):
+                open_uri(f"https://www.imdb.com/title/{imdb_id}/", self.window)
+            self._imdb_btn_hid = self.imdb_btn.connect("clicked", on_imdb_clicked)
+        elif imdb_id:
+            self.imdb_btn.set_label("IMDb")
+            self.imdb_btn.set_visible(True)
+            self.meta_dot.set_visible(True)
             def on_imdb_clicked(btn):
                 open_uri(f"https://www.imdb.com/title/{imdb_id}/", self.window)
             self._imdb_btn_hid = self.imdb_btn.connect("clicked", on_imdb_clicked)
         else:
             self.imdb_btn.set_visible(False)
+            self.meta_dot.set_visible(False)
             
         self.desc_label.set_text(details.get("description", ""))
         
@@ -1122,10 +1147,22 @@ class MovieDetailsPage(Gtk.Overlay):
             self.cast_label.set_visible(True)
             
         item_id = details.get("id")
-        self.detail_fav_btn.set_label("♥ Remove from Favorites" if database.is_favorite(item_id) else "♡ Add to Favorites")
+        if database.is_favorite(item_id):
+            self.detail_fav_btn.set_icon_name("emblem-favorite-symbolic")
+            self.detail_fav_btn.set_tooltip_text("Remove from Favorites")
+            self.detail_fav_btn.add_css_class("suggested-action")
+        else:
+            self.detail_fav_btn.set_icon_name("starred-symbolic")
+            self.detail_fav_btn.set_tooltip_text("Add to Favorites")
+            self.detail_fav_btn.remove_css_class("suggested-action")
         self._fav_btn_hid = self.detail_fav_btn.connect("clicked", lambda x: self.toggle_favorite(details))
 
-        self.detail_seen_btn.set_label("👁 Seen" if database.is_watched(item_id) else "👁 Not Seen")
+        if database.is_watched(item_id):
+            self.detail_seen_btn.set_tooltip_text("Marked as Seen")
+            self.detail_seen_btn.add_css_class("suggested-action")
+        else:
+            self.detail_seen_btn.set_tooltip_text("Mark as Seen")
+            self.detail_seen_btn.remove_css_class("suggested-action")
         self._seen_btn_hid = self.detail_seen_btn.connect("clicked", lambda x: self.toggle_watched(details))
 
         trailer_url = details.get("trailer")

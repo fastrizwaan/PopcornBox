@@ -38,6 +38,14 @@ toast {
       rgba(0, 0, 0, 0) 100%);
 }
 
+headerbar.details-headerbar,
+.details-headerbar {
+  background-color: transparent;
+  background-image: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+
 .controls {
   background: linear-gradient(0deg,
       rgba(0, 0, 0, 0.2) 0%,
