@@ -1656,7 +1656,7 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
     return [item[1] for item in matched_subs]
 
 def download_subtitle(sub_url, filename):
-    sub_dir = os.path.join(CONFIG_DIR, "subtitles")
+    sub_dir = os.path.join(database.CONFIG_DIR, "subtitles")
     os.makedirs(sub_dir, exist_ok=True)
         
     if not filename.endswith('.srt') and not filename.endswith('.vtt'):
