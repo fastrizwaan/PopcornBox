@@ -3888,9 +3888,7 @@ class CineWindow(Adw.ApplicationWindow):
 
                     is_yt = self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower())
                     if is_yt:
-                        from . import utils
-                        utils.open_uri(self.loaded_path)
-                        idle_add_once(self._show_toast, _("Opening trailer in web browser..."))
+                        idle_add_once(self._show_toast, _("Trailer unavailable"))
                         idle_add_once(self._close_player)
                     elif getattr(self, "stream_queue", None) and len(self.stream_queue) > 0:
                         idle_add_once(self._try_next_stream_in_queue)
@@ -4924,7 +4922,7 @@ class CineWindow(Adw.ApplicationWindow):
             self.mpv["ytdl"] = True
             try:
                 self.mpv["ytdl-raw-options"] = "no-playlist="
-                self.mpv["ytdl-format"] = "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+                self.mpv["ytdl-format"] = "18/22/b/best[height<=720]/best"
                 self.mpv["referrer"] = "https://www.youtube.com/"
                 self.mpv["demuxer-lavf-o"] = ""
             except Exception:
