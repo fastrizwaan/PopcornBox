@@ -497,16 +497,21 @@ def play_trailer(youtube_id, progress_callback=None):
         from . import database
         import shutil
         import subprocess
+        import json
 
         # 1. Check SQLite trailer stream cache (6h TTL — YouTube tokens expire)
-        cached_url = database.get_cached_trailer_stream(clean_id, max_age_hours=6)
-        if cached_url:
+        cached = database.get_cached_trailer_stream(clean_id, max_age_hours=6)
+        if cached:
+            cached_url, cached_ua = cached
             print(f"[Trailer] Cache hit for {clean_id}")
             if progress_callback:
-                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": cached_url, "is_trailer": True, "is_direct": True}))
+                GLib.idle_add(lambda: progress_callback({
+                    "status": "Playing Trailer!", "url": cached_url,
+                    "is_trailer": True, "is_direct": True, "user_agent": cached_ua
+                }))
             return
 
-        # 2. Pre-resolve direct stream URL with yt-dlp CLI
+        # 2. Pre-resolve direct stream URL + matching User-Agent with yt-dlp
         yt_dlp_bin = shutil.which("yt-dlp")
         if not yt_dlp_bin and os.path.exists("/app/bin/yt-dlp"):
             yt_dlp_bin = "/app/bin/yt-dlp"
@@ -515,35 +520,46 @@ def play_trailer(youtube_id, progress_callback=None):
             if progress_callback:
                 GLib.idle_add(lambda: progress_callback({"status": "Resolving trailer stream..."}))
             try:
-                # Use format 18 (360p mp4 single stream) for fastest start, fallback to best combined
+                # Use -j (dump JSON) to get both URL and http_headers in one call
                 cmd = [
-                    yt_dlp_bin, "-g", "--no-warnings",
+                    yt_dlp_bin, "-j", "--no-warnings",
                     "-f", "18/22/best[height<=720][ext=mp4]/best[height<=720]/best",
                     "--no-playlist", "--no-check-certificates",
                     watch_url
                 ]
-                print(f"[Trailer] Resolving: {' '.join(cmd)}")
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+                print(f"[Trailer] Resolving via yt-dlp -j ...")
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                 if res.returncode == 0 and res.stdout.strip():
-                    lines = [l.strip() for l in res.stdout.strip().splitlines() if l.strip()]
-                    if lines:
-                        direct_url = lines[0]
-                        print(f"[Trailer] Resolved to direct URL ({len(direct_url)} chars)")
-                        database.save_cached_trailer_stream(clean_id, direct_url)
-                        if progress_callback:
-                            GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": direct_url, "is_trailer": True, "is_direct": True}))
-                        return
+                    try:
+                        info = json.loads(res.stdout.strip())
+                        direct_url = info.get("url", "")
+                        ua = info.get("http_headers", {}).get("User-Agent", "")
+                        if direct_url:
+                            print(f"[Trailer] Resolved ({len(direct_url)} chars), UA: {ua[:60]}...")
+                            database.save_cached_trailer_stream(clean_id, direct_url, ua)
+                            if progress_callback:
+                                GLib.idle_add(lambda: progress_callback({
+                                    "status": "Playing Trailer!", "url": direct_url,
+                                    "is_trailer": True, "is_direct": True, "user_agent": ua
+                                }))
+                            return
+                    except json.JSONDecodeError:
+                        print("[Trailer] Failed to parse yt-dlp JSON output")
                 else:
                     err = res.stderr.strip()[:200] if res.stderr else "unknown"
                     print(f"[Trailer] yt-dlp failed (rc={res.returncode}): {err}")
             except subprocess.TimeoutExpired:
-                print("[Trailer] yt-dlp timed out after 12s")
+                print("[Trailer] yt-dlp timed out after 15s")
             except Exception as e:
                 print(f"[Trailer] yt-dlp error: {e}")
 
         # 3. Fallback: pass watch_url to MPV for internal ytdl_hook resolution (slow path)
         print(f"[Trailer] Falling back to MPV ytdl_hook for {watch_url}")
         if progress_callback:
-            GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": watch_url, "is_trailer": True, "is_direct": False}))
+            GLib.idle_add(lambda: progress_callback({
+                "status": "Playing Trailer!", "url": watch_url,
+                "is_trailer": True, "is_direct": False
+            }))
 
     threading.Thread(target=_resolve_and_play, daemon=True).start()
+

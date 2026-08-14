@@ -494,9 +494,15 @@ def _get_cache_db():
         CREATE TABLE IF NOT EXISTS trailer_stream_cache (
             youtube_id TEXT PRIMARY KEY,
             stream_url TEXT,
+            user_agent TEXT DEFAULT '',
             updated_at REAL
         )
     """)
+    # Migration: add user_agent column if missing
+    try:
+        _cache_conn.execute("ALTER TABLE trailer_stream_cache ADD COLUMN user_agent TEXT DEFAULT ''")
+    except Exception:
+        pass
     _cache_conn.execute("""
         CREATE TABLE IF NOT EXISTS subtitle_cache (
             cache_key TEXT PRIMARY KEY,
@@ -595,23 +601,24 @@ def delete_cached_streams(cache_key):
         print(f"Error deleting cached streams: {e}")
 
 def get_cached_trailer_stream(youtube_id, max_age_hours=24):
+    """Returns (stream_url, user_agent) tuple or None."""
     if not youtube_id:
         return None
     try:
         with _cache_db_lock:
             conn = _get_cache_db()
             cursor = conn.cursor()
-            cursor.execute("SELECT stream_url, updated_at FROM trailer_stream_cache WHERE youtube_id = ?", (str(youtube_id),))
+            cursor.execute("SELECT stream_url, user_agent, updated_at FROM trailer_stream_cache WHERE youtube_id = ?", (str(youtube_id),))
             row = cursor.fetchone()
             if row and row[0]:
-                updated_at = row[1]
+                updated_at = row[2]
                 if (time.time() - updated_at) / 3600 < max_age_hours:
-                    return row[0]
+                    return (row[0], row[1] or "")
     except Exception as e:
         print(f"Error reading trailer stream cache: {e}")
     return None
 
-def save_cached_trailer_stream(youtube_id, stream_url):
+def save_cached_trailer_stream(youtube_id, stream_url, user_agent=""):
     if not youtube_id or not stream_url:
         return
     try:
@@ -619,8 +626,8 @@ def save_cached_trailer_stream(youtube_id, stream_url):
             conn = _get_cache_db()
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT OR REPLACE INTO trailer_stream_cache (youtube_id, stream_url, updated_at) VALUES (?, ?, ?)",
-                (str(youtube_id), str(stream_url), time.time())
+                "INSERT OR REPLACE INTO trailer_stream_cache (youtube_id, stream_url, user_agent, updated_at) VALUES (?, ?, ?, ?)",
+                (str(youtube_id), str(stream_url), str(user_agent or ""), time.time())
             )
             conn.commit()
     except Exception as e:

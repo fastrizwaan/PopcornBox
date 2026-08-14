@@ -1580,7 +1580,11 @@ class MovieDetailsPage(Gtk.Overlay):
             if not isinstance(stats, dict): return
             url = stats.get("url")
             if url and self.window:
-                self.window._play_stream(url, trailer_title)
+                # Pass resolved user_agent from yt-dlp for direct googlevideo URLs
+                trailer_headers = {}
+                if stats.get("user_agent"):
+                    trailer_headers["User-Agent"] = stats["user_agent"]
+                self.window._play_stream(url, trailer_title, headers=trailer_headers if trailer_headers else None)
             elif stats.get("closed") or stats.get("opened_browser"):
                 self.reset_trailer_btn_ui()
                 if self.window:
@@ -4955,8 +4959,8 @@ class CineWindow(Adw.ApplicationWindow):
             # Pre-resolved direct stream URL from yt-dlp — play directly, no ytdl_hook needed
             self.show_player_loading(_("Loading trailer..."), title=title)
             try:
-                # Don't override headers — googlevideo URLs work with default/no User-Agent
-                self.mpv["user-agent"] = ""
+                # Use the matching User-Agent from yt-dlp (must match client token in URL signature)
+                self.mpv["user-agent"] = user_agent or ""
                 self.mpv["referrer"] = "https://www.youtube.com/"
                 self.mpv["http-header-fields"] = []
                 self.mpv["demuxer-lavf-o"] = ""
