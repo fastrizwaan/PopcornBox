@@ -1580,11 +1580,7 @@ class MovieDetailsPage(Gtk.Overlay):
             if not isinstance(stats, dict): return
             url = stats.get("url")
             if url and self.window:
-                # Pass resolved user_agent from yt-dlp for direct googlevideo URLs
-                trailer_headers = {}
-                if stats.get("user_agent"):
-                    trailer_headers["User-Agent"] = stats["user_agent"]
-                self.window._play_stream(url, trailer_title, headers=trailer_headers if trailer_headers else None)
+                self.window._play_stream(url, trailer_title)
             elif stats.get("closed") or stats.get("opened_browser"):
                 self.reset_trailer_btn_ui()
                 if self.window:
@@ -4952,22 +4948,12 @@ class CineWindow(Adw.ApplicationWindow):
             else:
                 custom_headers[k] = v
 
-        is_direct_googlevideo = url and isinstance(url, str) and "googlevideo.com" in url.lower()
-        is_youtube_watch = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower())
+        is_youtube = url and isinstance(url, str) and (
+            "youtube.com" in url.lower() or "youtu.be" in url.lower() or "googlevideo.com" in url.lower()
+        )
 
-        if is_direct_googlevideo:
-            # Pre-resolved direct stream URL from yt-dlp — play directly, no ytdl_hook needed
-            self.show_player_loading(_("Loading trailer..."), title=title)
-            try:
-                # Use the matching User-Agent from yt-dlp (must match client token in URL signature)
-                self.mpv["user-agent"] = user_agent or ""
-                self.mpv["referrer"] = "https://www.youtube.com/"
-                self.mpv["http-header-fields"] = []
-                self.mpv["demuxer-lavf-o"] = ""
-            except Exception:
-                pass
-        elif is_youtube_watch:
-            # Watch URL fallback — let MPV's ytdl_hook.lua resolve (slow path)
+        if is_youtube:
+            # Let MPV's ytdl_hook.lua handle everything — don't override any headers
             self.show_player_loading(_("Loading trailer..."), title=title)
             try:
                 self.mpv["user-agent"] = ""
