@@ -1142,7 +1142,12 @@ def _extract_quality(text):
     if "360p" in t or re.search(r'\b360\b', t): return "360p", 0
     return None, 0
 
-_RE_SIZE = re.compile(r'([\d.]+)\s*([GgMm][Bb])')
+_RE_SIZE = re.compile(
+    r'(?:💾|📦|[Ss]ize[:\s]*|\b)([\d.]+)\s*([TtGgMmKk][iI]?[Bb])(?!\s*(?:[pP][sS]|/[sS]|[iI][tT][sS]?|[bB][pP][sS]))\b'
+)
+_RE_BITRATE = re.compile(
+    r'~?([\d.]+)\s*([MmKkGg]bps|[MmKkGg]b/s|[MmKkGg]bit/s)\b', re.IGNORECASE
+)
 _RE_SEED = re.compile(r'(?:👤|👥|[Ss]eeders?[:\s]*)\s*(\d+)')
 
 def process_raw_streams(all_streams):
@@ -1196,17 +1201,32 @@ def process_raw_streams(all_streams):
         if not quality:
             quality, q_val = "Unknown", 0
         
+        combined_text = f"{title_str} {name_str}"
         size = ""
         size_gb = 0.0
-        size_match = _RE_SIZE.search(title_str)
-        if size_match:
-            unit = size_match.group(2).upper()
+        size_matches = list(_RE_SIZE.finditer(combined_text))
+        if size_matches:
+            explicit_match = next((m for m in size_matches if any(p in m.group(0) for p in ['💾', '📦', 'ize', 'ize:'])), None)
+            chosen_match = explicit_match or size_matches[-1]
+            unit = chosen_match.group(2).upper()
             try:
-                val = float(size_match.group(1))
-                size = f"{size_match.group(1)} {unit}"
-                size_gb = val / 1024.0 if unit == "MB" else val
+                val = float(chosen_match.group(1))
+                size = f"{chosen_match.group(1)} {unit}"
+                if "TB" in unit:
+                    size_gb = val * 1024.0
+                elif "GB" in unit:
+                    size_gb = val
+                elif "MB" in unit:
+                    size_gb = val / 1024.0
+                elif "KB" in unit:
+                    size_gb = val / (1024.0 * 1024.0)
             except ValueError:
                 pass
+            
+        bitrate = ""
+        bitrate_match = _RE_BITRATE.search(combined_text)
+        if bitrate_match:
+            bitrate = f"{bitrate_match.group(1)} {bitrate_match.group(2)}"
             
         seeders = 0
         seed_match = _RE_SEED.search(title_str)
@@ -1231,6 +1251,7 @@ def process_raw_streams(all_streams):
             "q_val": q_val,
             "size": size,
             "size_gb": size_gb,
+            "bitrate": bitrate,
             "seeders": seeders,
             "title": s.get("name") or "",
             "stream_title": full_title,

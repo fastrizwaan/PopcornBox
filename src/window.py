@@ -861,6 +861,10 @@ class MovieDetailsPage(Gtk.Overlay):
                 sz_lbl = Gtk.Label(label=t.get("size"))
                 sz_lbl.add_css_class("size-badge")
                 badge_vbox.append(sz_lbl)
+            elif t.get("bitrate"):
+                br_lbl = Gtk.Label(label=t.get("bitrate"))
+                br_lbl.add_css_class("size-badge")
+                badge_vbox.append(br_lbl)
 
             q_str = t.get("quality", "1080p")
             q_lbl = Gtk.Label(label=q_str)
@@ -902,6 +906,9 @@ class MovieDetailsPage(Gtk.Overlay):
                 meta_parts.append("⚡ Direct Stream")
             else:
                 meta_parts.append("🧲 Torrent")
+
+            if t.get("bitrate") and t.get("size"):
+                meta_parts.append(f"📶 {t.get('bitrate')}")
 
             if meta_parts:
                 meta_lbl = Gtk.Label(label=" • ".join(meta_parts))
