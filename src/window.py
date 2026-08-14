@@ -4952,21 +4952,6 @@ class CineWindow(Adw.ApplicationWindow):
             "youtube.com" in url.lower() or "youtu.be" in url.lower() or "googlevideo.com" in url.lower()
         )
 
-        if is_youtube and getattr(self, "current_youtube_url", None) == url:
-            # Re-using the paused YouTube trailer instantly
-            self.show_player_loading(_("Loading trailer..."), title=title)
-            self.main_stack.set_visible_child_name("player")
-            try:
-                self.mpv.pause = False
-            except Exception:
-                pass
-            self.hide_player_loading()
-            self.is_inactive = False
-            return
-            
-        self.is_playing_youtube = is_youtube
-        self.current_youtube_url = url if is_youtube else None
-
         if is_youtube:
             # Let MPV's ytdl_hook.lua handle everything — don't override any headers
             self.show_player_loading(_("Loading trailer..."), title=title)
@@ -5373,19 +5358,10 @@ class CineWindow(Adw.ApplicationWindow):
             if hasattr(page, 'reset_trailer_btn_ui'):
                 page.reset_trailer_btn_ui()
         if hasattr(self, 'mpv'):
-            if getattr(self, "is_playing_youtube", False):
-                # Pause and cache the trailer instead of unloading, so next play is instant
-                try:
-                    self.mpv.pause = True
-                    self.mpv.seek(0, reference="absolute")
-                except Exception:
-                    pass
-            else:
-                try: self.mpv.stop()
-                except Exception: pass
+            try: self.mpv.stop()
+            except Exception: pass
         from . import player
-        if not getattr(self, "is_playing_youtube", False):
-            player.stop_player()
+        player.stop_player()
         if self.details_box.get_first_child():
             self.main_stack.set_visible_child_name("details")
         else:
