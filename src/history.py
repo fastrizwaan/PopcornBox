@@ -202,8 +202,27 @@ class HistoryDialog(Adw.Dialog):
             launcher = Gtk.FileLauncher.new(gfile)
             launcher.open_containing_folder(self._win, None, on_launch_finished)
 
+        def copy_to_clipboard():
+            try:
+                display = row.get_display() or Gdk.Display.get_default()
+                if display:
+                    clipboard = display.get_clipboard()
+                    clipboard.set(path)
+                    toast_msg = _("Stream URL copied to clipboard") if not is_local_path(path) else _("File path copied to clipboard")
+                    self._show_toast(toast_msg)
+            except Exception as e:
+                logger.error(f"Error copying to clipboard: {e}")
+                idle_add_once(self._show_toast, f"{repr(e)}")
+
         menu = Gio.Menu.new()
-        menu.append(_("Open Item Location"), "row.open_location")
+        copy_label = _("Copy Stream URL") if not is_local_path(path) else _("Copy File Path")
+        menu.append(copy_label, "row.copy_url")
+
+        if is_local_path(path):
+            menu.append(_("Open Item Location"), "row.open_location")
+        elif isinstance(path, str) and path.startswith(("http://", "https://")):
+            menu.append(_("Open Stream in Browser"), "row.open_location")
+
         popover = Gtk.PopoverMenu.new_from_model(menu)
         popover.set_parent(row)
         popover.set_has_arrow(False)
@@ -212,9 +231,18 @@ class HistoryDialog(Adw.Dialog):
 
         action_group = Gio.SimpleActionGroup.new()
 
+        copy_action = Gio.SimpleAction.new("copy_url", None)
+        copy_action.connect("activate", lambda *_: copy_to_clipboard())
+        action_group.add_action(copy_action)
+
         if is_local_path(path):
             open_location = Gio.SimpleAction.new("open_location", None)
             open_location.connect("activate", lambda *_: show_in_folder())
+            action_group.add_action(open_location)
+        elif isinstance(path, str) and path.startswith(("http://", "https://")):
+            from .utils import open_uri
+            open_location = Gio.SimpleAction.new("open_location", None)
+            open_location.connect("activate", lambda *_: open_uri(path, self._win))
             action_group.add_action(open_location)
 
         row.insert_action_group("row", action_group)

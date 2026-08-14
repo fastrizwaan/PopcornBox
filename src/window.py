@@ -1655,7 +1655,10 @@ class MovieDetailsPage(Gtk.Overlay):
             except Exception as e:
                 print("Open URL error:", e)
             if hasattr(self, 'progress_label') and self.progress_label:
-                self.progress_label.set_text("Opening stream URL...")
+                if torrent.get("is_http") or (isinstance(url, str) and url.startswith(("http://", "https://"))):
+                    self.progress_label.set_text("Opening direct stream in browser...")
+                else:
+                    self.progress_label.set_text("Opening stream URL...")
 
     def _copy_stream_url(self, torrent):
         if not torrent: return

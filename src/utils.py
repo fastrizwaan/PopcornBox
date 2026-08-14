@@ -138,7 +138,35 @@ def is_local_path(path):
 
 def open_uri(uri, parent=None):
     try:
-        Gio.AppInfo.launch_default_for_uri(str(uri), None)
+        uri_str = str(uri)
+        parsed = urlparse(uri_str)
+        scheme = parsed.scheme.lower() if parsed.scheme else ""
+
+        if scheme in ("http", "https"):
+            try:
+                app_info = Gio.AppInfo.get_default_for_uri_scheme(scheme)
+                if app_info:
+                    app_id = (app_info.get_id() or "").lower()
+                    app_name = (app_info.get_name() or "").lower()
+                    if (
+                        "popcorn" not in app_id
+                        and "popcorn" not in app_name
+                        and "cine" not in app_id
+                        and "cine" not in app_name
+                    ):
+                        app_info.launch_uris([uri_str], None)
+                        return True
+            except Exception as e:
+                logger.warning(f"Failed to launch scheme handler for {scheme}: {e}")
+
+            try:
+                import webbrowser
+                if webbrowser.open(uri_str):
+                    return True
+            except Exception as e:
+                logger.warning(f"webbrowser.open failed for {uri_str}: {e}")
+
+        Gio.AppInfo.launch_default_for_uri(uri_str, None)
         return True
     except Exception as e:
         logger.error(f"Failed to open URI {uri}: {e}", exc_info=True)
