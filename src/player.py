@@ -480,8 +480,6 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
 
 def play_trailer(youtube_id, progress_callback=None):
     """Pass YouTube trailer URL directly to player for internal yt-dlp resolution."""
-    stop_player()
-    
     clean_id = str(youtube_id or "").strip()
     if "v=" in clean_id:
         clean_id = clean_id.split("v=")[-1].split("&")[0]
@@ -497,6 +495,6 @@ def play_trailer(youtube_id, progress_callback=None):
     from gi.repository import GLib
 
     if progress_callback:
-        GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": watch_url, "is_trailer": True}))
+        GLib.idle_add(lambda: progress_callback({"status": "Loading Trailer...", "url": watch_url, "is_trailer": True}))
 
 

@@ -275,11 +275,17 @@ class MovieDetailsPage(Gtk.Overlay):
         title_hbox.append(self.g_btn)
 
         self.trailer_btn = Gtk.Button()
-        trailer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        trailer_box.append(Gtk.Image.new_from_icon_name("media-playback-start-symbolic"))
-        trailer_box.append(Gtk.Label(label="Trailer"))
-        self.trailer_btn.set_child(trailer_box)
-        self.trailer_btn.add_css_class("flat")
+        self.trailer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.trailer_icon = Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
+        self.trailer_spinner = Gtk.Spinner()
+        self.trailer_spinner.set_visible(False)
+        self.trailer_label = Gtk.Label(label="Trailer")
+        self.trailer_box.append(self.trailer_icon)
+        self.trailer_box.append(self.trailer_spinner)
+        self.trailer_box.append(self.trailer_label)
+        self.trailer_btn.set_child(self.trailer_box)
+        self.trailer_btn.add_css_class("trailer-btn")
+        self.trailer_btn.set_tooltip_text("Watch Trailer")
         title_hbox.append(self.trailer_btn)
 
         meta_detail_vbox.append(title_hbox)
@@ -1189,6 +1195,8 @@ class MovieDetailsPage(Gtk.Overlay):
         self._seen_btn_hid = self.detail_seen_btn.connect("clicked", lambda x: self.toggle_watched(details))
 
         trailer_url = details.get("trailer")
+        self.trailer_url = trailer_url
+        self.reset_trailer_btn_ui()
         if trailer_url:
             self.trailer_btn.set_sensitive(True)
             self._trailer_btn_hid = self.trailer_btn.connect("clicked", lambda x: self.on_trailer_clicked(trailer_url))
@@ -1542,30 +1550,46 @@ class MovieDetailsPage(Gtk.Overlay):
         finally:
             self._programmatic_quality_switch = False
 
+    def reset_trailer_btn_ui(self):
+        if hasattr(self, 'trailer_spinner'):
+            self.trailer_spinner.stop()
+            self.trailer_spinner.set_visible(False)
+        if hasattr(self, 'trailer_icon'):
+            self.trailer_icon.set_visible(True)
+        if hasattr(self, 'trailer_btn'):
+            has_trailer = bool(getattr(self, 'trailer_url', None))
+            self.trailer_btn.set_sensitive(has_trailer)
+
     def on_trailer_clicked(self, trailer_url):
         if not trailer_url: return
         from . import player
+
+        if hasattr(self, 'trailer_icon'):
+            self.trailer_icon.set_visible(False)
+        if hasattr(self, 'trailer_spinner'):
+            self.trailer_spinner.set_visible(True)
+            self.trailer_spinner.start()
+        self.trailer_btn.set_sensitive(False)
+
+        trailer_title = f"{self.movie_stub.get('name') or self.movie_stub.get('title', 'Unknown Title')} (Trailer)"
+
         if self.window:
-            self.window.show_player_loading("Resolving trailer stream...")
+            self.window.show_player_loading(_("Loading trailer..."), title=trailer_title)
+
         def progress_callback(stats):
             if not isinstance(stats, dict): return
             url = stats.get("url")
             if url and self.window:
-                trailer_title = f"{self.movie_stub.get('name') or self.movie_stub.get('title', 'Unknown Title')} (Trailer)"
                 self.window._play_stream(url, trailer_title)
             elif stats.get("closed") or stats.get("opened_browser"):
+                self.reset_trailer_btn_ui()
                 if self.window:
-                    if hasattr(self.window, 'hide_player_loading'):
-                        self.window.hide_player_loading()
-                    elif hasattr(self.window, 'overlay_stack'):
-                        self.window.overlay_stack.set_visible_child_name("movie_details")
-                if stats.get("status") and hasattr(self.window, '_show_toast'):
-                    self.window._show_toast(stats.get("status"))
-            elif stats.get("status"):
-                if hasattr(self, 'progress_label') and self.progress_label:
-                    self.progress_label.set_text(stats.get("status"))
-                if self.window:
-                    self.window.update_player_loading(stats.get("status"))
+                    self.window.hide_player_loading()
+                    if hasattr(self.window, '_show_toast') and stats.get("status"):
+                        self.window._show_toast(stats.get("status"))
+            elif stats.get("status") and self.window:
+                self.window.update_player_loading(stats.get("status"))
+
         player.play_trailer(trailer_url, progress_callback=progress_callback)
 
     def on_stop_clicked(self, btn):
@@ -3849,7 +3873,12 @@ class CineWindow(Adw.ApplicationWindow):
         def on_files_loaded(_event):
             def update():
                 try:
+                    self.hide_player_loading()
                     self.spinner.set_visible(False)
+                    if hasattr(self, 'details_box') and self.details_box.get_first_child():
+                        page = self.details_box.get_first_child()
+                        if hasattr(page, 'reset_trailer_btn_ui'):
+                            page.reset_trailer_btn_ui()
                     self.is_local_path = is_local_path(self.mpv.path)
                     self.start_page.set_sensitive(True)
                     self._hide_ui_timeout()
@@ -4871,7 +4900,11 @@ class CineWindow(Adw.ApplicationWindow):
     def _play_stream(self, url, title=None, headers=None, preserve_queue=False):
         if not preserve_queue:
             self._clear_stream_failover()
-        self.hide_player_loading()
+        is_youtube_trailer = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower())
+        if is_youtube_trailer:
+            self.show_player_loading(_("Loading trailer..."), title=title)
+        else:
+            self.hide_player_loading()
         self.main_stack.set_visible_child_name("player")
         
         if title:
@@ -4924,12 +4957,11 @@ class CineWindow(Adw.ApplicationWindow):
             self.mpv["http-header-fields"] = []
             
         # Use yt-dlp strictly for YouTube trailers, disable for all other stream sources
-        is_youtube_trailer = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower())
         if is_youtube_trailer:
             self.mpv["ytdl"] = True
             try:
                 self.mpv["ytdl-raw-options"] = "no-playlist="
-                self.mpv["ytdl-format"] = "18/22/b/best[height<=720]/best"
+                self.mpv["ytdl-format"] = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
                 self.mpv["referrer"] = "https://www.youtube.com/"
                 self.mpv["demuxer-lavf-o"] = ""
             except Exception:
@@ -5310,6 +5342,10 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _close_player(self, *args):
         self.hide_player_loading()
+        if hasattr(self, 'details_box') and self.details_box.get_first_child():
+            page = self.details_box.get_first_child()
+            if hasattr(page, 'reset_trailer_btn_ui'):
+                page.reset_trailer_btn_ui()
         if hasattr(self, 'mpv'):
             try: self.mpv.stop()
             except Exception: pass
