@@ -1778,6 +1778,19 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
             except concurrent.futures.TimeoutError:
                 pass
 
+    # Deduplicate subtitles by URL to prevent loading identical tracks multiple times
+    seen_urls = set()
+    unique_subs = []
+    for s in all_subs:
+        url = s.get("url")
+        if url:
+            if url not in seen_urls:
+                seen_urls.add(url)
+                unique_subs.append(s)
+        else:
+            unique_subs.append(s)
+    all_subs = unique_subs
+
     pref_langs_str = ""
     try:
         import gi
