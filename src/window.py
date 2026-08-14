@@ -3904,29 +3904,35 @@ class CineWindow(Adw.ApplicationWindow):
 
         @self.mpv.event_callback("end-file")
         def on_end_file(event):
-            idle_add_once(self.spinner.set_visible, False)
-            idle_add_once(self.start_page.set_sensitive, True)
-
             try:
                 curr_pos = self.mpv.playlist_pos
                 info = event.as_dict()
                 reason = info["reason"]
 
                 if reason == b"error":
+                    error = info.get("file_error", b"").decode("utf-8", errors="ignore")
+                    
+                    # If we are currently loading a new stream and receive 'no audio or video data played' or empty error,
+                    # this is an artifact of displacing/replacing the previous stream. Ignore it.
+                    if getattr(self, "is_loading_stream", False) and ("no audio or video data played" in error.lower() or "aborted" in error.lower() or not error):
+                        logger.debug(f"Ignoring previous stream displacement: {error}")
+                        return
+
+                    idle_add_once(self.spinner.set_visible, False)
+                    idle_add_once(self.start_page.set_sensitive, True)
+
                     # Avoid stopping playback on last file/folder error
                     playlist_count = cast(int, self.mpv.playlist_count)
                     if curr_pos == playlist_count - 1:
                         self.mpv.playlist_pos = 0
 
                     self.error_count += 1
-                    error = info.get("file_error", b"").decode("utf-8", errors="ignore")
                     logger.warning(f"File error ({error}) path: {self.loaded_path}")
 
                     is_yt = self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower() or "googlevideo.com" in self.loaded_path.lower())
                     if is_yt:
-                        if not getattr(self, "is_loading_stream", False):
-                            idle_add_once(self._show_toast, _("Trailer unavailable"))
-                            idle_add_once(self._close_player)
+                        idle_add_once(self._show_toast, _("Trailer unavailable"))
+                        idle_add_once(self._close_player)
                     elif getattr(self, "stream_queue", None) and len(self.stream_queue) > 0:
                         idle_add_once(self._try_next_stream_in_queue)
                     else:
@@ -3936,15 +3942,18 @@ class CineWindow(Adw.ApplicationWindow):
                             self.shuffle_toggle_btn.set_active(False)
                             self.error_count = 0
                 elif reason == b"eof":
+                    idle_add_once(self.spinner.set_visible, False)
+                    idle_add_once(self.start_page.set_sensitive, True)
                     if not self.mpv.keep_open and self.mpv.idle_active and not self.startup:
                         def _handle_eof():
                             if not self._try_play_next_episode():
                                 self._close_player()
                         idle_add_once(_handle_eof)
-                elif (
-                    not self.mpv.keep_open and self.mpv.idle_active and not self.startup
-                ):
-                    idle_add_once(self._close_player)
+                else:
+                    idle_add_once(self.spinner.set_visible, False)
+                    idle_add_once(self.start_page.set_sensitive, True)
+                    if not self.mpv.keep_open and self.mpv.idle_active and not self.startup:
+                        idle_add_once(self._close_player)
             except mpv.ShutdownError:
                 pass
 
@@ -4944,10 +4953,7 @@ class CineWindow(Adw.ApplicationWindow):
             self.show_player_loading(_("Loading trailer..."), title=title)
             try:
                 self.mpv["user-agent"] = ""
-                self.mpv["referrer"] = "https://www.youtube.com/"
                 self.mpv["http-header-fields"] = []
-                self.mpv["ytdl-raw-options"] = "no-playlist="
-                self.mpv["ytdl-format"] = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
                 self.mpv["demuxer-lavf-o"] = ""
             except Exception:
                 pass
