@@ -166,6 +166,15 @@ def open_uri(uri, parent=None):
             except Exception as e:
                 logger.warning(f"webbrowser.open failed for {uri_str}: {e}")
 
+        elif scheme == "magnet":
+            try:
+                import subprocess
+                # xdg-open handles shell escaping and DE-specific quirks better than Gio for magnet links
+                subprocess.Popen(["xdg-open", uri_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+            except Exception as e:
+                logger.warning(f"xdg-open failed for magnet link, falling back to Gio: {e}")
+
         Gio.AppInfo.launch_default_for_uri(uri_str, None)
         return True
     except Exception as e:
