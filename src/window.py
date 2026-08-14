@@ -3919,13 +3919,14 @@ class CineWindow(Adw.ApplicationWindow):
                         self.mpv.playlist_pos = 0
 
                     self.error_count += 1
-                    logger.warning(f"File error path: {self.loaded_path}")
-                    error = info["file_error"].decode("utf-8")
+                    error = info.get("file_error", b"").decode("utf-8", errors="ignore")
+                    logger.warning(f"File error ({error}) path: {self.loaded_path}")
 
-                    is_yt = self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower())
+                    is_yt = self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower() or "googlevideo.com" in self.loaded_path.lower())
                     if is_yt:
-                        idle_add_once(self._show_toast, _("Trailer unavailable"))
-                        idle_add_once(self._close_player)
+                        if not getattr(self, "is_loading_stream", False):
+                            idle_add_once(self._show_toast, _("Trailer unavailable"))
+                            idle_add_once(self._close_player)
                     elif getattr(self, "stream_queue", None) and len(self.stream_queue) > 0:
                         idle_add_once(self._try_next_stream_in_queue)
                     else:
@@ -4956,9 +4957,8 @@ class CineWindow(Adw.ApplicationWindow):
         else:
             self.mpv["http-header-fields"] = []
             
-        # Use yt-dlp strictly for YouTube trailers, disable for all other stream sources
-        if is_youtube_trailer:
-            self.mpv["ytdl"] = True
+        is_direct_yt = url and isinstance(url, str) and ("googlevideo.com" in url.lower() or "youtube.com" in url.lower() or "youtu.be" in url.lower())
+        if is_youtube_trailer or is_direct_yt:
             try:
                 self.mpv["ytdl-raw-options"] = "no-playlist="
                 self.mpv["ytdl-format"] = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
@@ -4967,7 +4967,6 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
         else:
-            self.mpv["ytdl"] = False
             try:
                 self.mpv["demuxer-lavf-o"] = "probesize=1000000,analyzeduration=1000000"
                 self.mpv["demuxer-readahead-secs"] = 2
