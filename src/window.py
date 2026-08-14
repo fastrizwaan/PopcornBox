@@ -4910,25 +4910,22 @@ class CineWindow(Adw.ApplicationWindow):
         else:
             self.mpv["http-header-fields"] = []
             
-        # Optimize network stream loading speed
-        if url and isinstance(url, str) and (url.startswith("http://") or url.startswith("https://")):
-            # Bypass yt-dlp resolution delay for direct media streams
-            is_direct_stream = any(k in url.lower() for k in [".m3u8", ".mp4", ".mkv", ".avi", ".ts", ".m4s", "workers.dev"])
-            if is_direct_stream:
-                self.mpv["ytdl"] = False
-                try:
-                    self.mpv["demuxer-lavf-o"] = "probesize=1000000,analyzeduration=1000000"
-                    self.mpv["demuxer-readahead-secs"] = 2
-                except Exception:
-                    pass
-            else:
-                self.mpv["ytdl"] = True
-                try:
-                    self.mpv["demuxer-lavf-o"] = ""
-                except Exception:
-                    pass
-        else:
+        # Use yt-dlp strictly for YouTube trailers, disable for all other stream sources
+        is_youtube_trailer = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower())
+        if is_youtube_trailer:
             self.mpv["ytdl"] = True
+            try:
+                self.mpv["ytdl-format"] = "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+                self.mpv["demuxer-lavf-o"] = ""
+            except Exception:
+                pass
+        else:
+            self.mpv["ytdl"] = False
+            try:
+                self.mpv["demuxer-lavf-o"] = "probesize=1000000,analyzeduration=1000000"
+                self.mpv["demuxer-readahead-secs"] = 2
+            except Exception:
+                pass
 
         self.next_ep_dismissed = False
         self.next_ep_auto_triggered = False

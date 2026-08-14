@@ -479,7 +479,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
     return None
 
 def play_trailer(youtube_id, progress_callback=None):
-    """Resolve and play YouTube trailer via direct stream or browser fallback."""
+    """Play YouTube trailer using MPV's built-in yt-dlp hook."""
     stop_player()
     
     clean_id = str(youtube_id or "").strip()
@@ -490,102 +490,10 @@ def play_trailer(youtube_id, progress_callback=None):
 
     watch_url = f"https://www.youtube.com/watch?v={clean_id}"
     
-    def launch():
-        import gi
-        from gi.repository import GLib
-        from . import database, utils
+    import gi
+    from gi.repository import GLib
 
-        if progress_callback:
-            GLib.idle_add(lambda: progress_callback({"status": "Resolving trailer stream..."}))
+    if progress_callback:
+        GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": watch_url, "is_trailer": True}))
 
-        # 1. Check SQLite trailer stream cache
-        cached_stream = database.get_cached_trailer_stream(clean_id)
-        if cached_stream:
-            print(f"[TRAILER CACHE] Found cached direct stream for {clean_id}")
-            if progress_callback:
-                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": cached_stream}))
-            return
-
-        resolved_stream = None
-
-        # 2. Try fast parallel Piped & Invidious public API instances
-        piped_instances = [
-            f"https://api.piped.privacydev.net/streams/{clean_id}",
-            f"https://pipedapi.palvelintalo.fi/streams/{clean_id}",
-            f"https://pipedapi.systemli.org/streams/{clean_id}",
-            f"https://pipedapi.mha.fi/streams/{clean_id}",
-            f"https://pipedapi.lunar.icu/streams/{clean_id}",
-        ]
-        invidious_instances = [
-            f"https://inv.riverside.rocks/api/v1/videos/{clean_id}",
-            f"https://invidious.privacydev.net/api/v1/videos/{clean_id}",
-            f"https://iv.melmac.space/api/v1/videos/{clean_id}",
-            f"https://invidious.flokinet.to/api/v1/videos/{clean_id}",
-            f"https://vid.puffyan.us/api/v1/videos/{clean_id}",
-            f"https://yewtu.be/api/v1/videos/{clean_id}",
-        ]
-
-        def _fetch_api(target_url, is_invidious=False):
-            try:
-                import urllib.request, json
-                req = urllib.request.Request(target_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-                with urllib.request.urlopen(req, timeout=2.5) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    if is_invidious:
-                        streams = data.get("formatStreams", [])
-                        for s in streams:
-                            if isinstance(s, dict) and s.get("url"):
-                                return s["url"]
-                    else:
-                        streams = data.get("videoStreams", [])
-                        for s in streams:
-                            if isinstance(s, dict) and s.get("url") and not s.get("videoOnly"):
-                                return s["url"]
-            except Exception:
-                return None
-
-        import concurrent.futures
-        all_targets = [(u, False) for u in piped_instances] + [(u, True) for u in invidious_instances]
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=len(all_targets)) as executor:
-                futures = {executor.submit(_fetch_api, u, inv): u for u, inv in all_targets}
-                for future in concurrent.futures.as_completed(futures, timeout=3.0):
-                    res = future.result()
-                    if res:
-                        resolved_stream = res
-                        break
-        except Exception as e:
-            print(f"[TRAILER RESOLVE] API fetch error: {e}")
-
-        # 3. Fallback to local yt-dlp if installed on system
-        if not resolved_stream:
-            import shutil, subprocess
-            yt_dlp_bin = shutil.which("yt-dlp") or shutil.which("youtube-dl")
-            if yt_dlp_bin:
-                try:
-                    cmd = [yt_dlp_bin, "-g", "-f", "best[ext=mp4]/best", watch_url]
-                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-                    if proc.returncode == 0 and proc.stdout.strip():
-                        resolved_stream = proc.stdout.strip().split("\n")[0]
-                except Exception as e:
-                    print(f"[TRAILER RESOLVE] yt-dlp error: {e}")
-
-        # 4. If direct stream resolved -> Cache in DB and play in player
-        if resolved_stream:
-            database.save_cached_trailer_stream(clean_id, resolved_stream)
-            if progress_callback:
-                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": resolved_stream}))
-            return
-
-        # 5. Otherwise fallback: Open YouTube link in default Web Browser cleanly
-        print(f"[TRAILER RESOLVE] Direct stream unavailable, opening in browser: {watch_url}")
-        utils.open_uri(watch_url)
-        if progress_callback:
-            GLib.idle_add(lambda: progress_callback({
-                "status": "Opening trailer in web browser...",
-                "closed": True,
-                "opened_browser": True
-            }))
-                
-    threading.Thread(target=launch, daemon=True).start()
 
