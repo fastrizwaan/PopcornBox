@@ -479,7 +479,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
     return None
 
 def play_trailer(youtube_id, progress_callback=None):
-    """Resolve YouTube trailer stream using local yt-dlp for user's IP, or fallback to browser."""
+    """Pass YouTube trailer URL directly to player for internal yt-dlp resolution."""
     stop_player()
     
     clean_id = str(youtube_id or "").strip()
@@ -488,76 +488,15 @@ def play_trailer(youtube_id, progress_callback=None):
     elif "youtu.be/" in clean_id:
         clean_id = clean_id.split("youtu.be/")[-1].split("?")[0]
 
-    watch_url = f"https://www.youtube.com/watch?v={clean_id}"
-    
-    def launch():
-        import gi, shutil, subprocess, os
-        from gi.repository import GLib
-        from . import database, utils
+    if clean_id.startswith("http://") or clean_id.startswith("https://"):
+        watch_url = clean_id
+    else:
+        watch_url = f"https://www.youtube.com/watch?v={clean_id}"
 
-        if progress_callback:
-            GLib.idle_add(lambda: progress_callback({"status": "Resolving trailer..."}))
+    import gi
+    from gi.repository import GLib
 
-        # 1. Check SQLite trailer stream cache
-        cached_stream = database.get_cached_trailer_stream(clean_id)
-        if cached_stream:
-            print(f"[TRAILER CACHE] Found cached direct stream for {clean_id}")
-            if progress_callback:
-                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": cached_stream, "is_trailer": True}))
-            return
-
-        stream_url = None
-
-        # 2. Search for local yt-dlp binary (system PATH, user home, flatpak host)
-        yt_dlp_bin = shutil.which("yt-dlp") or shutil.which("youtube-dl")
-        cmd_prefix = []
-
-        if not yt_dlp_bin:
-            possible_paths = [
-                "/usr/bin/yt-dlp",
-                "/usr/local/bin/yt-dlp",
-                os.path.expanduser("~/.local/bin/yt-dlp"),
-                os.path.expanduser("~/.bin/yt-dlp"),
-                "/app/bin/yt-dlp",
-                "/var/usrlocal/bin/yt-dlp",
-            ]
-            for p in possible_paths:
-                if os.path.exists(p):
-                    yt_dlp_bin = p
-                    break
-
-        if not yt_dlp_bin and os.path.exists("/usr/bin/flatpak-spawn"):
-            yt_dlp_bin = "yt-dlp"
-            cmd_prefix = ["flatpak-spawn", "--host"]
-
-        if yt_dlp_bin:
-            try:
-                cmd = cmd_prefix + [yt_dlp_bin, "-g", "-f", "best[height<=720]/best", watch_url]
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-                if proc.returncode == 0 and proc.stdout.strip():
-                    lines = [l.strip() for l in proc.stdout.strip().split("\n") if l.strip().startswith("http")]
-                    if lines:
-                        stream_url = lines[0]
-            except Exception as e:
-                print(f"[yt-dlp] Resolution error: {e}")
-
-        # 3. If direct stream resolved via local yt-dlp -> Cache in DB and play in player
-        if stream_url:
-            database.save_cached_trailer_stream(clean_id, stream_url)
-            if progress_callback:
-                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": stream_url, "is_trailer": True}))
-            return
-
-        # 4. Fallback: Open YouTube link in default Web Browser cleanly
-        print(f"[TRAILER] Direct extraction failed, opening in browser: {watch_url}")
-        utils.open_uri(watch_url)
-        if progress_callback:
-            GLib.idle_add(lambda: progress_callback({
-                "status": "Opening trailer in web browser...",
-                "closed": True,
-                "opened_browser": True
-            }))
-
-    threading.Thread(target=launch, daemon=True).start()
+    if progress_callback:
+        GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": watch_url, "is_trailer": True}))
 
 

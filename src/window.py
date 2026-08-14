@@ -2069,7 +2069,7 @@ class CineWindow(Adw.ApplicationWindow):
             volume_max=150,
             keep_open=True,
             ytdl=True,
-            ytdl_raw_options="yes-playlist=",
+            ytdl_raw_options="no-playlist=",
             cursor_autohide_fs_only=True,
             directory_filter_types="video,audio",
             autocreate_playlist="filter",
@@ -4923,7 +4923,9 @@ class CineWindow(Adw.ApplicationWindow):
         if is_youtube_trailer:
             self.mpv["ytdl"] = True
             try:
+                self.mpv["ytdl-raw-options"] = "no-playlist="
                 self.mpv["ytdl-format"] = "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+                self.mpv["referrer"] = "https://www.youtube.com/"
                 self.mpv["demuxer-lavf-o"] = ""
             except Exception:
                 pass
