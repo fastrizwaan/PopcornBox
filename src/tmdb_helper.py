@@ -86,6 +86,7 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
     """
     Returns a list of all distinct provider IDs (IMDB tt..., TMDB, DesiFlix dsf:...)
     for the given media item so all stream addons (Torrentio, Castle, DesiFlix, etc.) can be queried.
+    Optimized to only perform network lookups if at least one installed stream addon requires that ID prefix.
     """
     import concurrent.futures
     ids = set()
@@ -95,19 +96,41 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
     elif item_id:
         ids.add(str(item_id))
 
+    # Determine what prefixes are actually needed by installed stream addons
+    installed_addons = [a for a in database.get_addons() if a.get("enabled", True) and not a.get("manifest_url", "").startswith("builtin://")]
+    needed_prefixes = set()
+    for a in installed_addons:
+        prefixes = a.get("idPrefixes")
+        if prefixes:
+            for p in prefixes:
+                needed_prefixes.add(str(p).lower())
+        else:
+            # Addon with no idPrefixes might support any prefix or default tt
+            needed_prefixes.add("tt")
+
+    needs_dsf = any(p.startswith("dsf") for p in needed_prefixes)
+    needs_tmdb = any(p.startswith("tmdb") for p in needed_prefixes)
+    has_tt = any(str(i).startswith("tt") for i in ids)
+
+    # If we already have tt... and don't need dsf or tmdb, return immediately!
+    if has_tt and not needs_dsf and not needs_tmdb:
+        return list(ids)
+
     def task_imdb():
         res = resolve_to_imdb_id(item_id, media_type, title)
         if isinstance(res, list): return res
         return [res] if res else []
 
     def task_dsf():
-        has_dsf = any(i.startswith("dsf:") for i in ids)
+        if not needs_dsf:
+            return []
+        has_dsf = any(str(i).startswith("dsf:") for i in ids)
         if not has_dsf and title and title != "Loading...":
             try:
                 from .api import _get_cached_request
                 c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                 search_url = f"https://desiflix.stremioaddon.workers.dev/catalog/{c_type}/desiflix/search={urllib.parse.quote(title)}.json"
-                data = _get_cached_request(search_url, max_age_hours=168)
+                data = _get_cached_request(search_url, max_age_hours=168, timeout=2.5)
                 if data and "metas" in data:
                     for m in data["metas"]:
                         m_id = m.get("id")
@@ -118,13 +141,13 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
         return []
 
     def task_tt():
-        has_tt = any(i.startswith("tt") for i in ids)
-        if not has_tt and title and title != "Loading...":
+        has_tt_curr = any(str(i).startswith("tt") for i in ids)
+        if not has_tt_curr and title and title != "Loading...":
             try:
                 from .api import _get_cached_request
                 c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                 search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(title)}.json"
-                data = _get_cached_request(search_url, max_age_hours=168)
+                data = _get_cached_request(search_url, max_age_hours=168, timeout=2.5)
                 if data and "metas" in data:
                     for m in data["metas"]:
                         m_id = m.get("imdb_id") or m.get("id", "")
@@ -135,17 +158,19 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
         return []
 
     def task_tmdb(current_ids):
+        if not needs_tmdb:
+            return []
         res = []
-        has_tmdb = any(i.startswith("tmdb:") for i in current_ids)
+        has_tmdb = any(str(i).startswith("tmdb:") for i in current_ids)
         if not has_tmdb:
             tt_id = next((i for i in current_ids if str(i).startswith("tt")), None)
-            root_tt_id = tt_id.split(":")[0] if tt_id else None
+            root_tt_id = str(tt_id).split(":")[0] if tt_id else None
             if root_tt_id:
                 try:
                     from .api import _get_cached_request
                     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                     meta_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{root_tt_id}.json"
-                    meta_data = _get_cached_request(meta_url, max_age_hours=168)
+                    meta_data = _get_cached_request(meta_url, max_age_hours=168, timeout=2.5)
                     if meta_data and "meta" in meta_data:
                         t_id = meta_data["meta"].get("id")
                         if t_id and str(t_id).startswith("tmdb:"):
@@ -157,7 +182,7 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
                     from .api import _get_cached_request
                     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                     search_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/catalog/{c_type}/tmdb.top/search={urllib.parse.quote(title)}.json"
-                    search_data = _get_cached_request(search_url, max_age_hours=168)
+                    search_data = _get_cached_request(search_url, max_age_hours=168, timeout=2.5)
                     if search_data and "metas" in search_data:
                         for m in search_data["metas"]:
                             m_id = m.get("id")
@@ -168,7 +193,7 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
                     pass
         return res
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         f1 = executor.submit(task_imdb)
         f2 = executor.submit(task_dsf)
         f3 = executor.submit(task_tt)
@@ -180,7 +205,7 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
             except Exception:
                 pass
 
-        if not any(i.startswith("tmdb:") for i in ids):
+        if needs_tmdb and not any(str(i).startswith("tmdb:") for i in ids):
             f4 = executor.submit(task_tmdb, list(ids))
             try:
                 for r in f4.result(timeout=1.5):

@@ -37,6 +37,9 @@ DEFAULT_ADDONS = [
         "description": "Provides movies and series catalogs from IMDb.",
         "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
         "enabled": True,
+        "resources": ["catalog", "meta"],
+        "types": ["movie", "series"],
+        "idPrefixes": ["tt"],
         "catalogs": [
             {"type": "movie", "id": "top", "genres": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western"], "extra": [{"name": "genre", "options": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western"]}, {"name": "search"}, {"name": "skip"}], "name": "Popular"},
             {"type": "movie", "id": "year", "genres": ["2026","2025","2024","2023","2022","2021","2020","2019","2018","2017","2016","2015","2014","2013","2012","2011","2010","2009","2008","2007","2006","2005","2004","2003","2002","2001","2000","1999","1998","1997","1996","1995","1994","1993","1992","1991","1990","1989","1988","1987","1986","1985","1984","1983","1982","1981","1980","1979","1978","1977","1976","1975","1974","1973","1972","1971","1970","1969","1968","1967","1966","1965","1964","1963","1962","1961","1960","1959","1958","1957","1956","1955","1954","1953","1952","1951","1950","1949","1948","1947","1946","1945","1944","1943","1942","1941","1940","1939","1938","1937","1936","1935","1934","1933","1932","1931","1930","1929","1928","1927","1926","1925","1924","1923","1922","1921","1920"], "extra": [{"name": "genre", "options": ["2026","2025","2024","2023","2022","2021","2020","2019","2018","2017","2016","2015","2014","2013","2012","2011","2010","2009","2008","2007","2006","2005","2004","2003","2002","2001","2000","1999","1998","1997","1996","1995","1994","1993","1992","1991","1990","1989","1988","1987","1986","1985","1984","1983","1982","1981","1980","1979","1978","1977","1976","1975","1974","1973","1972","1971","1970","1969","1968","1967","1966","1965","1964","1963","1962","1961","1960","1959","1958","1957","1956","1955","1954","1953","1952","1951","1950","1949","1948","1947","1946","1945","1944","1943","1942","1941","1940","1939","1938","1937","1936","1935","1934","1933","1932","1931","1930","1929","1928","1927","1926","1925","1924","1923","1922","1921","1920"]}, {"name": "skip"}], "name": "New"},
@@ -53,6 +56,9 @@ DEFAULT_ADDONS = [
         "description": "Provides anime catalogs from Kitsu.",
         "manifest_url": "https://anime-kitsu.strem.fun/manifest.json",
         "enabled": True,
+        "resources": ["catalog", "meta"],
+        "types": ["anime", "series", "movie"],
+        "idPrefixes": ["kitsu:"],
         "catalogs": [
             {
                 "type": "anime",
@@ -77,6 +83,9 @@ DEFAULT_ADDONS = [
         "description": "Free worldwide live TV channels.",
         "manifest_url": "https://iptv-org.github.io/manifest.json",
         "enabled": True,
+        "resources": ["catalog", "meta", "stream"],
+        "types": ["tv", "channel", "tvchannel"],
+        "idPrefixes": ["iptv:"],
         "catalogs": [
             {"type": "tv", "id": "US", "name": "USA TV Channels"},
             {"type": "tv", "id": "UK", "name": "UK TV Channels"},
@@ -122,6 +131,17 @@ def _read_db():
                     for a in data["addons"]:
                         if a.get("id") == default_addon["id"]:
                             found = True
+                            # Migrate missing resources/types/idPrefixes to existing default addons
+                            if "resources" in default_addon and "resources" not in a:
+                                a["resources"] = default_addon["resources"]
+                                migrated = True
+                            if "types" in default_addon and "types" not in a:
+                                a["types"] = default_addon["types"]
+                                migrated = True
+                            if "idPrefixes" in default_addon and "idPrefixes" not in a:
+                                a["idPrefixes"] = default_addon["idPrefixes"]
+                                migrated = True
+
                             # Migrate missing catalogs to existing addons
                             if "catalogs" in default_addon and "catalogs" not in a:
                                 a["catalogs"] = default_addon["catalogs"]
@@ -477,6 +497,13 @@ def _get_cache_db():
             updated_at REAL
         )
     """)
+    _cache_conn.execute("""
+        CREATE TABLE IF NOT EXISTS subtitle_cache (
+            cache_key TEXT PRIMARY KEY,
+            data TEXT,
+            updated_at REAL
+        )
+    """)
     _cache_conn.commit()
     _cache_db_initialized = True
     return _cache_conn
@@ -598,4 +625,48 @@ def save_cached_trailer_stream(youtube_id, stream_url):
             conn.commit()
     except Exception as e:
         print(f"Error saving trailer stream cache: {e}")
+
+def get_cached_subtitles(cache_key, max_age_hours=24):
+    if not cache_key:
+        return None
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT data, updated_at FROM subtitle_cache WHERE cache_key = ?", (str(cache_key),))
+            row = cursor.fetchone()
+            if row and row[0]:
+                updated_at = row[1]
+                if (time.time() - updated_at) / 3600 < max_age_hours:
+                    return json.loads(row[0])
+    except Exception as e:
+        print(f"Error reading subtitle cache: {e}")
+    return None
+
+def save_cached_subtitles(cache_key, subtitles):
+    if not cache_key or subtitles is None:
+        return
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO subtitle_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
+                (str(cache_key), json.dumps(subtitles), time.time())
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"Error saving subtitle cache: {e}")
+
+def delete_cached_subtitles(cache_key):
+    if not cache_key:
+        return
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM subtitle_cache WHERE cache_key = ?", (str(cache_key),))
+            conn.commit()
+    except Exception as e:
+        print(f"Error deleting cached subtitles: {e}")
 

@@ -14,19 +14,28 @@ else:
 IMAGE_CACHE_DIR = os.path.join(BASE_DIR, 'images')
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
-_image_pool = ThreadPoolExecutor(max_workers=4)
-_disk_pool = ThreadPoolExecutor(max_workers=4)
+_image_pool = ThreadPoolExecutor(max_workers=10)
+_disk_pool = ThreadPoolExecutor(max_workers=6)
+_meta_fallback_pool = ThreadPoolExecutor(max_workers=2)
+
+import threading
+_MEMORY_PIXBUF_CACHE = {}
+_MEMORY_PIXBUF_LOCK = threading.Lock()
+_MAX_MEMORY_PIXBUFS = 500
 
 def cancel_pending_image_downloads():
-    global _image_pool, _disk_pool
+    global _image_pool, _disk_pool, _meta_fallback_pool
     try:
         _image_pool.shutdown(wait=False, cancel_futures=True)
         _disk_pool.shutdown(wait=False, cancel_futures=True)
+        _meta_fallback_pool.shutdown(wait=False, cancel_futures=True)
     except TypeError:
         _image_pool.shutdown(wait=False)
         _disk_pool.shutdown(wait=False)
-    _image_pool = ThreadPoolExecutor(max_workers=4)
-    _disk_pool = ThreadPoolExecutor(max_workers=4)
+        _meta_fallback_pool.shutdown(wait=False)
+    _image_pool = ThreadPoolExecutor(max_workers=10)
+    _disk_pool = ThreadPoolExecutor(max_workers=6)
+    _meta_fallback_pool = ThreadPoolExecutor(max_workers=2)
     FAILED_IMAGE_URLS.clear()
 
 def extract_image_url(m):
@@ -66,9 +75,18 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
         import re
         url = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX400_.jpg', url)
     
+    setattr(picture_widget, "_popcornbox_image_url", url)
+
+    # 1. Fast in-memory pixbuf cache check
+    mem_key = (url, width, height)
+    with _MEMORY_PIXBUF_LOCK:
+        cached_pixbuf = _MEMORY_PIXBUF_CACHE.get(mem_key)
+    if cached_pixbuf:
+        _apply_pixbuf(picture_widget, cached_pixbuf, url)
+        return
+
     url_hash = hashlib.md5(url.encode()).hexdigest()
     cache_file = os.path.join(IMAGE_CACHE_DIR, url_hash)
-    setattr(picture_widget, "_popcornbox_image_url", url)
 
     if url in FAILED_IMAGE_URLS and not (os.path.exists(cache_file) and os.path.getsize(cache_file) > 0):
         if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
@@ -91,7 +109,7 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                 )
                 for attempt in range(2):
                     try:
-                        with urllib.request.urlopen(req, timeout=6) as response:
+                        with urllib.request.urlopen(req, timeout=3.5) as response:
                             data = response.read()
                             if data:
                                 with open(cache_file, 'wb') as f:
@@ -103,7 +121,7 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                             FAILED_IMAGE_URLS.add(url)
                         else:
                             import time
-                            time.sleep(0.5)
+                            time.sleep(0.3)
                 
             if not data:
                 if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
@@ -150,6 +168,12 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                             pixbuf = sub_pixbuf.scale_simple(width, height, GdkPixbuf.InterpType.BILINEAR)
                         except Exception:
                             pixbuf = pixbuf.scale_simple(width, height, GdkPixbuf.InterpType.BILINEAR)
+
+                with _MEMORY_PIXBUF_LOCK:
+                    if len(_MEMORY_PIXBUF_CACHE) > _MAX_MEMORY_PIXBUFS:
+                        _MEMORY_PIXBUF_CACHE.clear()
+                    _MEMORY_PIXBUF_CACHE[mem_key] = pixbuf
+
                 GLib.idle_add(_apply_pixbuf, picture_widget, pixbuf, url)
             else:
                 if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
@@ -172,7 +196,6 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
 def _apply_pixbuf(picture_widget, pixbuf, requested_url=None):
     try:
         if not picture_widget or not pixbuf:
-            print("[IMAGE APPLY WARNING] picture_widget or pixbuf is None.")
             return False
         if requested_url and getattr(picture_widget, "_popcornbox_image_url", None) != requested_url:
             return False
@@ -197,7 +220,7 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
             req = urllib.request.Request(imdb_url, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             })
-            with urllib.request.urlopen(req, timeout=4) as response:
+            with urllib.request.urlopen(req, timeout=2.5) as response:
                 import json
                 data = json.loads(response.read().decode('utf-8', errors='ignore'))
                 if data and "d" in data and len(data["d"]) > 0:
@@ -206,7 +229,6 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                             poster_url = item["i"]["imageUrl"]
                             import re
                             poster_url = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX500_.jpg', poster_url)
-                            print(f"[IMDb API] Successfully fetched fallback catalog poster for {item_id}: {poster_url}")
                             try:
                                 from .database import get_cached_metadata, save_cached_metadata
                                 existing = get_cached_metadata(item_id, item_type) or {}
@@ -216,14 +238,14 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                                 pass
                             GLib.idle_add(load_image_into_picture, poster_url, poster_widget, width, height)
                             return
-    except Exception as e:
+    except Exception:
         pass
         
     try:
         from .api import _get_cached_request
         if str(item_id).startswith("tt"):
             url = f"https://v3-cinemeta.strem.io/meta/{item_type}/{item_id}.json"
-            meta_data = _get_cached_request(url, max_age_hours=168)
+            meta_data = _get_cached_request(url, max_age_hours=168, timeout=2.5)
             if meta_data and "meta" in meta_data and meta_data["meta"].get("poster"):
                 poster_url = meta_data["meta"]["poster"]
                 try:
@@ -239,7 +261,7 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
         c_type = "series" if item_type in ["series", "anime", "tv"] else "movie"
         url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{item_id}.json"
         try:
-            tmdb_data = _get_cached_request(url, max_age_hours=168, timeout=4)
+            tmdb_data = _get_cached_request(url, max_age_hours=168, timeout=2.5)
             if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
                 poster_url = tmdb_data["meta"]["poster"]
                 try:
@@ -253,7 +275,7 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                 return
         except Exception:
             pass
-    except Exception as e:
+    except Exception:
         pass
 
 class MovieWidget(Gtk.Box):
@@ -305,8 +327,11 @@ class MovieWidget(Gtk.Box):
             hover.connect("leave", lambda *args: remove_btn.set_visible(False))
             self.add_controller(hover)
             
-        icon_container.append(self.overlay)
-        self.append(icon_container)
+            icon_container.append(self.overlay)
+            self.append(icon_container)
+        else:
+            icon_container.append(self.overlay)
+            self.append(icon_container)
         
         item_id = movie_data.get("imdb_id") or movie_data.get("id")
         item_type = movie_data.get("type", "movie")
@@ -328,7 +353,7 @@ class MovieWidget(Gtk.Box):
         
         def trigger_fallback():
             try:
-                _image_pool.submit(fetch_fallback_poster, item_id, item_type, self.poster_image, movie_data.get("title") or movie_data.get("name"), 130, 195)
+                _meta_fallback_pool.submit(fetch_fallback_poster, item_id, item_type, self.poster_image, movie_data.get("title") or movie_data.get("name"), 130, 195)
             except RuntimeError:
                 pass
 

@@ -5579,6 +5579,9 @@ class CineWindow(Adw.ApplicationWindow):
                 if self._current_search_id != current_search_id:
                     return
                 try:
+                    def is_cancelled_fn():
+                        return self._current_search_id != current_search_id
+
                     def on_batch(batch):
                         if self._current_search_id == current_search_id and batch:
                             def update_ui():
@@ -5591,7 +5594,14 @@ class CineWindow(Adw.ApplicationWindow):
                                     section.set_visible(True)
                                 return False
                             GLib.idle_add(update_ui)
-                    fetch_items(media_type=media_type, query=query, on_item_found=on_batch, target_manifest_url=target_manifest_url, target_catalog_id=target_catalog_id)
+                    fetch_items(
+                        media_type=media_type,
+                        query=query,
+                        on_item_found=on_batch,
+                        target_manifest_url=target_manifest_url,
+                        target_catalog_id=target_catalog_id,
+                        is_cancelled=is_cancelled_fn
+                    )
                 except Exception as e:
                     logger.error(f"Search error ({media_type}): {e}")
 
