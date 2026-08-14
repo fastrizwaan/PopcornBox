@@ -479,7 +479,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
     return None
 
 def play_trailer(youtube_id, progress_callback=None):
-    """Pass YouTube trailer URL directly to player for internal yt-dlp resolution."""
+    """Pre-resolve YouTube trailer stream URL via yt-dlp, then pass direct URL to player."""
     clean_id = str(youtube_id or "").strip()
     if "v=" in clean_id:
         clean_id = clean_id.split("v=")[-1].split("&")[0]
@@ -491,10 +491,59 @@ def play_trailer(youtube_id, progress_callback=None):
     else:
         watch_url = f"https://www.youtube.com/watch?v={clean_id}"
 
-    import gi
-    from gi.repository import GLib
+    def _resolve_and_play():
+        import gi
+        from gi.repository import GLib
+        from . import database
+        import shutil
+        import subprocess
 
-    if progress_callback:
-        GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": watch_url, "is_trailer": True}))
+        # 1. Check SQLite trailer stream cache (6h TTL — YouTube tokens expire)
+        cached_url = database.get_cached_trailer_stream(clean_id, max_age_hours=6)
+        if cached_url:
+            print(f"[Trailer] Cache hit for {clean_id}")
+            if progress_callback:
+                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": cached_url, "is_trailer": True, "is_direct": True}))
+            return
 
+        # 2. Pre-resolve direct stream URL with yt-dlp CLI
+        yt_dlp_bin = shutil.which("yt-dlp")
+        if not yt_dlp_bin and os.path.exists("/app/bin/yt-dlp"):
+            yt_dlp_bin = "/app/bin/yt-dlp"
 
+        if yt_dlp_bin:
+            if progress_callback:
+                GLib.idle_add(lambda: progress_callback({"status": "Resolving trailer stream..."}))
+            try:
+                # Use format 18 (360p mp4 single stream) for fastest start, fallback to best combined
+                cmd = [
+                    yt_dlp_bin, "-g", "--no-warnings",
+                    "-f", "18/22/best[height<=720][ext=mp4]/best[height<=720]/best",
+                    "--no-playlist", "--no-check-certificates",
+                    watch_url
+                ]
+                print(f"[Trailer] Resolving: {' '.join(cmd)}")
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+                if res.returncode == 0 and res.stdout.strip():
+                    lines = [l.strip() for l in res.stdout.strip().splitlines() if l.strip()]
+                    if lines:
+                        direct_url = lines[0]
+                        print(f"[Trailer] Resolved to direct URL ({len(direct_url)} chars)")
+                        database.save_cached_trailer_stream(clean_id, direct_url)
+                        if progress_callback:
+                            GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": direct_url, "is_trailer": True, "is_direct": True}))
+                        return
+                else:
+                    err = res.stderr.strip()[:200] if res.stderr else "unknown"
+                    print(f"[Trailer] yt-dlp failed (rc={res.returncode}): {err}")
+            except subprocess.TimeoutExpired:
+                print("[Trailer] yt-dlp timed out after 12s")
+            except Exception as e:
+                print(f"[Trailer] yt-dlp error: {e}")
+
+        # 3. Fallback: pass watch_url to MPV for internal ytdl_hook resolution (slow path)
+        print(f"[Trailer] Falling back to MPV ytdl_hook for {watch_url}")
+        if progress_callback:
+            GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": watch_url, "is_trailer": True, "is_direct": False}))
+
+    threading.Thread(target=_resolve_and_play, daemon=True).start()

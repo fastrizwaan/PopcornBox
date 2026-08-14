@@ -4948,8 +4948,22 @@ class CineWindow(Adw.ApplicationWindow):
             else:
                 custom_headers[k] = v
 
-        is_youtube = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower() or "googlevideo.com" in url.lower())
-        if is_youtube:
+        is_direct_googlevideo = url and isinstance(url, str) and "googlevideo.com" in url.lower()
+        is_youtube_watch = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower())
+
+        if is_direct_googlevideo:
+            # Pre-resolved direct stream URL from yt-dlp — play directly, no ytdl_hook needed
+            self.show_player_loading(_("Loading trailer..."), title=title)
+            try:
+                # Don't override headers — googlevideo URLs work with default/no User-Agent
+                self.mpv["user-agent"] = ""
+                self.mpv["referrer"] = "https://www.youtube.com/"
+                self.mpv["http-header-fields"] = []
+                self.mpv["demuxer-lavf-o"] = ""
+            except Exception:
+                pass
+        elif is_youtube_watch:
+            # Watch URL fallback — let MPV's ytdl_hook.lua resolve (slow path)
             self.show_player_loading(_("Loading trailer..."), title=title)
             try:
                 self.mpv["user-agent"] = ""
