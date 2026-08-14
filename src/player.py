@@ -479,7 +479,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
     return None
 
 def play_trailer(youtube_id, progress_callback=None):
-    """Resolve YouTube trailer URL using yt-dlp / APIs and pass stream to player."""
+    """Resolve YouTube trailer stream using local yt-dlp for user's IP, or fallback to browser."""
     stop_player()
     
     clean_id = str(youtube_id or "").strip()
@@ -491,7 +491,7 @@ def play_trailer(youtube_id, progress_callback=None):
     watch_url = f"https://www.youtube.com/watch?v={clean_id}"
     
     def launch():
-        import gi, shutil, subprocess, json, urllib.request, os
+        import gi, shutil, subprocess, os
         from gi.repository import GLib
         from . import database, utils
 
@@ -503,80 +503,53 @@ def play_trailer(youtube_id, progress_callback=None):
         if cached_stream:
             print(f"[TRAILER CACHE] Found cached direct stream for {clean_id}")
             if progress_callback:
-                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": cached_stream}))
+                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": cached_stream, "is_trailer": True}))
             return
 
         stream_url = None
 
-        # 2. Try system / user / flatpak yt-dlp binary if available
+        # 2. Search for local yt-dlp binary (system PATH, user home, flatpak host)
         yt_dlp_bin = shutil.which("yt-dlp") or shutil.which("youtube-dl")
+        cmd_prefix = []
+
         if not yt_dlp_bin:
-            for p in ["/usr/bin/yt-dlp", "/usr/local/bin/yt-dlp", os.path.expanduser("~/.local/bin/yt-dlp"), "/app/bin/yt-dlp"]:
+            possible_paths = [
+                "/usr/bin/yt-dlp",
+                "/usr/local/bin/yt-dlp",
+                os.path.expanduser("~/.local/bin/yt-dlp"),
+                os.path.expanduser("~/.bin/yt-dlp"),
+                "/app/bin/yt-dlp",
+                "/var/usrlocal/bin/yt-dlp",
+            ]
+            for p in possible_paths:
                 if os.path.exists(p):
                     yt_dlp_bin = p
                     break
 
+        if not yt_dlp_bin and os.path.exists("/usr/bin/flatpak-spawn"):
+            yt_dlp_bin = "yt-dlp"
+            cmd_prefix = ["flatpak-spawn", "--host"]
+
         if yt_dlp_bin:
             try:
-                cmd = [yt_dlp_bin, "-g", "-f", "best[height<=720]/best", watch_url]
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+                cmd = cmd_prefix + [yt_dlp_bin, "-g", "-f", "best[height<=720]/best", watch_url]
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
                 if proc.returncode == 0 and proc.stdout.strip():
-                    stream_url = proc.stdout.strip().split("\n")[0]
+                    lines = [l.strip() for l in proc.stdout.strip().split("\n") if l.strip().startswith("http")]
+                    if lines:
+                        stream_url = lines[0]
             except Exception as e:
-                print(f"[yt-dlp] Error running binary {yt_dlp_bin}: {e}")
+                print(f"[yt-dlp] Resolution error: {e}")
 
-        # 3. Try fast parallel Piped / Invidious APIs if yt-dlp binary did not return direct URL
-        if not stream_url:
-            apis = [
-                f"https://api.piped.privacydev.net/streams/{clean_id}",
-                f"https://pipedapi.palvelintalo.fi/streams/{clean_id}",
-                f"https://pipedapi.systemli.org/streams/{clean_id}",
-                f"https://pipedapi.mha.fi/streams/{clean_id}",
-                f"https://pipedapi.lunar.icu/streams/{clean_id}",
-                f"https://inv.riverside.rocks/api/v1/videos/{clean_id}",
-                f"https://invidious.privacydev.net/api/v1/videos/{clean_id}",
-                f"https://iv.melmac.space/api/v1/videos/{clean_id}",
-                f"https://invidious.flokinet.to/api/v1/videos/{clean_id}",
-                f"https://vid.puffyan.us/api/v1/videos/{clean_id}",
-                f"https://yewtu.be/api/v1/videos/{clean_id}",
-            ]
-            def _fetch(target_url):
-                try:
-                    req = urllib.request.Request(target_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-                    with urllib.request.urlopen(req, timeout=2.5) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        # Invidious format
-                        for s in data.get("formatStreams", []):
-                            if isinstance(s, dict) and s.get("url"):
-                                return s["url"]
-                        # Piped format
-                        for s in data.get("videoStreams", []):
-                            if isinstance(s, dict) and s.get("url") and not s.get("videoOnly"):
-                                return s["url"]
-                except Exception:
-                    return None
-
-            import concurrent.futures
-            try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=len(apis)) as ex:
-                    futures = {ex.submit(_fetch, url): url for url in apis}
-                    for f in concurrent.futures.as_completed(futures, timeout=3.0):
-                        res = f.result()
-                        if res:
-                            stream_url = res
-                            break
-            except Exception as e:
-                print(f"[TRAILER RESOLVE] API fetch error: {e}")
-
-        # 4. If direct stream resolved -> Cache in DB and play in player
+        # 3. If direct stream resolved via local yt-dlp -> Cache in DB and play in player
         if stream_url:
             database.save_cached_trailer_stream(clean_id, stream_url)
             if progress_callback:
-                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": stream_url}))
+                GLib.idle_add(lambda: progress_callback({"status": "Playing Trailer!", "url": stream_url, "is_trailer": True}))
             return
 
-        # 5. Otherwise fallback: Open YouTube link in default Web Browser cleanly
-        print(f"[TRAILER RESOLVE] Direct stream unavailable, opening in browser: {watch_url}")
+        # 4. Fallback: Open YouTube link in default Web Browser cleanly
+        print(f"[TRAILER] Direct extraction failed, opening in browser: {watch_url}")
         utils.open_uri(watch_url)
         if progress_callback:
             GLib.idle_add(lambda: progress_callback({

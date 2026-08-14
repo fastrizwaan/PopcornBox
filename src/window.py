@@ -4907,6 +4907,8 @@ class CineWindow(Adw.ApplicationWindow):
 
         if referrer:
             self.mpv["referrer"] = referrer
+        elif url and isinstance(url, str) and ("googlevideo.com" in url.lower() or "youtube.com" in url.lower() or "youtu.be" in url.lower()):
+            self.mpv["referrer"] = "https://www.youtube.com/"
         else:
             self.mpv["referrer"] = ""
 
