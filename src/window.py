@@ -3886,7 +3886,13 @@ class CineWindow(Adw.ApplicationWindow):
                     logger.warning(f"File error path: {self.loaded_path}")
                     error = info["file_error"].decode("utf-8")
 
-                    if getattr(self, "stream_queue", None) and len(self.stream_queue) > 0:
+                    is_yt = self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower())
+                    if is_yt:
+                        from . import utils
+                        utils.open_uri(self.loaded_path)
+                        idle_add_once(self._show_toast, _("Opening trailer in web browser..."))
+                        idle_add_once(self._close_player)
+                    elif getattr(self, "stream_queue", None) and len(self.stream_queue) > 0:
                         idle_add_once(self._try_next_stream_in_queue)
                     else:
                         idle_add_once(self._show_toast, _("File Error") + f": {error}")
