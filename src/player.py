@@ -521,10 +521,12 @@ def play_trailer(youtube_id, progress_callback=None):
                 GLib.idle_add(lambda: progress_callback({"status": "Resolving trailer stream..."}))
             try:
                 # Use -j (dump JSON) to get both URL and http_headers in one call
+                # Force web client so URL signature matches browser User-Agent (not ANDROID_VR)
                 cmd = [
                     yt_dlp_bin, "-j", "--no-warnings",
                     "-f", "18/22/best[height<=720][ext=mp4]/best[height<=720]/best",
                     "--no-playlist", "--no-check-certificates",
+                    "--extractor-args", "youtube:player_client=web",
                     watch_url
                 ]
                 print(f"[Trailer] Resolving via yt-dlp -j ...")

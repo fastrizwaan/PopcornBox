@@ -612,8 +612,12 @@ def get_cached_trailer_stream(youtube_id, max_age_hours=24):
             row = cursor.fetchone()
             if row and row[0]:
                 updated_at = row[2]
+                ua = row[1] or ""
+                # Invalidate stale entries without user_agent (pre-migration cache)
+                if not ua and "googlevideo.com" in row[0].lower():
+                    return None
                 if (time.time() - updated_at) / 3600 < max_age_hours:
-                    return (row[0], row[1] or "")
+                    return (row[0], ua)
     except Exception as e:
         print(f"Error reading trailer stream cache: {e}")
     return None
