@@ -470,6 +470,13 @@ def _get_cache_db():
             updated_at REAL
         )
     """)
+    _cache_conn.execute("""
+        CREATE TABLE IF NOT EXISTS trailer_stream_cache (
+            youtube_id TEXT PRIMARY KEY,
+            stream_url TEXT,
+            updated_at REAL
+        )
+    """)
     _cache_conn.commit()
     _cache_db_initialized = True
     return _cache_conn
@@ -559,3 +566,36 @@ def delete_cached_streams(cache_key):
             conn.commit()
     except Exception as e:
         print(f"Error deleting cached streams: {e}")
+
+def get_cached_trailer_stream(youtube_id, max_age_hours=24):
+    if not youtube_id:
+        return None
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT stream_url, updated_at FROM trailer_stream_cache WHERE youtube_id = ?", (str(youtube_id),))
+            row = cursor.fetchone()
+            if row and row[0]:
+                updated_at = row[1]
+                if (time.time() - updated_at) / 3600 < max_age_hours:
+                    return row[0]
+    except Exception as e:
+        print(f"Error reading trailer stream cache: {e}")
+    return None
+
+def save_cached_trailer_stream(youtube_id, stream_url):
+    if not youtube_id or not stream_url:
+        return
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO trailer_stream_cache (youtube_id, stream_url, updated_at) VALUES (?, ?, ?)",
+                (str(youtube_id), str(stream_url), time.time())
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"Error saving trailer stream cache: {e}")
+

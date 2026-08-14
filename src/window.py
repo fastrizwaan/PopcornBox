@@ -1541,11 +1541,20 @@ class MovieDetailsPage(Gtk.Overlay):
         if self.window:
             self.window.show_player_loading("Resolving trailer stream...")
         def progress_callback(stats):
-            url = stats.get("url") if isinstance(stats, dict) else None
+            if not isinstance(stats, dict): return
+            url = stats.get("url")
             if url and self.window:
                 trailer_title = f"{self.movie_stub.get('name') or self.movie_stub.get('title', 'Unknown Title')} (Trailer)"
                 self.window._play_stream(url, trailer_title)
-            elif isinstance(stats, dict) and stats.get("status"):
+            elif stats.get("closed") or stats.get("opened_browser"):
+                if self.window:
+                    if hasattr(self.window, 'hide_player_loading'):
+                        self.window.hide_player_loading()
+                    elif hasattr(self.window, 'overlay_stack'):
+                        self.window.overlay_stack.set_visible_child_name("movie_details")
+                if stats.get("status") and hasattr(self.window, '_show_toast'):
+                    self.window._show_toast(stats.get("status"))
+            elif stats.get("status"):
                 if hasattr(self, 'progress_label') and self.progress_label:
                     self.progress_label.set_text(stats.get("status"))
                 if self.window:

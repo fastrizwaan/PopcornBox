@@ -637,6 +637,35 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
                 except Exception as e:
                     print(f"[IMDb API] Failed for {imdb_id}: {e}")
 
+    if existing and existing.get("trailer") and not res.get("trailer"):
+        res["trailer"] = existing["trailer"]
+
+    if not res.get("trailer") and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
+        try:
+            c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
+            tmdb_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
+            tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168, timeout=4)
+            if tmdb_data and "meta" in tmdb_data:
+                tm_meta = tmdb_data["meta"]
+                tr_id = tm_meta.get("trailer")
+                if not tr_id:
+                    for ts in tm_meta.get("trailerStreams", []):
+                        if isinstance(ts, dict) and ts.get("ytId"):
+                            tr_id = ts.get("ytId")
+                            break
+                if not tr_id:
+                    for t in tm_meta.get("trailers", []):
+                        if isinstance(t, dict):
+                            tr_id = t.get("source") or t.get("ytId")
+                        elif isinstance(t, str):
+                            tr_id = t
+                        if tr_id: break
+                if tr_id:
+                    res["trailer"] = tr_id
+                    print(f"[TMDB Trailer Fallback] Saved trailer for {imdb_id}: {tr_id}")
+        except Exception as e:
+            print(f"[TMDB Trailer Fallback] Failed for {imdb_id}: {e}")
+
     if existing and existing.get("background") and not res.get("background"):
         res["background"] = existing["background"]
 
