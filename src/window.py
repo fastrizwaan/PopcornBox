@@ -4939,34 +4939,36 @@ class CineWindow(Adw.ApplicationWindow):
             else:
                 custom_headers[k] = v
 
-        if user_agent:
-            self.mpv["user-agent"] = user_agent
-        else:
-            self.mpv["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-        if referrer:
-            self.mpv["referrer"] = referrer
-        elif url and isinstance(url, str) and ("googlevideo.com" in url.lower() or "youtube.com" in url.lower() or "youtu.be" in url.lower()):
-            self.mpv["referrer"] = "https://www.youtube.com/"
-        else:
-            self.mpv["referrer"] = ""
-
-        if custom_headers:
-            header_fields = [f"{k}: {v}" for k, v in custom_headers.items()]
-            self.mpv["http-header-fields"] = header_fields
-        else:
-            self.mpv["http-header-fields"] = []
-            
-        is_direct_yt = url and isinstance(url, str) and ("googlevideo.com" in url.lower() or "youtube.com" in url.lower() or "youtu.be" in url.lower())
-        if is_youtube_trailer or is_direct_yt:
+        is_youtube = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower() or "googlevideo.com" in url.lower())
+        if is_youtube:
+            self.show_player_loading(_("Loading trailer..."), title=title)
             try:
+                self.mpv["user-agent"] = ""
+                self.mpv["referrer"] = "https://www.youtube.com/"
+                self.mpv["http-header-fields"] = []
                 self.mpv["ytdl-raw-options"] = "no-playlist="
                 self.mpv["ytdl-format"] = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
-                self.mpv["referrer"] = "https://www.youtube.com/"
                 self.mpv["demuxer-lavf-o"] = ""
             except Exception:
                 pass
         else:
+            self.hide_player_loading()
+            if user_agent:
+                self.mpv["user-agent"] = user_agent
+            else:
+                self.mpv["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+            if referrer:
+                self.mpv["referrer"] = referrer
+            else:
+                self.mpv["referrer"] = ""
+
+            if custom_headers:
+                header_fields = [f"{k}: {v}" for k, v in custom_headers.items()]
+                self.mpv["http-header-fields"] = header_fields
+            else:
+                self.mpv["http-header-fields"] = []
+
             try:
                 self.mpv["demuxer-lavf-o"] = "probesize=1000000,analyzeduration=1000000"
                 self.mpv["demuxer-readahead-secs"] = 2
