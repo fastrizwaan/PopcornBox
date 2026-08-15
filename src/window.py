@@ -199,15 +199,6 @@ class MovieDetailsPage(Gtk.Overlay):
         self.reload_btn.connect("clicked", on_reload)
         self.header_bar.pack_start(self.reload_btn)
 
-        self.detail_fav_btn = Gtk.Button(icon_name="starred-symbolic")
-        self.detail_fav_btn.set_tooltip_text("Add to Favorites")
-        self.detail_fav_btn.add_css_class("flat")
-        self.header_bar.pack_start(self.detail_fav_btn)
-
-        self.detail_seen_btn = Gtk.Button(icon_name="eye-open-negative-filled-symbolic")
-        self.detail_seen_btn.set_tooltip_text("Mark as Seen")
-        self.detail_seen_btn.add_css_class("flat")
-        self.header_bar.pack_start(self.detail_seen_btn)
 
         menu_btn = Gtk.MenuButton()
         menu_btn.set_icon_name("open-menu-symbolic")
@@ -269,9 +260,22 @@ class MovieDetailsPage(Gtk.Overlay):
         self.copy_btn.add_css_class("circular")
         title_hbox.append(self.copy_btn)
 
+        self.detail_fav_btn = Gtk.Button(icon_name="starred-symbolic")
+        self.detail_fav_btn.set_tooltip_text("Add to Favorites")
+        self.detail_fav_btn.add_css_class("flat")
+        self.detail_fav_btn.add_css_class("circular")
+        title_hbox.append(self.detail_fav_btn)
+
+        self.detail_seen_btn = Gtk.Button(icon_name="eye-open-negative-filled-symbolic")
+        self.detail_seen_btn.set_tooltip_text("Mark as Seen")
+        self.detail_seen_btn.add_css_class("flat")
+        self.detail_seen_btn.add_css_class("circular")
+        title_hbox.append(self.detail_seen_btn)
+
         self.g_btn = Gtk.Button(label="Google")
         self.g_btn.set_tooltip_text("Search Online")
         self.g_btn.add_css_class("flat")
+        self.g_btn.add_css_class("pill")
         title_hbox.append(self.g_btn)
 
         self.trailer_btn = Gtk.Button()
@@ -284,7 +288,7 @@ class MovieDetailsPage(Gtk.Overlay):
         self.trailer_box.append(self.trailer_spinner)
         self.trailer_box.append(self.trailer_label)
         self.trailer_btn.set_child(self.trailer_box)
-        self.trailer_btn.add_css_class("trailer-btn")
+        self.trailer_btn.add_css_class("pill")
         self.trailer_btn.set_tooltip_text("Watch Trailer")
         title_hbox.append(self.trailer_btn)
 
