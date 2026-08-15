@@ -253,11 +253,9 @@ class MovieDetailsPage(Gtk.Overlay):
         self.title_label.set_halign(Gtk.Align.START)
         self.title_label.set_wrap(True)
         title_hbox.append(self.title_label)
-        meta_detail_vbox.append(title_hbox)
 
         action_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         action_hbox.set_valign(Gtk.Align.CENTER)
-        action_hbox.set_margin_bottom(4)
 
         self.copy_btn = Gtk.Button(icon_name="edit-copy-symbolic")
         self.copy_btn.set_tooltip_text("Copy Title")
@@ -297,7 +295,18 @@ class MovieDetailsPage(Gtk.Overlay):
         self.trailer_btn.set_tooltip_text("Watch Trailer")
         action_hbox.append(self.trailer_btn)
 
-        meta_detail_vbox.append(action_hbox)
+        title_flowbox = Gtk.FlowBox()
+        title_flowbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        title_flowbox.set_column_spacing(16)
+        title_flowbox.set_row_spacing(8)
+        title_flowbox.set_valign(Gtk.Align.START)
+        
+        # In a FlowBox, children wrap based on their natural sizes.
+        # We append both the title and action boxes to it.
+        title_flowbox.append(title_hbox)
+        title_flowbox.append(action_hbox)
+        
+        meta_detail_vbox.append(title_flowbox)
 
         meta_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         meta_hbox.set_valign(Gtk.Align.CENTER)
