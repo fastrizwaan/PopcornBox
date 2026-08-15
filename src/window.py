@@ -297,9 +297,10 @@ class MovieDetailsPage(Gtk.Overlay):
 
         title_flowbox = Gtk.FlowBox()
         title_flowbox.set_selection_mode(Gtk.SelectionMode.NONE)
-        title_flowbox.set_column_spacing(16)
+        title_flowbox.set_column_spacing(6)
         title_flowbox.set_row_spacing(8)
         title_flowbox.set_valign(Gtk.Align.START)
+        title_flowbox.set_halign(Gtk.Align.START)
         
         # In a FlowBox, children wrap based on their natural sizes.
         # We append both the title and action boxes to it.
