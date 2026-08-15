@@ -519,9 +519,9 @@ cine-list-view row:last-child>box {
 
 /* Trailer Highlighted Button */
 button.trailer-btn {
-  background: rgba(255, 68, 68, 0.18);
-  border: 1px solid rgba(255, 68, 68, 0.35);
-  color: #ff6b6b;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #eeeeee;
   border-radius: 8px;
   padding: 4px 10px;
   font-weight: 600;
@@ -529,10 +529,10 @@ button.trailer-btn {
 }
 
 button.trailer-btn:hover {
-  background: rgba(255, 68, 68, 0.32);
-  border-color: rgba(255, 90, 90, 0.7);
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.25);
   color: #ffffff;
-  box-shadow: 0 0 10px rgba(255, 68, 68, 0.35);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
 }
 
 button.trailer-btn:active {
