@@ -245,7 +245,7 @@ class MovieDetailsPage(Gtk.Overlay):
         meta_detail_vbox.set_hexpand(True)
 
         title_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        title_hbox.set_valign(Gtk.Align.CENTER)
+        title_hbox.set_valign(Gtk.Align.START)
         
         title_str = self.movie_stub.get("title", "")
         self.title_label = Gtk.Label(label=title_str if title_str else "Loading...")
@@ -253,29 +253,35 @@ class MovieDetailsPage(Gtk.Overlay):
         self.title_label.set_halign(Gtk.Align.START)
         self.title_label.set_wrap(True)
         title_hbox.append(self.title_label)
+        meta_detail_vbox.append(title_hbox)
+
+        action_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        action_hbox.set_valign(Gtk.Align.CENTER)
+        action_hbox.set_margin_bottom(4)
 
         self.copy_btn = Gtk.Button(icon_name="edit-copy-symbolic")
         self.copy_btn.set_tooltip_text("Copy Title")
         self.copy_btn.add_css_class("flat")
         self.copy_btn.add_css_class("circular")
-        title_hbox.append(self.copy_btn)
+        action_hbox.append(self.copy_btn)
 
         self.detail_fav_btn = Gtk.Button(icon_name="starred-symbolic")
         self.detail_fav_btn.set_tooltip_text("Add to Favorites")
         self.detail_fav_btn.add_css_class("flat")
         self.detail_fav_btn.add_css_class("circular")
-        title_hbox.append(self.detail_fav_btn)
+        action_hbox.append(self.detail_fav_btn)
 
         self.detail_seen_btn = Gtk.Button(icon_name="eye-open-negative-filled-symbolic")
         self.detail_seen_btn.set_tooltip_text("Mark as Seen")
         self.detail_seen_btn.add_css_class("flat")
         self.detail_seen_btn.add_css_class("circular")
-        title_hbox.append(self.detail_seen_btn)
+        action_hbox.append(self.detail_seen_btn)
 
-        self.g_btn = Gtk.Button(label="Google")
+        self.g_btn = Gtk.Button(icon_name="goa-account-google-symbolic")
         self.g_btn.set_tooltip_text("Search Online")
         self.g_btn.add_css_class("flat")
-        title_hbox.append(self.g_btn)
+        self.g_btn.add_css_class("circular")
+        action_hbox.append(self.g_btn)
 
         self.trailer_btn = Gtk.Button()
         self.trailer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -289,9 +295,9 @@ class MovieDetailsPage(Gtk.Overlay):
         self.trailer_btn.set_child(self.trailer_box)
         self.trailer_btn.add_css_class("trailer-btn")
         self.trailer_btn.set_tooltip_text("Watch Trailer")
-        title_hbox.append(self.trailer_btn)
+        action_hbox.append(self.trailer_btn)
 
-        meta_detail_vbox.append(title_hbox)
+        meta_detail_vbox.append(action_hbox)
 
         meta_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         meta_hbox.set_valign(Gtk.Align.CENTER)
