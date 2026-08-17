@@ -55,5 +55,11 @@
     <file alias="popcorn-anime-symbolic.svg">../data/icons/scalable/actions/popcorn-anime-symbolic.svg</file>
     <file alias="popcorn-movies-symbolic.svg">../data/icons/scalable/actions/popcorn-movies-symbolic.svg</file>
     <file alias="popcorn-tv-series-symbolic.svg">../data/icons/scalable/actions/popcorn-tv-series-symbolic.svg</file>
+    <file alias="eye-closed-symbolic.svg">../data/icons/scalable/actions/eye-closed-symbolic.svg</file>
+    <file alias="eye-open-negative-filled-symbolic.svg">../data/icons/scalable/actions/eye-open-negative-filled-symbolic.svg</file>
+    <file alias="heart-filled-symbolic.svg">../data/icons/scalable/actions/heart-filled-symbolic.svg</file>
+    <file alias="non-starred-symbolic.svg">../data/icons/scalable/actions/non-starred-symbolic.svg</file>
+    <file alias="starred-symbolic.svg">../data/icons/scalable/actions/starred-symbolic.svg</file>
+    <file alias="star-outline-rounded-symbolic.svg">../data/icons/scalable/actions/star-outline-rounded-symbolic.svg</file>
   </gresource>
 </gresources>

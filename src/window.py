@@ -263,13 +263,13 @@ class MovieDetailsPage(Gtk.Overlay):
         self.copy_btn.add_css_class("circular")
         action_hbox.append(self.copy_btn)
 
-        self.detail_fav_btn = Gtk.Button(icon_name="starred-symbolic")
+        self.detail_fav_btn = Gtk.Button(icon_name="non-starred-symbolic")
         self.detail_fav_btn.set_tooltip_text("Add to Favorites")
         self.detail_fav_btn.add_css_class("flat")
         self.detail_fav_btn.add_css_class("circular")
         action_hbox.append(self.detail_fav_btn)
 
-        self.detail_seen_btn = Gtk.Button(icon_name="eye-open-negative-filled-symbolic")
+        self.detail_seen_btn = Gtk.Button(icon_name="eye-closed-symbolic")
         self.detail_seen_btn.set_tooltip_text("Mark as Seen")
         self.detail_seen_btn.add_css_class("flat")
         self.detail_seen_btn.add_css_class("circular")
@@ -1046,8 +1046,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if database.is_favorite(item_id):
             database.remove_favorite(item_id)
             self.detail_fav_btn.set_tooltip_text("Add to Favorites")
-            self.detail_fav_btn.set_icon_name("starred-symbolic")
-            self.detail_fav_btn.remove_css_class("suggested-action")
+            self.detail_fav_btn.set_icon_name("non-starred-symbolic")
         else:
             database.add_favorite({
                 "id": item_id,
@@ -1057,8 +1056,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 "type": self.media_type
             })
             self.detail_fav_btn.set_tooltip_text("Remove from Favorites")
-            self.detail_fav_btn.set_icon_name("emblem-favorite-symbolic")
-            self.detail_fav_btn.add_css_class("suggested-action")
+            self.detail_fav_btn.set_icon_name("starred-symbolic")
 
     def toggle_watched(self, details):
         from . import database
@@ -1066,7 +1064,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if database.is_watched(item_id):
             database.remove_watched(item_id)
             self.detail_seen_btn.set_tooltip_text("Mark as Seen")
-            self.detail_seen_btn.remove_css_class("suggested-action")
+            self.detail_seen_btn.set_icon_name("eye-closed-symbolic")
         else:
             database.add_watched({
                 "id": item_id,
@@ -1076,7 +1074,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 "type": self.media_type
             })
             self.detail_seen_btn.set_tooltip_text("Marked as Seen")
-            self.detail_seen_btn.add_css_class("suggested-action")
+            self.detail_seen_btn.set_icon_name("eye-open-negative-filled-symbolic")
 
     def build_ui(self, details):
         if not details: return
@@ -1196,21 +1194,19 @@ class MovieDetailsPage(Gtk.Overlay):
             
         item_id = details.get("id")
         if database.is_favorite(item_id):
-            self.detail_fav_btn.set_icon_name("emblem-favorite-symbolic")
-            self.detail_fav_btn.set_tooltip_text("Remove from Favorites")
-            self.detail_fav_btn.add_css_class("suggested-action")
-        else:
             self.detail_fav_btn.set_icon_name("starred-symbolic")
+            self.detail_fav_btn.set_tooltip_text("Remove from Favorites")
+        else:
+            self.detail_fav_btn.set_icon_name("non-starred-symbolic")
             self.detail_fav_btn.set_tooltip_text("Add to Favorites")
-            self.detail_fav_btn.remove_css_class("suggested-action")
         self._fav_btn_hid = self.detail_fav_btn.connect("clicked", lambda x: self.toggle_favorite(details))
 
         if database.is_watched(item_id):
+            self.detail_seen_btn.set_icon_name("eye-open-negative-filled-symbolic")
             self.detail_seen_btn.set_tooltip_text("Marked as Seen")
-            self.detail_seen_btn.add_css_class("suggested-action")
         else:
+            self.detail_seen_btn.set_icon_name("eye-closed-symbolic")
             self.detail_seen_btn.set_tooltip_text("Mark as Seen")
-            self.detail_seen_btn.remove_css_class("suggested-action")
         self._seen_btn_hid = self.detail_seen_btn.connect("clicked", lambda x: self.toggle_watched(details))
 
         trailer_url = details.get("trailer")
