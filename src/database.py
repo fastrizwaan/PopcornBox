@@ -300,9 +300,58 @@ def remove_history(item_id):
 # --- Continue Watching ---
 
 def get_continue_watching():
-    """Return list of in-progress items ordered by last_watched descending."""
-    items = _read_db().get("continue_watching", [])
-    return sorted(items, key=lambda x: x.get("last_watched", 0), reverse=True)
+    """Return list of in-progress and played items ordered by last_watched descending."""
+    db = _read_db()
+    cw_items = list(db.get("continue_watching", []))
+    removed_set = set(db.get("removed_continue_watching", []))
+    
+    seen_ids = set()
+    valid_cw = []
+    for item in cw_items:
+        i_id = item.get("id") or item.get("imdb_id")
+        if i_id and str(i_id) not in removed_set:
+            seen_ids.add(str(i_id))
+            valid_cw.append(item)
+
+    # Merge played items from history if not explicitly removed
+    history_items = db.get("history", [])
+    for h in history_items:
+        h_id = h.get("id") or h.get("imdb_id")
+        if h_id and str(h_id) not in seen_ids and str(h_id) not in removed_set:
+            seen_ids.add(str(h_id))
+            item_copy = dict(h)
+            if "progress" not in item_copy:
+                item_copy["progress"] = 0.2
+            valid_cw.append(item_copy)
+
+    return sorted(valid_cw, key=lambda x: x.get("last_watched", 0), reverse=True)
+
+def get_continue_watching_item(item_id):
+    """Get continue watching item for a given item_id/imdb_id if available."""
+    if not item_id:
+        return None
+    db = _read_db()
+    cw_items = list(db.get("continue_watching", []))
+    removed_set = set(db.get("removed_continue_watching", []))
+    ids_to_match = [str(x) for x in item_id] if isinstance(item_id, list) else [str(item_id)]
+    
+    for mid in ids_to_match:
+        if mid in removed_set:
+            return None
+            
+    for item in cw_items:
+        i_id = item.get("id") or item.get("imdb_id")
+        if i_id and str(i_id) in ids_to_match:
+            return item
+            
+    for h in db.get("history", []):
+        h_id = h.get("id") or h.get("imdb_id")
+        if h_id and str(h_id) in ids_to_match and str(h_id) not in removed_set:
+            item_copy = dict(h)
+            if "progress" not in item_copy:
+                item_copy["progress"] = 0.2
+            return item_copy
+    return None
 
 def save_continue_watching(item):
     """Save or update an in-progress item in continue_watching."""
@@ -314,6 +363,10 @@ def save_continue_watching(item):
     with _db_lock:
         db = _read_db()
         cw = db.setdefault("continue_watching", [])
+        removed_set = set(db.get("removed_continue_watching", []))
+        removed_set.discard(str(item_id))
+        db["removed_continue_watching"] = list(removed_set)
+        
         existing = None
         new_cw = []
         for entry in cw:
@@ -330,7 +383,7 @@ def save_continue_watching(item):
             updated_item["last_watched"] = int(time.time())
 
         new_cw.insert(0, updated_item)
-        db["continue_watching"] = new_cw[:50]
+        db["continue_watching"] = new_cw[:100]
         _write_db(db)
 
 def remove_continue_watching(item_id):
@@ -344,6 +397,9 @@ def remove_continue_watching(item_id):
             e for e in cw 
             if e.get("id") != item_id and e.get("imdb_id") != item_id
         ]
+        removed_set = set(db.get("removed_continue_watching", []))
+        removed_set.add(str(item_id))
+        db["removed_continue_watching"] = list(removed_set)[-200:]
         _write_db(db)
 
 # --- Downloads ---

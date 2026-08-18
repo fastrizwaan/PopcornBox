@@ -346,12 +346,13 @@ flowboxchild:selected {
 }
 
 .continue-play-circle {
-  background-color: rgba(18, 18, 24, 0.65);
+  background-color: rgba(18, 18, 24, 0.75);
   color: #ffffff;
   border-radius: 9999px;
-  min-width: 42px;
-  min-height: 42px;
-  border: 1.5px solid rgba(255, 255, 255, 0.35);
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1.5px solid rgba(255, 255, 255, 0.4);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
   transition: all 200ms cubic-bezier(0.25, 0.8, 0.25, 1);
 }
@@ -359,9 +360,22 @@ flowboxchild:selected {
 .pt-card:hover .continue-play-circle {
   background-color: #3584e4;
   color: #ffffff;
-  border-color: rgba(255, 255, 255, 0.6);
+  border-color: rgba(255, 255, 255, 0.7);
   transform: scale(1.12);
   box-shadow: 0 4px 18px rgba(53, 132, 228, 0.6);
+}
+
+.pt-card .continue-play-circle:hover,
+button.continue-play-btn:hover {
+  background-color: #1c71d8;
+  border-color: #ffffff;
+  transform: scale(1.24);
+  box-shadow: 0 6px 22px rgba(53, 132, 228, 0.85);
+}
+
+.pt-card .continue-play-circle:active,
+button.continue-play-btn:active {
+  transform: scale(1.06);
 }
 
 .continue-progress-bar trough {
@@ -645,6 +659,30 @@ button.trailer-btn:disabled {
   background: rgba(255, 255, 255, 0.05);
   border-color: transparent;
   color: rgba(255, 255, 255, 0.3);
+}
+
+/* Continue Watching Button in Details Page */
+button.continue-details-btn {
+  background: #3584e4;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-weight: 600;
+  transition: all 180ms ease-in-out;
+  box-shadow: 0 2px 8px rgba(53, 132, 228, 0.4);
+}
+
+button.continue-details-btn:hover {
+  background: #1c71d8;
+  border-color: rgba(255, 255, 255, 0.55);
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(53, 132, 228, 0.65);
+  transform: scale(1.03);
+}
+
+button.continue-details-btn:active {
+  transform: scale(0.96);
 }
 
 /* Local Nav Buttons */

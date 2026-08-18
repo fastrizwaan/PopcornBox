@@ -281,6 +281,19 @@ class MovieDetailsPage(Gtk.Overlay):
         self.g_btn.add_css_class("circular")
         action_hbox.append(self.g_btn)
 
+        self.continue_btn = Gtk.Button()
+        self.continue_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.continue_icon = Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
+        self.continue_label = Gtk.Label(label="Continue")
+        self.continue_box.append(self.continue_icon)
+        self.continue_box.append(self.continue_label)
+        self.continue_btn.set_child(self.continue_box)
+        self.continue_btn.add_css_class("continue-details-btn")
+        self.continue_btn.set_tooltip_text("Continue Watching")
+        self.continue_btn.set_visible(False)
+        action_hbox.append(self.continue_btn)
+        self._continue_btn_hid = None
+
         self.trailer_btn = Gtk.Button()
         self.trailer_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.trailer_icon = Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
@@ -607,6 +620,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self.stream_back_btn.set_visible(False)
 
         # Initial Metadata Loading
+        self.update_continue_btn()
         item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
         primary_id = item_id[0] if isinstance(item_id, list) else item_id
         cached_details = database.get_cached_metadata(primary_id)
@@ -1076,6 +1090,61 @@ class MovieDetailsPage(Gtk.Overlay):
             self.detail_seen_btn.set_tooltip_text("Marked as Seen")
             self.detail_seen_btn.set_icon_name("eye-open-negative-filled-symbolic")
 
+    def update_continue_btn(self, details=None):
+        from . import database
+        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
+        primary_id = item_id[0] if isinstance(item_id, list) else item_id
+        if not primary_id and details:
+            primary_id = details.get("id") or details.get("imdb_id")
+
+        cw_item = database.get_continue_watching_item(primary_id)
+        if not cw_item and (self.movie_stub.get("stream_queue") or self.movie_stub.get("stream_url") or self.movie_stub.get("magnet") or float(self.movie_stub.get("position") or 0) > 0):
+            cw_item = self.movie_stub
+
+        if not cw_item:
+            self.continue_btn.set_visible(False)
+            return
+
+        # Determine label and tooltip
+        pos = float(cw_item.get("position") or 0.0)
+        dur = float(cw_item.get("duration") or 0.0)
+        season = cw_item.get("season")
+        episode = cw_item.get("episode")
+        
+        lbl_parts = ["Continue"]
+        if season is not None and episode is not None:
+            lbl_parts.append(f"S{season}:E{episode}")
+            if dur > pos and pos > 0:
+                rem_mins = int((dur - pos) / 60)
+                if rem_mins > 0:
+                    lbl_parts.append(f"({rem_mins}m left)")
+        elif dur > pos and pos > 0:
+            rem_mins = int((dur - pos) / 60)
+            if rem_mins > 0:
+                lbl_parts.append(f"({rem_mins}m left)")
+                
+        lbl_text = " ".join(lbl_parts)
+        self.continue_label.set_text(lbl_text)
+        self.continue_btn.set_visible(True)
+
+        if hasattr(self, '_continue_btn_hid') and self._continue_btn_hid:
+            try:
+                self.continue_btn.disconnect(self._continue_btn_hid)
+            except Exception:
+                pass
+            self._continue_btn_hid = None
+
+        def on_continue_clicked(btn):
+            if self.window and hasattr(self.window, "_on_continue_watching_clicked"):
+                play_data = dict(cw_item)
+                if not play_data.get("title"):
+                    play_data["title"] = (details or {}).get("title") or self.movie_stub.get("title") or self.movie_stub.get("name")
+                if not play_data.get("type"):
+                    play_data["type"] = self.media_type
+                self.window._on_continue_watching_clicked(play_data)
+
+        self._continue_btn_hid = self.continue_btn.connect("clicked", on_continue_clicked)
+
     def build_ui(self, details):
         if not details: return
         self.movie_details = details
@@ -1117,7 +1186,7 @@ class MovieDetailsPage(Gtk.Overlay):
         # to avoid duplicate callbacks when build_ui() is called a second time.
         for attr in ('_copy_btn_hid', '_g_btn_hid', '_imdb_btn_hid',
                      '_fav_btn_hid', '_seen_btn_hid', '_trailer_btn_hid',
-                     '_ep_dropdown_hid', '_season_dropdown_hid'):
+                     '_continue_btn_hid', '_ep_dropdown_hid', '_season_dropdown_hid'):
             hid = getattr(self, attr, None)
             if hid:
                 try:
@@ -1128,6 +1197,7 @@ class MovieDetailsPage(Gtk.Overlay):
                         '_fav_btn_hid': self.detail_fav_btn,
                         '_seen_btn_hid': self.detail_seen_btn,
                         '_trailer_btn_hid': self.trailer_btn,
+                        '_continue_btn_hid': self.continue_btn,
                         '_ep_dropdown_hid': self.episode_dropdown,
                         '_season_dropdown_hid': self.season_dropdown,
                     }[attr]
@@ -1209,6 +1279,8 @@ class MovieDetailsPage(Gtk.Overlay):
             self.detail_seen_btn.set_tooltip_text("Mark as Seen")
         self._seen_btn_hid = self.detail_seen_btn.connect("clicked", lambda x: self.toggle_watched(details))
 
+        self.update_continue_btn(details)
+
         trailer_url = details.get("trailer")
         self.trailer_url = trailer_url
         self.reset_trailer_btn_ui()
@@ -1281,7 +1353,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.episode_dropdown.set_model(Gtk.StringList.new(ep_strings))
                     ep_nums = [e.get('episode') for e in unique_eps]
                     
-                    saved_ep = database.get_setting(f"last_ep_{item_id}_{s}", None) if item_id else None
+                    saved_ep = self.movie_stub.get("episode") or (database.get_setting(f"last_ep_{item_id}_{s}", None) if item_id else None)
                     if saved_ep in ep_nums:
                         default_ep_idx = ep_nums.index(saved_ep)
                     else:
@@ -1298,7 +1370,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self._season_dropdown_hid = self.season_dropdown.connect("notify::selected", on_season_changed)
             
             if self.seasons:
-                saved_s = database.get_setting(f"last_s_{item_id}", None) if item_id else None
+                saved_s = self.movie_stub.get("season") or (database.get_setting(f"last_s_{item_id}", None) if item_id else None)
                 if saved_s in self.seasons:
                     default_s_idx = self.seasons.index(saved_s)
                 else:
@@ -3183,23 +3255,24 @@ class CineWindow(Adw.ApplicationWindow):
 
             # Track Continue Watching progress
             if getattr(self, "_current_playing_item", None):
-                if duration > 30 and curr_time > 5:
-                    prog = min(1.0, max(0.0, curr_time / duration))
-                    self._current_playing_item["position"] = curr_time
-                    self._current_playing_item["duration"] = duration
-                    self._current_playing_item["progress"] = prog
-                    
-                    last_cw_save = getattr(self, "_last_cw_save_time", 0)
-                    import time
-                    now = time.time()
-                    if now - last_cw_save >= 8:
-                        self._last_cw_save_time = now
-                        from . import database
-                        if prog >= 0.92:
-                            item_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
-                            database.remove_continue_watching(item_id)
-                        else:
-                            database.save_continue_watching(self._current_playing_item)
+                prog = min(1.0, max(0.0, curr_time / duration)) if duration > 0 else 0.0
+                self._current_playing_item["position"] = curr_time
+                self._current_playing_item["duration"] = duration
+                self._current_playing_item["progress"] = prog
+                
+                last_cw_save = getattr(self, "_last_cw_save_time", 0)
+                import time
+                now = time.time()
+                if now - last_cw_save >= 4:
+                    self._last_cw_save_time = now
+                    from . import database
+                    if prog >= 0.92:
+                        item_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
+                        database.remove_continue_watching(item_id)
+                    else:
+                        database.save_continue_watching(self._current_playing_item)
+                    if hasattr(self, "_update_continue_watching_section"):
+                        self._update_continue_watching_section()
         except mpv.ShutdownError:
             pass
 
@@ -4709,11 +4782,18 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_continue_watching_clicked(self, item_data):
         stream_url = item_data.get("stream_url")
         magnet = item_data.get("magnet")
+        title = item_data.get("title") or item_data.get("name") or "Stream"
+        if not magnet and not stream_url and item_data.get("hash"):
+            from . import api
+            t_name = item_data.get("stream_title") or title
+            magnet = api.build_magnet(item_data.get("hash"), t_name)
         stream_queue = item_data.get("stream_queue")
         position = float(item_data.get("position") or 0.0)
-        title = item_data.get("title") or item_data.get("name") or "Stream"
         
         self._current_playing_item = dict(item_data)
+        
+        curr_page = self.main_stack.get_visible_child_name() or "discover"
+        prev_page = "details" if curr_page == "details" else "discover"
         
         if stream_queue and len(stream_queue) > 0:
             q_idx = int(item_data.get("stream_queue_index") or 0)
@@ -4721,7 +4801,7 @@ class CineWindow(Adw.ApplicationWindow):
                 stream_queue,
                 initial_index=q_idx,
                 title=title,
-                previous_page="discover",
+                previous_page=prev_page,
                 season=item_data.get("season"),
                 episode=item_data.get("episode"),
                 imdb_id=item_data.get("id") or item_data.get("imdb_id"),
@@ -4739,7 +4819,7 @@ class CineWindow(Adw.ApplicationWindow):
                 GLib.timeout_add(800, _seek_pos)
         elif magnet or (stream_url and str(stream_url).startswith(("http://", "https://", "magnet:"))):
             target = stream_url or magnet
-            self.previous_page_before_player = "discover"
+            self.previous_page_before_player = prev_page
             self._play_stream(target, title)
             if position > 0:
                 def _seek_pos():
@@ -4760,7 +4840,11 @@ class CineWindow(Adw.ApplicationWindow):
         if item_id:
             database.remove_continue_watching(item_id)
         parent = widget.get_parent()
-        if parent:
+        if parent and isinstance(parent, Gtk.FlowBoxChild):
+            flowbox = parent.get_parent()
+            if flowbox:
+                flowbox.remove(parent)
+        elif parent:
             parent.remove(widget)
             if not parent.get_first_child():
                 grandparent = parent.get_parent()
@@ -4853,45 +4937,109 @@ class CineWindow(Adw.ApplicationWindow):
                     
         return rows
 
+    def _open_continue_watching_grid(self):
+        from . import database
+        from .movie_widget import ContinueWatchingWidget
+        
+        while child := self.content_flowbox.get_first_child():
+            self.content_flowbox.remove(child)
+            
+        cw_items = database.get_continue_watching()
+        for item in cw_items:
+            card = ContinueWatchingWidget(
+                item,
+                self._on_movie_clicked,
+                on_remove_clicked=self._on_remove_continue_watching,
+                on_play_clicked=self._on_continue_watching_clicked
+            )
+            self.content_flowbox.append(card)
+            
+        self.discover_grid_title.set_text(_("Continue Watching"))
+        self.discover_back_box.set_visible(True)
+        self.library_stack.set_visible_child_name("content")
+
+    def _update_continue_watching_section(self):
+        if not hasattr(self, "discover_box"):
+            return
+        from . import database
+        from .movie_widget import ContinueWatchingWidget
+        
+        cw_items = database.get_continue_watching()
+        
+        existing_header = getattr(self, "_cw_header_widget", None)
+        existing_scroll = getattr(self, "_cw_scroll_widget", None)
+        
+        if not cw_items:
+            if existing_header and existing_header.get_parent() == self.discover_box:
+                self.discover_box.remove(existing_header)
+            if existing_scroll and existing_scroll.get_parent() == self.discover_box:
+                self.discover_box.remove(existing_scroll)
+            self._cw_header_widget = None
+            self._cw_scroll_widget = None
+            return
+            
+        if not existing_header or existing_header.get_parent() != self.discover_box:
+            cw_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            cw_header.add_css_class("discover-section-header")
+            
+            lbl = Gtk.Label(label=_("Continue Watching"), halign=Gtk.Align.START)
+            lbl.add_css_class("discover-section-title")
+            cw_header.append(lbl)
+            
+            see_all_btn = Gtk.Button(label=_("See All"))
+            see_all_btn.add_css_class("discover-see-all-btn")
+            see_all_btn.add_css_class("flat")
+            see_all_btn.set_halign(Gtk.Align.END)
+            see_all_btn.set_hexpand(True)
+            see_all_btn.connect("clicked", lambda *a: self._open_continue_watching_grid())
+            cw_header.append(see_all_btn)
+            
+            self._cw_header_widget = cw_header
+            self.discover_box.prepend(cw_header)
+        else:
+            cw_header = existing_header
+
+        if not existing_scroll or existing_scroll.get_parent() != self.discover_box:
+            cw_scroll = Gtk.ScrolledWindow()
+            cw_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+            cw_scroll.set_hexpand(True)
+            cw_scroll.add_css_class("discover-row-scroll")
+            self._cw_scroll_widget = cw_scroll
+            self.discover_box.insert_child_after(cw_scroll, cw_header)
+        else:
+            cw_scroll = existing_scroll
+
+        cw_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        cw_row.add_css_class("discover-row-box")
+        
+        for item in cw_items:
+            card = ContinueWatchingWidget(
+                item, 
+                self._on_movie_clicked,
+                on_remove_clicked=self._on_remove_continue_watching,
+                on_play_clicked=self._on_continue_watching_clicked
+            )
+            cw_row.append(card)
+            
+        cw_scroll.set_child(cw_row)
+            
+        cw_scroll.set_child(cw_row)
+
     def _refresh_discover_page(self):
         from . import database
-        from .movie_widget import ContinueWatchingWidget, cancel_pending_image_downloads
+        from .movie_widget import cancel_pending_image_downloads
         cancel_pending_image_downloads()
         
         self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
         req_id = self.discover_request_id
         
+        self._cw_header_widget = None
+        self._cw_scroll_widget = None
         while child := self.discover_box.get_first_child():
             self.discover_box.remove(child)
             
         # 1. Continue Watching Section (instant from local DB)
-        cw_items = database.get_continue_watching()
-        if cw_items:
-            cw_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-            cw_header.add_css_class("discover-section-header")
-            lbl = Gtk.Label(label=_("Continue Watching"), halign=Gtk.Align.START)
-            lbl.add_css_class("discover-section-title")
-            cw_header.append(lbl)
-            self.discover_box.append(cw_header)
-            
-            cw_scroll = Gtk.ScrolledWindow()
-            cw_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-            cw_scroll.set_hexpand(True)
-            cw_scroll.add_css_class("discover-row-scroll")
-            
-            cw_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-            cw_row.add_css_class("discover-row-box")
-            
-            for item in cw_items:
-                card = ContinueWatchingWidget(
-                    item, 
-                    self._on_continue_watching_clicked,
-                    on_remove_clicked=self._on_remove_continue_watching
-                )
-                cw_row.append(card)
-                
-            cw_scroll.set_child(cw_row)
-            self.discover_box.append(cw_scroll)
+        self._update_continue_watching_section()
 
         # 2. Setup Sequential Row Loading List
         self._discover_catalog_list = self._get_discover_catalog_list()
@@ -4918,12 +5066,11 @@ class CineWindow(Adw.ApplicationWindow):
 
         def worker():
             from . import api, database
-            import time
+            from concurrent.futures import ThreadPoolExecutor
             try:
-                for row_info in batch_items:
+                def _fetch_row(row_info):
                     if req_id != getattr(self, "discover_request_id", 0):
-                        return
-                        
+                        return None
                     m_type = row_info.get("media_type", "movie")
                     c_id = row_info.get("catalog_id")
                     m_url = row_info.get("manifest_url")
@@ -4943,69 +5090,78 @@ class CineWindow(Adw.ApplicationWindow):
                                 page=1,
                                 limit=15
                             )
-                            if items:
-                                database.save_cached_catalog(cache_key, items)
+                            database.save_cached_catalog(cache_key, items if items else [])
                         except Exception as e:
                             logger.error(f"Error fetching discover row {row_title}: {e}")
                             items = None
+                            database.save_cached_catalog(cache_key, [])
                             
-                        # Gentle sleep between uncached network calls to keep CPU low
-                        time.sleep(0.04)
-
-                    if req_id != getattr(self, "discover_request_id", 0):
-                        return
+                    if not items or len(items) == 0:
+                        return None
                         
-                    if items and len(items) > 0:
-                        def _render_row(r_title=row_title, r_items=items, mt=m_type, cid=c_id, cname=c_name, murl=m_url):
-                            if req_id != getattr(self, "discover_request_id", 0):
-                                return False
-                                
-                            from .movie_widget import MovieWidget
-                            
-                            sec_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-                            sec_header.add_css_class("discover-section-header")
-                            
-                            sec_title = Gtk.Label(label=r_title, halign=Gtk.Align.START)
-                            sec_title.add_css_class("discover-section-title")
-                            sec_header.append(sec_title)
-                            
-                            see_all_btn = Gtk.Button(label=_("See All"))
-                            see_all_btn.add_css_class("discover-see-all-btn")
-                            see_all_btn.add_css_class("flat")
-                            see_all_btn.set_halign(Gtk.Align.END)
-                            see_all_btn.set_hexpand(True)
-                            
-                            cat_obj = {
-                                "catalog_id": cid,
-                                "catalog_name": cname,
-                                "manifest_url": murl,
-                                "display_name": r_title
-                            }
-                            see_all_btn.connect("clicked", lambda *a, cat_dict=cat_obj, m_type_val=mt, title_val=r_title: self._open_catalog_grid(m_type_val, cat_dict, title_val))
-                            sec_header.append(see_all_btn)
-                            
-                            sec_scroll = Gtk.ScrolledWindow()
-                            sec_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-                            sec_scroll.set_hexpand(True)
-                            sec_scroll.add_css_class("discover-row-scroll")
-                            
-                            sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-                            sec_row.add_css_class("discover-row-box")
-                            
-                            for it in r_items:
-                                if not it.get("type"):
-                                    it["type"] = mt
-                                card = MovieWidget(it, self._on_movie_clicked)
-                                card.set_hexpand(False)
-                                sec_row.append(card)
-                                
-                            sec_scroll.set_child(sec_row)
-                            
-                            self.discover_box.append(sec_header)
-                            self.discover_box.append(sec_scroll)
-                            return False
+                    return (row_title, items, m_type, c_id, c_name, m_url)
 
-                        GLib.idle_add(_render_row)
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    futures = [pool.submit(_fetch_row, item) for item in batch_items]
+                    for future in futures:
+                        if req_id != getattr(self, "discover_request_id", 0):
+                            return
+                        try:
+                            result = future.result(timeout=4.0)
+                            if result and req_id == getattr(self, "discover_request_id", 0):
+                                r_title, r_items, mt, cid, cname, murl = result
+                                def _render_row(r_title=r_title, r_items=r_items, mt=mt, cid=cid, cname=cname, murl=murl):
+                                    if req_id != getattr(self, "discover_request_id", 0):
+                                        return False
+                                        
+                                    from .movie_widget import MovieWidget
+                                    
+                                    sec_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+                                    sec_header.add_css_class("discover-section-header")
+                                    
+                                    sec_title = Gtk.Label(label=r_title, halign=Gtk.Align.START)
+                                    sec_title.add_css_class("discover-section-title")
+                                    sec_header.append(sec_title)
+                                    
+                                    see_all_btn = Gtk.Button(label=_("See All"))
+                                    see_all_btn.add_css_class("discover-see-all-btn")
+                                    see_all_btn.add_css_class("flat")
+                                    see_all_btn.set_halign(Gtk.Align.END)
+                                    see_all_btn.set_hexpand(True)
+                                    
+                                    cat_obj = {
+                                        "catalog_id": cid,
+                                        "catalog_name": cname,
+                                        "manifest_url": murl,
+                                        "display_name": r_title
+                                    }
+                                    see_all_btn.connect("clicked", lambda *a, cat_dict=cat_obj, m_type_val=mt, title_val=r_title: self._open_catalog_grid(m_type_val, cat_dict, title_val))
+                                    sec_header.append(see_all_btn)
+                                    
+                                    sec_scroll = Gtk.ScrolledWindow()
+                                    sec_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+                                    sec_scroll.set_hexpand(True)
+                                    sec_scroll.add_css_class("discover-row-scroll")
+                                    
+                                    sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+                                    sec_row.add_css_class("discover-row-box")
+                                    
+                                    for it in r_items:
+                                        if not it.get("type"):
+                                            it["type"] = mt
+                                        card = MovieWidget(it, self._on_movie_clicked)
+                                        card.set_hexpand(False)
+                                        sec_row.append(card)
+                                        
+                                    sec_scroll.set_child(sec_row)
+                                    
+                                    self.discover_box.append(sec_header)
+                                    self.discover_box.append(sec_scroll)
+                                    return False
+
+                                GLib.idle_add(_render_row)
+                        except Exception as e:
+                            logger.debug(f"Row fetch future error: {e}")
             finally:
                 self._discover_is_loading_rows = False
 
@@ -5585,10 +5741,24 @@ class CineWindow(Adw.ApplicationWindow):
 
         # Record playing item for Continue Watching
         page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
-        details = getattr(page, 'movie_details', {}) if page else {}
-        stub = getattr(page, 'movie_stub', {}) if page else {}
+        details = {}
+        stub = {}
+        if page:
+            p_details = getattr(page, 'movie_details', {}) or {}
+            p_stub = getattr(page, 'movie_stub', {}) or {}
+            p_id = p_details.get("imdb_id") or p_details.get("id") or p_stub.get("imdb_id") or p_stub.get("id")
+            if not imdb_id or not p_id or str(p_id) == str(imdb_id):
+                details = p_details
+                stub = p_stub
+
+        from . import database
+        if not details and imdb_id:
+            cached_meta = database.get_cached_metadata(imdb_id, media_type)
+            if cached_meta:
+                details = cached_meta
+
         cover = details.get("medium_cover_image") or stub.get("medium_cover_image") or details.get("poster") or stub.get("poster")
-        item_title = details.get("title") or stub.get("title") or title
+        item_title = details.get("title") or stub.get("title") or details.get("name") or stub.get("name") or title
         import time
         self._current_playing_item = {
             "id": imdb_id or details.get("id") or stub.get("id"),
@@ -5602,7 +5772,13 @@ class CineWindow(Adw.ApplicationWindow):
             "stream_queue_index": self.stream_queue_index,
             "stream_title": title,
             "last_watched": int(time.time()),
+            "progress": 0.01,
+            "position": 0.0,
         }
+        if self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id") or self._current_playing_item.get("title"):
+            database.save_continue_watching(self._current_playing_item)
+            if hasattr(self, "_update_continue_watching_section"):
+                self._update_continue_watching_section()
 
         logger.info(f"[SUBS] play_stream_with_failover: imdb_id={imdb_id}, media_type={media_type}, S{season}E{episode}, title={title}")
         self.fetch_and_add_subtitles(imdb_id, media_type, season, episode, stream_subtitles=all_subs, stream_title=title)
@@ -5810,11 +5986,30 @@ class CineWindow(Adw.ApplicationWindow):
             page = self.details_box.get_first_child()
             if hasattr(page, 'reset_trailer_btn_ui'):
                 page.reset_trailer_btn_ui()
+        if getattr(self, "_current_playing_item", None) and hasattr(self, "mpv"):
+            try:
+                curr_pos = float(self.mpv.time_pos or 0.0)
+                curr_dur = float(self.mpv.duration or 0.0)
+                if curr_dur > 0:
+                    prog = min(1.0, max(0.0, curr_pos / curr_dur))
+                    self._current_playing_item["position"] = curr_pos
+                    self._current_playing_item["duration"] = curr_dur
+                    self._current_playing_item["progress"] = prog
+                    from . import database
+                    if prog >= 0.92:
+                        item_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
+                        database.remove_continue_watching(item_id)
+                    else:
+                        database.save_continue_watching(self._current_playing_item)
+            except Exception:
+                pass
         if hasattr(self, 'mpv'):
             try: self.mpv.stop()
             except Exception: pass
         from . import player
         player.stop_player()
+        if hasattr(self, "_update_continue_watching_section"):
+            self._update_continue_watching_section()
         if self.details_box.get_first_child():
             self.main_stack.set_visible_child_name("details")
         else:
@@ -5979,6 +6174,8 @@ class CineWindow(Adw.ApplicationWindow):
                 self.nav_stack.pop(0)
 
     def _go_back(self, *args):
+        if hasattr(self, "_update_continue_watching_section"):
+            self._update_continue_watching_section()
         if hasattr(self, "nav_stack") and self.nav_stack:
             prev = self.nav_stack.pop()
             main_page = prev.get("main_page", "library")

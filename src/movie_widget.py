@@ -396,11 +396,13 @@ class MovieWidget(Gtk.Box):
 
 
 class ContinueWatchingWidget(Gtk.Box):
-    def __init__(self, item_data, click_callback, on_remove_clicked=None):
+    def __init__(self, item_data, click_callback, on_remove_clicked=None, on_play_clicked=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.item_data = item_data
         self.click_callback = click_callback
+        self.on_play_clicked = on_play_clicked
         self.remove_btn_ref = None
+        self.play_btn_ref = None
         
         self.set_size_request(130, 240)
         self.set_hexpand(False)
@@ -425,12 +427,22 @@ class ContinueWatchingWidget(Gtk.Box):
         self.overlay.set_child(self.poster_image)
         
         # Center Play Button Overlay
+        play_btn = Gtk.Button()
+        play_btn.set_can_focus(False)
         play_icon = Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
         play_icon.set_pixel_size(20)
-        play_icon.set_halign(Gtk.Align.CENTER)
-        play_icon.set_valign(Gtk.Align.CENTER)
-        play_icon.add_css_class("continue-play-circle")
-        self.overlay.add_overlay(play_icon)
+        play_btn.set_child(play_icon)
+        play_btn.add_css_class("continue-play-circle")
+        play_btn.add_css_class("continue-play-btn")
+        play_btn.add_css_class("circular")
+        play_btn.add_css_class("osd")
+        play_btn.set_halign(Gtk.Align.CENTER)
+        play_btn.set_valign(Gtk.Align.CENTER)
+        play_btn.set_tooltip_text("Play")
+        if on_play_clicked:
+            play_btn.connect("clicked", lambda btn: on_play_clicked(self.item_data))
+        self.overlay.add_overlay(play_btn)
+        self.play_btn_ref = play_btn
         
         # Progress Bar at bottom of poster
         progress_val = float(item_data.get("progress") or 0.0)
@@ -537,7 +549,7 @@ class ContinueWatchingWidget(Gtk.Box):
         picked = self.pick(x, y, Gtk.PickFlags.DEFAULT)
         target = picked
         while target is not None:
-            if target == self.remove_btn_ref:
+            if target == self.remove_btn_ref or target == self.play_btn_ref:
                 return
             if target == self:
                 break

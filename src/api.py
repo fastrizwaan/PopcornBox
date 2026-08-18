@@ -89,7 +89,11 @@ _MEM_CACHE = {}
 _MEM_CACHE_LOCK = threading.Lock()
 _MEM_CACHE_MAX_ITEMS = 1000
 
-def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=5):
+_OFFLINE_HOSTS = {}
+_OFFLINE_HOSTS_LOCK = threading.Lock()
+_OFFLINE_HOST_COOLDOWN = 300 # 5 minutes circuit breaker for offline addons
+
+def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0):
     if not url:
         return None
     now = time.time()
@@ -125,6 +129,25 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
                 
     if cache_only:
         return None
+
+    # Circuit breaker: fast-fail if host is known to be offline/down
+    parsed_host = ""
+    try:
+        parsed_host = urllib.parse.urlparse(url).netloc
+    except Exception:
+        pass
+
+    if parsed_host:
+        with _OFFLINE_HOSTS_LOCK:
+            last_fail = _OFFLINE_HOSTS.get(parsed_host)
+            if last_fail and (now - last_fail < _OFFLINE_HOST_COOLDOWN):
+                if os.path.exists(cache_file):
+                    try:
+                        with open(cache_file, 'r', encoding='utf-8') as f:
+                            return json.load(f)
+                    except Exception:
+                        pass
+                return None
         
     # 3. Fetch from network
     try:
@@ -135,6 +158,11 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
             return None
         data = json.loads(data_str)
         
+        # Host is healthy: remove from offline list
+        if parsed_host:
+            with _OFFLINE_HOSTS_LOCK:
+                _OFFLINE_HOSTS.pop(parsed_host, None)
+
         # Save to memory cache
         with _MEM_CACHE_LOCK:
             if len(_MEM_CACHE) > _MEM_CACHE_MAX_ITEMS:
@@ -155,16 +183,25 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
                 pass
         return data
     except urllib.error.HTTPError as e:
+        if parsed_host:
+            with _OFFLINE_HOSTS_LOCK:
+                _OFFLINE_HOSTS[parsed_host] = time.time()
         logging.debug(f"HTTP Error {e.code} fetching from {url}")
         try:
             e.close()
         except Exception:
             pass
     except urllib.error.URLError as e:
+        if parsed_host:
+            with _OFFLINE_HOSTS_LOCK:
+                _OFFLINE_HOSTS[parsed_host] = time.time()
         logging.debug(f"URL/SSL Error fetching from {url}: {e.reason}")
     except json.JSONDecodeError as e:
         logging.debug(f"JSON decode error from {url}: {e}")
     except Exception as e:
+        if parsed_host:
+            with _OFFLINE_HOSTS_LOCK:
+                _OFFLINE_HOSTS[parsed_host] = time.time()
         logging.debug(f"Error fetching items from {url}: {e}")
         
     # Return stale cache if network fails
@@ -688,7 +725,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         else:
             url += ".json"
             
-        data = _get_cached_request(url, max_age_hours=2, cache_only=cache_only)
+        data = _get_cached_request(url, max_age_hours=2, cache_only=cache_only, timeout=2.5)
         if data is None:
             return None
             
