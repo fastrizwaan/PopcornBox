@@ -101,7 +101,7 @@ def _ensure_db():
         CONFIG_DIR.mkdir(parents=True)
     if not DB_FILE.exists():
         with open(DB_FILE, "w") as f:
-            json.dump({"favorites": [], "watched": [], "history": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}, f, indent=4)
+            json.dump({"favorites": [], "watched": [], "history": [], "continue_watching": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}, f, indent=4)
 
 def _read_db():
     global _db_corrupted, _json_cache, _json_cache_valid
@@ -115,6 +115,8 @@ def _read_db():
             # Migrate older databases
             if "history" not in data:
                 data["history"] = []
+            if "continue_watching" not in data:
+                data["continue_watching"] = []
             if "downloads" not in data:
                 data["downloads"] = []
             if "settings" not in data:
@@ -293,6 +295,55 @@ def remove_history(item_id):
     with _db_lock:
         db = _read_db()
         db["history"] = [h for h in db.get("history", []) if h.get("id") != item_id and h.get("imdb_id") != item_id]
+        _write_db(db)
+
+# --- Continue Watching ---
+
+def get_continue_watching():
+    """Return list of in-progress items ordered by last_watched descending."""
+    items = _read_db().get("continue_watching", [])
+    return sorted(items, key=lambda x: x.get("last_watched", 0), reverse=True)
+
+def save_continue_watching(item):
+    """Save or update an in-progress item in continue_watching."""
+    if not item or not isinstance(item, dict):
+        return
+    item_id = item.get("id") or item.get("imdb_id")
+    if not item_id:
+        return
+    with _db_lock:
+        db = _read_db()
+        cw = db.setdefault("continue_watching", [])
+        existing = None
+        new_cw = []
+        for entry in cw:
+            e_id = entry.get("id") or entry.get("imdb_id")
+            if e_id == item_id:
+                existing = entry
+            else:
+                new_cw.append(entry)
+
+        updated_item = dict(existing or {})
+        updated_item.update(item)
+        if "last_watched" not in item:
+            import time
+            updated_item["last_watched"] = int(time.time())
+
+        new_cw.insert(0, updated_item)
+        db["continue_watching"] = new_cw[:50]
+        _write_db(db)
+
+def remove_continue_watching(item_id):
+    """Remove an item from continue_watching."""
+    if not item_id:
+        return
+    with _db_lock:
+        db = _read_db()
+        cw = db.get("continue_watching", [])
+        db["continue_watching"] = [
+            e for e in cw 
+            if e.get("id") != item_id and e.get("imdb_id") != item_id
+        ]
         _write_db(db)
 
 # --- Downloads ---
@@ -510,6 +561,13 @@ def _get_cache_db():
             updated_at REAL
         )
     """)
+    _cache_conn.execute("""
+        CREATE TABLE IF NOT EXISTS catalog_cache (
+            cache_key TEXT PRIMARY KEY,
+            data TEXT,
+            updated_at REAL
+        )
+    """)
     _cache_conn.commit()
     _cache_db_initialized = True
     return _cache_conn
@@ -680,4 +738,37 @@ def delete_cached_subtitles(cache_key):
             conn.commit()
     except Exception as e:
         print(f"Error deleting cached subtitles: {e}")
+
+def get_cached_catalog(cache_key, max_age_hours=6):
+    if not cache_key:
+        return None
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT data, updated_at FROM catalog_cache WHERE cache_key = ?", (str(cache_key),))
+            row = cursor.fetchone()
+            if row and row[0]:
+                updated_at = row[1]
+                if (time.time() - updated_at) / 3600 < max_age_hours:
+                    return json.loads(row[0])
+    except Exception as e:
+        print(f"Error reading catalog cache: {e}")
+    return None
+
+def save_cached_catalog(cache_key, items):
+    if not cache_key or items is None:
+        return
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO catalog_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
+                (str(cache_key), json.dumps(items), time.time())
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"Error saving catalog cache: {e}")
+
 

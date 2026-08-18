@@ -109,8 +109,22 @@ template $CineWindow: Adw.ApplicationWindow {
                   }
 
                 [title]
-                Adw.WindowTitle {
-                  title: _("PopcornBox");
+                Box library_title_box {
+                  spacing: 6;
+                  halign: center;
+                  Adw.WindowTitle library_window_title {
+                    title: _("PopcornBox");
+                  }
+                  ToggleButton discover_filter_toggle_btn {
+                    visible: false;
+                    valign: center;
+                    tooltip-text: _("Filter Catalogs & Genres");
+                    child: Adw.ButtonContent {
+                      icon-name: "view-filter-symbolic";
+                      label: _("Catalogs & Filters");
+                    };
+                    styles ["flat", "discover-filter-toggle-btn"]
+                  }
                 }
 
                 [end]
@@ -192,11 +206,42 @@ template $CineWindow: Adw.ApplicationWindow {
 
             Adw.ViewStack library_stack {
               Adw.ViewStackPage {
+                name: "discover";
+                title: _("Discover");
+                child: ScrolledWindow discover_scrolled {
+                  vexpand: true;
+                  Box discover_box {
+                    orientation: vertical;
+                    spacing: 12;
+                    margin-top: 12; margin-bottom: 24;
+                    margin-start: 16; margin-end: 16;
+                  }
+                };
+              }
+              Adw.ViewStackPage {
                 name: "content";
                 title: _("Content");
                 icon-name: "popcorn-movies-symbolic";
                 child: Box {
                   orientation: vertical;
+                  
+                  Box discover_back_box {
+                    orientation: horizontal;
+                    spacing: 8;
+                    margin-start: 16; margin-end: 16; margin-top: 12; margin-bottom: 4;
+                    visible: false;
+                    
+                    Button back_to_discover_btn {
+                      icon-name: "go-previous-symbolic";
+                      tooltip-text: _("Back to Discover");
+                      styles ["flat", "circular"]
+                    }
+                    
+                    Label discover_grid_title {
+                      styles ["title-2"]
+                      halign: start;
+                    }
+                  }
                   
                   ScrolledWindow content_scrolled {
                     vexpand: true;

@@ -285,7 +285,7 @@ class MovieWidget(Gtk.Box):
         self.click_callback = click_callback
         self.remove_btn_ref = None
         
-        self.set_size_request(130, 195)
+        self.set_size_request(130, 240)
         self.set_hexpand(True)
         self.set_halign(Gtk.Align.CENTER)
         self.add_css_class("pt-card")
@@ -393,3 +393,156 @@ class MovieWidget(Gtk.Box):
             
         if self.click_callback:
             self.click_callback(self.movie_data)
+
+
+class ContinueWatchingWidget(Gtk.Box):
+    def __init__(self, item_data, click_callback, on_remove_clicked=None):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.item_data = item_data
+        self.click_callback = click_callback
+        self.remove_btn_ref = None
+        
+        self.set_size_request(130, 240)
+        self.set_hexpand(False)
+        self.set_halign(Gtk.Align.CENTER)
+        self.add_css_class("pt-card")
+        self.add_css_class("continue-card")
+        
+        click = Gtk.GestureClick()
+        click.connect("released", self._on_card_released)
+        self.add_controller(click)
+        
+        icon_container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        icon_container.set_hexpand(True)
+        icon_container.set_halign(Gtk.Align.CENTER)
+        
+        self.overlay = Gtk.Overlay()
+        self.poster_image = Gtk.Picture()
+        self.poster_image.set_can_shrink(True)
+        self.poster_image.set_size_request(130, 195)
+        self.poster_image.set_content_fit(Gtk.ContentFit.COVER)
+        
+        self.overlay.set_child(self.poster_image)
+        
+        # Center Play Button Overlay
+        play_icon = Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
+        play_icon.set_pixel_size(20)
+        play_icon.set_halign(Gtk.Align.CENTER)
+        play_icon.set_valign(Gtk.Align.CENTER)
+        play_icon.add_css_class("continue-play-circle")
+        self.overlay.add_overlay(play_icon)
+        
+        # Progress Bar at bottom of poster
+        progress_val = float(item_data.get("progress") or 0.0)
+        if progress_val <= 0:
+            pos = float(item_data.get("position") or 0.0)
+            dur = float(item_data.get("duration") or 0.0)
+            if dur > 0:
+                progress_val = min(1.0, max(0.0, pos / dur))
+        
+        pbar = Gtk.ProgressBar()
+        pbar.set_fraction(max(0.05, min(1.0, progress_val)))
+        pbar.set_valign(Gtk.Align.END)
+        pbar.set_halign(Gtk.Align.FILL)
+        pbar.add_css_class("continue-progress-bar")
+        self.overlay.add_overlay(pbar)
+        
+        # Remove button on hover
+        if on_remove_clicked:
+            remove_btn = Gtk.Button(icon_name="window-close-symbolic")
+            remove_btn.set_can_focus(False)
+            remove_btn.add_css_class("card-remove-btn")
+            remove_btn.add_css_class("osd")
+            remove_btn.add_css_class("circular")
+            remove_btn.set_halign(Gtk.Align.END)
+            remove_btn.set_valign(Gtk.Align.START)
+            remove_btn.set_margin_top(6)
+            remove_btn.set_margin_end(6)
+            remove_btn.set_tooltip_text("Remove")
+            remove_btn.set_visible(False)
+            remove_btn.connect("clicked", lambda btn: on_remove_clicked(self.item_data, self))
+            self.overlay.add_overlay(remove_btn)
+            self.remove_btn_ref = remove_btn
+            
+            hover = Gtk.EventControllerMotion()
+            hover.connect("enter", lambda *args: remove_btn.set_visible(True))
+            hover.connect("leave", lambda *args: remove_btn.set_visible(False))
+            self.add_controller(hover)
+        
+        icon_container.append(self.overlay)
+        self.append(icon_container)
+        
+        # Poster image loading
+        item_id = item_data.get("imdb_id") or item_data.get("id")
+        item_type = item_data.get("type", "movie")
+        poster_url = item_data.get("medium_cover_image") or item_data.get("poster")
+        if not poster_url and item_id:
+            try:
+                from .database import get_cached_metadata
+                cached = get_cached_metadata(item_id, item_type)
+                if cached and cached.get("medium_cover_image"):
+                    poster_url = cached.get("medium_cover_image")
+            except Exception:
+                pass
+        if not poster_url:
+            poster_url = extract_image_url(item_data)
+            
+        def trigger_fallback():
+            try:
+                _meta_fallback_pool.submit(fetch_fallback_poster, item_id, item_type, self.poster_image, item_data.get("title") or item_data.get("name"), 130, 195)
+            except RuntimeError:
+                pass
+
+        if poster_url:
+            load_image_into_picture(poster_url, self.poster_image, width=130, height=195, on_error=trigger_fallback)
+        else:
+            trigger_fallback()
+            
+        # Title
+        title_text = item_data.get("title") or item_data.get("name") or "Unknown"
+        title_label = Gtk.Label(label=title_text)
+        title_label.set_lines(1)
+        title_label.set_ellipsize(Pango.EllipsizeMode.END)
+        title_label.set_max_width_chars(1)
+        title_label.set_hexpand(True)
+        title_label.set_halign(Gtk.Align.FILL)
+        title_label.set_xalign(0.0)
+        title_label.add_css_class("pt-card-title")
+        self.append(title_label)
+        
+        # Subtitle (Season/Episode or Remaining Time)
+        sub_text = ""
+        season = item_data.get("season")
+        episode = item_data.get("episode")
+        if season is not None and episode is not None:
+            sub_text = f"S{season}:E{episode}"
+        else:
+            pos = float(item_data.get("position") or 0.0)
+            dur = float(item_data.get("duration") or 0.0)
+            if dur > pos and pos > 0:
+                rem_mins = int((dur - pos) / 60)
+                if rem_mins > 0:
+                    sub_text = f"{rem_mins}m left"
+            if not sub_text:
+                sub_text = str(item_data.get("year", "")) or ""
+                
+        if sub_text:
+            sub_label = Gtk.Label(label=sub_text)
+            sub_label.set_halign(Gtk.Align.START)
+            sub_label.add_css_class("pt-card-year")
+            self.append(sub_label)
+
+    def _on_card_released(self, gesture, n_press, x, y):
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        picked = self.pick(x, y, Gtk.PickFlags.DEFAULT)
+        target = picked
+        while target is not None:
+            if target == self.remove_btn_ref:
+                return
+            if target == self:
+                break
+            target = target.get_parent()
+            
+        if self.click_callback:
+            self.click_callback(self.item_data)
+

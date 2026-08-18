@@ -69,7 +69,7 @@ import threading
 import concurrent.futures
 from . import database
 from .api import fetch_items, fetch_movie_details, get_torrents_streamed
-from .movie_widget import MovieWidget
+from .movie_widget import MovieWidget, ContinueWatchingWidget
 
 gi.require_version("Adw", "1")
 gi.require_version("Gio", "2.0")
@@ -1830,7 +1830,14 @@ class CineWindow(Adw.ApplicationWindow):
     anime_inactive_btn_movies: Gtk.Button = Gtk.Template.Child()
     anime_inactive_btn_series: Gtk.Button = Gtk.Template.Child()
     discover_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    discover_filter_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    library_window_title: Adw.WindowTitle = Gtk.Template.Child()
     discover_options_revealer: Gtk.Revealer = Gtk.Template.Child()
+    discover_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
+    discover_box: Gtk.Box = Gtk.Template.Child()
+    discover_back_box: Gtk.Box = Gtk.Template.Child()
+    back_to_discover_btn: Gtk.Button = Gtk.Template.Child()
+    discover_grid_title: Gtk.Label = Gtk.Template.Child()
     library_header: Adw.HeaderBar = Gtk.Template.Child()
     search_header: Adw.HeaderBar = Gtk.Template.Child()
     search_entry: Gtk.SearchEntry = Gtk.Template.Child()
@@ -3173,6 +3180,26 @@ class CineWindow(Adw.ApplicationWindow):
             else:
                 if hasattr(self, "next_episode_revealer") and self.next_episode_revealer.get_reveal_child():
                     self.next_episode_revealer.set_reveal_child(False)
+
+            # Track Continue Watching progress
+            if getattr(self, "_current_playing_item", None):
+                if duration > 30 and curr_time > 5:
+                    prog = min(1.0, max(0.0, curr_time / duration))
+                    self._current_playing_item["position"] = curr_time
+                    self._current_playing_item["duration"] = duration
+                    self._current_playing_item["progress"] = prog
+                    
+                    last_cw_save = getattr(self, "_last_cw_save_time", 0)
+                    import time
+                    now = time.time()
+                    if now - last_cw_save >= 8:
+                        self._last_cw_save_time = now
+                        from . import database
+                        if prog >= 0.92:
+                            item_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
+                            database.remove_continue_watching(item_id)
+                        else:
+                            database.save_continue_watching(self._current_playing_item)
         except mpv.ShutdownError:
             pass
 
@@ -3871,12 +3898,16 @@ class CineWindow(Adw.ApplicationWindow):
         self.prev_shuffle = self.shuffle_toggle_btn.props.active
         self.playlist_changed = False
 
-    def _show_toast(self, label, force_dismiss=False):
-        toast = Adw.Toast(title=label, timeout=2)
-        self.toast_overlay.dismiss_all()
-        self.toast_overlay.add_toast(toast)
-        if force_dismiss:
-            timeout_add_seconds_once(2, toast.dismiss)
+    def _show_toast(self, label, timeout=5, force_dismiss=False):
+        try:
+            toast = Adw.Toast.new(label)
+            toast.set_timeout(timeout)
+            if hasattr(self, "toast_overlay"):
+                self.toast_overlay.dismiss_all()
+                self.toast_overlay.add_toast(toast)
+                GLib.timeout_add_seconds(timeout, lambda: (toast.dismiss(), False)[1])
+        except Exception as e:
+            logger.error(f"Error showing toast: {e}")
 
     def _setup_observers(self):
         @self.mpv.event_callback("start-file")
@@ -4393,6 +4424,12 @@ class CineWindow(Adw.ApplicationWindow):
                 self.genre_dropdown.set_visible(False)
                 self.current_genre = None
                 
+            if self.discover_toggle_btn.get_active() and not getattr(self, "_suppress_discover_grid_switch", False):
+                self.library_stack.set_visible_child_name("content")
+                self.discover_back_box.set_visible(True)
+                disp_title = self.current_catalog.get("display_name", "Catalog") if self.current_catalog else "Catalog"
+                self.discover_grid_title.set_text(disp_title)
+
             self._refresh_content()
             
         self.catalog_dropdown.connect("notify::selected", on_catalog_changed)
@@ -4407,6 +4444,19 @@ class CineWindow(Adw.ApplicationWindow):
                 self._refresh_content()
                 
         self.genre_dropdown.connect("notify::selected", on_genre_changed)
+
+        def on_discover_filter_toggled(button, pspec):
+            is_active = button.get_active()
+            self.discover_options_revealer.set_reveal_child(is_active)
+        self.discover_filter_toggle_btn.connect("notify::active", on_discover_filter_toggled)
+
+        def on_back_to_discover_clicked(button):
+            self.discover_back_box.set_visible(False)
+            self.library_stack.set_visible_child_name("discover")
+            self.discover_options_revealer.set_reveal_child(False)
+            self.discover_filter_toggle_btn.set_active(False)
+            self._refresh_discover_page()
+        self.back_to_discover_btn.connect("clicked", on_back_to_discover_clicked)
         
         def on_btn_active(btn, pspec):
             if btn.get_active():
@@ -4493,11 +4543,18 @@ class CineWindow(Adw.ApplicationWindow):
 
         def on_discover_toggled(button, pspec):
             is_active = button.get_active()
-            self.discover_options_revealer.set_reveal_child(is_active)
             self.category_btn_stack.set_visible(not is_active)
+            self.library_window_title.set_visible(not is_active)
+            self.discover_filter_toggle_btn.set_visible(is_active)
+            self.discover_filter_toggle_btn.set_active(False)
+            self.discover_options_revealer.set_reveal_child(False)
             if is_active:
-                on_media_type_changed(self.media_type_dropdown, None)
+                self.discover_back_box.set_visible(False)
+                self.library_stack.set_visible_child_name("discover")
+                self._refresh_discover_page()
             else:
+                self.discover_back_box.set_visible(False)
+                self.library_stack.set_visible_child_name("content")
                 active_cat = self.category_btn_stack.get_visible_child_name()
                 if active_cat == "series":
                     self.activate_action("win.switch-to-series", None)
@@ -4512,6 +4569,10 @@ class CineWindow(Adw.ApplicationWindow):
             adj = self.content_scrolled.get_vadjustment()
             adj.connect("value-changed", self._on_content_scroll)
             adj.connect("changed", self._on_content_scroll)
+
+        if hasattr(self, "discover_scrolled"):
+            discover_adj = self.discover_scrolled.get_vadjustment()
+            discover_adj.connect("value-changed", self._on_discover_scroll)
             
         self._populate_addons()
         
@@ -4617,6 +4678,353 @@ class CineWindow(Adw.ApplicationWindow):
             GLib.idle_add(apply_results)
 
         threading.Thread(target=fetch, daemon=True).start()
+
+    def _open_catalog_grid(self, media_type, catalog, title):
+        self._suppress_discover_grid_switch = True
+        self.current_media_type = media_type
+        self.current_catalog = catalog
+        self.current_genre = None
+        
+        # Sync dropdowns
+        if hasattr(self, "media_type_keys") and media_type in self.media_type_keys:
+            try:
+                self.media_type_dropdown.set_selected(self.media_type_keys.index(media_type))
+                from . import api
+                self.all_catalogs = api.get_available_catalogs(media_type)
+                cat_names = [c["display_name"] for c in self.all_catalogs] or ["No Catalogs Found"]
+                self.catalog_dropdown.set_model(Gtk.StringList.new(cat_names))
+                for idx, c in enumerate(self.all_catalogs):
+                    if c.get("catalog_id") == catalog.get("catalog_id") and c.get("manifest_url") == catalog.get("manifest_url"):
+                        self.catalog_dropdown.set_selected(idx)
+                        break
+            except Exception:
+                pass
+        self._suppress_discover_grid_switch = False
+        
+        self.discover_grid_title.set_text(title)
+        self.discover_back_box.set_visible(True)
+        self.library_stack.set_visible_child_name("content")
+        self._refresh_content()
+
+    def _on_continue_watching_clicked(self, item_data):
+        stream_url = item_data.get("stream_url")
+        magnet = item_data.get("magnet")
+        stream_queue = item_data.get("stream_queue")
+        position = float(item_data.get("position") or 0.0)
+        title = item_data.get("title") or item_data.get("name") or "Stream"
+        
+        self._current_playing_item = dict(item_data)
+        
+        if stream_queue and len(stream_queue) > 0:
+            q_idx = int(item_data.get("stream_queue_index") or 0)
+            self.play_stream_with_failover(
+                stream_queue,
+                initial_index=q_idx,
+                title=title,
+                previous_page="discover",
+                season=item_data.get("season"),
+                episode=item_data.get("episode"),
+                imdb_id=item_data.get("id") or item_data.get("imdb_id"),
+                media_type=item_data.get("type", "movie")
+            )
+            if position > 0:
+                def _seek_pos():
+                    try:
+                        if hasattr(self, 'mpv') and not self.mpv.core_idle:
+                            self.mpv.seek(position, reference="absolute")
+                            return False
+                    except Exception:
+                        pass
+                    return True
+                GLib.timeout_add(800, _seek_pos)
+        elif magnet or (stream_url and str(stream_url).startswith(("http://", "https://", "magnet:"))):
+            target = stream_url or magnet
+            self.previous_page_before_player = "discover"
+            self._play_stream(target, title)
+            if position > 0:
+                def _seek_pos():
+                    try:
+                        if hasattr(self, 'mpv') and not self.mpv.core_idle:
+                            self.mpv.seek(position, reference="absolute")
+                            return False
+                    except Exception:
+                        pass
+                    return True
+                GLib.timeout_add(800, _seek_pos)
+        else:
+            self._on_movie_clicked(item_data)
+
+    def _on_remove_continue_watching(self, item_data, widget):
+        from . import database
+        item_id = item_data.get("id") or item_data.get("imdb_id")
+        if item_id:
+            database.remove_continue_watching(item_id)
+        parent = widget.get_parent()
+        if parent:
+            parent.remove(widget)
+            if not parent.get_first_child():
+                grandparent = parent.get_parent()
+                if grandparent and isinstance(grandparent, Gtk.ScrolledWindow):
+                    prev = grandparent.get_prev_sibling()
+                    if prev and isinstance(prev, Gtk.Box):
+                        self.discover_box.remove(prev)
+                    self.discover_box.remove(grandparent)
+
+    def _get_discover_catalog_list(self):
+        from . import database
+        addons = database.get_addons()
+        rows = []
+        
+        # Priority order: Cinemeta first, then Anime, TMDB, Bharat Binge, WATCHO, IPTV, etc.
+        def addon_sort_key(addon):
+            name = addon.get('name', '').lower()
+            if 'cinemeta' in name: return 0
+            if 'kitsu' in name or 'animestream' in name or 'onlyanimes' in name or 'anime' in name: return 1
+            if 'tmdb' in name or 'movie database' in name: return 2
+            if 'iptv' in name or 'channel' in name: return 8
+            return 5
+
+        sorted_addons = sorted([a for a in addons if a.get('enabled', True)], key=addon_sort_key)
+        type_priority = {'movie': 0, 'series': 1, 'anime': 2, 'tv': 3, 'channel': 4, 'live': 5, 'music': 6}
+        seen_row_keys = set()
+
+        for addon in sorted_addons:
+            addon_name = addon.get('name', 'Addon')
+            m_url = addon.get('manifest_url', '')
+            if not m_url or m_url.startswith('builtin:'):
+                continue
+                
+            catalogs = addon.get('catalogs', [])
+            if not catalogs:
+                continue
+                
+            grouped = {}
+            for cat in catalogs:
+                c_id = cat.get('id', '')
+                c_name = cat.get('name') or c_id
+                c_type = cat.get('type') or 'movie'
+                
+                clean_name = c_name
+                if addon_name and clean_name.lower().startswith(addon_name.lower()):
+                    clean_name = clean_name[len(addon_name):].lstrip(' -|:·')
+                
+                group_key = clean_name.lower().strip()
+                if not group_key:
+                    group_key = str(c_id).lower().strip()
+                    
+                if group_key not in grouped:
+                    grouped[group_key] = []
+                grouped[group_key].append(cat)
+                
+            for g_key, cat_group in grouped.items():
+                sorted_group = sorted(cat_group, key=lambda c: type_priority.get(c.get('type', 'movie'), 99))
+                for cat in sorted_group:
+                    c_id = cat.get('id')
+                    c_name = cat.get('name') or c_id
+                    c_type = cat.get('type', 'movie')
+                    
+                    row_key = (m_url, c_id, c_type)
+                    if row_key in seen_row_keys:
+                        continue
+                    seen_row_keys.add(row_key)
+                    
+                    type_display = 'Movies' if c_type == 'movie' else ('Series' if c_type == 'series' else ('Anime' if c_type == 'anime' else ('TV Channels' if c_type in ['tv', 'channel'] else c_type.title())))
+                    clean_name = c_name
+                    if addon_name and clean_name.lower().startswith(addon_name.lower()):
+                        clean_name = clean_name[len(addon_name):].lstrip(' -|:·')
+                    if not clean_name:
+                        clean_name = c_id.title() if c_id else 'Catalog'
+                        
+                    if 'cinemeta' in addon_name.lower():
+                        row_title = f'{clean_name.title()} - {type_display}'
+                    elif addon_name.lower() in clean_name.lower():
+                        row_title = f'{clean_name} ({type_display})'
+                    else:
+                        row_title = f'{addon_name} - {clean_name} ({type_display})'
+                        
+                    rows.append({
+                        'addon_name': addon_name,
+                        'media_type': c_type,
+                        'catalog_id': c_id,
+                        'catalog_name': c_name,
+                        'manifest_url': m_url,
+                        'title': row_title
+                    })
+                    
+        return rows
+
+    def _refresh_discover_page(self):
+        from . import database
+        from .movie_widget import ContinueWatchingWidget, cancel_pending_image_downloads
+        cancel_pending_image_downloads()
+        
+        self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
+        req_id = self.discover_request_id
+        
+        while child := self.discover_box.get_first_child():
+            self.discover_box.remove(child)
+            
+        # 1. Continue Watching Section (instant from local DB)
+        cw_items = database.get_continue_watching()
+        if cw_items:
+            cw_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            cw_header.add_css_class("discover-section-header")
+            lbl = Gtk.Label(label=_("Continue Watching"), halign=Gtk.Align.START)
+            lbl.add_css_class("discover-section-title")
+            cw_header.append(lbl)
+            self.discover_box.append(cw_header)
+            
+            cw_scroll = Gtk.ScrolledWindow()
+            cw_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+            cw_scroll.set_hexpand(True)
+            cw_scroll.add_css_class("discover-row-scroll")
+            
+            cw_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            cw_row.add_css_class("discover-row-box")
+            
+            for item in cw_items:
+                card = ContinueWatchingWidget(
+                    item, 
+                    self._on_continue_watching_clicked,
+                    on_remove_clicked=self._on_remove_continue_watching
+                )
+                cw_row.append(card)
+                
+            cw_scroll.set_child(cw_row)
+            self.discover_box.append(cw_scroll)
+
+        # 2. Setup Sequential Row Loading List
+        self._discover_catalog_list = self._get_discover_catalog_list()
+        self._discover_next_row_index = 0
+        self._discover_is_loading_rows = False
+        
+        # Load initial batch (8 rows)
+        self._load_next_discover_batch(req_id, batch_size=8)
+
+    def _load_next_discover_batch(self, req_id, batch_size=6):
+        if getattr(self, "_discover_is_loading_rows", False):
+            return
+        if req_id != getattr(self, "discover_request_id", 0):
+            return
+        if not hasattr(self, "_discover_catalog_list") or self._discover_next_row_index >= len(self._discover_catalog_list):
+            return
+            
+        self._discover_is_loading_rows = True
+        
+        start_idx = self._discover_next_row_index
+        end_idx = min(start_idx + batch_size, len(self._discover_catalog_list))
+        self._discover_next_row_index = end_idx
+        batch_items = self._discover_catalog_list[start_idx:end_idx]
+
+        def worker():
+            from . import api, database
+            import time
+            try:
+                for row_info in batch_items:
+                    if req_id != getattr(self, "discover_request_id", 0):
+                        return
+                        
+                    m_type = row_info.get("media_type", "movie")
+                    c_id = row_info.get("catalog_id")
+                    m_url = row_info.get("manifest_url")
+                    row_title = row_info.get("title", "Catalog")
+                    c_name = row_info.get("catalog_name", c_id)
+                    
+                    cache_key = f"discover:{m_url}:{c_id}:{m_type}"
+                    cached = database.get_cached_catalog(cache_key, max_age_hours=6)
+                    if cached is not None:
+                        items = cached
+                    else:
+                        try:
+                            items = api.fetch_items(
+                                media_type=m_type,
+                                catalog_id=c_id,
+                                catalog_url=m_url,
+                                page=1,
+                                limit=15
+                            )
+                            if items:
+                                database.save_cached_catalog(cache_key, items)
+                        except Exception as e:
+                            logger.error(f"Error fetching discover row {row_title}: {e}")
+                            items = None
+                            
+                        # Gentle sleep between uncached network calls to keep CPU low
+                        time.sleep(0.04)
+
+                    if req_id != getattr(self, "discover_request_id", 0):
+                        return
+                        
+                    if items and len(items) > 0:
+                        def _render_row(r_title=row_title, r_items=items, mt=m_type, cid=c_id, cname=c_name, murl=m_url):
+                            if req_id != getattr(self, "discover_request_id", 0):
+                                return False
+                                
+                            from .movie_widget import MovieWidget
+                            
+                            sec_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+                            sec_header.add_css_class("discover-section-header")
+                            
+                            sec_title = Gtk.Label(label=r_title, halign=Gtk.Align.START)
+                            sec_title.add_css_class("discover-section-title")
+                            sec_header.append(sec_title)
+                            
+                            see_all_btn = Gtk.Button(label=_("See All"))
+                            see_all_btn.add_css_class("discover-see-all-btn")
+                            see_all_btn.add_css_class("flat")
+                            see_all_btn.set_halign(Gtk.Align.END)
+                            see_all_btn.set_hexpand(True)
+                            
+                            cat_obj = {
+                                "catalog_id": cid,
+                                "catalog_name": cname,
+                                "manifest_url": murl,
+                                "display_name": r_title
+                            }
+                            see_all_btn.connect("clicked", lambda *a, cat_dict=cat_obj, m_type_val=mt, title_val=r_title: self._open_catalog_grid(m_type_val, cat_dict, title_val))
+                            sec_header.append(see_all_btn)
+                            
+                            sec_scroll = Gtk.ScrolledWindow()
+                            sec_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+                            sec_scroll.set_hexpand(True)
+                            sec_scroll.add_css_class("discover-row-scroll")
+                            
+                            sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+                            sec_row.add_css_class("discover-row-box")
+                            
+                            for it in r_items:
+                                if not it.get("type"):
+                                    it["type"] = mt
+                                card = MovieWidget(it, self._on_movie_clicked)
+                                card.set_hexpand(False)
+                                sec_row.append(card)
+                                
+                            sec_scroll.set_child(sec_row)
+                            
+                            self.discover_box.append(sec_header)
+                            self.discover_box.append(sec_scroll)
+                            return False
+
+                        GLib.idle_add(_render_row)
+            finally:
+                self._discover_is_loading_rows = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_discover_scroll(self, adj):
+        if not self.discover_toggle_btn.get_active():
+            return
+        if getattr(self, "_discover_is_loading_rows", False):
+            return
+        if not hasattr(self, "_discover_catalog_list") or getattr(self, "_discover_next_row_index", 0) >= len(self._discover_catalog_list):
+            return
+            
+        val = adj.get_value()
+        page_size = adj.get_page_size()
+        upper = adj.get_upper()
+        
+        if val + page_size >= upper - 800:
+            self._load_next_discover_batch(getattr(self, "discover_request_id", 0), batch_size=6)
 
     def _clean_cat_name(self, cat, addon_name, media_type):
         raw_name = cat.get("catalog_name") or cat.get("catalog_id") or "Catalog"
@@ -4930,6 +5338,15 @@ class CineWindow(Adw.ApplicationWindow):
             self.show_player_loading(_("Loading trailer..."), title=title)
         else:
             self.hide_player_loading()
+            if not getattr(self, "_current_playing_item", None):
+                import time
+                self._current_playing_item = {
+                    "title": title or "Stream",
+                    "last_watched": int(time.time()),
+                }
+            self._current_playing_item["stream_url"] = url
+            if title:
+                self._current_playing_item["stream_title"] = title
         self.main_stack.set_visible_child_name("player")
         
         if title:
@@ -5165,6 +5582,27 @@ class CineWindow(Adw.ApplicationWindow):
         current_stream = self.stream_queue[self.stream_queue_index] if self.stream_queue and self.stream_queue_index < len(self.stream_queue) else {}
         entry_subs = current_stream.get("subtitles") if isinstance(current_stream, dict) else None
         all_subs = stream_subtitles or entry_subs
+
+        # Record playing item for Continue Watching
+        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+        details = getattr(page, 'movie_details', {}) if page else {}
+        stub = getattr(page, 'movie_stub', {}) if page else {}
+        cover = details.get("medium_cover_image") or stub.get("medium_cover_image") or details.get("poster") or stub.get("poster")
+        item_title = details.get("title") or stub.get("title") or title
+        import time
+        self._current_playing_item = {
+            "id": imdb_id or details.get("id") or stub.get("id"),
+            "imdb_id": imdb_id or details.get("imdb_id") or stub.get("imdb_id"),
+            "title": item_title,
+            "type": media_type or (getattr(page, 'media_type', 'movie') if page else 'movie'),
+            "medium_cover_image": cover,
+            "season": season,
+            "episode": episode,
+            "stream_queue": list(queue) if queue else [],
+            "stream_queue_index": self.stream_queue_index,
+            "stream_title": title,
+            "last_watched": int(time.time()),
+        }
 
         logger.info(f"[SUBS] play_stream_with_failover: imdb_id={imdb_id}, media_type={media_type}, S{season}E{episode}, title={title}")
         self.fetch_and_add_subtitles(imdb_id, media_type, season, episode, stream_subtitles=all_subs, stream_title=title)
