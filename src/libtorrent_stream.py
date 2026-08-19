@@ -713,10 +713,15 @@ class TorrentStreamEngine:
             except Exception:
                 pass
                 
-            # The closer the piece is to start_piece, the higher its priority (7 to 1)
-            # This ensures absolute strict sequential downloading for the requested window!
             dist = piece - start_piece
-            prio = max(4, 7 - dist)
+            if dist < 8:
+                prio = 7
+            elif dist < 20:
+                prio = 6
+            elif dist < 40:
+                prio = 5
+            else:
+                prio = 4
             
             try:
                 self.handle.piece_priority(piece, prio)
@@ -900,13 +905,21 @@ class TorrentStreamEngine:
         path = self._target_path()
         pos = start
         chunk_size = 256 * 1024
+        
+        # On the initial chunk of a new range request (e.g. initial start or seek),
+        # ensure at least 2MB is buffered ahead so the player demuxer doesn't immediately starve.
+        if pos == start and (end - start + 1) > 2 * 1024 * 1024:
+            initial_buffer_end = min(end, pos + (2 * 1024 * 1024) - 1)
+            self.prioritize_range(pos, min(end, pos + (32 * 1024 * 1024) - 1), clear_old=True)
+            self._wait_for_range(pos, initial_buffer_end, timeout=60, gen=gen)
+
         while pos <= end and not self.stopped.is_set():
             # If a newer request arrived (mpv seeked), abort immediately
             if self._stream_gen != gen:
                 return
 
-            seek_window_end = min(end, pos + (16 * 1024 * 1024) - 1)
-            self.prioritize_range(pos, seek_window_end)
+            seek_window_end = min(end, pos + (32 * 1024 * 1024) - 1)
+            self.prioritize_range(pos, seek_window_end, clear_old=False)
 
             chunk_end = min(end, pos + chunk_size - 1)
             if not self._wait_for_range(pos, chunk_end, timeout=60, gen=gen):

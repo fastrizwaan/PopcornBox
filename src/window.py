@@ -5159,6 +5159,9 @@ class CineWindow(Adw.ApplicationWindow):
 
         self._current_playing_item = dict(item_data)
         
+        position = float(item_data.get("position") or 0.0)
+        self._pending_seek_position = position if position > 5.0 else None
+        
         curr_page = self.main_stack.get_visible_child_name() or "discover"
         prev_page = "details" if curr_page == "details" else "discover"
         
@@ -5174,30 +5177,10 @@ class CineWindow(Adw.ApplicationWindow):
                 imdb_id=p_id,
                 media_type=item_data.get("type", "movie")
             )
-            if position > 0:
-                def _seek_pos():
-                    try:
-                        if hasattr(self, 'mpv') and not self.mpv.core_idle:
-                            self.mpv.seek(position, reference="absolute")
-                            return False
-                    except Exception:
-                        pass
-                    return True
-                GLib.timeout_add(800, _seek_pos)
         elif magnet or (stream_url and str(stream_url).startswith(("http://", "https://", "magnet:"))):
             target = stream_url or magnet
             self.previous_page_before_player = prev_page
-            self._play_stream(target, title)
-            if position > 0:
-                def _seek_pos():
-                    try:
-                        if hasattr(self, 'mpv') and not self.mpv.core_idle:
-                            self.mpv.seek(position, reference="absolute")
-                            return False
-                    except Exception:
-                        pass
-                    return True
-                GLib.timeout_add(800, _seek_pos)
+            self._play_stream(target, title, start_time=self._pending_seek_position)
         else:
             self._on_movie_clicked(item_data)
 
@@ -5997,7 +5980,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue = []
         self.stream_queue_index = 0
 
-    def _play_stream(self, url, title=None, headers=None, preserve_queue=False):
+    def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None):
         if not preserve_queue:
             self._clear_stream_failover()
         from . import player
@@ -6119,8 +6102,13 @@ class CineWindow(Adw.ApplicationWindow):
                 self.mpv["http-header-fields"] = []
 
             try:
-                self.mpv["demuxer-lavf-o"] = "probesize=1000000,analyzeduration=1000000"
-                self.mpv["demuxer-readahead-secs"] = 2
+                self.mpv["demuxer-lavf-o"] = "probesize=2000000,analyzeduration=2000000"
+                self.mpv["demuxer-readahead-secs"] = 30
+                self.mpv["demuxer-max-bytes"] = 150 * 1024 * 1024
+                self.mpv["demuxer-max-back-bytes"] = 50 * 1024 * 1024
+                self.mpv["cache"] = "yes"
+                self.mpv["cache-pause"] = "yes"
+                self.mpv["cache-pause-wait"] = 1.0
             except Exception:
                 pass
 
@@ -6129,7 +6117,24 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "next_episode_revealer"):
             self.next_episode_revealer.set_reveal_child(False)
 
-        self.mpv.loadfile(url, "replace")
+        seek_target = start_time
+        if seek_target is None and getattr(self, "_pending_seek_position", None):
+            seek_target = self._pending_seek_position
+            self._pending_seek_position = None
+        elif seek_target is None and getattr(self, "_current_playing_item", None):
+            pos = float(self._current_playing_item.get("position") or 0.0)
+            prog = float(self._current_playing_item.get("progress") or 0.0)
+            if pos > 5.0 and prog < 0.92:
+                seek_target = pos
+
+        if seek_target and float(seek_target) > 5.0 and not is_youtube:
+            try:
+                self.mpv.command("loadfile", url, "replace", f"start={float(seek_target):.2f}")
+            except Exception:
+                self.mpv.loadfile(url, "replace")
+        else:
+            self.mpv.loadfile(url, "replace")
+
         self.mpv.pause = False
         self.is_inactive = False
 
