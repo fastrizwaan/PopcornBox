@@ -1085,7 +1085,7 @@ class MovieDetailsPage(Gtk.Overlay):
             return True
         try:
             current = self.window.details_box.get_first_child()
-            return current is self or (current is None and self.get_parent() is None)
+            return current is self
         except Exception:
             return False
 
@@ -3570,7 +3570,9 @@ class CineWindow(Adw.ApplicationWindow):
                     else:
                         database.save_continue_watching(self._current_playing_item)
                     if hasattr(self, "_update_continue_watching_section"):
-                        self._update_continue_watching_section()
+                        curr_stack = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
+                        if curr_stack != "player":
+                            self._update_continue_watching_section()
         except mpv.ShutdownError:
             pass
 
@@ -4982,7 +4984,9 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "discover_scrolled"):
             discover_adj = self.discover_scrolled.get_vadjustment()
             discover_adj.connect("value-changed", self._on_discover_scroll)
+            discover_adj.connect("changed", self._on_discover_scroll)
             
+        self._discover_views = {}
         self._populate_addons()
         
         # Default Launch Option: Discover View and Discover Mode Active
@@ -5212,10 +5216,12 @@ class CineWindow(Adw.ApplicationWindow):
             if not parent.get_first_child():
                 grandparent = parent.get_parent()
                 if grandparent and isinstance(grandparent, Gtk.ScrolledWindow):
+                    box = grandparent.get_parent()
                     prev = grandparent.get_prev_sibling()
-                    if prev and isinstance(prev, Gtk.Box):
-                        self.discover_box.remove(prev)
-                    self.discover_box.remove(grandparent)
+                    if box and prev and isinstance(prev, Gtk.Box):
+                        box.remove(prev)
+                    if box:
+                        box.remove(grandparent)
 
     def _get_discover_catalog_list(self, filter_media_type=None, filter_addon_url=None):
         from . import database, api
@@ -5342,26 +5348,33 @@ class CineWindow(Adw.ApplicationWindow):
         self.library_stack.set_visible_child_name("content")
 
     def _update_continue_watching_section(self):
-        if not hasattr(self, "discover_box"):
-            return
         from . import database
         from .movie_widget import ContinueWatchingWidget
         
+        target_box = None
+        if hasattr(self, "_discover_views") and "all|all" in self._discover_views:
+            target_box = self._discover_views["all|all"]["box"]
+        elif hasattr(self, "discover_box"):
+            target_box = self.discover_box
+            
+        if not target_box:
+            return
+            
         cw_items = database.get_continue_watching()
         
         existing_header = getattr(self, "_cw_header_widget", None)
         existing_scroll = getattr(self, "_cw_scroll_widget", None)
         
         if not cw_items:
-            if existing_header and existing_header.get_parent() == self.discover_box:
-                self.discover_box.remove(existing_header)
-            if existing_scroll and existing_scroll.get_parent() == self.discover_box:
-                self.discover_box.remove(existing_scroll)
+            if existing_header and existing_header.get_parent() == target_box:
+                target_box.remove(existing_header)
+            if existing_scroll and existing_scroll.get_parent() == target_box:
+                target_box.remove(existing_scroll)
             self._cw_header_widget = None
             self._cw_scroll_widget = None
             return
             
-        if not existing_header or existing_header.get_parent() != self.discover_box:
+        if not existing_header or existing_header.get_parent() != target_box:
             cw_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
             cw_header.add_css_class("discover-section-header")
             
@@ -5378,17 +5391,17 @@ class CineWindow(Adw.ApplicationWindow):
             cw_header.append(see_all_btn)
             
             self._cw_header_widget = cw_header
-            self.discover_box.prepend(cw_header)
+            target_box.prepend(cw_header)
         else:
             cw_header = existing_header
 
-        if not existing_scroll or existing_scroll.get_parent() != self.discover_box:
+        if not existing_scroll or existing_scroll.get_parent() != target_box:
             cw_scroll = Gtk.ScrolledWindow()
             cw_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
             cw_scroll.set_hexpand(True)
             cw_scroll.add_css_class("discover-row-scroll")
             self._cw_scroll_widget = cw_scroll
-            self.discover_box.insert_child_after(cw_scroll, cw_header)
+            target_box.insert_child_after(cw_scroll, cw_header)
         else:
             cw_scroll = existing_scroll
 
@@ -5409,30 +5422,75 @@ class CineWindow(Adw.ApplicationWindow):
         if page and hasattr(page, "update_continue_btn"):
             page.update_continue_btn()
 
-    def _refresh_discover_page(self, filter_media_type=None, filter_addon_url=None, custom_title=None):
+    def _refresh_discover_page(self, filter_media_type=None, filter_addon_url=None, custom_title=None, force_refresh=False):
         from . import database
+        
+        self._current_discover_type = filter_media_type or "all"
+        self._current_discover_addon = filter_addon_url
+        
+        if not hasattr(self, "_discover_views"):
+            self._discover_views = {}
+            
+        view_key = f"{self._current_discover_type}|{self._current_discover_addon or 'all'}"
+        
+        # 1. Instant cache hit: Switch visible view immediately
+        if not force_refresh and view_key in self._discover_views:
+            view_data = self._discover_views[view_key]
+            target_box = view_data["box"]
+            self._discover_catalog_list = view_data["catalog_list"]
+            self._discover_next_row_index = view_data["next_row_index"]
+            self.discover_request_id = view_data["request_id"]
+            
+            if hasattr(self, "discover_scrolled") and self.discover_scrolled.get_child() != target_box:
+                self.discover_scrolled.set_child(target_box)
+            self.discover_box = target_box
+            
+            if self._current_discover_type == "all" and not self._current_discover_addon:
+                self._update_continue_watching_section()
+                
+            if hasattr(self, "discover_scrolled"):
+                adj = self.discover_scrolled.get_vadjustment()
+                val = adj.get_value()
+                page_size = adj.get_page_size()
+                upper = adj.get_upper()
+                if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
+                    self._load_next_discover_batch(self.discover_request_id, batch_size=6)
+            return
+
         from .movie_widget import cancel_pending_image_downloads
         cancel_pending_image_downloads()
         
         self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
         req_id = self.discover_request_id
         
-        self._current_discover_type = filter_media_type or "all"
-        self._current_discover_addon = filter_addon_url
+        new_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        new_box.set_margin_top(12)
+        new_box.set_margin_bottom(24)
+        new_box.set_margin_start(16)
+        new_box.set_margin_end(16)
+        
+        if hasattr(self, "discover_scrolled"):
+            self.discover_scrolled.set_child(new_box)
+        self.discover_box = new_box
         
         self._cw_header_widget = None
         self._cw_scroll_widget = None
-        while child := self.discover_box.get_first_child():
-            self.discover_box.remove(child)
-            
-        # 1. Continue Watching Section (only if filter is "all" or None)
+        
+        # Continue Watching Section (only if filter is "all" or None)
         if not filter_media_type or filter_media_type == "all":
             self._update_continue_watching_section()
 
-        # 2. Setup Sequential Row Loading List
+        # Setup Sequential Row Loading List
         self._discover_catalog_list = self._get_discover_catalog_list(filter_media_type=filter_media_type, filter_addon_url=filter_addon_url)
         self._discover_next_row_index = 0
         self._discover_is_loading_rows = False
+        
+        self._discover_views[view_key] = {
+            "box": new_box,
+            "catalog_list": self._discover_catalog_list,
+            "next_row_index": 0,
+            "request_id": req_id
+        }
         
         # Load initial batch (8 rows)
         self._load_next_discover_batch(req_id, batch_size=8)
@@ -5447,10 +5505,15 @@ class CineWindow(Adw.ApplicationWindow):
             
         self._discover_is_loading_rows = True
         
+        target_box = getattr(self, "discover_box", None)
         start_idx = self._discover_next_row_index
         end_idx = min(start_idx + batch_size, len(self._discover_catalog_list))
         self._discover_next_row_index = end_idx
         batch_items = self._discover_catalog_list[start_idx:end_idx]
+        
+        view_key = f"{getattr(self, '_current_discover_type', 'all')}|{getattr(self, '_current_discover_addon', None) or 'all'}"
+        if hasattr(self, "_discover_views") and view_key in self._discover_views:
+            self._discover_views[view_key]["next_row_index"] = end_idx
 
         def worker():
             from . import api, database
@@ -5504,7 +5567,7 @@ class CineWindow(Adw.ApplicationWindow):
                             if result and req_id == getattr(self, "discover_request_id", 0):
                                 rendered_count += 1
                                 r_title, r_items, mt, cid, cname, murl = result
-                                def _render_row(r_title=r_title, r_items=r_items, mt=mt, cid=cid, cname=cname, murl=murl):
+                                def _render_row(r_title=r_title, r_items=r_items, mt=mt, cid=cid, cname=cname, murl=murl, t_box=target_box):
                                     if req_id != getattr(self, "discover_request_id", 0):
                                         return False
                                         
@@ -5549,8 +5612,9 @@ class CineWindow(Adw.ApplicationWindow):
                                         
                                     sec_scroll.set_child(sec_row)
                                     
-                                    self.discover_box.append(sec_header)
-                                    self.discover_box.append(sec_scroll)
+                                    if t_box:
+                                        t_box.append(sec_header)
+                                        t_box.append(sec_scroll)
                                     return False
 
                                 GLib.idle_add(_render_row)
@@ -5559,11 +5623,16 @@ class CineWindow(Adw.ApplicationWindow):
             finally:
                 self._discover_is_loading_rows = False
                 if req_id == getattr(self, "discover_request_id", 0) and self._discover_next_row_index < len(self._discover_catalog_list):
-                    def queue_next_batch():
-                        if req_id == getattr(self, "discover_request_id", 0):
-                            self._load_next_discover_batch(req_id, batch_size)
+                    def check_fill_viewport():
+                        if req_id == getattr(self, "discover_request_id", 0) and hasattr(self, "discover_scrolled"):
+                            adj = self.discover_scrolled.get_vadjustment()
+                            val = adj.get_value()
+                            page_size = adj.get_page_size()
+                            upper = adj.get_upper()
+                            if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
+                                self._load_next_discover_batch(req_id, batch_size=6)
                         return False
-                    GLib.timeout_add(100, queue_next_batch)
+                    GLib.idle_add(check_fill_viewport)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -5579,7 +5648,7 @@ class CineWindow(Adw.ApplicationWindow):
         page_size = adj.get_page_size()
         upper = adj.get_upper()
         
-        if val + page_size >= upper - 800:
+        if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
             self._load_next_discover_batch(getattr(self, "discover_request_id", 0), batch_size=6)
 
     def _clean_cat_name(self, cat, addon_name, media_type):
@@ -6241,11 +6310,17 @@ class CineWindow(Adw.ApplicationWindow):
 
         cover = details.get("medium_cover_image") or stub.get("medium_cover_image") or details.get("poster") or stub.get("poster")
         item_title = details.get("title") or stub.get("title") or details.get("name") or stub.get("name") or title
+        target_id = imdb_id or details.get("id") or stub.get("id")
+        existing_cw = database.get_continue_watching_item(target_id) if target_id else None
+        saved_pos = float(existing_cw.get("position") or 0.0) if existing_cw else 0.0
+        saved_prog = float(existing_cw.get("progress") or 0.01) if existing_cw else 0.01
+        saved_dur = float(existing_cw.get("duration") or 0.0) if existing_cw else 0.0
+
         import time
         self._last_marked_stream_idx = None
         self._current_playing_item = {
-            "id": imdb_id or details.get("id") or stub.get("id"),
-            "imdb_id": imdb_id or details.get("imdb_id") or stub.get("imdb_id"),
+            "id": target_id,
+            "imdb_id": imdb_id or details.get("imdb_id") or stub.get("imdb_id") or target_id,
             "title": item_title,
             "type": media_type or (getattr(page, 'media_type', 'movie') if page else 'movie'),
             "medium_cover_image": cover,
@@ -6255,14 +6330,17 @@ class CineWindow(Adw.ApplicationWindow):
             "stream_queue_index": self.stream_queue_index,
             "stream_title": title,
             "last_watched": int(time.time()),
-            "progress": 0.01,
-            "position": 0.0,
+            "progress": saved_prog,
+            "position": saved_pos,
+            "duration": saved_dur,
         }
 
         if self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id") or self._current_playing_item.get("title"):
             database.save_continue_watching(self._current_playing_item)
             if hasattr(self, "_update_continue_watching_section"):
-                self._update_continue_watching_section()
+                curr_stack = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
+                if curr_stack != "player":
+                    self._update_continue_watching_section()
 
         logger.info(f"[SUBS] play_stream_with_failover: imdb_id={imdb_id}, media_type={media_type}, S{season}E{episode}, title={title}")
         self.fetch_and_add_subtitles(imdb_id, media_type, season, episode, stream_subtitles=all_subs, stream_title=title)
@@ -6552,6 +6630,8 @@ class CineWindow(Adw.ApplicationWindow):
             self.main_stack.set_visible_child_name("library")
 
     def _populate_addons(self):
+        if hasattr(self, "_discover_views"):
+            self._discover_views.clear()
         while self.addons_listbox.get_first_child() is not None:
             self.addons_listbox.remove(self.addons_listbox.get_first_child())
             

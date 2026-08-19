@@ -1343,8 +1343,19 @@ def process_raw_streams(all_streams):
         q_val = x.get("q_val", 0)
         size_gb = float(x.get("size_gb") or 0.0)
         seeders = x.get("seeders", 0) if not x.get("is_http") else 100
-        is_1080p_under_4gb = (q_val == 1080 and ((0 < size_gb < 4.0) or size_gb == 0.0))
-        p_tier = 3 if is_1080p_under_4gb else (2 if q_val == 720 else (1 if q_val == 1080 else 0))
+        # q_val: 4=4K, 3=1080p, 2=720p, 1=480p, 0=360p/Unknown
+        is_1080p_optimal = (q_val == 3 and ((0 < size_gb <= 4.5) or size_gb == 0.0))
+        is_720p_optimal = (q_val == 2 and ((0 < size_gb <= 2.5) or size_gb == 0.0))
+        if is_1080p_optimal:
+            p_tier = 4
+        elif is_720p_optimal:
+            p_tier = 3
+        elif q_val == 3:
+            p_tier = 2
+        elif q_val == 4 or q_val == 2:
+            p_tier = 1
+        else:
+            p_tier = 0
         return (p_tier, seeders, q_val, size_gb)
 
     valid_streams.sort(key=_rank_key, reverse=True)
@@ -1767,7 +1778,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                     s["addon_name"] = addon_name
                                     all_raw_streams.append(s)
                                 if callback:
-                                    current_parsed = process_raw_streams(all_raw_streams)
+                                    current_parsed = process_raw_streams(list(all_raw_streams))
                                     callback(current_parsed, is_cached=False, is_complete=False)
                         except Exception as e:
                             print(f"Error in addon future: {e}")

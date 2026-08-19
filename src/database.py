@@ -372,8 +372,23 @@ def save_continue_watching(item):
             else:
                 new_cw.append(entry)
 
+        existing_pos = float(existing.get("position") or 0.0) if existing else 0.0
+        existing_prog = float(existing.get("progress") or 0.0) if existing else 0.0
+        existing_dur = float(existing.get("duration") or 0.0) if existing else 0.0
+
         updated_item = dict(existing or {})
         updated_item.update(item)
+
+        # Do not overwrite saved playback position with zero/placeholder position
+        new_pos = float(item.get("position") or 0.0)
+        new_prog = float(item.get("progress") or 0.0)
+        if new_pos <= 0.0 and existing_pos > 0.0:
+            updated_item["position"] = existing_pos
+        if new_prog <= 0.01 and existing_prog > 0.01:
+            updated_item["progress"] = existing_prog
+        if not updated_item.get("duration") and existing_dur > 0:
+            updated_item["duration"] = existing_dur
+
         if "last_watched" not in item:
             import time
             updated_item["last_watched"] = int(time.time())

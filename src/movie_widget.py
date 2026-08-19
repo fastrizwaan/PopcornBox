@@ -23,6 +23,25 @@ _MEMORY_PIXBUF_CACHE = {}
 _MEMORY_PIXBUF_LOCK = threading.Lock()
 _MAX_MEMORY_PIXBUFS = 500
 
+_FAILED_IMAGE_LOCK = threading.Lock()
+FAILED_IMAGE_URLS = set()
+
+def _is_image_failed(url):
+    with _FAILED_IMAGE_LOCK:
+        return url in FAILED_IMAGE_URLS
+
+def _mark_image_failed(url):
+    with _FAILED_IMAGE_LOCK:
+        FAILED_IMAGE_URLS.add(url)
+
+def _mark_image_success(url):
+    with _FAILED_IMAGE_LOCK:
+        FAILED_IMAGE_URLS.discard(url)
+
+def _clear_failed_images():
+    with _FAILED_IMAGE_LOCK:
+        FAILED_IMAGE_URLS.clear()
+
 def cancel_pending_image_downloads():
     global _image_pool, _disk_pool, _meta_fallback_pool
     try:
@@ -36,7 +55,7 @@ def cancel_pending_image_downloads():
     _image_pool = ThreadPoolExecutor(max_workers=10)
     _disk_pool = ThreadPoolExecutor(max_workers=6)
     _meta_fallback_pool = ThreadPoolExecutor(max_workers=2)
-    FAILED_IMAGE_URLS.clear()
+    _clear_failed_images()
 
 def extract_image_url(m):
     if not isinstance(m, dict):
@@ -60,8 +79,6 @@ def extract_image_url(m):
             if url.startswith("http://") or url.startswith("https://"):
                 return url
     return ""
-
-FAILED_IMAGE_URLS = set()
 
 def load_image_into_picture(url, picture_widget, width=None, height=None, on_error=None):
     if not url or not isinstance(url, str): return
@@ -88,7 +105,7 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
     url_hash = hashlib.md5(url.encode()).hexdigest()
     cache_file = os.path.join(IMAGE_CACHE_DIR, url_hash)
 
-    if url in FAILED_IMAGE_URLS and not (os.path.exists(cache_file) and os.path.getsize(cache_file) > 0):
+    if _is_image_failed(url) and not (os.path.exists(cache_file) and os.path.getsize(cache_file) > 0):
         if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
             GLib.idle_add(on_error)
         return
@@ -114,11 +131,11 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                             if data:
                                 with open(cache_file, 'wb') as f:
                                     f.write(data)
-                                FAILED_IMAGE_URLS.discard(url)
+                                _mark_image_success(url)
                             break
                     except Exception as e:
                         if attempt == 1:
-                            FAILED_IMAGE_URLS.add(url)
+                            _mark_image_failed(url)
                         else:
                             import time
                             time.sleep(0.3)
