@@ -82,6 +82,12 @@ from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject, Pango
 def _streams_match(s1, s2):
     if not s1 or not s2: return False
     if s1 is s2: return True
+    
+    is_http1 = bool(s1.get("is_http") or (isinstance(s1.get("url"), str) and s1.get("url", "").startswith(("http://", "https://")) and not s1.get("hash") and not s1.get("infoHash")))
+    is_http2 = bool(s2.get("is_http") or (isinstance(s2.get("url"), str) and s2.get("url", "").startswith(("http://", "https://")) and not s2.get("hash") and not s2.get("infoHash")))
+    if is_http1 != is_http2:
+        return False
+
     u1, u2 = s1.get("url") or "", s2.get("url") or ""
     if u1 and u2 and u1.startswith("http") and u2.startswith("http"):
         return u1 == u2
@@ -92,9 +98,13 @@ def _streams_match(s1, s2):
         idx2 = s2.get("file_index") if s2.get("file_index") is not None else s2.get("fileIdx")
         if idx1 is None or idx2 is None or idx1 == idx2:
             return True
+    m1 = s1.get("magnet") or ""
+    m2 = s2.get("magnet") or ""
+    if m1 and m2 and m1 == m2:
+        return True
     t1 = (s1.get("stream_title") or s1.get("title") or s1.get("filename") or "").strip()
     t2 = (s2.get("stream_title") or s2.get("title") or s2.get("filename") or "").strip()
-    if t1 and t2 and t1 == t2:
+    if t1 and t2 and t1 == t2 and not h1 and not h2 and not u1 and not u2:
         return True
     return False
 
@@ -1880,13 +1890,8 @@ class MovieDetailsPage(Gtk.Overlay):
         self.watch_btn.set_label(watch_label)
 
     def on_watch_clicked(self, btn):
-        t_list = getattr(self, 'current_t_list', []) or []
-        source_idx = getattr(self, 'source_idx', 0)
-        if source_idx == 1:
-            t_list = [t for t in t_list if t.get('is_http')]
-        elif source_idx == 2:
-            t_list = [t for t in t_list if not t.get('is_http')]
-
+        raw_t_list = getattr(self, 'current_t_list', []) or []
+        
         sel_prov_name = "All Providers"
         if hasattr(self, 'provider_dropdown'):
             model = self.provider_dropdown.get_model()
@@ -1895,11 +1900,41 @@ class MovieDetailsPage(Gtk.Overlay):
                 sel_prov_name = model.get_string(sel_idx)
 
         if sel_prov_name != "All Providers":
-            t_list = [t for t in t_list if sel_prov_name in t.get("addon_names", [])]
+            raw_t_list = [t for t in raw_t_list if sel_prov_name in t.get("addon_names", [])]
 
-        if not getattr(self, 'selected_torrent', None) or (t_list and self.selected_torrent not in t_list):
-            if t_list:
+        t_list = raw_t_list
+        source_idx = getattr(self, 'source_idx', 0)
+        if source_idx == 1:
+            t_list = [t for t in t_list if t.get('is_http')]
+        elif source_idx == 2:
+            t_list = [t for t in t_list if not t.get('is_http')]
+
+        selected = getattr(self, 'selected_torrent', None)
+        if selected and any(_streams_match(selected, t) for t in raw_t_list):
+            self.selected_torrent = next(t for t in raw_t_list if _streams_match(selected, t))
+        elif not selected or (t_list and not any(_streams_match(selected, t) for t in t_list)):
+            working_stream = getattr(self, "remembered_working_stream", None)
+            if not working_stream:
+                from . import database
+                item_id = (
+                    getattr(self, "movie_details", {}).get("imdb_id")
+                    or getattr(self, "movie_details", {}).get("id")
+                    or self.movie_stub.get("imdb_id")
+                    or self.movie_stub.get("id")
+                )
+                season = getattr(self, "selected_season", None)
+                episode = getattr(self, "selected_episode", None)
+                working_stream = database.get_working_stream(item_id, season, episode)
+                if working_stream:
+                    self.remembered_working_stream = working_stream
+
+            if working_stream and isinstance(working_stream, dict) and any(_streams_match(working_stream, t) for t in t_list):
+                matching_items = [t for t in t_list if _streams_match(working_stream, t)]
+                self.selected_torrent = matching_items[0]
+            elif t_list:
                 self.selected_torrent = t_list[0]
+            elif raw_t_list:
+                self.selected_torrent = raw_t_list[0]
             else:
                 media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
                 self._auto_play_on_streams_loaded = True
@@ -1909,23 +1944,16 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.window.show_player_loading("Loading streams to play...", media_title)
                 return
 
-        working_stream = getattr(self, "remembered_working_stream", None)
-        if not working_stream:
-            from . import database
-            item_id = (
-                getattr(self, "movie_details", {}).get("imdb_id")
-                or getattr(self, "movie_details", {}).get("id")
-                or self.movie_stub.get("imdb_id")
-                or self.movie_stub.get("id")
-            )
-            season = getattr(self, "selected_season", None)
-            episode = getattr(self, "selected_episode", None)
-            working_stream = database.get_working_stream(item_id, season, episode)
-            if working_stream:
-                self.remembered_working_stream = working_stream
-
-        if working_stream and isinstance(working_stream, dict):
-            self.selected_torrent = working_stream
+        # Save selected stream as working stream
+        from . import database
+        primary_id = (
+            getattr(self, "movie_details", {}).get("imdb_id")
+            or getattr(self, "movie_details", {}).get("id")
+            or self.movie_stub.get("imdb_id")
+            or self.movie_stub.get("id")
+        )
+        database.save_working_stream(primary_id, getattr(self, "selected_season", None), getattr(self, "selected_episode", None), self.selected_torrent)
+        self.remembered_working_stream = self.selected_torrent
 
         media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
         if self.media_type == "series" and getattr(self, "selected_season", None) is not None:
@@ -1938,15 +1966,15 @@ class MovieDetailsPage(Gtk.Overlay):
             
         is_direct = bool(self.selected_torrent.get("is_http"))
         if is_direct:
-            queue = [t for t in (t_list if t_list else [self.selected_torrent]) if t.get("is_http")]
+            queue = [t for t in (raw_t_list if raw_t_list else [self.selected_torrent]) if t.get("is_http")]
         else:
-            queue = [t for t in (t_list if t_list else [self.selected_torrent]) if not t.get("is_http")]
+            queue = [t for t in (raw_t_list if raw_t_list else [self.selected_torrent]) if not t.get("is_http")]
 
         if not queue:
             queue = [self.selected_torrent]
 
         if self.selected_torrent:
-            queue = [self.selected_torrent] + [t for t in queue if t != self.selected_torrent and (t.get("url") or t.get("magnet")) != (self.selected_torrent.get("url") or self.selected_torrent.get("magnet"))]
+            queue = [self.selected_torrent] + [t for t in queue if not _streams_match(t, self.selected_torrent)]
             init_idx = 0
         else:
             init_idx = 0
@@ -2154,12 +2182,18 @@ class CineWindow(Adw.ApplicationWindow):
     library_stack: Adw.ViewStack = Gtk.Template.Child()
     header_stack: Gtk.Stack = Gtk.Template.Child()
     category_btn_stack: Gtk.Stack = Gtk.Template.Child()
+    discover_active_btn: Gtk.MenuButton = Gtk.Template.Child()
     movies_active_btn: Gtk.MenuButton = Gtk.Template.Child()
     series_active_btn: Gtk.MenuButton = Gtk.Template.Child()
     anime_active_btn: Gtk.MenuButton = Gtk.Template.Child()
+    discover_inactive_btn_movies: Gtk.Button = Gtk.Template.Child()
+    discover_inactive_btn_series: Gtk.Button = Gtk.Template.Child()
+    discover_inactive_btn_anime: Gtk.Button = Gtk.Template.Child()
+    movies_inactive_btn_discover: Gtk.Button = Gtk.Template.Child()
+    series_inactive_btn_discover: Gtk.Button = Gtk.Template.Child()
+    anime_inactive_btn_discover: Gtk.Button = Gtk.Template.Child()
     anime_inactive_btn_movies: Gtk.Button = Gtk.Template.Child()
     anime_inactive_btn_series: Gtk.Button = Gtk.Template.Child()
-    discover_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
     discover_filter_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
     library_window_title: Adw.WindowTitle = Gtk.Template.Child()
     discover_options_revealer: Gtk.Revealer = Gtk.Template.Child()
@@ -4694,8 +4728,9 @@ class CineWindow(Adw.ApplicationWindow):
         supported_types = _get_supported_types(all_addons)
         self.anime_supported = ("anime" in supported_types)
         self.tv_supported = any(t in supported_types for t in ["tv", "channel", "tvchannel"])
-        self.anime_inactive_btn_movies.set_visible(self.anime_supported)
-        self.anime_inactive_btn_series.set_visible(self.anime_supported)
+        for btn_name in ["anime_inactive_btn_movies", "anime_inactive_btn_series", "anime_inactive_btn_discover"]:
+            if hasattr(self, btn_name):
+                getattr(self, btn_name).set_visible(self.anime_supported)
         
         # Build dynamic media types based on Stremio addons
         media_type_labels = ["Movies", "Series"]
@@ -4724,6 +4759,7 @@ class CineWindow(Adw.ApplicationWindow):
                 added_keys.add(t)
 
         self.media_type_keys = media_type_keys
+        self.media_type_labels = media_type_labels
         self.media_type_dropdown.set_model(Gtk.StringList.new(media_type_labels))
         
         def on_media_type_changed(dropdown, pspec):
@@ -4761,8 +4797,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.genre_dropdown.set_visible(False)
                 self.current_genre = None
                 
-            if self.discover_toggle_btn.get_active() and not getattr(self, "_suppress_discover_grid_switch", False):
-                self.library_stack.set_visible_child_name("content")
+            if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() == "content" and not getattr(self, "_suppress_discover_grid_switch", False):
                 self.discover_back_box.set_visible(True)
                 disp_title = self.current_catalog.get("display_name", "Catalog") if self.current_catalog else "Catalog"
                 self.discover_grid_title.set_text(disp_title)
@@ -4785,33 +4820,86 @@ class CineWindow(Adw.ApplicationWindow):
         def on_discover_filter_toggled(button, pspec):
             is_active = button.get_active()
             self.discover_options_revealer.set_reveal_child(is_active)
-        self.discover_filter_toggle_btn.connect("notify::active", on_discover_filter_toggled)
+        if hasattr(self, "discover_filter_toggle_btn"):
+            self.discover_filter_toggle_btn.connect("notify::active", on_discover_filter_toggled)
 
         def on_back_to_discover_clicked(button):
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
             self.discover_options_revealer.set_reveal_child(False)
-            self.discover_filter_toggle_btn.set_active(False)
-            self._refresh_discover_page()
+            if hasattr(self, "discover_filter_toggle_btn"):
+                self.discover_filter_toggle_btn.set_active(False)
+            filter_type = getattr(self, "_current_discover_type", "all")
+            filter_addon = getattr(self, "_current_discover_addon", None)
+            self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=filter_addon)
         self.back_to_discover_btn.connect("clicked", on_back_to_discover_clicked)
         
         def on_btn_active(btn, pspec):
             if btn.get_active():
                 self._ensure_all_menus_built()
 
+        if hasattr(self, "discover_active_btn"):
+            self.discover_active_btn.connect("notify::active", on_btn_active)
         if hasattr(self, "movies_active_btn"):
-            if not self.movies_active_btn.get_menu_model():
-                self.movies_active_btn.set_menu_model(Gio.Menu.new())
             self.movies_active_btn.connect("notify::active", on_btn_active)
         if hasattr(self, "series_active_btn"):
-            if not self.series_active_btn.get_menu_model():
-                self.series_active_btn.set_menu_model(Gio.Menu.new())
             self.series_active_btn.connect("notify::active", on_btn_active)
         if hasattr(self, "anime_active_btn"):
-            if not self.anime_active_btn.get_menu_model():
-                self.anime_active_btn.set_menu_model(Gio.Menu.new())
             self.anime_active_btn.connect("notify::active", on_btn_active)
 
+        self._build_discover_menu()
+
+        # Action: Switch to Discover
+        action = Gio.SimpleAction.new("switch-to-discover", None)
+        def on_switch_discover(action, parameter):
+            self._ensure_all_menus_built()
+            self._current_discover_type = "all"
+            self._current_discover_addon = None
+            self.category_btn_stack.set_visible_child_name("discover")
+            self.discover_back_box.set_visible(False)
+            self.library_stack.set_visible_child_name("discover")
+            self._refresh_discover_page(filter_media_type="all")
+        action.connect("activate", on_switch_discover)
+        self.add_action(action)
+
+        # Action: Select Discover Filter Type
+        action = Gio.SimpleAction.new("select-discover-type", GLib.VariantType.new("s"))
+        def on_select_discover_type(action, parameter):
+            m_type = parameter.get_string()
+            self._current_discover_type = m_type
+            self._current_discover_addon = None
+            self.category_btn_stack.set_visible_child_name("discover")
+            self.discover_back_box.set_visible(False)
+            self.library_stack.set_visible_child_name("discover")
+            self._refresh_discover_page(filter_media_type=m_type)
+        action.connect("activate", on_select_discover_type)
+        self.add_action(action)
+
+        # Action: Select Addon Discover (multi-row view of all catalogs for an addon)
+        action = Gio.SimpleAction.new("select-addon-discover", GLib.VariantType.new("s"))
+        def on_select_addon_discover(action, parameter):
+            val = parameter.get_string()
+            parts = val.split("|", 2)
+            if len(parts) == 3:
+                m_type, m_url, addon_name = parts
+                self._current_discover_type = m_type
+                self._current_discover_addon = m_url
+                if m_type == "movie":
+                    self.category_btn_stack.set_visible_child_name("movies")
+                elif m_type == "series":
+                    self.category_btn_stack.set_visible_child_name("series")
+                elif m_type == "anime":
+                    self.category_btn_stack.set_visible_child_name("anime")
+                else:
+                    self.category_btn_stack.set_visible_child_name("discover")
+                
+                self.discover_back_box.set_visible(False)
+                self.library_stack.set_visible_child_name("discover")
+                self._refresh_discover_page(filter_media_type=m_type, filter_addon_url=m_url, custom_title=addon_name)
+        action.connect("activate", on_select_addon_discover)
+        self.add_action(action)
+
+        # Action: Select Catalog & Genre (full grid)
         action = Gio.SimpleAction.new("select-catalog-genre", GLib.VariantType.new("s"))
         def on_select_catalog_genre(action, parameter):
             val = parameter.get_string()
@@ -4829,79 +4917,63 @@ class CineWindow(Adw.ApplicationWindow):
                 elif m_type == "anime":
                     self.category_btn_stack.set_visible_child_name("anime")
                 
+                from . import api
+                cat_info = None
+                for c in api.get_available_catalogs(m_type):
+                    if c.get("catalog_id") == c_id and c.get("manifest_url") == m_url:
+                        cat_info = c
+                        break
+                
+                title = (cat_info.get("display_name") if cat_info else c_id.title()) or "Catalog"
+                if self.current_genre:
+                    title += f" — {self.current_genre}"
+                
+                self.discover_grid_title.set_text(title)
+                self.discover_back_box.set_visible(True)
+                self.library_stack.set_visible_child_name("content")
                 self._refresh_content()
         action.connect("activate", on_select_catalog_genre)
         self.add_action(action)
-        
-        def set_catalog_for_media_type(m_type):
-            self.current_media_type = m_type
-            cats = api.get_available_catalogs(m_type)
-            if cats:
-                self.current_catalog = {
-                    "catalog_id": cats[0].get("catalog_id", "top"),
-                    "manifest_url": cats[0].get("manifest_url", "")
-                }
-            elif m_type == "anime":
-                self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
-                self.current_media_type = "series"
-                self.current_genre = "Animation"
-                return
-            else:
-                self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
-            self.current_genre = None
 
+        # Action: Switch to Movies (multi-row view of all movie catalogs)
         action = Gio.SimpleAction.new("switch-to-movies", None)
         def on_switch_movies(action, parameter):
-            set_catalog_for_media_type("movie")
+            self._ensure_all_menus_built()
+            self._current_discover_type = "movie"
+            self._current_discover_addon = None
             self.category_btn_stack.set_visible_child_name("movies")
-            self._refresh_content()
+            self.discover_back_box.set_visible(False)
+            self.library_stack.set_visible_child_name("discover")
+            self._refresh_discover_page(filter_media_type="movie")
         action.connect("activate", on_switch_movies)
         self.add_action(action)
         
+        # Action: Switch to Series (multi-row view of all series catalogs)
         action = Gio.SimpleAction.new("switch-to-series", None)
         def on_switch_series(action, parameter):
             self._ensure_all_menus_built()
-            set_catalog_for_media_type("series")
+            self._current_discover_type = "series"
+            self._current_discover_addon = None
             self.category_btn_stack.set_visible_child_name("series")
-            self._refresh_content()
+            self.discover_back_box.set_visible(False)
+            self.library_stack.set_visible_child_name("discover")
+            self._refresh_discover_page(filter_media_type="series")
         action.connect("activate", on_switch_series)
         self.add_action(action)
 
+        # Action: Switch to Anime (multi-row view of all anime catalogs)
         action = Gio.SimpleAction.new("switch-to-anime", None)
         def on_switch_anime(action, parameter):
             self._ensure_all_menus_built()
-            set_catalog_for_media_type("anime")
+            self._current_discover_type = "anime"
+            self._current_discover_addon = None
             self.category_btn_stack.set_visible_child_name("anime")
-            self._refresh_content()
+            self.discover_back_box.set_visible(False)
+            self.library_stack.set_visible_child_name("discover")
+            self._refresh_discover_page(filter_media_type="anime")
         action.connect("activate", on_switch_anime)
         self.add_action(action)
-        
-        # Removed redundant static anime genre action
 
-        def on_discover_toggled(button, pspec):
-            is_active = button.get_active()
-            self.category_btn_stack.set_visible(not is_active)
-            self.library_window_title.set_visible(not is_active)
-            self.discover_filter_toggle_btn.set_visible(is_active)
-            self.discover_filter_toggle_btn.set_active(False)
-            self.discover_options_revealer.set_reveal_child(False)
-            if is_active:
-                self.discover_back_box.set_visible(False)
-                self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page()
-            else:
-                self.discover_back_box.set_visible(False)
-                self.library_stack.set_visible_child_name("content")
-                active_cat = self.category_btn_stack.get_visible_child_name()
-                if active_cat == "series":
-                    self.activate_action("win.switch-to-series", None)
-                elif active_cat == "anime":
-                    self.activate_action("win.switch-to-anime", None)
-                else:
-                    self.activate_action("win.switch-to-movies", None)
-                
-        self.discover_toggle_btn.connect("notify::active", on_discover_toggled)
-        
         if hasattr(self, "content_scrolled"):
             adj = self.content_scrolled.get_vadjustment()
             adj.connect("value-changed", self._on_content_scroll)
@@ -4913,12 +4985,15 @@ class CineWindow(Adw.ApplicationWindow):
             
         self._populate_addons()
         
-        # Trigger initial load in classic mode manually (activate_action drops events during init)
+        # Default Launch Option: Discover View and Discover Mode Active
+        self._current_discover_type = "all"
+        self._current_discover_addon = None
         self.current_media_type = "movie"
         self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
         self.current_genre = None
-        self.category_btn_stack.set_visible_child_name("movies")
-        self._refresh_content()
+        self.category_btn_stack.set_visible_child_name("discover")
+        self.library_stack.set_visible_child_name("discover")
+        self._refresh_discover_page(filter_media_type="all")
         
         self.search_entry.connect("search-changed", self._on_search_changed)
         search_key_ctrl = Gtk.EventControllerKey()
@@ -5142,7 +5217,7 @@ class CineWindow(Adw.ApplicationWindow):
                         self.discover_box.remove(prev)
                     self.discover_box.remove(grandparent)
 
-    def _get_discover_catalog_list(self):
+    def _get_discover_catalog_list(self, filter_media_type=None, filter_addon_url=None):
         from . import database, api
         addons = database.get_addons()
         rows = []
@@ -5165,6 +5240,8 @@ class CineWindow(Adw.ApplicationWindow):
             m_url = addon.get('manifest_url', '')
             if not m_url or m_url.startswith('builtin:'):
                 continue
+            if filter_addon_url and m_url != filter_addon_url:
+                continue
                 
             catalogs = addon.get('catalogs', [])
             if not catalogs:
@@ -5178,6 +5255,15 @@ class CineWindow(Adw.ApplicationWindow):
                 c_id = cat.get('id', '')
                 c_name = cat.get('name') or c_id
                 c_type = cat.get('type') or 'movie'
+                
+                # Check media type filter if specified
+                if filter_media_type and filter_media_type != "all":
+                    if not api.is_type_match(c_type, filter_media_type):
+                        if filter_media_type == "anime":
+                            if "anime" not in str(c_type).lower() and "anime" not in c_name.lower() and "anime" not in str(c_id).lower() and "anime" not in addon_name.lower():
+                                continue
+                        else:
+                            continue
                 
                 clean_name = c_name
                 if addon_name and clean_name.lower().startswith(addon_name.lower()):
@@ -5214,7 +5300,9 @@ class CineWindow(Adw.ApplicationWindow):
                     if not clean_name:
                         clean_name = c_id.title() if c_id else 'Catalog'
                         
-                    if 'cinemeta' in addon_name.lower():
+                    if filter_addon_url:
+                        row_title = f'{clean_name.title()}'
+                    elif 'cinemeta' in addon_name.lower():
                         row_title = f'{clean_name.title()} - {type_display}'
                     elif addon_name.lower() in clean_name.lower():
                         row_title = f'{clean_name} ({type_display})'
@@ -5321,7 +5409,7 @@ class CineWindow(Adw.ApplicationWindow):
         if page and hasattr(page, "update_continue_btn"):
             page.update_continue_btn()
 
-    def _refresh_discover_page(self):
+    def _refresh_discover_page(self, filter_media_type=None, filter_addon_url=None, custom_title=None):
         from . import database
         from .movie_widget import cancel_pending_image_downloads
         cancel_pending_image_downloads()
@@ -5329,16 +5417,20 @@ class CineWindow(Adw.ApplicationWindow):
         self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
         req_id = self.discover_request_id
         
+        self._current_discover_type = filter_media_type or "all"
+        self._current_discover_addon = filter_addon_url
+        
         self._cw_header_widget = None
         self._cw_scroll_widget = None
         while child := self.discover_box.get_first_child():
             self.discover_box.remove(child)
             
-        # 1. Continue Watching Section (instant from local DB)
-        self._update_continue_watching_section()
+        # 1. Continue Watching Section (only if filter is "all" or None)
+        if not filter_media_type or filter_media_type == "all":
+            self._update_continue_watching_section()
 
         # 2. Setup Sequential Row Loading List
-        self._discover_catalog_list = self._get_discover_catalog_list()
+        self._discover_catalog_list = self._get_discover_catalog_list(filter_media_type=filter_media_type, filter_addon_url=filter_addon_url)
         self._discover_next_row_index = 0
         self._discover_is_loading_rows = False
         
@@ -5363,6 +5455,7 @@ class CineWindow(Adw.ApplicationWindow):
         def worker():
             from . import api, database
             from concurrent.futures import ThreadPoolExecutor
+            rendered_count = 0
             try:
                 def _fetch_row(row_info):
                     if req_id != getattr(self, "discover_request_id", 0):
@@ -5397,14 +5490,19 @@ class CineWindow(Adw.ApplicationWindow):
                         
                     return (row_title, items, m_type, c_id, c_name, m_url)
 
-                with ThreadPoolExecutor(max_workers=3) as pool:
+                with ThreadPoolExecutor(max_workers=4) as pool:
                     futures = [pool.submit(_fetch_row, item) for item in batch_items]
                     for future in futures:
                         if req_id != getattr(self, "discover_request_id", 0):
+                            try:
+                                pool.shutdown(wait=False, cancel_futures=True)
+                            except Exception:
+                                pass
                             return
                         try:
                             result = future.result(timeout=4.0)
                             if result and req_id == getattr(self, "discover_request_id", 0):
+                                rendered_count += 1
                                 r_title, r_items, mt, cid, cname, murl = result
                                 def _render_row(r_title=r_title, r_items=r_items, mt=mt, cid=cid, cname=cname, murl=murl):
                                     if req_id != getattr(self, "discover_request_id", 0):
@@ -5444,7 +5542,7 @@ class CineWindow(Adw.ApplicationWindow):
                                     
                                     for it in r_items:
                                         if not it.get("type"):
-                                            it["type"] = mt
+                                             it["type"] = mt
                                         card = MovieWidget(it, self._on_movie_clicked)
                                         card.set_hexpand(False)
                                         sec_row.append(card)
@@ -5460,11 +5558,17 @@ class CineWindow(Adw.ApplicationWindow):
                             logger.debug(f"Row fetch future error: {e}")
             finally:
                 self._discover_is_loading_rows = False
+                if req_id == getattr(self, "discover_request_id", 0) and self._discover_next_row_index < len(self._discover_catalog_list):
+                    def queue_next_batch():
+                        if req_id == getattr(self, "discover_request_id", 0):
+                            self._load_next_discover_batch(req_id, batch_size)
+                        return False
+                    GLib.timeout_add(100, queue_next_batch)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_discover_scroll(self, adj):
-        if not self.discover_toggle_btn.get_active():
+        if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "discover":
             return
         if getattr(self, "_discover_is_loading_rows", False):
             return
@@ -5564,13 +5668,23 @@ class CineWindow(Adw.ApplicationWindow):
             while unique_addon_name in seen_addon_names:
                 unique_addon_name += "\u200b"
             seen_addon_names.add(unique_addon_name)
-            result_addons.append((unique_addon_name, addon_cat_items))
+            result_addons.append((unique_addon_name, m_url, addon_cat_items))
             
         return result_addons
 
-    def _build_addon_submenu(self, addon_cat_items):
+    def _build_addon_submenu(self, addon_name, m_url, media_type, addon_cat_items):
         """Build a single addon's Gio.Menu from its prepared data. Very fast (~<1ms)."""
         addon_menu = Gio.Menu.new()
+        
+        # 1. Top item: All catalogs from this addon (e.g. "All Cinemeta Movies")
+        m_label = "Movies" if media_type == "movie" else ("Series" if media_type == "series" else ("Anime" if media_type == "anime" else media_type.title()))
+        clean_addon_name = addon_name.replace("\u200b", "")
+        all_addon_item = Gio.MenuItem.new(f"★ All {clean_addon_name} {m_label}", None)
+        target_str = f"{media_type}|{m_url}|{clean_addon_name}"
+        all_addon_item.set_action_and_target_value("win.select-addon-discover", GLib.Variant("s", target_str))
+        addon_menu.append_item(all_addon_item)
+
+        # 2. Catalogs and Genres
         for cat_data in addon_cat_items:
             if cat_data["type"] == "submenu":
                 cat_menu = Gio.Menu.new()
@@ -5578,15 +5692,32 @@ class CineWindow(Adw.ApplicationWindow):
                     item = Gio.MenuItem.new(label, None)
                     item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", target_str))
                     cat_menu.append_item(item)
-                if cat_data.get("is_single_default"):
-                    addon_menu = cat_menu
-                else:
-                    addon_menu.append_submenu(cat_data["name"], cat_menu)
+                addon_menu.append_submenu(cat_data["name"], cat_menu)
             else:
                 item = Gio.MenuItem.new(cat_data["name"], None)
                 item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", cat_data["target"]))
                 addon_menu.append_item(item)
         return addon_menu
+
+    def _build_discover_menu(self):
+        if not hasattr(self, "discover_active_btn"):
+            return
+        if not hasattr(self, "media_type_keys") or not self.media_type_keys:
+            return
+        if self.discover_active_btn.get_menu_model() is not None:
+            return
+            
+        menu = Gio.Menu.new()
+        all_item = Gio.MenuItem.new(_("All Types"), None)
+        all_item.set_action_and_target_value("win.select-discover-type", GLib.Variant("s", "all"))
+        menu.append_item(all_item)
+        
+        for key, label in zip(getattr(self, "media_type_keys", []), getattr(self, "media_type_labels", [])):
+            item = Gio.MenuItem.new(label, None)
+            item.set_action_and_target_value("win.select-discover-type", GLib.Variant("s", key))
+            menu.append_item(item)
+            
+        self.discover_active_btn.set_menu_model(menu)
 
     def _stream_menu_build(self, media_type, prepared_data, btn):
         """Stream menu construction: append one addon per idle tick to button's menu model."""
@@ -5595,13 +5726,25 @@ class CineWindow(Adw.ApplicationWindow):
             menu = Gio.Menu.new()
             btn.set_menu_model(menu)
 
+        menu.remove_all()
+
+        m_label = "Movies" if media_type == "movie" else ("Series" if media_type == "series" else ("Anime" if media_type == "anime" else media_type.title()))
+        top_item = Gio.MenuItem.new(f"★ All {m_label} (All Catalogs)", None)
+        if media_type == "movie":
+            top_item.set_action_and_target_value("win.switch-to-movies", None)
+        elif media_type == "series":
+            top_item.set_action_and_target_value("win.switch-to-series", None)
+        elif media_type == "anime":
+            top_item.set_action_and_target_value("win.switch-to-anime", None)
+        menu.append_item(top_item)
+
         work = list(prepared_data)
         def append_next():
             if not work:
                 return False
-            addon_name, addon_cat_items = work.pop(0)
+            addon_name, m_url, addon_cat_items = work.pop(0)
             try:
-                addon_menu = self._build_addon_submenu(addon_cat_items)
+                addon_menu = self._build_addon_submenu(addon_name, m_url, media_type, addon_cat_items)
                 menu.append_submenu(addon_name, addon_menu)
             except Exception as e:
                 logger.error(f"Error appending addon menu '{addon_name}': {e}")
@@ -5612,6 +5755,7 @@ class CineWindow(Adw.ApplicationWindow):
         GLib.idle_add(append_next)
 
     def _ensure_all_menus_built(self):
+        self._build_discover_menu()
         if getattr(self, "_menus_building", False) or getattr(self, "_menus_built", False):
             return
         self._menus_building = True
@@ -5787,6 +5931,9 @@ class CineWindow(Adw.ApplicationWindow):
     def _play_stream(self, url, title=None, headers=None, preserve_queue=False):
         if not preserve_queue:
             self._clear_stream_failover()
+        from . import player
+        if url and isinstance(url, str) and not url.startswith("http://127.0.0.1") and not url.startswith("http://localhost"):
+            player.stop_player()
         is_youtube_trailer = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower())
         if is_youtube_trailer:
             self.show_player_loading(_("Loading trailer..."), title=title)

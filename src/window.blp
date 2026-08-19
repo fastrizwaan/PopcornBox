@@ -36,9 +36,42 @@ template $CineWindow: Adw.ApplicationWindow {
                   Stack category_btn_stack {
                     transition-type: crossfade;
                     StackPage {
+                      name: "discover";
+                      child: Box {
+                        styles ["linked"]
+                        MenuButton discover_active_btn {
+                          always-show-arrow: true;
+                          child: Adw.ButtonContent {
+                            icon-name: "popcorn-discover-symbolic";
+                            label: _("Discover");
+                          };
+                        }
+                        Button movies_inactive_btn_discover {
+                          action-name: "win.switch-to-movies";
+                          icon-name: "popcorn-movies-symbolic";
+                          tooltip-text: _("Movies");
+                        }
+                        Button series_inactive_btn_discover {
+                          action-name: "win.switch-to-series";
+                          icon-name: "popcorn-tv-series-symbolic";
+                          tooltip-text: _("Series");
+                        }
+                        Button anime_inactive_btn_discover {
+                          action-name: "win.switch-to-anime";
+                          icon-name: "popcorn-anime-symbolic";
+                          tooltip-text: _("Anime");
+                        }
+                      };
+                    }
+                    StackPage {
                       name: "movies";
                       child: Box {
                         styles ["linked"]
+                        Button discover_inactive_btn_movies {
+                          action-name: "win.switch-to-discover";
+                          icon-name: "popcorn-discover-symbolic";
+                          tooltip-text: _("Discover");
+                        }
                         MenuButton movies_active_btn {
                           always-show-arrow: true;
                           child: Adw.ButtonContent {
@@ -49,6 +82,7 @@ template $CineWindow: Adw.ApplicationWindow {
                         Button series_inactive_btn {
                           action-name: "win.switch-to-series";
                           icon-name: "popcorn-tv-series-symbolic";
+                          tooltip-text: _("Series");
                         }
                         Button anime_inactive_btn_movies {
                           action-name: "win.switch-to-anime";
@@ -61,9 +95,15 @@ template $CineWindow: Adw.ApplicationWindow {
                       name: "series";
                       child: Box {
                         styles ["linked"]
+                        Button discover_inactive_btn_series {
+                          action-name: "win.switch-to-discover";
+                          icon-name: "popcorn-discover-symbolic";
+                          tooltip-text: _("Discover");
+                        }
                         Button movies_inactive_btn {
                           action-name: "win.switch-to-movies";
                           icon-name: "popcorn-movies-symbolic";
+                          tooltip-text: _("Movies");
                         }
                         MenuButton series_active_btn {
                           always-show-arrow: true;
@@ -83,13 +123,20 @@ template $CineWindow: Adw.ApplicationWindow {
                       name: "anime";
                       child: Box {
                         styles ["linked"]
+                        Button discover_inactive_btn_anime {
+                          action-name: "win.switch-to-discover";
+                          icon-name: "popcorn-discover-symbolic";
+                          tooltip-text: _("Discover");
+                        }
                         Button movies_inactive_btn_anime {
                           action-name: "win.switch-to-movies";
                           icon-name: "popcorn-movies-symbolic";
+                          tooltip-text: _("Movies");
                         }
                         Button series_inactive_btn_anime {
                           action-name: "win.switch-to-series";
                           icon-name: "popcorn-tv-series-symbolic";
+                          tooltip-text: _("Series");
                         }
                         MenuButton anime_active_btn {
                           always-show-arrow: true;
@@ -100,12 +147,6 @@ template $CineWindow: Adw.ApplicationWindow {
                         }
                       };
                     }
-                  }
-
-                  ToggleButton discover_toggle_btn {
-                    icon-name: "popcorn-discover-symbolic";
-                    tooltip-text: _("Discover Mode");
-                    styles ["flat", "circular"]
                   }
 
                 [title]

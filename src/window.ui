@@ -45,12 +45,63 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                         <property name="transition-type">1</property>
                                         <child>
                                           <object class="GtkStackPage">
+                                            <property name="name">discover</property>
+                                            <property name="child">
+                                              <object class="GtkBox">
+                                                <style>
+                                                  <class name="linked"/>
+                                                </style>
+                                                <child>
+                                                  <object class="GtkMenuButton" id="discover_active_btn">
+                                                    <property name="always-show-arrow">true</property>
+                                                    <property name="child">
+                                                      <object class="AdwButtonContent">
+                                                        <property name="icon-name">popcorn-discover-symbolic</property>
+                                                        <property name="label" translatable="yes">Discover</property>
+                                                      </object>
+                                                    </property>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkButton" id="movies_inactive_btn_discover">
+                                                    <property name="action-name">win.switch-to-movies</property>
+                                                    <property name="icon-name">popcorn-movies-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Movies</property>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkButton" id="series_inactive_btn_discover">
+                                                    <property name="action-name">win.switch-to-series</property>
+                                                    <property name="icon-name">popcorn-tv-series-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Series</property>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkButton" id="anime_inactive_btn_discover">
+                                                    <property name="action-name">win.switch-to-anime</property>
+                                                    <property name="icon-name">popcorn-anime-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Anime</property>
+                                                  </object>
+                                                </child>
+                                              </object>
+                                            </property>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkStackPage">
                                             <property name="name">movies</property>
                                             <property name="child">
                                               <object class="GtkBox">
                                                 <style>
                                                   <class name="linked"/>
                                                 </style>
+                                                <child>
+                                                  <object class="GtkButton" id="discover_inactive_btn_movies">
+                                                    <property name="action-name">win.switch-to-discover</property>
+                                                    <property name="icon-name">popcorn-discover-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Discover</property>
+                                                  </object>
+                                                </child>
                                                 <child>
                                                   <object class="GtkMenuButton" id="movies_active_btn">
                                                     <property name="always-show-arrow">true</property>
@@ -66,6 +117,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                   <object class="GtkButton" id="series_inactive_btn">
                                                     <property name="action-name">win.switch-to-series</property>
                                                     <property name="icon-name">popcorn-tv-series-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Series</property>
                                                   </object>
                                                 </child>
                                                 <child>
@@ -88,9 +140,17 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                   <class name="linked"/>
                                                 </style>
                                                 <child>
+                                                  <object class="GtkButton" id="discover_inactive_btn_series">
+                                                    <property name="action-name">win.switch-to-discover</property>
+                                                    <property name="icon-name">popcorn-discover-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Discover</property>
+                                                  </object>
+                                                </child>
+                                                <child>
                                                   <object class="GtkButton" id="movies_inactive_btn">
                                                     <property name="action-name">win.switch-to-movies</property>
                                                     <property name="icon-name">popcorn-movies-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Movies</property>
                                                   </object>
                                                 </child>
                                                 <child>
@@ -124,15 +184,24 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                   <class name="linked"/>
                                                 </style>
                                                 <child>
+                                                  <object class="GtkButton" id="discover_inactive_btn_anime">
+                                                    <property name="action-name">win.switch-to-discover</property>
+                                                    <property name="icon-name">popcorn-discover-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Discover</property>
+                                                  </object>
+                                                </child>
+                                                <child>
                                                   <object class="GtkButton" id="movies_inactive_btn_anime">
                                                     <property name="action-name">win.switch-to-movies</property>
                                                     <property name="icon-name">popcorn-movies-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Movies</property>
                                                   </object>
                                                 </child>
                                                 <child>
                                                   <object class="GtkButton" id="series_inactive_btn_anime">
                                                     <property name="action-name">win.switch-to-series</property>
                                                     <property name="icon-name">popcorn-tv-series-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Series</property>
                                                   </object>
                                                 </child>
                                                 <child>
@@ -150,16 +219,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                             </property>
                                           </object>
                                         </child>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkToggleButton" id="discover_toggle_btn">
-                                        <property name="icon-name">popcorn-discover-symbolic</property>
-                                        <property name="tooltip-text" translatable="yes">Discover Mode</property>
-                                        <style>
-                                          <class name="flat"/>
-                                          <class name="circular"/>
-                                        </style>
                                       </object>
                                     </child>
                                     <child type="title">
