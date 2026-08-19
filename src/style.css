@@ -796,6 +796,14 @@ button.category-filter-btn:checked {
   font-weight: 600;
 }
 
+.stream-ep-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #a78bfa;
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
 /* Stream Source Row Cards */
 .stream-card-row {
   background: rgba(26, 26, 32, 0.7);
