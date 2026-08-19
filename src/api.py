@@ -415,6 +415,20 @@ def has_stream_resource(addon, media_type=None, item_id=None):
     """Return True if the addon supports stream ('stream') resource for this item."""
     return addon_has_resource(addon, "stream", media_type=media_type, item_id=item_id)
 
+def get_stream_addons(media_type=None, item_id=None):
+    """Return all enabled addons that provide streams/torrents for this media type and item."""
+    from . import database
+    addons = [a for a in database.get_addons() if a.get("enabled", True)]
+    return [
+        a for a in addons 
+        if not a.get("manifest_url", "").startswith("builtin://") 
+        and has_stream_resource(a, media_type=media_type, item_id=item_id)
+    ]
+
+def has_stream_addons(media_type=None, item_id=None):
+    """Return True if there is at least one enabled stream/torrent addon for this media type and item."""
+    return len(get_stream_addons(media_type=media_type, item_id=item_id)) > 0
+
 def has_catalog_resource(addon, media_type=None):
     """Return True if the addon supports catalog ('catalog') resource for this media type."""
     return addon_has_resource(addon, "catalog", media_type=media_type)
@@ -422,6 +436,28 @@ def has_catalog_resource(addon, media_type=None):
 def has_subtitles_resource(addon, media_type=None, item_id=None):
     """Return True if the addon supports subtitles ('subtitles') resource for this item."""
     return addon_has_resource(addon, "subtitles", media_type=media_type, item_id=item_id)
+
+def is_catalog_browsable(cat):
+    """
+    Return True if the catalog can be browsed directly without search or other required parameters.
+    Catalogs with isRequired=True for 'search' (or in extraRequired) are search-only catalogs.
+    """
+    if not isinstance(cat, dict):
+        return False
+    extra_req = cat.get("extraRequired") or []
+    if "search" in extra_req:
+        return False
+    extra = cat.get("extra") or []
+    for ex in extra:
+        if isinstance(ex, dict):
+            name = ex.get("name", "")
+            is_req = ex.get("isRequired", False)
+            if is_req:
+                if name == "search":
+                    return False
+                if name != "genre" and not ex.get("options"):
+                    return False
+    return True
 
 def get_available_catalogs(c_type="movie"):
     from . import database
@@ -439,6 +475,9 @@ def get_available_catalogs(c_type="movie"):
             
         addon_catalogs = addon.get("catalogs", [])
         for cat in addon_catalogs:
+            if not is_catalog_browsable(cat):
+                continue
+
             cat_type = cat.get("type")
             cat_name = cat.get("name") or ""
             cat_id = cat.get("id", "")
@@ -456,11 +495,12 @@ def get_available_catalogs(c_type="movie"):
                         genres = ex.get("options", [])
                         
                 if not cat_name or cat_name.lower() == "catalog":
-                    display_name = f"{addon_name} - {cat_id}"
+                    if str(cat_id).lower() in ["tpbctlg-movies", "tpbctlg-series"]:
+                        display_name = f"{addon_name} - Popular"
+                    else:
+                        display_name = f"{addon_name} - {cat_id}"
                 else:
                     display_name = f"{addon_name} - {cat_name}" if addon_name.lower() not in cat_name.lower() else cat_name
-                    if "tpbctlg" in display_name.lower():
-                         display_name = f"{display_name} ({cat_id})"
                 
                 catalogs.append({
                     "addon_name": addon_name,
@@ -512,13 +552,14 @@ def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
         cat_name = cat.get("name", "")
         extra = cat.get("extra") or []
         extra_sup = cat.get("extraSupported") or []
+        extra_req = cat.get("extraRequired") or []
         
         is_search = False
         if addon.get("id") == "cinemeta" and cat_id == "top":
             is_search = True
         elif "search" in str(cat_id).lower() or "search" in str(cat_name).lower():
             is_search = True
-        elif "search" in extra_sup:
+        elif "search" in extra_sup or "search" in extra_req:
             is_search = True
         else:
             for ex in extra:
@@ -1298,7 +1339,15 @@ def process_raw_streams(all_streams):
             "addon_names": [s.get("addon_name")] if s.get("addon_name") else []
         })
     
-    valid_streams.sort(key=lambda x: (x.get("seeders", 0) if not x.get("is_http") else 100, x.get("q_val", 0), x.get("size_gb", 0.0)), reverse=True)
+    def _rank_key(x):
+        q_val = x.get("q_val", 0)
+        size_gb = float(x.get("size_gb") or 0.0)
+        seeders = x.get("seeders", 0) if not x.get("is_http") else 100
+        is_1080p_under_4gb = (q_val == 1080 and ((0 < size_gb < 4.0) or size_gb == 0.0))
+        p_tier = 3 if is_1080p_under_4gb else (2 if q_val == 720 else (1 if q_val == 1080 else 0))
+        return (p_tier, seeders, q_val, size_gb)
+
+    valid_streams.sort(key=_rank_key, reverse=True)
     return valid_streams
 
 def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cache=True):

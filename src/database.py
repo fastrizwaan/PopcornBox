@@ -309,20 +309,9 @@ def get_continue_watching():
     valid_cw = []
     for item in cw_items:
         i_id = item.get("id") or item.get("imdb_id")
-        if i_id and str(i_id) not in removed_set:
+        if i_id and str(i_id) not in removed_set and str(i_id) not in seen_ids:
             seen_ids.add(str(i_id))
             valid_cw.append(item)
-
-    # Merge played items from history if not explicitly removed
-    history_items = db.get("history", [])
-    for h in history_items:
-        h_id = h.get("id") or h.get("imdb_id")
-        if h_id and str(h_id) not in seen_ids and str(h_id) not in removed_set:
-            seen_ids.add(str(h_id))
-            item_copy = dict(h)
-            if "progress" not in item_copy:
-                item_copy["progress"] = 0.2
-            valid_cw.append(item_copy)
 
     return sorted(valid_cw, key=lambda x: x.get("last_watched", 0), reverse=True)
 
@@ -333,7 +322,7 @@ def get_continue_watching_item(item_id):
     db = _read_db()
     cw_items = list(db.get("continue_watching", []))
     removed_set = set(db.get("removed_continue_watching", []))
-    ids_to_match = [str(x) for x in item_id] if isinstance(item_id, list) else [str(item_id)]
+    ids_to_match = [str(x) for x in item_id if x] if isinstance(item_id, (list, set, tuple)) else [str(item_id)]
     
     for mid in ids_to_match:
         if mid in removed_set:
@@ -341,16 +330,12 @@ def get_continue_watching_item(item_id):
             
     for item in cw_items:
         i_id = item.get("id") or item.get("imdb_id")
-        if i_id and str(i_id) in ids_to_match:
+        i_aliases = [str(i_id)] if i_id else []
+        if isinstance(item.get("alias_ids"), list):
+            i_aliases.extend([str(x) for x in item["alias_ids"]])
+        if any(a in ids_to_match for a in i_aliases):
             return item
             
-    for h in db.get("history", []):
-        h_id = h.get("id") or h.get("imdb_id")
-        if h_id and str(h_id) in ids_to_match and str(h_id) not in removed_set:
-            item_copy = dict(h)
-            if "progress" not in item_copy:
-                item_copy["progress"] = 0.2
-            return item_copy
     return None
 
 def save_continue_watching(item):
@@ -367,11 +352,22 @@ def save_continue_watching(item):
         removed_set.discard(str(item_id))
         db["removed_continue_watching"] = list(removed_set)
         
+        ids_to_match = [str(item_id)]
+        if isinstance(item.get("alias_ids"), list):
+            ids_to_match.extend([str(x) for x in item["alias_ids"]])
+        if item.get("id"):
+            ids_to_match.append(str(item["id"]))
+        if item.get("imdb_id"):
+            ids_to_match.append(str(item["imdb_id"]))
+
         existing = None
         new_cw = []
         for entry in cw:
             e_id = entry.get("id") or entry.get("imdb_id")
-            if e_id == item_id:
+            e_aliases = [str(e_id)] if e_id else []
+            if isinstance(entry.get("alias_ids"), list):
+                e_aliases.extend([str(x) for x in entry["alias_ids"]])
+            if any(a in ids_to_match for a in e_aliases):
                 existing = entry
             else:
                 new_cw.append(entry)
@@ -501,6 +497,60 @@ def is_adult_content_hidden():
 
 def set_adult_content_hidden(enabled):
     set_setting("hide_adult_content", bool(enabled))
+
+def _normalize_stream_for_storage(stream):
+    if not stream or not isinstance(stream, dict):
+        return None
+    res = {}
+    for k in ["url", "magnet", "hash", "infoHash", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "stream_title", "title", "filename", "is_http", "addon_names", "behaviorHints", "subtitles"]:
+        if k in stream and stream[k] is not None:
+            res[k] = stream[k]
+    return res
+
+def save_working_stream(item_id, season=None, episode=None, stream_info=None):
+    """Save the working stream/torrent for a movie or series episode."""
+    if not item_id or not stream_info:
+        return
+    norm = _normalize_stream_for_storage(stream_info)
+    if not norm:
+        return
+    s_key = f"{season}" if season is not None else ""
+    e_key = f"{episode}" if episode is not None else ""
+    key = f"working_stream_{item_id}_{s_key}_{e_key}"
+    set_setting(key, norm)
+
+def get_working_stream(item_id, season=None, episode=None):
+    """Get the remembered working stream/torrent for a movie or series episode."""
+    if not item_id:
+        return None
+    s_key = f"{season}" if season is not None else ""
+    e_key = f"{episode}" if episode is not None else ""
+    key = f"working_stream_{item_id}_{s_key}_{e_key}"
+    saved = get_setting(key, None)
+    if saved:
+        return saved
+    if s_key or e_key:
+        general_saved = get_setting(f"working_stream_{item_id}__", None)
+        if general_saved:
+            return general_saved
+    cw = get_continue_watching_item(item_id)
+    if cw:
+        if season is not None and cw.get("season") is not None and str(cw.get("season")) != str(season):
+            return None
+        if episode is not None and cw.get("episode") is not None and str(cw.get("episode")) != str(episode):
+            return None
+        if cw.get("selected_torrent"):
+            return _normalize_stream_for_storage(cw["selected_torrent"])
+        if cw.get("magnet") or cw.get("stream_url") or cw.get("hash"):
+            return {
+                "url": cw.get("stream_url") or cw.get("magnet"),
+                "magnet": cw.get("magnet"),
+                "hash": cw.get("hash"),
+                "file_index": cw.get("file_index"),
+                "stream_title": cw.get("stream_title") or cw.get("title"),
+                "is_http": bool(cw.get("stream_url") and not str(cw.get("stream_url")).startswith("magnet:")),
+            }
+    return None
 
 
 # --- Progress ---

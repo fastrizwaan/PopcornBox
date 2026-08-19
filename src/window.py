@@ -90,7 +90,7 @@ def _streams_match(s1, s2):
     if h1 and h2 and h1 == h2:
         idx1 = s1.get("file_index") if s1.get("file_index") is not None else s1.get("fileIdx")
         idx2 = s2.get("file_index") if s2.get("file_index") is not None else s2.get("fileIdx")
-        if idx1 == idx2:
+        if idx1 is None or idx2 is None or idx1 == idx2:
             return True
     t1 = (s1.get("stream_title") or s1.get("title") or s1.get("filename") or "").strip()
     t2 = (s2.get("stream_title") or s2.get("title") or s2.get("filename") or "").strip()
@@ -104,6 +104,13 @@ def _find_stream_index(stream, stream_list):
         if _streams_match(stream, item):
             return idx
     return 0
+
+def _find_stream_index_exact(stream, stream_list):
+    if not stream or not stream_list: return -1
+    for idx, item in enumerate(stream_list):
+        if _streams_match(stream, item):
+            return idx
+    return -1
 
 libegl = ctypes.CDLL("libEGL.so.1")
 egl_get_proc_address = libegl.eglGetProcAddress
@@ -133,14 +140,25 @@ class MovieDetailsPage(Gtk.Overlay):
         self.seasons = []
         self.current_episodes = []
         self.selected_torrent = None
+        self.quality_buttons = []
         self._restoring_state = False
         self._destroyed = False
         self._last_played_magnet = None
         self._last_played_file_index = None
         self._auto_play_next = False
+        self._auto_play_on_streams_loaded = False
         self._details_fetch_id = 0
         self._fetch_gen = 0
         self._last_fetch_key = None
+        
+        self.remembered_working_stream = None
+        from . import database
+        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
+        primary_id = item_id[0] if isinstance(item_id, list) else item_id
+        if primary_id:
+            self.remembered_working_stream = database.get_working_stream(primary_id, self.selected_season, self.selected_episode)
+            if self.remembered_working_stream:
+                self.selected_torrent = self.remembered_working_stream
         
         self.backdrop_pic = Gtk.Picture()
         self.backdrop_pic.set_can_shrink(True)
@@ -1091,42 +1109,35 @@ class MovieDetailsPage(Gtk.Overlay):
             self.detail_seen_btn.set_icon_name("eye-open-negative-filled-symbolic")
 
     def update_continue_btn(self, details=None):
-        from . import database
-        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
-        primary_id = item_id[0] if isinstance(item_id, list) else item_id
-        if not primary_id and details:
-            primary_id = details.get("id") or details.get("imdb_id")
+        from . import database, api
+        ids_to_check = []
+        if self.movie_stub.get("alias_ids"):
+            for a_id in self.movie_stub["alias_ids"]:
+                if a_id and str(a_id) not in ids_to_check:
+                    ids_to_check.append(str(a_id))
+        for k in ["id", "imdb_id"]:
+            val = self.movie_stub.get(k)
+            if val and str(val) not in ids_to_check:
+                ids_to_check.append(str(val))
+        if details:
+            for k in ["id", "imdb_id"]:
+                val = details.get(k)
+                if val and str(val) not in ids_to_check:
+                    ids_to_check.append(str(val))
 
-        cw_item = database.get_continue_watching_item(primary_id)
-        if not cw_item and (self.movie_stub.get("stream_queue") or self.movie_stub.get("stream_url") or self.movie_stub.get("magnet") or float(self.movie_stub.get("position") or 0) > 0):
+        primary_id = ids_to_check[0] if ids_to_check else None
+
+        cw_item = database.get_continue_watching_item(ids_to_check)
+        if not cw_item and (self.movie_stub.get("stream_queue") or self.movie_stub.get("stream_url") or float(self.movie_stub.get("position") or 0) > 0):
             cw_item = self.movie_stub
 
-        if not cw_item:
-            self.continue_btn.set_visible(False)
-            return
+        working_stream = getattr(self, "remembered_working_stream", None)
+        if not working_stream and primary_id:
+            working_stream = database.get_working_stream(primary_id, getattr(self, "selected_season", None), getattr(self, "selected_episode", None))
+            if working_stream:
+                self.remembered_working_stream = working_stream
 
-        # Determine label and tooltip
-        pos = float(cw_item.get("position") or 0.0)
-        dur = float(cw_item.get("duration") or 0.0)
-        season = cw_item.get("season")
-        episode = cw_item.get("episode")
-        
-        lbl_parts = ["Continue"]
-        if season is not None and episode is not None:
-            lbl_parts.append(f"S{season}:E{episode}")
-            if dur > pos and pos > 0:
-                rem_mins = int((dur - pos) / 60)
-                if rem_mins > 0:
-                    lbl_parts.append(f"({rem_mins}m left)")
-        elif dur > pos and pos > 0:
-            rem_mins = int((dur - pos) / 60)
-            if rem_mins > 0:
-                lbl_parts.append(f"({rem_mins}m left)")
-                
-        lbl_text = " ".join(lbl_parts)
-        self.continue_label.set_text(lbl_text)
-        self.continue_btn.set_visible(True)
-
+        # Disconnect existing click handler if any
         if hasattr(self, '_continue_btn_hid') and self._continue_btn_hid:
             try:
                 self.continue_btn.disconnect(self._continue_btn_hid)
@@ -1134,16 +1145,89 @@ class MovieDetailsPage(Gtk.Overlay):
                 pass
             self._continue_btn_hid = None
 
-        def on_continue_clicked(btn):
-            if self.window and hasattr(self.window, "_on_continue_watching_clicked"):
-                play_data = dict(cw_item)
-                if not play_data.get("title"):
-                    play_data["title"] = (details or {}).get("title") or self.movie_stub.get("title") or self.movie_stub.get("name")
-                if not play_data.get("type"):
-                    play_data["type"] = self.media_type
-                self.window._on_continue_watching_clicked(play_data)
+        has_progress = False
+        if cw_item:
+            pos = float(cw_item.get("position") or 0.0)
+            if pos > 0 or cw_item.get("stream_url") or cw_item.get("magnet") or cw_item.get("stream_queue"):
+                has_progress = True
+            elif working_stream:
+                has_progress = True
+        elif working_stream:
+            has_progress = True
 
-        self._continue_btn_hid = self.continue_btn.connect("clicked", on_continue_clicked)
+        has_stream_provider = api.has_stream_addons(self.media_type, primary_id)
+        has_direct_playable = bool(
+            working_stream
+            or (cw_item and (cw_item.get("stream_url") or cw_item.get("magnet") or cw_item.get("stream_queue")))
+            or (self.movie_stub.get("stream_url") or self.movie_stub.get("magnet"))
+            or (details and (details.get("stream_url") or details.get("magnet")))
+            or getattr(self, "torrents", None)
+        )
+
+        if not has_stream_provider and not has_direct_playable:
+            self.continue_btn.set_visible(False)
+            return
+
+        if has_progress:
+            # In-progress title: Show "Continue" with progress
+            pos = float((cw_item or {}).get("position") or 0.0)
+            dur = float((cw_item or {}).get("duration") or 0.0)
+            season = (cw_item or {}).get("season") or getattr(self, "selected_season", None)
+            episode = (cw_item or {}).get("episode") or getattr(self, "selected_episode", None)
+            
+            lbl_parts = ["Continue"]
+            if season is not None and episode is not None:
+                lbl_parts.append(f"S{season}:E{episode}")
+                if dur > pos and pos > 0:
+                    rem_mins = int((dur - pos) / 60)
+                    if rem_mins > 0:
+                        lbl_parts.append(f"({rem_mins}m left)")
+            elif dur > pos and pos > 0:
+                rem_mins = int((dur - pos) / 60)
+                if rem_mins > 0:
+                    lbl_parts.append(f"({rem_mins}m left)")
+                    
+            lbl_text = " ".join(lbl_parts)
+            self.continue_label.set_text(lbl_text)
+            self.continue_btn.set_tooltip_text("Continue Watching")
+            self.continue_btn.set_visible(True)
+
+            def on_continue_clicked(btn):
+                if self.window and hasattr(self.window, "_on_continue_watching_clicked"):
+                    play_data = dict(cw_item) if cw_item else {}
+                    if not play_data.get("id"):
+                        play_data["id"] = primary_id
+                    if not play_data.get("imdb_id"):
+                        play_data["imdb_id"] = primary_id
+                    if not play_data.get("title"):
+                        play_data["title"] = (details or {}).get("title") or self.movie_stub.get("title") or self.movie_stub.get("name")
+                    if not play_data.get("type"):
+                        play_data["type"] = self.media_type
+                    if working_stream and not play_data.get("selected_torrent"):
+                        play_data["selected_torrent"] = working_stream
+                        if working_stream.get("url"):
+                            play_data["stream_url"] = working_stream["url"]
+                        if working_stream.get("magnet"):
+                            play_data["magnet"] = working_stream["magnet"]
+                    self.window._on_continue_watching_clicked(play_data)
+                elif hasattr(self, "on_watch_clicked"):
+                    if working_stream:
+                        self.selected_torrent = working_stream
+                    self.on_watch_clicked(btn)
+
+            self._continue_btn_hid = self.continue_btn.connect("clicked", on_continue_clicked)
+        else:
+            # Unplayed title: Show "Play" button to directly play stream or torrent!
+            self.continue_label.set_text("Play")
+            self.continue_btn.set_tooltip_text("Play Stream or Torrent")
+            self.continue_btn.set_visible(True)
+
+            def on_play_clicked(btn):
+                if getattr(self, "remembered_working_stream", None):
+                    self.selected_torrent = self.remembered_working_stream
+                self.on_watch_clicked(btn)
+
+            self._continue_btn_hid = self.continue_btn.connect("clicked", on_play_clicked)
 
     def build_ui(self, details):
         if not details: return
@@ -1317,8 +1401,13 @@ class MovieDetailsPage(Gtk.Overlay):
                 if hasattr(self, 'current_episodes') and idx < len(self.current_episodes):
                     self.selected_video = self.current_episodes[idx]
                     self.selected_episode = self.selected_video.get("episode")
-                    if item_id and getattr(self, 'selected_season', None) is not None and self.selected_episode is not None:
-                        database.set_setting(f"last_ep_{item_id}_{self.selected_season}", self.selected_episode)
+                    primary_id = (self.movie_stub.get("alias_ids") or [self.movie_stub.get("id") or self.movie_stub.get("imdb_id")])[0]
+                    if primary_id and getattr(self, 'selected_season', None) is not None and self.selected_episode is not None:
+                        database.set_setting(f"last_ep_{primary_id}_{self.selected_season}", self.selected_episode)
+                    self.remembered_working_stream = database.get_working_stream(primary_id, getattr(self, 'selected_season', None), self.selected_episode)
+                    if self.remembered_working_stream:
+                        self.selected_torrent = self.remembered_working_stream
+                    self.update_continue_btn()
                     self.fetch_torrents_async()
                 
             self._ep_dropdown_hid = self.episode_dropdown.connect("notify::selected", on_episode_changed)
@@ -1430,8 +1519,18 @@ class MovieDetailsPage(Gtk.Overlay):
 
             self.torrents = torrents or []
             self.update_quality_dropdown()
+            self.update_continue_btn()
 
-            if is_complete and self.torrents and getattr(self, '_auto_play_next', False):
+            if self.torrents and getattr(self, '_auto_play_on_streams_loaded', False):
+                self._auto_play_on_streams_loaded = False
+                GLib.idle_add(self.on_watch_clicked, self.watch_btn)
+            elif is_complete and not self.torrents and getattr(self, '_auto_play_on_streams_loaded', False):
+                self._auto_play_on_streams_loaded = False
+                if self.window:
+                    self.window.hide_player_loading()
+                if hasattr(self, 'progress_label') and self.progress_label:
+                    self.progress_label.set_text("No streams available.")
+            elif is_complete and self.torrents and getattr(self, '_auto_play_next', False):
                 self._auto_play_next = False
                 GLib.idle_add(self.on_watch_clicked, self.watch_btn)
             return False
@@ -1518,11 +1617,31 @@ class MovieDetailsPage(Gtk.Overlay):
                 quality_groups["More"].append(t)
             
         self.quality_buttons = []
-        
-        def _stream_sort_key(t):
-            return (t.get('seeders', 0), t.get('q_val', 0), t.get('size_gb', 0.0))
+        while child := self.quality_button_box.get_first_child():
+            self.quality_button_box.remove(child)
 
+        def _stream_sort_key_1080p(t):
+            size = float(t.get('size_gb') or 0.0)
+            is_under_4gb = (0 < size < 4.0) or (size == 0.0)
+            p_size = 1 if is_under_4gb else 0
+            seeds = int(t.get('seeders') or 0)
+            is_http = 1 if t.get('is_http') else 0
+            ping_ok = 1 if t.get('ping_status') is True else 0
+            return (p_size, ping_ok, is_http, seeds, size)
 
+        def _stream_sort_key_general(t):
+            seeds = int(t.get('seeders') or 0)
+            is_http = 1 if t.get('is_http') else 0
+            ping_ok = 1 if t.get('ping_status') is True else 0
+            size = float(t.get('size_gb') or 0.0)
+            return (ping_ok, is_http, seeds, size)
+
+        for q_label in ["4K", "1080p", "720p", "More"]:
+            if quality_groups[q_label]:
+                if q_label == "1080p":
+                    quality_groups[q_label].sort(key=_stream_sort_key_1080p, reverse=True)
+                else:
+                    quality_groups[q_label].sort(key=_stream_sort_key_general, reverse=True)
 
         def update_file_dropdown_ui(t_list):
             if not t_list:
@@ -1582,13 +1701,11 @@ class MovieDetailsPage(Gtk.Overlay):
             update_file_dropdown_ui(t_list)
             
         saved_label = getattr(self, 'user_selected_quality', None)
-        if not saved_label:
-            from . import database
-            saved_label = database.get_setting("preferred_quality", None)
         target_btn = None
         target_t_list = None
         
         preferred_order = ["1080p", "720p", "4K", "More"]
+        btn_by_label = {}
         
         self._programmatic_quality_switch = True
         try:
@@ -1596,7 +1713,6 @@ class MovieDetailsPage(Gtk.Overlay):
             for q_label in preferred_order:
                 t_list = quality_groups[q_label]
                 if t_list:
-                    t_list.sort(key=_stream_sort_key, reverse=True)
                     btn = Gtk.ToggleButton(label=q_label)
                     btn.set_size_request(-1, 32)
                     if first_quality_btn is None:
@@ -1617,18 +1733,41 @@ class MovieDetailsPage(Gtk.Overlay):
                     btn.connect("toggled", make_click_cb(btn, q_label, t_list))
                     self.quality_buttons.append(btn)
                     self.quality_button_box.append(btn)
-                    
-                    if saved_label and q_label == saved_label:
-                        target_btn = btn
-                        target_t_list = t_list
-                        
-            if not target_btn and self.quality_buttons:
-                target_btn = self.quality_buttons[0]
+                    btn_by_label[q_label] = (btn, t_list)
+
+            # 1. First priority: Match remembered working stream if available
+            if getattr(self, "remembered_working_stream", None):
                 for q_label in preferred_order:
-                    if quality_groups[q_label]:
-                        target_t_list = quality_groups[q_label]
-                        break
-                        
+                    if q_label in btn_by_label:
+                        t_list = quality_groups[q_label]
+                        idx = _find_stream_index_exact(self.remembered_working_stream, t_list)
+                        if idx >= 0:
+                            target_btn, target_t_list = btn_by_label[q_label]
+                            self.selected_torrent = t_list[idx]
+                            break
+
+            # 2. Second priority: User explicitly selected quality in this session
+            if not target_btn and saved_label and saved_label in btn_by_label:
+                target_btn, target_t_list = btn_by_label[saved_label]
+
+            # 3. Third priority: Preference rule:
+            # Prefer 1080p if size < 4 GB, if not found in 1080p choose 720p, then others
+            if not target_btn:
+                has_1080p_under_4gb = any(
+                    (0.0 < float(t.get('size_gb') or 0.0) < 4.0) or float(t.get('size_gb') or 0.0) == 0.0
+                    for t in quality_groups.get('1080p', [])
+                )
+                if has_1080p_under_4gb and "1080p" in btn_by_label:
+                    target_btn, target_t_list = btn_by_label["1080p"]
+                elif "720p" in btn_by_label:
+                    target_btn, target_t_list = btn_by_label["720p"]
+                elif "1080p" in btn_by_label:
+                    target_btn, target_t_list = btn_by_label["1080p"]
+                elif "4K" in btn_by_label:
+                    target_btn, target_t_list = btn_by_label["4K"]
+                elif "More" in btn_by_label:
+                    target_btn, target_t_list = btn_by_label["More"]
+
             if target_btn and target_t_list:
                 if not target_btn.get_active():
                     target_btn.set_active(True)
@@ -1714,9 +1853,31 @@ class MovieDetailsPage(Gtk.Overlay):
             if t_list:
                 self.selected_torrent = t_list[0]
             else:
+                media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
+                self._auto_play_on_streams_loaded = True
                 if hasattr(self, 'progress_label') and self.progress_label:
-                    self.progress_label.set_text("Please select a stream first.")
+                    self.progress_label.set_text("Loading streams to play...")
+                if self.window:
+                    self.window.show_player_loading("Loading streams to play...", media_title)
                 return
+
+        working_stream = getattr(self, "remembered_working_stream", None)
+        if not working_stream:
+            from . import database
+            item_id = (
+                getattr(self, "movie_details", {}).get("imdb_id")
+                or getattr(self, "movie_details", {}).get("id")
+                or self.movie_stub.get("imdb_id")
+                or self.movie_stub.get("id")
+            )
+            season = getattr(self, "selected_season", None)
+            episode = getattr(self, "selected_episode", None)
+            working_stream = database.get_working_stream(item_id, season, episode)
+            if working_stream:
+                self.remembered_working_stream = working_stream
+
+        if working_stream and isinstance(working_stream, dict):
+            self.selected_torrent = working_stream
 
         media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
         if self.media_type == "series" and getattr(self, "selected_season", None) is not None:
@@ -1736,7 +1897,11 @@ class MovieDetailsPage(Gtk.Overlay):
         if not queue:
             queue = [self.selected_torrent]
 
-        init_idx = _find_stream_index(self.selected_torrent, queue)
+        if self.selected_torrent:
+            queue = [self.selected_torrent] + [t for t in queue if t != self.selected_torrent and (t.get("url") or t.get("magnet")) != (self.selected_torrent.get("url") or self.selected_torrent.get("magnet"))]
+            init_idx = 0
+        else:
+            init_idx = 0
 
         # Subtitle fetching is handled by play_stream_with_failover — do NOT call it here too
         if self.window and hasattr(self.window, 'play_stream_with_failover'):
@@ -1834,6 +1999,48 @@ class MovieDetailsPage(Gtk.Overlay):
             except (ValueError, TypeError):
                 media_title = f"{media_title} (S{self.selected_season}E{self.selected_episode})"
             
+        from . import database
+        primary_id = (
+            getattr(self, "movie_details", {}).get("imdb_id")
+            or getattr(self, "movie_details", {}).get("id")
+            or self.movie_stub.get("imdb_id")
+            or self.movie_stub.get("id")
+        )
+        season = getattr(self, "selected_season", None)
+        episode = getattr(self, "selected_episode", None)
+        st_obj = dict(self.selected_torrent) if getattr(self, "selected_torrent", None) else {
+            "magnet": magnet,
+            "url": magnet,
+            "file_index": file_index,
+            "title": media_title,
+            "stream_title": media_title,
+        }
+        database.save_working_stream(primary_id, season, episode, st_obj)
+        self.remembered_working_stream = st_obj
+
+        if self.window:
+            import time
+            details = getattr(self, "movie_details", {}) or {}
+            cover = details.get("medium_cover_image") or self.movie_stub.get("medium_cover_image") or details.get("poster") or self.movie_stub.get("poster")
+            self.window._current_playing_item = {
+                "id": primary_id,
+                "imdb_id": primary_id,
+                "title": media_title,
+                "type": self.media_type,
+                "medium_cover_image": cover,
+                "season": season,
+                "episode": episode,
+                "magnet": magnet,
+                "file_index": file_index,
+                "stream_title": media_title,
+                "last_watched": int(time.time()),
+                "progress": 0.01,
+                "position": 0.0,
+                "selected_torrent": st_obj,
+            }
+            database.save_continue_watching(self.window._current_playing_item)
+            self.update_continue_btn()
+
         if magnet.startswith("http://") or magnet.startswith("https://"):
             if self.window:
                 self.window.show_player_loading("Opening direct stream...", media_title)
@@ -1861,10 +2068,13 @@ class MovieDetailsPage(Gtk.Overlay):
                     if isinstance(stats, dict) and stats.get("filePath"):
                         import os
                         display_title = os.path.basename(stats.get("filePath"))
+                    if getattr(self.window, "_current_playing_item", None):
+                        self.window._current_playing_item["stream_url"] = url
                     self.window._play_stream(url, display_title)
                     GLib.idle_add(self.stop_btn.set_visible, True)
                     continue_label = "▶ Resume Stream" if self.media_type in ["music", "radio", "live"] else "▶ Continue Watching"
                     GLib.idle_add(self.watch_btn.set_label, continue_label)
+                    GLib.idle_add(self.update_continue_btn)
                 elif isinstance(stats, dict):
                     status_msg = stats.get("status", "Buffering...")
                     if hasattr(self, 'progress_label') and self.progress_label:
@@ -3253,7 +3463,13 @@ class CineWindow(Adw.ApplicationWindow):
                 if hasattr(self, "next_episode_revealer") and self.next_episode_revealer.get_reveal_child():
                     self.next_episode_revealer.set_reveal_child(False)
 
-            # Track Continue Watching progress
+            # Track Continue Watching progress and mark verified working stream
+            if curr_time >= 0.1 and getattr(self, "stream_queue", None):
+                last_marked = getattr(self, "_last_marked_stream_idx", None)
+                if last_marked != self.stream_queue_index:
+                    self._last_marked_stream_idx = self.stream_queue_index
+                    self._mark_current_stream_as_working()
+
             if getattr(self, "_current_playing_item", None):
                 prog = min(1.0, max(0.0, curr_time / duration)) if duration > 0 else 0.0
                 self._current_playing_item["position"] = curr_time
@@ -4780,16 +4996,40 @@ class CineWindow(Adw.ApplicationWindow):
         self._refresh_content()
 
     def _on_continue_watching_clicked(self, item_data):
+        if not item_data: return
         stream_url = item_data.get("stream_url")
         magnet = item_data.get("magnet")
         title = item_data.get("title") or item_data.get("name") or "Stream"
+        stream_queue = item_data.get("stream_queue")
+        position = float(item_data.get("position") or 0.0)
+
         if not magnet and not stream_url and item_data.get("hash"):
             from . import api
             t_name = item_data.get("stream_title") or title
             magnet = api.build_magnet(item_data.get("hash"), t_name)
-        stream_queue = item_data.get("stream_queue")
-        position = float(item_data.get("position") or 0.0)
-        
+        p_id = item_data.get("id") or item_data.get("imdb_id")
+        season = item_data.get("season")
+        episode = item_data.get("episode")
+        from . import database
+        working_stream = database.get_working_stream(p_id, season, episode) or item_data.get("selected_torrent")
+
+        if working_stream and isinstance(working_stream, dict):
+            item_data["selected_torrent"] = working_stream
+            if stream_queue and len(stream_queue) > 0:
+                stream_queue = [working_stream] + [s for s in stream_queue if s != working_stream and (s.get("url") or s.get("magnet")) != (working_stream.get("url") or working_stream.get("magnet"))]
+                item_data["stream_queue"] = stream_queue
+                item_data["stream_queue_index"] = 0
+            else:
+                stream_queue = [working_stream]
+                item_data["stream_queue"] = stream_queue
+                item_data["stream_queue_index"] = 0
+            if working_stream.get("url"):
+                stream_url = working_stream["url"]
+                item_data["stream_url"] = stream_url
+            if working_stream.get("magnet"):
+                magnet = working_stream["magnet"]
+                item_data["magnet"] = magnet
+
         self._current_playing_item = dict(item_data)
         
         curr_page = self.main_stack.get_visible_child_name() or "discover"
@@ -4804,7 +5044,7 @@ class CineWindow(Adw.ApplicationWindow):
                 previous_page=prev_page,
                 season=item_data.get("season"),
                 episode=item_data.get("episode"),
-                imdb_id=item_data.get("id") or item_data.get("imdb_id"),
+                imdb_id=p_id,
                 media_type=item_data.get("type", "movie")
             )
             if position > 0:
@@ -4855,7 +5095,7 @@ class CineWindow(Adw.ApplicationWindow):
                     self.discover_box.remove(grandparent)
 
     def _get_discover_catalog_list(self):
-        from . import database
+        from . import database, api
         addons = database.get_addons()
         rows = []
         
@@ -4884,6 +5124,9 @@ class CineWindow(Adw.ApplicationWindow):
                 
             grouped = {}
             for cat in catalogs:
+                if not api.is_catalog_browsable(cat):
+                    continue
+
                 c_id = cat.get('id', '')
                 c_name = cat.get('name') or c_id
                 c_type = cat.get('type') or 'movie'
@@ -4891,6 +5134,8 @@ class CineWindow(Adw.ApplicationWindow):
                 clean_name = c_name
                 if addon_name and clean_name.lower().startswith(addon_name.lower()):
                     clean_name = clean_name[len(addon_name):].lstrip(' -|:·')
+                if clean_name.lower() in ['tpbctlg-movies', 'tpbctlg-series']:
+                    clean_name = 'Popular'
                 
                 group_key = clean_name.lower().strip()
                 if not group_key:
@@ -4916,6 +5161,8 @@ class CineWindow(Adw.ApplicationWindow):
                     clean_name = c_name
                     if addon_name and clean_name.lower().startswith(addon_name.lower()):
                         clean_name = clean_name[len(addon_name):].lstrip(' -|:·')
+                    if clean_name.lower() in ['tpbctlg-movies', 'tpbctlg-series']:
+                        clean_name = 'Popular'
                     if not clean_name:
                         clean_name = c_id.title() if c_id else 'Catalog'
                         
@@ -5020,10 +5267,11 @@ class CineWindow(Adw.ApplicationWindow):
                 on_play_clicked=self._on_continue_watching_clicked
             )
             cw_row.append(card)
-            
         cw_scroll.set_child(cw_row)
-            
-        cw_scroll.set_child(cw_row)
+
+        page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
+        if page and hasattr(page, "update_continue_btn"):
+            page.update_continue_btn()
 
     def _refresh_discover_page(self):
         from . import database
@@ -5189,6 +5437,8 @@ class CineWindow(Adw.ApplicationWindow):
         name = display_name if display_name else raw_name
         if addon_name and name.lower().startswith(addon_name.lower()):
             name = name[len(addon_name):].lstrip(" -|:·")
+        if name.lower() in ['tpbctlg-movies', 'tpbctlg-series']:
+            name = 'Popular'
             
         words = []
         if media_type == "movie":
@@ -5494,15 +5744,52 @@ class CineWindow(Adw.ApplicationWindow):
             self.show_player_loading(_("Loading trailer..."), title=title)
         else:
             self.hide_player_loading()
+            page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+            details = getattr(page, 'movie_details', {}) or {} if page else {}
+            stub = getattr(page, 'movie_stub', {}) or {} if page else {}
+            p_id = details.get("imdb_id") or details.get("id") or stub.get("imdb_id") or stub.get("id")
+            cover = details.get("medium_cover_image") or stub.get("medium_cover_image") or details.get("poster") or stub.get("poster")
+            m_type = getattr(page, 'media_type', 'movie') if page else 'movie'
+            s_num = getattr(page, 'selected_season', None) if page else None
+            e_num = getattr(page, 'selected_episode', None) if page else None
+
             if not getattr(self, "_current_playing_item", None):
                 import time
                 self._current_playing_item = {
-                    "title": title or "Stream",
+                    "id": p_id,
+                    "imdb_id": p_id,
+                    "title": title or stub.get("title") or stub.get("name") or "Stream",
+                    "type": m_type,
+                    "medium_cover_image": cover,
+                    "season": s_num,
+                    "episode": e_num,
                     "last_watched": int(time.time()),
+                    "progress": 0.01,
+                    "position": 0.0,
                 }
+            else:
+                if p_id and not self._current_playing_item.get("id"):
+                    self._current_playing_item["id"] = p_id
+                    self._current_playing_item["imdb_id"] = p_id
+                if cover and not self._current_playing_item.get("medium_cover_image"):
+                    self._current_playing_item["medium_cover_image"] = cover
+                if m_type and not self._current_playing_item.get("type"):
+                    self._current_playing_item["type"] = m_type
+                if s_num is not None and self._current_playing_item.get("season") is None:
+                    self._current_playing_item["season"] = s_num
+                if e_num is not None and self._current_playing_item.get("episode") is None:
+                    self._current_playing_item["episode"] = e_num
+
             self._current_playing_item["stream_url"] = url
             if title:
                 self._current_playing_item["stream_title"] = title
+
+            from . import database
+            if self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id"):
+                database.save_continue_watching(self._current_playing_item)
+                if page and hasattr(page, "update_continue_btn"):
+                    page.update_continue_btn()
+
         self.main_stack.set_visible_child_name("player")
         
         if title:
@@ -5760,6 +6047,7 @@ class CineWindow(Adw.ApplicationWindow):
         cover = details.get("medium_cover_image") or stub.get("medium_cover_image") or details.get("poster") or stub.get("poster")
         item_title = details.get("title") or stub.get("title") or details.get("name") or stub.get("name") or title
         import time
+        self._last_marked_stream_idx = None
         self._current_playing_item = {
             "id": imdb_id or details.get("id") or stub.get("id"),
             "imdb_id": imdb_id or details.get("imdb_id") or stub.get("imdb_id"),
@@ -5775,6 +6063,7 @@ class CineWindow(Adw.ApplicationWindow):
             "progress": 0.01,
             "position": 0.0,
         }
+
         if self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id") or self._current_playing_item.get("title"):
             database.save_continue_watching(self._current_playing_item)
             if hasattr(self, "_update_continue_watching_section"):
@@ -5797,15 +6086,15 @@ class CineWindow(Adw.ApplicationWindow):
             return
 
         torrent = self.stream_queue[self.stream_queue_index]
-        magnet = torrent.get("url") or torrent.get("magnet")
-        hash_val = torrent.get("hash") or torrent.get("infoHash")
+        magnet = torrent.get("url") or torrent.get("magnet") if isinstance(torrent, dict) else None
+        hash_val = torrent.get("hash") or torrent.get("infoHash") if isinstance(torrent, dict) else None
         if not magnet and hash_val:
             from . import api
             t_name = torrent.get("filename") or torrent.get("stream_title") or torrent.get("name") or torrent.get("title") or self.stream_queue_title or ""
             magnet = api.build_magnet(hash_val, t_name)
 
         title_text = self.stream_queue_title or "Stream"
-        stream_name = torrent.get("filename") or torrent.get("name") or torrent.get("stream_title") or ""
+        stream_name = torrent.get("filename") or torrent.get("name") or torrent.get("stream_title") or "" if isinstance(torrent, dict) else ""
         if stream_name:
             display_title = f"{title_text} ({stream_name})"
         else:
@@ -5817,7 +6106,7 @@ class CineWindow(Adw.ApplicationWindow):
         )
 
         headers = {}
-        behavior_hints = torrent.get("behaviorHints", {})
+        behavior_hints = torrent.get("behaviorHints", {}) if isinstance(torrent, dict) else {}
         if behavior_hints and "headers" in behavior_hints:
             headers.update(behavior_hints["headers"])
             
@@ -5833,8 +6122,8 @@ class CineWindow(Adw.ApplicationWindow):
             self._play_stream(magnet, display_title, headers=headers, preserve_queue=True)
         elif magnet:
             from . import player
-            file_index = torrent.get("file_index")
-            if file_index is None:
+            file_index = torrent.get("file_index") if isinstance(torrent, dict) else None
+            if file_index is None and isinstance(torrent, dict):
                 file_index = torrent.get("fileIdx")
             def progress_callback(stats):
                 if request_id != getattr(self, "stream_request_id", 0):
@@ -5849,7 +6138,7 @@ class CineWindow(Adw.ApplicationWindow):
                 elif isinstance(stats, dict):
                     text = self.format_stream_stats(stats)
                     self.update_player_loading(text)
-            player.play_magnet(magnet, file_index=file_index, progress_callback=progress_callback, item_id=torrent.get("id"), season=getattr(self, "selected_season", None), episode=getattr(self, "selected_episode", None))
+            player.play_magnet(magnet, file_index=file_index, progress_callback=progress_callback, item_id=torrent.get("id") if isinstance(torrent, dict) else None, season=getattr(self, "selected_season", None), episode=getattr(self, "selected_episode", None))
         else:
             self._try_next_stream_in_queue()
 
@@ -5880,6 +6169,46 @@ class CineWindow(Adw.ApplicationWindow):
             self.main_stack.set_visible_child_name(prev_page)
         else:
             self.main_stack.set_visible_child_name('details')
+
+    def _mark_current_stream_as_working(self):
+        """Save the verified working stream to DB and reorder the queue so it is played first next time."""
+        if not getattr(self, "stream_queue", None) or self.stream_queue_index >= len(self.stream_queue):
+            return
+        working_stream = self.stream_queue[self.stream_queue_index]
+        if not working_stream or not isinstance(working_stream, dict):
+            return
+
+        from . import database
+        p_id = getattr(self, "_current_playing_item", {}).get("id") or getattr(self, "_current_playing_item", {}).get("imdb_id")
+        season = getattr(self, "_current_playing_item", {}).get("season")
+        episode = getattr(self, "_current_playing_item", {}).get("episode")
+
+        # Save verified working stream to database
+        if p_id:
+            database.save_working_stream(p_id, season, episode, working_stream)
+
+        # Update details page if open
+        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+        if page:
+            page.remembered_working_stream = working_stream
+            page.selected_torrent = working_stream
+            if hasattr(page, 'update_continue_btn'):
+                page.update_continue_btn()
+
+        # Update _current_playing_item with working stream placed at index 0
+        if getattr(self, "_current_playing_item", None):
+            reordered_queue = [working_stream] + [t for t in self.stream_queue if t != working_stream and (t.get("url") or t.get("magnet")) != (working_stream.get("url") or working_stream.get("magnet"))]
+            self.stream_queue = reordered_queue
+            self.stream_queue_index = 0
+            self._current_playing_item["stream_queue"] = reordered_queue
+            self._current_playing_item["stream_queue_index"] = 0
+            self._current_playing_item["selected_torrent"] = working_stream
+            st_url = working_stream.get("url") or working_stream.get("magnet") or getattr(self, "loaded_path", None)
+            if st_url:
+                self._current_playing_item["stream_url"] = st_url
+            if working_stream.get("magnet"):
+                self._current_playing_item["magnet"] = working_stream["magnet"]
+            database.save_continue_watching(self._current_playing_item)
 
     def _on_no_streams_found(self):
         self.hide_player_loading()
@@ -5990,6 +6319,8 @@ class CineWindow(Adw.ApplicationWindow):
             try:
                 curr_pos = float(self.mpv.time_pos or 0.0)
                 curr_dur = float(self.mpv.duration or 0.0)
+                if curr_pos > 0 and getattr(self, "stream_queue", None):
+                    self._mark_current_stream_as_working()
                 if curr_dur > 0:
                     prog = min(1.0, max(0.0, curr_pos / curr_dur))
                     self._current_playing_item["position"] = curr_pos
@@ -6010,7 +6341,10 @@ class CineWindow(Adw.ApplicationWindow):
         player.stop_player()
         if hasattr(self, "_update_continue_watching_section"):
             self._update_continue_watching_section()
-        if self.details_box.get_first_child():
+        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+        if page:
+            if hasattr(page, 'update_continue_btn'):
+                page.update_continue_btn()
             self.main_stack.set_visible_child_name("details")
         else:
             self.main_stack.set_visible_child_name("library")
