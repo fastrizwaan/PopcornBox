@@ -5777,9 +5777,6 @@ class CineWindow(Adw.ApplicationWindow):
             if key not in addons_map:
                 addons_map[key] = []
             addons_map[key].append(cat)
-            
-        seen_submenu_names = set()
-        seen_addon_names = set()
         result_addons = []
 
         for (addon_name, m_url), addon_cats in addons_map.items():
@@ -5797,14 +5794,10 @@ class CineWindow(Adw.ApplicationWindow):
                         
                     is_single_default = (len(addon_cats) == 1 and clean_name.lower() in ["top", "main", "all", "default", addon_name.lower()])
                     
-                    unique_sub_name = clean_name
-                    while unique_sub_name in seen_submenu_names:
-                        unique_sub_name += "\u200b"
-                    seen_submenu_names.add(unique_sub_name)
-                    
                     addon_cat_items.append({
                         "type": "submenu",
-                        "name": unique_sub_name,
+                        "name": clean_name,
+                        "cat_id": cat_id,
                         "items": genre_items,
                         "is_single_default": is_single_default
                     })
@@ -5816,35 +5809,34 @@ class CineWindow(Adw.ApplicationWindow):
                         "target": target_str
                     })
                     
-            unique_addon_name = addon_name
-            while unique_addon_name in seen_addon_names:
-                unique_addon_name += "\u200b"
-            seen_addon_names.add(unique_addon_name)
-            result_addons.append((unique_addon_name, m_url, addon_cat_items))
+            result_addons.append((addon_name, m_url, addon_cat_items))
             
         return result_addons
 
     def _build_addon_submenu(self, addon_name, m_url, media_type, addon_cat_items):
         """Build a single addon's Gio.Menu from its prepared data. Very fast (~<1ms)."""
+        import hashlib
         addon_menu = Gio.Menu.new()
         
         # 1. Top item: All catalogs from this addon (e.g. "All Cinemeta Movies")
         m_label = "Movies" if media_type == "movie" else ("Series" if media_type == "series" else ("Anime" if media_type == "anime" else media_type.title()))
-        clean_addon_name = addon_name.replace("\u200b", "")
-        all_addon_item = Gio.MenuItem.new(f"★ All {clean_addon_name} {m_label}", None)
-        target_str = f"{media_type}|{m_url}|{clean_addon_name}"
+        all_addon_item = Gio.MenuItem.new(f"★ All {addon_name} {m_label}", None)
+        target_str = f"{media_type}|{m_url}|{addon_name}"
         all_addon_item.set_action_and_target_value("win.select-addon-discover", GLib.Variant("s", target_str))
         addon_menu.append_item(all_addon_item)
 
         # 2. Catalogs and Genres
-        for cat_data in addon_cat_items:
+        for cat_idx, cat_data in enumerate(addon_cat_items):
             if cat_data["type"] == "submenu":
                 cat_menu = Gio.Menu.new()
                 for label, target_str in cat_data["items"]:
                     item = Gio.MenuItem.new(label, None)
                     item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", target_str))
                     cat_menu.append_item(item)
-                addon_menu.append_submenu(cat_data["name"], cat_menu)
+                sub_item = Gio.MenuItem.new_submenu(cat_data["name"], cat_menu)
+                h = hashlib.md5(f"{media_type}:{m_url}:{cat_data.get('cat_id', '')}:{cat_idx}:{cat_data['name']}".encode()).hexdigest()[:12]
+                sub_item.set_attribute_value("id", GLib.Variant("s", f"cat_{h}"))
+                addon_menu.append_item(sub_item)
             else:
                 item = Gio.MenuItem.new(cat_data["name"], None)
                 item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", cat_data["target"]))
@@ -5873,6 +5865,7 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _stream_menu_build(self, media_type, prepared_data, btn):
         """Stream menu construction: append one addon per idle tick to button's menu model."""
+        import hashlib
         menu = btn.get_menu_model()
         if not menu or not isinstance(menu, Gio.Menu):
             menu = Gio.Menu.new()
@@ -5890,14 +5883,17 @@ class CineWindow(Adw.ApplicationWindow):
             top_item.set_action_and_target_value("win.switch-to-anime", None)
         menu.append_item(top_item)
 
-        work = list(prepared_data)
+        work = list(enumerate(prepared_data))
         def append_next():
             if not work:
                 return False
-            addon_name, m_url, addon_cat_items = work.pop(0)
+            addon_idx, (addon_name, m_url, addon_cat_items) = work.pop(0)
             try:
                 addon_menu = self._build_addon_submenu(addon_name, m_url, media_type, addon_cat_items)
-                menu.append_submenu(addon_name, addon_menu)
+                addon_sub_item = Gio.MenuItem.new_submenu(addon_name, addon_menu)
+                h = hashlib.md5(f"{media_type}:{m_url}:{addon_idx}:{addon_name}".encode()).hexdigest()[:12]
+                addon_sub_item.set_attribute_value("id", GLib.Variant("s", f"addon_{h}"))
+                menu.append_item(addon_sub_item)
             except Exception as e:
                 logger.error(f"Error appending addon menu '{addon_name}': {e}")
             if work:
