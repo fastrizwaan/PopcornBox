@@ -4697,27 +4697,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.content_seen_ids = set()
         
         # Populate search catalog dropdown with all available catalogs
-        movie_cats = api.get_available_catalogs("movie")
-        series_cats = api.get_available_catalogs("series")
-        
-        seen_cat_keys = set()
-        self.search_catalogs_list = [{"display_name": "All Catalogs", "manifest_url": None, "catalog_id": None}]
-        
-        for cat in movie_cats + series_cats:
-            key = (cat["manifest_url"], cat["catalog_id"])
-            if key not in seen_cat_keys:
-                seen_cat_keys.add(key)
-                self.search_catalogs_list.append({
-                    "display_name": cat["display_name"],
-                    "manifest_url": cat["manifest_url"],
-                    "catalog_id": cat["catalog_id"]
-                })
-                
-        search_cat_names = [c["display_name"] for c in self.search_catalogs_list]
-        self.search_catalog_dropdown.set_model(Gtk.StringList.new(search_cat_names))
-        saved_search_cat = database.get_setting("search_catalog_idx", 0)
-        if 0 <= saved_search_cat < len(search_cat_names):
-            self.search_catalog_dropdown.set_selected(saved_search_cat)
+        self._update_search_catalog_dropdown()
             
         def on_search_catalog_changed(dropdown, pspec):
             selected = dropdown.get_selected()
@@ -6729,9 +6709,84 @@ class CineWindow(Adw.ApplicationWindow):
         else:
             self.main_stack.set_visible_child_name("library")
 
-    def _populate_addons(self):
+    def _update_search_catalog_dropdown(self):
+        from . import api, database
+        movie_cats = api.get_available_catalogs("movie")
+        series_cats = api.get_available_catalogs("series")
+        anime_cats = api.get_available_catalogs("anime") if getattr(self, "anime_supported", False) else []
+        
+        seen_cat_keys = set()
+        self.search_catalogs_list = [{"display_name": "All Catalogs", "manifest_url": None, "catalog_id": None}]
+        
+        for cat in movie_cats + series_cats + anime_cats:
+            key = (cat["manifest_url"], cat["catalog_id"])
+            if key not in seen_cat_keys:
+                seen_cat_keys.add(key)
+                self.search_catalogs_list.append({
+                    "display_name": cat["display_name"],
+                    "manifest_url": cat["manifest_url"],
+                    "catalog_id": cat["catalog_id"]
+                })
+                
+        search_cat_names = [c["display_name"] for c in self.search_catalogs_list]
+        if hasattr(self, "search_catalog_dropdown"):
+            self.search_catalog_dropdown.set_model(Gtk.StringList.new(search_cat_names))
+            saved_search_cat = database.get_setting("search_catalog_idx", 0)
+            if 0 <= saved_search_cat < len(search_cat_names):
+                self.search_catalog_dropdown.set_selected(saved_search_cat)
+            else:
+                self.search_catalog_dropdown.set_selected(0)
+
+    def _on_addons_changed(self):
+        from .movie_widget import cancel_pending_image_downloads
+        cancel_pending_image_downloads()
+
+        # 1. Invalidate all cached discover views
         if hasattr(self, "_discover_views"):
             self._discover_views.clear()
+
+        # 2. Reset menu build flags and rebuild category & discover menus
+        self._menus_built = False
+        self._menus_building = False
+        if hasattr(self, "discover_active_btn"):
+            self.discover_active_btn.set_menu_model(None)
+        self._ensure_all_menus_built()
+        self._update_search_catalog_dropdown()
+
+        # 3. Update active view state (Discover / Movies / Series / Anime / Content grid)
+        from . import api, database
+        if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() == "content":
+            curr_cat = getattr(self, "current_catalog", None)
+            m_type = getattr(self, "current_media_type", "movie")
+            available = api.get_available_catalogs(m_type)
+            still_exists = any(
+                c.get("catalog_id") == curr_cat.get("catalog_id") and c.get("manifest_url") == curr_cat.get("manifest_url")
+                for c in available
+            ) if curr_cat else False
+            
+            if not still_exists:
+                self.discover_back_box.set_visible(False)
+                self.library_stack.set_visible_child_name("discover")
+                if hasattr(self, "category_btn_stack"):
+                    self.category_btn_stack.set_visible_child_name("discover")
+                self._refresh_discover_page(filter_media_type="all", force_refresh=True)
+            else:
+                self._refresh_content()
+        elif hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() == "discover":
+            cur_type = getattr(self, "_current_discover_type", "all")
+            cur_addon = getattr(self, "_current_discover_addon", None)
+            if cur_addon:
+                addon_exists = any(a.get("manifest_url") == cur_addon and a.get("enabled", True) for a in database.get_addons())
+                if not addon_exists:
+                    cur_addon = None
+                    cur_type = "all"
+                    if hasattr(self, "category_btn_stack"):
+                        self.category_btn_stack.set_visible_child_name("discover")
+            self._refresh_discover_page(filter_media_type=cur_type, filter_addon_url=cur_addon, force_refresh=True)
+        else:
+            self._refresh_discover_page(filter_media_type="all", force_refresh=True)
+
+    def _populate_addons(self):
         while self.addons_listbox.get_first_child() is not None:
             self.addons_listbox.remove(self.addons_listbox.get_first_child())
             
@@ -6772,7 +6827,7 @@ class CineWindow(Adw.ApplicationWindow):
             
             enable_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
             enable_switch.set_active(addon.get("enabled", True))
-            enable_switch.connect("notify::active", lambda sw, pspec, a=addon: database.set_addon_enabled(a.get("id"), sw.get_active()))
+            enable_switch.connect("notify::active", lambda sw, pspec, a=addon: (database.set_addon_enabled(a.get("id"), sw.get_active()), self._on_addons_changed()))
             box.append(enable_switch)
             
             menu_btn = Gtk.MenuButton(icon_name="view-more-symbolic", valign=Gtk.Align.CENTER)
@@ -6827,6 +6882,7 @@ class CineWindow(Adw.ApplicationWindow):
                     manifest["manifest_url"] = url
                     database.add_addon(manifest)
                     GLib.idle_add(self._populate_addons)
+                    GLib.idle_add(self._on_addons_changed)
                     GLib.idle_add(self.addon_url_entry.set_text, "")
             except Exception as e:
                 logger.error(f"Failed to add addon: {e}")
@@ -6854,6 +6910,7 @@ class CineWindow(Adw.ApplicationWindow):
                             }
                             database.add_addon(manifest)
                             self._populate_addons()
+                            self._on_addons_changed()
                             self.addon_url_entry.set_text("")
                     dialog.connect("response", on_response)
                     dialog.present()
@@ -6867,6 +6924,7 @@ class CineWindow(Adw.ApplicationWindow):
         if addon_id:
             database.remove_addon(addon_id)
             self._populate_addons()
+            self._on_addons_changed()
 
     def _addon_filter_func(self, row):
         search_text = self.addon_url_entry.get_text().lower().strip()
@@ -6926,6 +6984,7 @@ class CineWindow(Adw.ApplicationWindow):
                 for a in addons:
                     database.add_addon(a)
                 self._populate_addons()
+                self._on_addons_changed()
             except Exception as e:
                 logger.error(f"Failed to import addons: {e}")
         dialog.open(self, None, on_open_response)

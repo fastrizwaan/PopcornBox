@@ -625,8 +625,23 @@ def add_addon(addon):
 def remove_addon(addon_id):
     with _db_lock:
         db = _read_db()
+        manifest_urls = [a.get("manifest_url") for a in db.get("addons", []) if a.get("id") == addon_id and a.get("manifest_url")]
         db["addons"] = [a for a in db.get("addons", []) if a.get("id") != addon_id]
         _write_db(db)
+    for m_url in manifest_urls:
+        clear_cached_catalog_for_url(m_url)
+
+def clear_cached_catalog_for_url(manifest_url):
+    if not manifest_url:
+        return
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM catalog_cache WHERE cache_key LIKE ?", (f"%{manifest_url}%",))
+            conn.commit()
+    except Exception as e:
+        print(f"Error clearing catalog cache for {manifest_url}: {e}")
 
 def set_addon_enabled(addon_id, enabled):
     with _db_lock:
