@@ -1234,8 +1234,12 @@ def process_raw_streams(all_streams):
     valid_streams = []
     seen_keys = {}  # {dedup_key: index in valid_streams} for O(1) duplicate lookup
     for s in all_streams:
-        stream_url = str(s.get("url") or s.get("externalUrl") or "")
+        raw_stream_url = str(s.get("url") or "")
+        external_url = str(s.get("externalUrl") or "")
         info_hash = str(s.get("infoHash") or "").lower()
+        
+        is_external = bool(external_url and not raw_stream_url)
+        stream_url = raw_stream_url or external_url
         
         is_http = False
         if stream_url.startswith("http://") or stream_url.startswith("https://"):
@@ -1324,6 +1328,8 @@ def process_raw_streams(all_streams):
         valid_streams.append({
             "hash": raw_id,
             "url": stream_url,
+            "externalUrl": external_url,
+            "is_external": is_external,
             "is_http": is_http,
             "quality": quality,
             "q_val": q_val,

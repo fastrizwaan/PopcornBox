@@ -997,7 +997,9 @@ class MovieDetailsPage(Gtk.Overlay):
             mid_vbox.append(title_lbl)
 
             meta_parts = []
-            if t.get("is_http"):
+            if t.get("is_external"):
+                meta_parts.append("🌐 Web Stream")
+            elif t.get("is_http"):
                 meta_parts.append("⚡ Direct Stream")
             else:
                 meta_parts.append("🧲 Torrent")
@@ -1968,6 +1970,14 @@ class MovieDetailsPage(Gtk.Overlay):
                 media_title = f"{media_title} (S{self.selected_season}E{self.selected_episode})"
             
         is_direct = bool(self.selected_torrent.get("is_http"))
+        if self.selected_torrent.get("is_external") or (self.selected_torrent.get("url") and any(d in str(self.selected_torrent.get("url")).lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"])):
+            ext_url = self.selected_torrent.get("externalUrl") or self.selected_torrent.get("url")
+            if ext_url:
+                if self.window:
+                    self.window._show_toast(_("Opening in web browser..."))
+                open_uri(ext_url, self.window if self.window else None)
+                return
+
         all_matching = getattr(self, 'torrents', []) or []
         if sel_prov_name != "All Providers":
             all_matching = [t for t in all_matching if sel_prov_name in t.get("addon_names", [])]
@@ -2126,6 +2136,13 @@ class MovieDetailsPage(Gtk.Overlay):
             }
             database.save_continue_watching(self.window._current_playing_item)
             self.update_continue_btn()
+
+        if magnet and any(d in magnet.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
+            if self.window:
+                self.window.hide_player_loading()
+                self.window._show_toast(_("Opening in web browser..."))
+            open_uri(magnet, self.window if self.window else None)
+            return
 
         if magnet.startswith("http://") or magnet.startswith("https://"):
             if self.window:
@@ -4360,11 +4377,14 @@ class CineWindow(Adw.ApplicationWindow):
                         self.mpv.playlist_pos = 0
 
                     self.error_count += 1
-                    logger.warning(f"File error ({error}) path: {self.loaded_path}")
-
                     is_yt = self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower() or "googlevideo.com" in self.loaded_path.lower())
+                    is_web = self.loaded_path and isinstance(self.loaded_path, str) and any(d in self.loaded_path.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"])
                     if is_yt:
                         idle_add_once(self._show_toast, _("Trailer unavailable"))
+                        idle_add_once(self._close_player)
+                    elif is_web:
+                        idle_add_once(self._show_toast, _("Opening in web browser..."))
+                        idle_add_once(open_uri, self.loaded_path, self)
                         idle_add_once(self._close_player)
                     elif getattr(self, "stream_queue", None) and len(self.stream_queue) > 0:
                         idle_add_once(self._try_next_stream_in_queue)
@@ -5227,6 +5247,11 @@ class CineWindow(Adw.ApplicationWindow):
             )
         elif magnet or (stream_url and str(stream_url).startswith(("http://", "https://", "magnet:"))):
             target = stream_url or magnet
+            if target and any(d in target.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
+                self.hide_player_loading()
+                self._show_toast(_("Opening in web browser..."))
+                open_uri(target, self)
+                return
             self.previous_page_before_player = prev_page
             self._play_stream(target, title, start_time=self._pending_seek_position)
         else:
@@ -6058,6 +6083,11 @@ class CineWindow(Adw.ApplicationWindow):
     def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None):
         if not preserve_queue:
             self._clear_stream_failover()
+        if url and isinstance(url, str) and any(d in url.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
+            self.hide_player_loading()
+            self._show_toast(_("Opening in web browser..."))
+            open_uri(url, self)
+            return
         from . import player
         if url and isinstance(url, str) and not url.startswith("http://127.0.0.1") and not url.startswith("http://localhost"):
             player.stop_player()
@@ -6470,6 +6500,13 @@ class CineWindow(Adw.ApplicationWindow):
             for key in ["User-Agent", "Referer", "Origin"]:
                 if key in query_params and query_params[key]:
                     headers[key] = query_params[key][0]
+
+        if torrent.get("is_external") or (isinstance(torrent, dict) and torrent.get("externalUrl")):
+            ext_url = torrent.get("externalUrl") or magnet
+            self.hide_player_loading()
+            self._show_toast(_("Opening in web browser..."))
+            open_uri(ext_url, self)
+            return
 
         if magnet and (magnet.startswith("http://") or magnet.startswith("https://")):
             self._play_stream(magnet, display_title, headers=headers, preserve_queue=True)
