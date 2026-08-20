@@ -61,5 +61,14 @@
 		<key name="hide-adult-content" type="b">
 			<default>true</default>
 		</key>
+		<key name="show-movies-button" type="b">
+			<default>true</default>
+		</key>
+		<key name="show-series-button" type="b">
+			<default>true</default>
+		</key>
+		<key name="show-anime-button" type="b">
+			<default>true</default>
+		</key>
 	</schema>
 </schemalist>

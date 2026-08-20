@@ -93,6 +93,9 @@ class Preferences(Adw.Dialog):
     subtitle_bg_switch: Gtk.Switch = Gtk.Template.Child()
     subtitle_lang_row: Adw.EntryRow = Gtk.Template.Child()
     audio_lang_row: Adw.EntryRow = Gtk.Template.Child()
+    show_movies_button_row: Adw.SwitchRow = Gtk.Template.Child()
+    show_series_button_row: Adw.SwitchRow = Gtk.Template.Child()
+    show_anime_button_row: Adw.SwitchRow = Gtk.Template.Child()
 
     def __init__(self, window, **kwargs):
         super().__init__(**kwargs)
@@ -151,6 +154,9 @@ class Preferences(Adw.Dialog):
             ("right-click", self.secondary_click_row, "selected"),
             ("subtitle-languages", self.subtitle_lang_row, "text"),
             ("audio-languages", self.audio_lang_row, "text"),
+            ("show-movies-button", self.show_movies_button_row, "active"),
+            ("show-series-button", self.show_series_button_row, "active"),
+            ("show-anime-button", self.show_anime_button_row, "active"),
         ]
 
         for key, widget, property in bindings:

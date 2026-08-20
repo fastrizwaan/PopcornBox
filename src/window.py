@@ -577,7 +577,7 @@ class MovieDetailsPage(Gtk.Overlay):
                             finally:
                                 self._ignore_source_toggle_signals = False
 
-            self.render_streams_list()
+            self.update_quality_dropdown()
 
         self.provider_dropdown.connect("notify::selected", on_provider_changed)
         self.stream_header_box.append(self.provider_dropdown)
@@ -1231,27 +1231,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self.continue_btn.set_visible(True)
 
             def on_continue_clicked(btn):
-                if self.window and hasattr(self.window, "_on_continue_watching_clicked"):
-                    play_data = dict(cw_item) if cw_item else {}
-                    if not play_data.get("id"):
-                        play_data["id"] = primary_id
-                    if not play_data.get("imdb_id"):
-                        play_data["imdb_id"] = primary_id
-                    if not play_data.get("title"):
-                        play_data["title"] = (details or {}).get("title") or self.movie_stub.get("title") or self.movie_stub.get("name")
-                    if not play_data.get("type"):
-                        play_data["type"] = self.media_type
-                    if working_stream and not play_data.get("selected_torrent"):
-                        play_data["selected_torrent"] = working_stream
-                        if working_stream.get("url"):
-                            play_data["stream_url"] = working_stream["url"]
-                        if working_stream.get("magnet"):
-                            play_data["magnet"] = working_stream["magnet"]
-                    self.window._on_continue_watching_clicked(play_data)
-                elif hasattr(self, "on_watch_clicked"):
-                    if working_stream:
-                        self.selected_torrent = working_stream
-                    self.on_watch_clicked(btn)
+                self.on_watch_clicked(btn)
 
             self._continue_btn_hid = self.continue_btn.connect("clicked", on_continue_clicked)
         else:
@@ -1261,8 +1241,6 @@ class MovieDetailsPage(Gtk.Overlay):
             self.continue_btn.set_visible(True)
 
             def on_play_clicked(btn):
-                if getattr(self, "remembered_working_stream", None):
-                    self.selected_torrent = self.remembered_working_stream
                 self.on_watch_clicked(btn)
 
             self._continue_btn_hid = self.continue_btn.connect("clicked", on_play_clicked)
@@ -1623,7 +1601,8 @@ class MovieDetailsPage(Gtk.Overlay):
             
         self.update_provider_dropdown_model()
             
-        if not self.torrents:
+        all_torrents = getattr(self, 'torrents', []) or []
+        if not all_torrents:
             self.current_t_list = []
             self.selected_torrent = None
             self.quality_row_box.set_visible(False)
@@ -1637,7 +1616,23 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.search_online_btn.add_css_class("suggested-action")
             return
 
-        filtered_torrents = self.torrents
+        source_idx = getattr(self, 'source_idx', 0)
+        if source_idx == 1:
+            filtered_torrents = [t for t in all_torrents if t.get('is_http')]
+        elif source_idx == 2:
+            filtered_torrents = [t for t in all_torrents if not t.get('is_http')]
+        else:
+            filtered_torrents = list(all_torrents)
+
+        sel_prov_name = "All Providers"
+        if hasattr(self, 'provider_dropdown'):
+            model = self.provider_dropdown.get_model()
+            sel_idx = self.provider_dropdown.get_selected()
+            if model and sel_idx != Gtk.INVALID_LIST_POSITION and sel_idx < model.get_n_items():
+                sel_prov_name = model.get_string(sel_idx)
+
+        if sel_prov_name != "All Providers":
+            filtered_torrents = [t for t in filtered_torrents if sel_prov_name in t.get("addon_names", [])]
 
         if not filtered_torrents:
             self.current_t_list = []
@@ -1650,6 +1645,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self.watch_btn.set_visible(False)
             if hasattr(self, 'download_btn'):
                 self.download_btn.set_sensitive(False)
+            self.render_streams_list()
             return
 
         self.quality_row_box.set_visible(True)
@@ -1736,7 +1732,9 @@ class MovieDetailsPage(Gtk.Overlay):
             selected_idx = 0
             curr_sel = getattr(self, 'selected_torrent', None)
             if curr_sel and t_list:
-                selected_idx = _find_stream_index(curr_sel, t_list)
+                selected_idx = _find_stream_index_exact(curr_sel, t_list)
+                if selected_idx < 0:
+                    selected_idx = 0
                 
             self._programmatic_dropdown_switch = True
             try:
@@ -1910,9 +1908,9 @@ class MovieDetailsPage(Gtk.Overlay):
             t_list = [t for t in t_list if not t.get('is_http')]
 
         selected = getattr(self, 'selected_torrent', None)
-        if selected and any(_streams_match(selected, t) for t in raw_t_list):
-            self.selected_torrent = next(t for t in raw_t_list if _streams_match(selected, t))
-        elif not selected or (t_list and not any(_streams_match(selected, t) for t in t_list)):
+        if selected and any(_streams_match(selected, t) for t in t_list):
+            self.selected_torrent = next(t for t in t_list if _streams_match(selected, t))
+        else:
             working_stream = getattr(self, "remembered_working_stream", None)
             if not working_stream:
                 from . import database
@@ -1933,16 +1931,21 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.selected_torrent = matching_items[0]
             elif t_list:
                 self.selected_torrent = t_list[0]
-            elif raw_t_list:
+            elif raw_t_list and source_idx == 0:
                 self.selected_torrent = raw_t_list[0]
             else:
-                media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
-                self._auto_play_on_streams_loaded = True
-                if hasattr(self, 'progress_label') and self.progress_label:
-                    self.progress_label.set_text("Loading streams to play...")
-                if self.window:
-                    self.window.show_player_loading("Loading streams to play...", media_title)
-                return
+                if not getattr(self, 'torrents', None):
+                    media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
+                    self._auto_play_on_streams_loaded = True
+                    if hasattr(self, 'progress_label') and self.progress_label:
+                        self.progress_label.set_text("Loading streams to play...")
+                    if self.window:
+                        self.window.show_player_loading("Loading streams to play...", media_title)
+                    return
+                else:
+                    if self.window and hasattr(self.window, '_show_toast'):
+                        self.window._show_toast("No streams match active filter.")
+                    return
 
         # Save selected stream as working stream
         from . import database
@@ -1965,19 +1968,26 @@ class MovieDetailsPage(Gtk.Overlay):
                 media_title = f"{media_title} (S{self.selected_season}E{self.selected_episode})"
             
         is_direct = bool(self.selected_torrent.get("is_http"))
-        if is_direct:
-            queue = [t for t in (raw_t_list if raw_t_list else [self.selected_torrent]) if t.get("is_http")]
+        all_matching = getattr(self, 'torrents', []) or []
+        if sel_prov_name != "All Providers":
+            all_matching = [t for t in all_matching if sel_prov_name in t.get("addon_names", [])]
+        if source_idx == 1:
+            all_matching = [t for t in all_matching if t.get("is_http")]
+        elif source_idx == 2:
+            all_matching = [t for t in all_matching if not t.get("is_http")]
+        elif is_direct:
+            all_matching = [t for t in all_matching if t.get("is_http")]
         else:
-            queue = [t for t in (raw_t_list if raw_t_list else [self.selected_torrent]) if not t.get("is_http")]
+            all_matching = [t for t in all_matching if not t.get("is_http")]
 
-        if not queue:
-            queue = [self.selected_torrent]
-
-        if self.selected_torrent:
-            queue = [self.selected_torrent] + [t for t in queue if not _streams_match(t, self.selected_torrent)]
-            init_idx = 0
-        else:
-            init_idx = 0
+        queue = [self.selected_torrent]
+        for t in t_list:
+            if not _streams_match(t, self.selected_torrent):
+                queue.append(t)
+        for t in all_matching:
+            if not any(_streams_match(t, q) for q in queue):
+                queue.append(t)
+        init_idx = 0
 
         # Subtitle fetching is handled by play_stream_with_failover — do NOT call it here too
         if self.window and hasattr(self.window, 'play_stream_with_failover'):
@@ -2192,6 +2202,10 @@ class CineWindow(Adw.ApplicationWindow):
     movies_inactive_btn_discover: Gtk.Button = Gtk.Template.Child()
     series_inactive_btn_discover: Gtk.Button = Gtk.Template.Child()
     anime_inactive_btn_discover: Gtk.Button = Gtk.Template.Child()
+    movies_inactive_btn: Gtk.Button = Gtk.Template.Child()
+    series_inactive_btn: Gtk.Button = Gtk.Template.Child()
+    movies_inactive_btn_anime: Gtk.Button = Gtk.Template.Child()
+    series_inactive_btn_anime: Gtk.Button = Gtk.Template.Child()
     anime_inactive_btn_movies: Gtk.Button = Gtk.Template.Child()
     anime_inactive_btn_series: Gtk.Button = Gtk.Template.Child()
     discover_filter_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
@@ -4886,11 +4900,14 @@ class CineWindow(Adw.ApplicationWindow):
                 m_type, m_url, addon_name = parts
                 self._current_discover_type = m_type
                 self._current_discover_addon = m_url
-                if m_type == "movie":
+                show_movies = settings.get_boolean("show-movies-button")
+                show_series = settings.get_boolean("show-series-button")
+                show_anime = settings.get_boolean("show-anime-button")
+                if m_type == "movie" and show_movies:
                     self.category_btn_stack.set_visible_child_name("movies")
-                elif m_type == "series":
+                elif m_type == "series" and show_series:
                     self.category_btn_stack.set_visible_child_name("series")
-                elif m_type == "anime":
+                elif m_type == "anime" and show_anime:
                     self.category_btn_stack.set_visible_child_name("anime")
                 else:
                     self.category_btn_stack.set_visible_child_name("discover")
@@ -4912,12 +4929,17 @@ class CineWindow(Adw.ApplicationWindow):
                 self.current_catalog = {"manifest_url": m_url, "catalog_id": c_id}
                 self.current_genre = None if genre == "All" else genre
                 
-                if m_type == "movie":
+                show_movies = settings.get_boolean("show-movies-button")
+                show_series = settings.get_boolean("show-series-button")
+                show_anime = settings.get_boolean("show-anime-button")
+                if m_type == "movie" and show_movies:
                     self.category_btn_stack.set_visible_child_name("movies")
-                elif m_type == "series":
+                elif m_type == "series" and show_series:
                     self.category_btn_stack.set_visible_child_name("series")
-                elif m_type == "anime":
+                elif m_type == "anime" and show_anime:
                     self.category_btn_stack.set_visible_child_name("anime")
+                else:
+                    self.category_btn_stack.set_visible_child_name("discover")
                 
                 from . import api
                 cat_info = None
@@ -5011,6 +5033,52 @@ class CineWindow(Adw.ApplicationWindow):
             return False
         search_key_ctrl.connect("key-pressed", on_search_key_pressed)
         self.search_entry.add_controller(search_key_ctrl)
+
+        self.update_category_buttons_visibility()
+        settings.connect("changed::show-movies-button", lambda *a: self.update_category_buttons_visibility())
+        settings.connect("changed::show-series-button", lambda *a: self.update_category_buttons_visibility())
+        settings.connect("changed::show-anime-button", lambda *a: self.update_category_buttons_visibility())
+
+    def update_category_buttons_visibility(self):
+        show_movies = settings.get_boolean("show-movies-button")
+        show_series = settings.get_boolean("show-series-button")
+        show_anime = settings.get_boolean("show-anime-button")
+
+        for btn in [
+            getattr(self, "movies_active_btn", None),
+            getattr(self, "movies_inactive_btn_discover", None),
+            getattr(self, "movies_inactive_btn", None),
+            getattr(self, "movies_inactive_btn_anime", None),
+        ]:
+            if btn:
+                btn.set_visible(show_movies)
+
+        for btn in [
+            getattr(self, "series_active_btn", None),
+            getattr(self, "series_inactive_btn_discover", None),
+            getattr(self, "series_inactive_btn", None),
+            getattr(self, "series_inactive_btn_anime", None),
+        ]:
+            if btn:
+                btn.set_visible(show_series)
+
+        for btn in [
+            getattr(self, "anime_active_btn", None),
+            getattr(self, "anime_inactive_btn_discover", None),
+            getattr(self, "anime_inactive_btn_movies", None),
+            getattr(self, "anime_inactive_btn_series", None),
+        ]:
+            if btn:
+                btn.set_visible(show_anime)
+
+        curr_cat = self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else "discover"
+        if (not show_movies and curr_cat == "movies") or \
+           (not show_series and curr_cat == "series") or \
+           (not show_anime and curr_cat == "anime"):
+            self.category_btn_stack.set_visible_child_name("discover")
+            self.discover_back_box.set_visible(False)
+            self.library_stack.set_visible_child_name("discover")
+            self._refresh_discover_page(filter_media_type="all")
 
     def _refresh_content(self):
         from .movie_widget import cancel_pending_image_downloads

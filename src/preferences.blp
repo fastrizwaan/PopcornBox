@@ -189,6 +189,22 @@ template $Preferences: Adw.Dialog {
 			}
 
 			Adw.PreferencesGroup {
+				title: _("Navigation Buttons");
+
+				Adw.SwitchRow show_movies_button_row {
+					title: _("Show Movies Button");
+				}
+
+				Adw.SwitchRow show_series_button_row {
+					title: _("Show Series Button");
+				}
+
+				Adw.SwitchRow show_anime_button_row {
+					title: _("Show Anime Button");
+				}
+			}
+
+			Adw.PreferencesGroup {
 				Adw.ActionRow sub_color_row {
 					title: _("Subtitle Color");
 					activatable: true;
