@@ -5405,7 +5405,7 @@ class CineWindow(Adw.ApplicationWindow):
         target_box = None
         if hasattr(self, "_discover_views") and "all|all" in self._discover_views:
             target_box = self._discover_views["all|all"]["box"]
-        elif hasattr(self, "discover_box"):
+        elif hasattr(self, "_current_discover_type") and self._current_discover_type == "all" and hasattr(self, "discover_box"):
             target_box = self.discover_box
             
         if not target_box:
@@ -5413,21 +5413,45 @@ class CineWindow(Adw.ApplicationWindow):
             
         cw_items = database.get_continue_watching()
         
-        existing_header = getattr(self, "_cw_header_widget", None)
-        existing_scroll = getattr(self, "_cw_scroll_widget", None)
+        # Scan target_box to identify any existing Continue Watching header and scroll widgets
+        existing_header = None
+        existing_scroll = None
+        extra_headers = []
+        extra_scrolls = []
         
+        child = target_box.get_first_child()
+        while child:
+            next_child = child.get_next_sibling()
+            if getattr(child, "_is_cw_header", False) or child.has_css_class("continue-watching-header"):
+                if existing_header is None:
+                    existing_header = child
+                else:
+                    extra_headers.append(child)
+            elif getattr(child, "_is_cw_scroll", False) or child.has_css_class("continue-watching-scroll"):
+                if existing_scroll is None:
+                    existing_scroll = child
+                else:
+                    extra_scrolls.append(child)
+            child = next_child
+            
+        # Clean up any duplicate widgets that may have accumulated
+        for h in extra_headers:
+            target_box.remove(h)
+        for s in extra_scrolls:
+            target_box.remove(s)
+            
         if not cw_items:
             if existing_header and existing_header.get_parent() == target_box:
                 target_box.remove(existing_header)
             if existing_scroll and existing_scroll.get_parent() == target_box:
                 target_box.remove(existing_scroll)
-            self._cw_header_widget = None
-            self._cw_scroll_widget = None
             return
             
-        if not existing_header or existing_header.get_parent() != target_box:
+        if not existing_header:
             cw_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
             cw_header.add_css_class("discover-section-header")
+            cw_header.add_css_class("continue-watching-header")
+            cw_header._is_cw_header = True
             
             lbl = Gtk.Label(label=_("Continue Watching"), halign=Gtk.Align.START)
             lbl.add_css_class("discover-section-title")
@@ -5441,20 +5465,26 @@ class CineWindow(Adw.ApplicationWindow):
             see_all_btn.connect("clicked", lambda *a: self._open_continue_watching_grid())
             cw_header.append(see_all_btn)
             
-            self._cw_header_widget = cw_header
             target_box.prepend(cw_header)
+            existing_header = cw_header
         else:
             cw_header = existing_header
+            cw_header.add_css_class("continue-watching-header")
+            cw_header._is_cw_header = True
 
-        if not existing_scroll or existing_scroll.get_parent() != target_box:
+        if not existing_scroll:
             cw_scroll = Gtk.ScrolledWindow()
             cw_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
             cw_scroll.set_hexpand(True)
             cw_scroll.add_css_class("discover-row-scroll")
-            self._cw_scroll_widget = cw_scroll
+            cw_scroll.add_css_class("continue-watching-scroll")
+            cw_scroll._is_cw_scroll = True
             target_box.insert_child_after(cw_scroll, cw_header)
+            existing_scroll = cw_scroll
         else:
             cw_scroll = existing_scroll
+            cw_scroll.add_css_class("continue-watching-scroll")
+            cw_scroll._is_cw_scroll = True
 
         cw_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         cw_row.add_css_class("discover-row-box")
@@ -5523,9 +5553,6 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "discover_scrolled"):
             self.discover_scrolled.set_child(new_box)
         self.discover_box = new_box
-        
-        self._cw_header_widget = None
-        self._cw_scroll_widget = None
         
         # Continue Watching Section (only if filter is "all" or None)
         if not filter_media_type or filter_media_type == "all":
