@@ -163,8 +163,14 @@ class TorrentStreamEngine:
             if self.error:
                 return {"ready": False, "status": f"Error: {self.error}"}
 
-            if not self.handle:
+            if not self.handle or self.stopped.is_set():
                 return {"ready": False, "status": "Initializing torrent engine..."}
+
+            try:
+                if hasattr(self.handle, 'is_valid') and not self.handle.is_valid():
+                    return {"ready": False, "status": "Torrent stopped"}
+            except Exception:
+                return {"ready": False, "status": "Torrent stopped"}
 
             status = self._status()
             has_metadata = bool(getattr(status, "has_metadata", False))
@@ -626,16 +632,23 @@ class TorrentStreamEngine:
             time.sleep(1.0)
 
     def _files(self):
-        info = self.handle.torrent_file()
-        storage = info.files()
-        count = self._num_files(storage, info)
-        files = []
-        for idx in range(count):
-            path = self._file_path(storage, info, idx)
-            size = int(self._file_size(storage, info, idx))
-            offset = int(self._file_offset(storage, info, idx))
-            files.append({"index": idx, "path": path.replace("\\", "/"), "size": size, "offset": offset})
-        return files
+        try:
+            if not self.handle or (hasattr(self.handle, 'is_valid') and not self.handle.is_valid()):
+                return []
+            info = self.handle.torrent_file()
+            if not info:
+                return []
+            storage = info.files()
+            count = self._num_files(storage, info)
+            files = []
+            for idx in range(count):
+                path = self._file_path(storage, info, idx)
+                size = int(self._file_size(storage, info, idx))
+                offset = int(self._file_offset(storage, info, idx))
+                files.append({"index": idx, "path": path.replace("\\", "/"), "size": size, "offset": offset})
+            return files
+        except Exception:
+            return []
 
     def _num_files(self, storage, info):
         for obj in (storage, info):
@@ -676,19 +689,35 @@ class TorrentStreamEngine:
         return entry.offset
 
     def _piece_length(self):
-        info = self.handle.torrent_file()
-        return int(info.piece_length())
+        try:
+            if not self.handle or (hasattr(self.handle, 'is_valid') and not self.handle.is_valid()):
+                return 0
+            info = self.handle.torrent_file()
+            return int(info.piece_length()) if info else 0
+        except Exception:
+            return 0
 
     def _piece_range_for_file_bytes(self, start, end):
+        if not self.target or "offset" not in self.target:
+            return 0, 0
         piece_length = self._piece_length()
+        if piece_length <= 0:
+            return 0, 0
         absolute_start = self.target["offset"] + start
         absolute_end = self.target["offset"] + end
         return absolute_start // piece_length, absolute_end // piece_length
 
     def prioritize_range(self, start, end, clear_old=True):
-        if not self.target or end < start:
+        if not self.target or end < start or not self.handle:
+            return
+        try:
+            if hasattr(self.handle, 'is_valid') and not self.handle.is_valid():
+                return
+        except Exception:
             return
         start_piece, end_piece = self._piece_range_for_file_bytes(start, end)
+        if start_piece == 0 and end_piece == 0 and self._piece_length() <= 0:
+            return
         deadline = 0
         selected = []
         
@@ -740,6 +769,8 @@ class TorrentStreamEngine:
             return 0
             
         try:
+            if hasattr(self.handle, 'is_valid') and not self.handle.is_valid():
+                return 0
             progress = self.handle.file_progress()
             downloaded = int(progress[self.target["index"]])
             return downloaded
@@ -749,46 +780,64 @@ class TorrentStreamEngine:
         return self._downloaded_by_piece_scan()
 
     def _downloaded_by_piece_scan(self):
-        start_piece, end_piece = self._piece_range_for_file_bytes(0, self.target["size"] - 1)
-        piece_length = self._piece_length()
-        total = 0
-        for piece in range(start_piece, end_piece + 1):
-            try:
-                if not self.handle.have_piece(piece):
+        if not self.target or not self.handle:
+            return 0
+        try:
+            if hasattr(self.handle, 'is_valid') and not self.handle.is_valid():
+                return 0
+            start_piece, end_piece = self._piece_range_for_file_bytes(0, self.target["size"] - 1)
+            piece_length = self._piece_length()
+            if piece_length <= 0:
+                return 0
+            total = 0
+            for piece in range(start_piece, end_piece + 1):
+                try:
+                    if not self.handle.have_piece(piece):
+                        continue
+                except Exception:
                     continue
-            except Exception:
-                continue
-            piece_start = piece * piece_length
-            piece_end = piece_start + piece_length - 1
-            file_start = self.target["offset"]
-            file_end = self.target["offset"] + self.target["size"] - 1
-            total += max(0, min(piece_end, file_end) - max(piece_start, file_start) + 1)
-        return min(total, self.target["size"])
+                piece_start = piece * piece_length
+                piece_end = piece_start + piece_length - 1
+                file_start = self.target["offset"]
+                file_end = self.target["offset"] + self.target["size"] - 1
+                total += max(0, min(piece_end, file_end) - max(piece_start, file_start) + 1)
+            return min(total, self.target["size"])
+        except Exception:
+            return 0
 
     def _buffered_from_start(self):
-        if not self.target:
+        if not self.target or not self.handle:
             return 0
-        piece_length = self._piece_length()
-        file_start = self.target["offset"]
-        file_end = self.target["offset"] + self.target["size"] - 1
-        start_piece = file_start // piece_length
-        end_piece = file_end // piece_length
-        buffered = 0
-        for piece in range(start_piece, end_piece + 1):
-            try:
-                if not self.handle.have_piece(piece):
+        try:
+            if hasattr(self.handle, 'is_valid') and not self.handle.is_valid():
+                return 0
+            piece_length = self._piece_length()
+            if piece_length <= 0:
+                return 0
+            file_start = self.target["offset"]
+            file_end = self.target["offset"] + self.target["size"] - 1
+            start_piece = file_start // piece_length
+            end_piece = file_end // piece_length
+            buffered = 0
+            for piece in range(start_piece, end_piece + 1):
+                try:
+                    if not self.handle.have_piece(piece):
+                        break
+                except Exception:
                     break
-            except Exception:
-                break
-            piece_start = piece * piece_length
-            piece_end = piece_start + piece_length - 1
-            buffered += max(0, min(piece_end, file_end) - max(piece_start, file_start) + 1)
-        return min(buffered, self.target["size"])
+                piece_start = piece * piece_length
+                piece_end = piece_start + piece_length - 1
+                buffered += max(0, min(piece_end, file_end) - max(piece_start, file_start) + 1)
+            return min(buffered, self.target["size"])
+        except Exception:
+            return 0
 
     def _has_range_downloaded(self, start, end):
         if not self.target or not self.handle:
             return False
         try:
+            if hasattr(self.handle, 'is_valid') and not self.handle.is_valid():
+                return False
             start_piece, end_piece = self._piece_range_for_file_bytes(start, end)
             for piece in range(start_piece, end_piece + 1):
                 if not self.handle.have_piece(piece):

@@ -280,13 +280,15 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
             while True:
                 with _engines_lock:
                     eng = _engines.get(info_hash)
-                if not eng or not eng.is_alive():
+                if not eng or not eng.is_alive() or _streaming_hash != info_hash:
                     break
-                if _streaming_hash != info_hash:
+                try:
+                    stats = eng.stats()
+                    if stats:
+                        stats["status"] = "Downloading"
+                        if progress_callback: GLib.idle_add(progress_callback, stats)
+                except Exception:
                     break
-                stats = eng.stats()
-                stats["status"] = "Downloading"
-                if progress_callback: GLib.idle_add(progress_callback, stats)
                 time.sleep(1)
                     
         threading.Thread(target=poll, daemon=True).start()
@@ -359,7 +361,12 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                     for i in range(1500):
                         with _engines_lock:
                             if _streaming_hash != info_hash: return
-                        stats = engine.stats()
+                        if not engine or not engine.is_alive():
+                            return
+                        try:
+                            stats = engine.stats()
+                        except Exception:
+                            return
                         downloaded = stats.get("downloaded", 0)
                         buffered = stats.get("bufferedFromStart", downloaded)
                         
@@ -368,12 +375,16 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                             
                         if downloaded > 0 or buffered > 0:
                             last_nonzero_time = time.time()
-                        if engine.is_buffering_finished():
+                        try:
+                            if engine.is_buffering_finished():
+                                break
+                        except Exception:
                             break
                         if (time.time() - last_nonzero_time) > 30:
                             break
                         time.sleep(0.1)
-                    launch_player_only(engine)
+                    if engine and engine.is_alive():
+                        launch_player_only(engine)
                 threading.Thread(target=resume_stream, daemon=True).start()
                 if progress_callback: GLib.idle_add(progress_callback, {"status": "Resuming stream..."})
                 return
@@ -395,7 +406,12 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                         for i in range(300):
                             with _engines_lock:
                                 if _streaming_hash != info_hash: return
-                            stats = engine.stats()
+                            if not engine or not engine.is_alive():
+                                return
+                            try:
+                                stats = engine.stats()
+                            except Exception:
+                                return
                             downloaded = stats.get("downloaded", 0)
                             buffered = stats.get("bufferedFromStart", downloaded)
                             
@@ -404,12 +420,16 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                                 
                             if downloaded > 0 or buffered > 0:
                                 last_nonzero_time = time.time()
-                            if engine.is_buffering_finished():
+                            try:
+                                if engine.is_buffering_finished():
+                                    break
+                            except Exception:
                                 break
                             if (time.time() - last_nonzero_time) > 30:
                                 break
                             time.sleep(1)
-                        launch_player_only(engine)
+                        if engine and engine.is_alive():
+                            launch_player_only(engine)
                     threading.Thread(target=resume_stream, daemon=True).start()
                     if progress_callback: GLib.idle_add(progress_callback, {"status": "Resuming stream..."})
                     return

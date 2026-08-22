@@ -582,8 +582,6 @@ class MovieDetailsPage(Gtk.Overlay):
         self.provider_dropdown.connect("notify::selected", on_provider_changed)
         self.stream_header_box.append(self.provider_dropdown)
 
-        self.streams_page_vbox.append(self.stream_header_box)
-
         # Quality Row Box (Quality Pills & Check Live Button)
         self.quality_row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
 
@@ -1208,28 +1206,36 @@ class MovieDetailsPage(Gtk.Overlay):
             self.continue_btn.set_visible(False)
             return
 
-        if has_progress:
-            # In-progress title: Show "Continue" with progress
-            pos = float((cw_item or {}).get("position") or 0.0)
-            dur = float((cw_item or {}).get("duration") or 0.0)
-            season = (cw_item or {}).get("season") or getattr(self, "selected_season", None)
-            episode = (cw_item or {}).get("episode") or getattr(self, "selected_episode", None)
+        sel_season = getattr(self, "selected_season", None)
+        sel_episode = getattr(self, "selected_episode", None)
+
+        if self.media_type in ["series", "anime", "tv"]:
+            cw_s = (cw_item or {}).get("season")
+            cw_e = (cw_item or {}).get("episode")
+            cw_pos = float((cw_item or {}).get("position") or 0.0)
+            cw_dur = float((cw_item or {}).get("duration") or 0.0)
+
+            s_label = sel_season if sel_season is not None else (cw_s if cw_s is not None else 1)
+            e_label = sel_episode if sel_episode is not None else (cw_e if cw_e is not None else 1)
+
+            is_matching_cw = (cw_s is not None and cw_e is not None and cw_s == s_label and cw_e == e_label and cw_pos > 0)
             
-            lbl_parts = ["Continue"]
-            if season is not None and episode is not None:
-                lbl_parts.append(f"S{season}:E{episode}")
-                if dur > pos and pos > 0:
-                    rem_mins = int((dur - pos) / 60)
+            lbl_parts = []
+            if is_matching_cw:
+                lbl_parts.append("Continue")
+                lbl_parts.append(f"S{s_label}:E{e_label}")
+                if cw_dur > cw_pos and cw_pos > 0:
+                    rem_mins = int((cw_dur - cw_pos) / 60)
                     if rem_mins > 0:
                         lbl_parts.append(f"({rem_mins}m left)")
-            elif dur > pos and pos > 0:
-                rem_mins = int((dur - pos) / 60)
-                if rem_mins > 0:
-                    lbl_parts.append(f"({rem_mins}m left)")
-                    
+                self.continue_btn.set_tooltip_text("Continue Watching")
+            else:
+                lbl_parts.append("Play")
+                lbl_parts.append(f"S{s_label}:E{e_label}")
+                self.continue_btn.set_tooltip_text(f"Play Season {s_label} Episode {e_label}")
+
             lbl_text = " ".join(lbl_parts)
             self.continue_label.set_text(lbl_text)
-            self.continue_btn.set_tooltip_text("Continue Watching")
             self.continue_btn.set_visible(True)
 
             def on_continue_clicked(btn):
@@ -1237,9 +1243,19 @@ class MovieDetailsPage(Gtk.Overlay):
 
             self._continue_btn_hid = self.continue_btn.connect("clicked", on_continue_clicked)
         else:
-            # Unplayed title: Show "Play" button to directly play stream or torrent!
-            self.continue_label.set_text("Play")
-            self.continue_btn.set_tooltip_text("Play Stream or Torrent")
+            pos = float((cw_item or {}).get("position") or 0.0)
+            dur = float((cw_item or {}).get("duration") or 0.0)
+            if pos > 0:
+                lbl_parts = ["Continue"]
+                if dur > pos:
+                    rem_mins = int((dur - pos) / 60)
+                    if rem_mins > 0:
+                        lbl_parts.append(f"({rem_mins}m left)")
+                self.continue_label.set_text(" ".join(lbl_parts))
+                self.continue_btn.set_tooltip_text("Continue Watching")
+            else:
+                self.continue_label.set_text("Play")
+                self.continue_btn.set_tooltip_text("Play Movie")
             self.continue_btn.set_visible(True)
 
             def on_play_clicked(btn):
@@ -1445,9 +1461,19 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.remembered_working_stream = database.get_working_stream(primary_id, getattr(self, 'selected_season', None), self.selected_episode)
                     if self.remembered_working_stream:
                         self.selected_torrent = self.remembered_working_stream
+                    if hasattr(self, 'stream_ep_title_label'):
+                        s_val = getattr(self, 'selected_season', 1)
+                        ep_title = self.selected_video.get("title") or self.selected_video.get("name") or f"Episode {self.selected_episode}"
+                        if self.media_type in ["series", "anime"]:
+                            self.stream_ep_title_label.set_text(f"▶ S{s_val}E{self.selected_episode}: {ep_title}")
+                        else:
+                            self.stream_ep_title_label.set_text(f"▶ {ep_title}")
+                        self.stream_ep_title_label.set_visible(True)
                     self.update_continue_btn()
+                    self.render_episodes_list()
                     self.fetch_torrents_async()
                 
+            self._on_episode_dropdown_changed = on_episode_changed
             self._ep_dropdown_hid = self.episode_dropdown.connect("notify::selected", on_episode_changed)
             
             def on_season_changed(dropdown, *args):
@@ -1568,9 +1594,15 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.window.hide_player_loading()
                 if hasattr(self, 'progress_label') and self.progress_label:
                     self.progress_label.set_text("No streams available.")
-            elif is_complete and self.torrents and getattr(self, '_auto_play_next', False):
+            elif self.torrents and getattr(self, '_auto_play_next', False):
                 self._auto_play_next = False
                 GLib.idle_add(self.on_watch_clicked, self.watch_btn)
+            elif is_complete and not self.torrents and getattr(self, '_auto_play_next', False):
+                self._auto_play_next = False
+                if self.window:
+                    self.window.hide_player_loading()
+                if hasattr(self, 'progress_label') and self.progress_label:
+                    self.progress_label.set_text("No streams available.")
             return False
 
         def on_stream_batch(torrents, is_cached=False, is_complete=False):
@@ -5792,7 +5824,7 @@ class CineWindow(Adw.ApplicationWindow):
                         target_str = f"{media_type}|{m_url}|{cat_id}|{g}"
                         genre_items.append((g, target_str))
                         
-                    is_single_default = (len(addon_cats) == 1 and clean_name.lower() in ["top", "main", "all", "default", addon_name.lower()])
+                    is_single_default = (len(addon_cats) == 1 and clean_name.lower() in ["top", "main", "all", "default", "popular", addon_name.lower()])
                     
                     addon_cat_items.append({
                         "type": "submenu",
@@ -5826,21 +5858,33 @@ class CineWindow(Adw.ApplicationWindow):
         addon_menu.append_item(all_addon_item)
 
         # 2. Catalogs and Genres
-        for cat_idx, cat_data in enumerate(addon_cat_items):
+        if len(addon_cat_items) == 1 and addon_cat_items[0].get("is_single_default"):
+            cat_data = addon_cat_items[0]
             if cat_data["type"] == "submenu":
-                cat_menu = Gio.Menu.new()
                 for label, target_str in cat_data["items"]:
                     item = Gio.MenuItem.new(label, None)
                     item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", target_str))
-                    cat_menu.append_item(item)
-                sub_item = Gio.MenuItem.new_submenu(cat_data["name"], cat_menu)
-                h = hashlib.md5(f"{media_type}:{m_url}:{cat_data.get('cat_id', '')}:{cat_idx}:{cat_data['name']}".encode()).hexdigest()[:12]
-                sub_item.set_attribute_value("id", GLib.Variant("s", f"cat_{h}"))
-                addon_menu.append_item(sub_item)
+                    addon_menu.append_item(item)
             else:
                 item = Gio.MenuItem.new(cat_data["name"], None)
                 item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", cat_data["target"]))
                 addon_menu.append_item(item)
+        else:
+            for cat_idx, cat_data in enumerate(addon_cat_items):
+                if cat_data["type"] == "submenu":
+                    cat_menu = Gio.Menu.new()
+                    for label, target_str in cat_data["items"]:
+                        item = Gio.MenuItem.new(label, None)
+                        item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", target_str))
+                        cat_menu.append_item(item)
+                    sub_item = Gio.MenuItem.new_submenu(cat_data["name"], cat_menu)
+                    h = hashlib.md5(f"{media_type}:{m_url}:{cat_data.get('cat_id', '')}:{cat_idx}:{cat_data['name']}".encode()).hexdigest()[:12]
+                    sub_item.set_attribute_value("id", GLib.Variant("s", f"cat_{h}"))
+                    addon_menu.append_item(sub_item)
+                else:
+                    item = Gio.MenuItem.new(cat_data["name"], None)
+                    item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", cat_data["target"]))
+                    addon_menu.append_item(item)
         return addon_menu
 
     def _build_discover_menu(self):
@@ -6551,8 +6595,12 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue = []
         self.stream_queue_index = 0
         prev_page = getattr(self, 'previous_page_before_player', 'details')
-        if prev_page and prev_page in ['details', 'main', 'discover']:
+        if prev_page and prev_page in ['details', 'library', 'favorites', 'history', 'watched', 'downloads', 'addons']:
             self.main_stack.set_visible_child_name(prev_page)
+        elif prev_page in ['discover', 'content', 'search_results']:
+            self.main_stack.set_visible_child_name('library')
+            if hasattr(self, 'library_stack'):
+                self.library_stack.set_visible_child_name(prev_page)
         else:
             self.main_stack.set_visible_child_name('details')
 
@@ -6689,6 +6737,12 @@ class CineWindow(Adw.ApplicationWindow):
         
         page._auto_play_next = True
         
+        primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0]
+        if primary_id:
+            from . import database
+            database.set_setting(f"last_s_{primary_id}", target_season)
+            database.set_setting(f"last_ep_{primary_id}_{target_season}", target_episode)
+        
         if target_season != current_season:
             seasons = sorted(list(set([v.get("season", 1) for v in videos])))
             if target_season in seasons:
@@ -6698,7 +6752,10 @@ class CineWindow(Adw.ApplicationWindow):
             ep_nums = [e.get('episode') for e in page.current_episodes]
             if target_episode in ep_nums:
                 idx = ep_nums.index(target_episode)
+                prev_idx = page.episode_dropdown.get_selected()
                 page.episode_dropdown.set_selected(idx)
+                if prev_idx == idx and hasattr(page, '_on_episode_dropdown_changed'):
+                    page._on_episode_dropdown_changed(page.episode_dropdown)
                 
         return True
 
