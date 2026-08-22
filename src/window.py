@@ -143,6 +143,27 @@ class MovieDetailsPage(Gtk.Overlay):
         self.movie_stub = movie
         self.window = window
         self.media_type = movie.get("type", "movie")
+        
+        item_raw_id = str(self.movie_stub.get("id", ""))
+        poster_raw = str(self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster") or "")
+        if item_raw_id.startswith("tpb_ctl:"):
+            try:
+                import base64, json
+                raw_b64 = item_raw_id.split("tpb_ctl:", 1)[1]
+                payload = json.loads(base64.b64decode(raw_b64).decode('utf-8', errors='ignore'))
+                if payload.get("extra", {}).get("type"):
+                    self.media_type = payload["extra"]["type"]
+                if payload.get("poster") and not poster_raw:
+                    poster_raw = payload["poster"]
+            except Exception:
+                pass
+        if poster_raw and not item_raw_id.startswith("tt"):
+            tt_m = re.search(r'\b(tt\d{7,8})\b', poster_raw)
+            if tt_m:
+                alias_ids = self.movie_stub.get("alias_ids") or []
+                if tt_m.group(1) not in alias_ids:
+                    self.movie_stub.setdefault("alias_ids", []).append(tt_m.group(1))
+
         self.selected_season = None
         self.selected_episode = None
         self.torrents = []
@@ -459,9 +480,14 @@ class MovieDetailsPage(Gtk.Overlay):
         episodes_scroll.set_child(self.episodes_list_box)
         self.episodes_page_vbox.append(episodes_scroll)
 
-        # Page 2: Streams Selector
         self.streams_page_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.sidebar_stack.add_named(self.streams_page_vbox, "streams")
+
+        # Set default visible stack child based on initial media_type
+        if self.media_type in ["series", "anime"]:
+            self.sidebar_stack.set_visible_child_name("episodes")
+        else:
+            self.sidebar_stack.set_visible_child_name("streams")
 
         # Streams Header
         self.stream_header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -1266,6 +1292,8 @@ class MovieDetailsPage(Gtk.Overlay):
     def build_ui(self, details):
         if not details: return
         self.movie_details = details
+        if details.get("type"):
+            self.media_type = details["type"]
         item_id = details.get("id") or self.movie_stub.get("id")
         print(f"[CARD CLICK Step 8] build_ui() running for '{item_id}'")
         if details.get("videos"):
@@ -1416,7 +1444,7 @@ class MovieDetailsPage(Gtk.Overlay):
             else:
                 self.play_next_check.set_label("Play Next Ep")
         
-        if details.get("videos"):
+        if details.get("videos") and len(details.get("videos", [])) > 0:
             videos = details.get("videos")
             self.videos = videos
             has_multiple = len(videos) > 1 or self.media_type in ["series", "anime"] or str(self.movie_stub.get("id", "")).startswith("ctmdb.") or self.movie_stub.get("type") == "collections"
@@ -1425,6 +1453,8 @@ class MovieDetailsPage(Gtk.Overlay):
             self.stream_back_btn.set_tooltip_text("Back to Episodes" if self.media_type in ["series", "anime"] else "Back to Movies")
             if has_multiple and not getattr(self, '_user_navigated_to_streams', False):
                 self.sidebar_stack.set_visible_child_name("episodes")
+            else:
+                self.sidebar_stack.set_visible_child_name("streams")
 
             if hasattr(self, 'ep_search_entry'):
                 if self.media_type in ["series", "anime"]:
@@ -1533,6 +1563,12 @@ class MovieDetailsPage(Gtk.Overlay):
                 self._ignore_dropdown_changes = False
                 on_season_changed(self.season_dropdown)
         else:
+            self.sidebar_stack.set_visible_child_name("streams")
+            self.stream_back_btn.set_visible(False)
+            if hasattr(self, 'season_nav_box'):
+                self.season_nav_box.set_visible(False)
+            if hasattr(self, 'row2_box'):
+                self.row2_box.set_visible(False)
             self.fetch_torrents_async()
 
     def fetch_torrents_async(self, force=False):

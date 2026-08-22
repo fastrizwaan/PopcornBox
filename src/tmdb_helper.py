@@ -17,6 +17,20 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
         str_id = str(imdb_id).strip()
         if str_id.startswith("tt"):
             return str_id.split(":")[0]
+        if str_id.startswith("tpb_ctl:"):
+            try:
+                import base64, json
+                raw_b64 = str_id.split("tpb_ctl:", 1)[1]
+                payload = json.loads(base64.b64decode(raw_b64).decode('utf-8', errors='ignore'))
+                p_url = payload.get("poster", "")
+                tt_match = re.search(r'\b(tt\d{7,8})\b', p_url)
+                if tt_match:
+                    return tt_match.group(1)
+            except Exception:
+                pass
+        tt_match = re.search(r'\b(tt\d{7,8})\b', str_id)
+        if tt_match:
+            return tt_match.group(1)
 
     from .api import _get_cached_request
     

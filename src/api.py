@@ -780,13 +780,37 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 poster = extract_image_url(m)
                 title = m.get("name", "")
                 year = str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else ""
+                item_type = m.get("type") or media_type
+                alias_ids = [imdb_id] if imdb_id else []
+
+                if str(imdb_id).startswith("tpb_ctl:"):
+                    try:
+                        import base64, json
+                        raw_b64 = str(imdb_id).split("tpb_ctl:", 1)[1]
+                        payload = json.loads(base64.b64decode(raw_b64).decode('utf-8', errors='ignore'))
+                        if payload.get("extra", {}).get("type"):
+                            item_type = payload["extra"]["type"]
+                        p_val = payload.get("poster")
+                        if p_val:
+                            if not poster: poster = p_val
+                            tt_m = re.search(r'\b(tt\d{7,8})\b', p_val)
+                            if tt_m and tt_m.group(1) not in alias_ids:
+                                alias_ids.append(tt_m.group(1))
+                    except Exception:
+                        pass
+                elif poster:
+                    tt_m = re.search(r'\b(tt\d{7,8})\b', poster)
+                    if tt_m and tt_m.group(1) not in alias_ids:
+                        alias_ids.append(tt_m.group(1))
+
                 movies.append({
                     "id": imdb_id,
+                    "alias_ids": alias_ids,
                     "title": title,
                     "year": year,
                     "medium_cover_image": poster,
                     "poster": poster,
-                    "type": m.get("type") or media_type
+                    "type": item_type
                 })
             return movies
         return []
@@ -928,6 +952,29 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         database.save_cached_metadata(imdb_id, media_type, res)
         return res
 
+    if str(imdb_id).startswith("tpb_ctl:"):
+        try:
+            import base64, json
+            raw_b64 = str(imdb_id).split("tpb_ctl:", 1)[1]
+            payload = json.loads(base64.b64decode(raw_b64).decode('utf-8', errors='ignore'))
+            if payload.get("extra", {}).get("type"):
+                media_type = payload["extra"]["type"]
+            p_val = payload.get("poster")
+            if p_val:
+                if not poster: poster = p_val
+                tt_m = re.search(r'\b(tt\d{7,8})\b', p_val)
+                if tt_m:
+                    imdb_id = tt_m.group(1)
+            if not title and payload.get("parsedName"):
+                title = payload.get("parsedName")
+        except Exception:
+            pass
+
+    if poster and not (str(imdb_id).startswith("tt") or str(imdb_id).startswith("tmdb:")):
+        tt_m = re.search(r'\b(tt\d{7,8})\b', str(poster))
+        if tt_m:
+            imdb_id = tt_m.group(1)
+
     # Resolve TMDB ids to IMDB format if needed
     imdb_id = resolve_to_imdb_id(imdb_id, media_type, title)
 
@@ -965,8 +1012,9 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
     c_type = media_type
 
-    def fetch_addon_meta(addon_orig):
+    def fetch_addon_meta(addon_orig, req_type=None):
         addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
+        target_m_type = req_type or c_type
         if not addon.get("enabled", True): return None
         m_url = addon.get("manifest_url", "")
         if not m_url or m_url.startswith("builtin:"): return None
@@ -989,13 +1037,13 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             except Exception:
                 pass
                 
-        matched_type = c_type
+        matched_type = target_m_type
         if addon_types is not None:
-            type_match = next((t for t in addon_types if is_type_match(t, c_type)), None)
+            type_match = next((t for t in addon_types if is_type_match(t, target_m_type)), None)
             if type_match:
                 matched_type = type_match
             else:
-                has_cat_match = any(is_type_match(cat.get("type"), c_type) for cat in addon.get("catalogs", []))
+                has_cat_match = any(is_type_match(cat.get("type"), target_m_type) for cat in addon.get("catalogs", []))
                 has_prefix_match = addon_prefixes and any(str(imdb_id).startswith(p) for p in addon_prefixes)
                 if not (has_cat_match or has_prefix_match):
                     return None
@@ -1098,6 +1146,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 "videos": videos,
                 "cast": cm.get("cast", []),
                 "genres": cm.get("genres", []),
+                "type": cm.get("type") or matched_type,
                 "adult": cm.get("adult") or cm.get("isAdult") or False
             }
             if database.is_adult_content_hidden() and is_adult_item(res_dict):
@@ -1112,7 +1161,13 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
     
     cinemeta_res = None
     if cinemeta_addon:
-        cinemeta_res = fetch_addon_meta(cinemeta_addon)
+        cinemeta_res = fetch_addon_meta(cinemeta_addon, c_type)
+        if (not cinemeta_res or not is_valid_meta(cinemeta_res)) and str(imdb_id).startswith("tt"):
+            alt_type = "movie" if c_type in ["series", "anime", "tv"] else "series"
+            alt_res = fetch_addon_meta(cinemeta_addon, alt_type)
+            if alt_res and is_valid_meta(alt_res):
+                cinemeta_res = alt_res
+                media_type = alt_type
         if cinemeta_res and is_valid_meta(cinemeta_res):
             return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
 
