@@ -6,6 +6,7 @@ import urllib.request
 import os
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
+from .utils import debug_log
 
 if os.environ.get("FLATPAK_ID"):
     BASE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "popcorn-box")
@@ -42,8 +43,18 @@ def _clear_failed_images():
     with _FAILED_IMAGE_LOCK:
         FAILED_IMAGE_URLS.clear()
 
+_IMAGE_GEN_LOCK = threading.Lock()
+_IMAGE_GENERATION_ID = 0
+
 def cancel_pending_image_downloads():
+    global _IMAGE_GENERATION_ID
+    with _IMAGE_GEN_LOCK:
+        _IMAGE_GENERATION_ID += 1
     _clear_failed_images()
+
+def is_image_generation_active(gen_id):
+    with _IMAGE_GEN_LOCK:
+        return gen_id == _IMAGE_GENERATION_ID
 
 def extract_image_url(m):
     if not isinstance(m, dict):
@@ -68,7 +79,7 @@ def extract_image_url(m):
                 return url
     return ""
 
-def load_image_into_picture(url, picture_widget, width=None, height=None, on_error=None):
+def load_image_into_picture(url, picture_widget, width=None, height=None, on_error=None, is_priority=False):
     if not url or not isinstance(url, str): return
     url = url.strip()
     if url.startswith("//"):
@@ -98,13 +109,20 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
             GLib.idle_add(on_error)
         return
 
+    with _IMAGE_GEN_LOCK:
+        task_gen = _IMAGE_GENERATION_ID
+
     def fetch_image():
+        if not is_priority and not is_image_generation_active(task_gen):
+            return
         try:
             data = None
             if os.path.exists(cache_file) and os.path.getsize(cache_file) > 0:
                 with open(cache_file, 'rb') as f:
                     data = f.read()
             else:
+                if not is_priority and not is_image_generation_active(task_gen):
+                    return
                 if os.path.exists(cache_file):
                     try: os.remove(cache_file)
                     except Exception: pass
@@ -113,6 +131,8 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
                 )
                 for attempt in range(2):
+                    if not is_priority and not is_image_generation_active(task_gen):
+                        return
                     try:
                         with urllib.request.urlopen(req, timeout=3.5) as response:
                             data = response.read()
@@ -128,6 +148,9 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                             import time
                             time.sleep(0.3)
                 
+            if not is_priority and not is_image_generation_active(task_gen):
+                return
+
             if not data:
                 if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
                     GLib.idle_add(on_error)
@@ -151,6 +174,9 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                     pass
                 print(f"Failed to decode image {url}: {e}")
                 
+            if not is_priority and not is_image_generation_active(task_gen):
+                return
+
             if pixbuf:
                 if width and height:
                     orig_w = pixbuf.get_width()
@@ -179,7 +205,8 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                         _MEMORY_PIXBUF_CACHE.clear()
                     _MEMORY_PIXBUF_CACHE[mem_key] = pixbuf
 
-                GLib.idle_add(_apply_pixbuf, picture_widget, pixbuf, url)
+                if is_priority or is_image_generation_active(task_gen):
+                    GLib.idle_add(_apply_pixbuf, picture_widget, pixbuf, url)
             else:
                 if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
                     GLib.idle_add(on_error)
@@ -341,20 +368,7 @@ class MovieWidget(Gtk.Box):
         item_id = movie_data.get("imdb_id") or movie_data.get("id")
         item_type = movie_data.get("type", "movie")
         
-        poster_url = None
-        has_cached_poster = False
-        if item_id:
-            try:
-                from .database import get_cached_metadata
-                cached = get_cached_metadata(item_id, item_type)
-                if cached and cached.get("medium_cover_image"):
-                    poster_url = cached.get("medium_cover_image")
-                    has_cached_poster = True
-            except Exception:
-                pass
-                
-        if not poster_url:
-            poster_url = extract_image_url(movie_data)
+        poster_url = extract_image_url(movie_data)
         
         def trigger_fallback():
             try:
@@ -364,7 +378,7 @@ class MovieWidget(Gtk.Box):
 
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195, on_error=trigger_fallback)
-        else:
+        elif item_id:
             trigger_fallback()
             
         title_text = movie_data.get("title") or movie_data.get("name") or "Unknown"
@@ -494,17 +508,7 @@ class ContinueWatchingWidget(Gtk.Box):
         # Poster image loading
         item_id = item_data.get("imdb_id") or item_data.get("id")
         item_type = item_data.get("type", "movie")
-        poster_url = item_data.get("medium_cover_image") or item_data.get("poster")
-        if not poster_url and item_id:
-            try:
-                from .database import get_cached_metadata
-                cached = get_cached_metadata(item_id, item_type)
-                if cached and cached.get("medium_cover_image"):
-                    poster_url = cached.get("medium_cover_image")
-            except Exception:
-                pass
-        if not poster_url:
-            poster_url = extract_image_url(item_data)
+        poster_url = item_data.get("medium_cover_image") or item_data.get("poster") or extract_image_url(item_data)
             
         def trigger_fallback():
             try:
@@ -514,7 +518,7 @@ class ContinueWatchingWidget(Gtk.Box):
 
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195, on_error=trigger_fallback)
-        else:
+        elif item_id:
             trigger_fallback()
             
         # Title

@@ -27,6 +27,7 @@ from gettext import gettext as _
 from urllib.parse import urlparse
 from time import time
 import shlex
+import hashlib
 
 from .save_session import (
     save_last_playlist_file,
@@ -36,6 +37,7 @@ from .save_session import (
 
 from .utils import (
     logger,
+    debug_log,
     get_mouse_bindings,
     parse_nonrepeat_bindings,
     is_local_path,
@@ -181,6 +183,7 @@ class MovieDetailsPage(Gtk.Overlay):
         self.selected_season = None
         self.selected_episode = None
         self.torrents = []
+        self._last_torrents_hash = None  # For change detection to skip redundant UI rebuilds
         self.videos = []
         self.seasons = []
         self.current_episodes = []
@@ -195,7 +198,12 @@ class MovieDetailsPage(Gtk.Overlay):
         self._details_fetch_id = 0
         self._fetch_gen = 0
         self._last_fetch_key = None
+        # Trailer state
+        self._trailer_signal_gen = 0       # Bumped on each safe trailer btn reconnect
+        self._resolved_trailer_url = None  # Pre-resolved direct stream URL for instant playback
+        self._trailer_fast_abort = None    # threading.Event to cancel fast-fetch on navigation
         
+
         self.remembered_working_stream = None
         from . import database
         item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
@@ -1134,7 +1142,16 @@ class MovieDetailsPage(Gtk.Overlay):
         existing_poster = self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster")
         self._details_fetch_id += 1
         fetch_id = self._details_fetch_id
+
+        # Cancel any in-flight fast trailer fetch from a previous page
+        if self._trailer_fast_abort:
+            self._trailer_fast_abort.set()
+        self._trailer_fast_abort = threading.Event()
+        fast_abort = self._trailer_fast_abort
+
         print(f"[CARD CLICK Step 6] load_details_async started (force_refresh={force_refresh}) for '{item_id}'")
+
+        # Step 1: Fetch Image & Metadata FIRST
         def fetch():
             from . import api
             details = api.fetch_movie_details(item_id, self.media_type, title=self.movie_stub.get("title"), use_cache=not force_refresh, poster=existing_poster)
@@ -1143,14 +1160,80 @@ class MovieDetailsPage(Gtk.Overlay):
                 print(f"[CARD CLICK Step 7] api.fetch_movie_details completed. Poster URL: {poster}")
                 def apply_details():
                     if fetch_id == self._details_fetch_id and self._is_current_details_page():
+                        # Step 1 UI build (Metadata and Images displayed)
                         self.build_ui(details)
+                        # Step 2: Now resolve trailer YouTube URL & direct stream
+                        tr = details.get("trailer")
+                        if tr:
+                            self._apply_trailer_url(tr, fetch_id)
+                        else:
+                            self._start_fast_trailer_fetch(item_id, fetch_id, fast_abort)
                     return False
                 GLib.idle_add(apply_details)
             else:
                 print(f"[CARD CLICK Step 7 WARNING] api.fetch_movie_details returned None for '{item_id}'")
+                def try_fast_trailer():
+                    if fetch_id == self._details_fetch_id and self._is_current_details_page():
+                        self._start_fast_trailer_fetch(item_id, fetch_id, fast_abort)
+                    return False
+                GLib.idle_add(try_fast_trailer)
+
         threading.Thread(target=fetch, daemon=True).start()
 
-    def toggle_favorite(self, details):
+    def _start_fast_trailer_fetch(self, item_id, fetch_id, abort_event):
+        """Query trailer-capable addons for a trailer ytId after metadata is loaded."""
+        if getattr(self, "trailer_url", None):
+            return
+
+        def _fast_fetch():
+            from . import api
+            yt_id = api.fetch_trailer_link_fast(item_id, self.media_type, abort_event=abort_event)
+            if yt_id and not abort_event.is_set():
+                GLib.idle_add(self._apply_trailer_url, yt_id, fetch_id)
+
+        threading.Thread(target=_fast_fetch, daemon=True).start()
+
+    def _apply_trailer_url(self, yt_id, fetch_id=None):
+        """
+        Safely apply a discovered trailer URL to the button and start background stream pre-resolution.
+        Guards against stale results from old pages via fetch_id check.
+        """
+        if not yt_id:
+            return False
+        if fetch_id is not None and fetch_id != getattr(self, "_details_fetch_id", 0):
+            return False  # Stale result from a previous page
+        if not self._is_current_details_page():
+            return False
+        if getattr(self, "_destroyed", False):
+            return False
+
+        clean_yt = str(yt_id).strip()
+        self.trailer_url = clean_yt
+
+        if hasattr(self, "trailer_btn") and self.trailer_btn:
+            self._trailer_signal_gen += 1
+            cur_gen = self._trailer_signal_gen
+
+            if hasattr(self, "_trailer_btn_hid") and self._trailer_btn_hid:
+                try:
+                    self.trailer_btn.disconnect(self._trailer_btn_hid)
+                except Exception:
+                    pass
+                self._trailer_btn_hid = None
+
+            self.reset_trailer_btn_ui()
+            self.trailer_btn.set_sensitive(True)
+
+            def _on_trailer_btn_clicked(btn):
+                if self._trailer_signal_gen != cur_gen:
+                    return
+                self.on_trailer_clicked()
+
+            self._trailer_btn_hid = self.trailer_btn.connect("clicked", _on_trailer_btn_clicked)
+
+        return False
+
+
         from . import database
         item_id = details.get("id")
         if database.is_favorite(item_id):
@@ -1324,7 +1407,7 @@ class MovieDetailsPage(Gtk.Overlay):
         from .movie_widget import load_image_into_picture
 
         if details.get("background"):
-            load_image_into_picture(details.get("background"), self.backdrop_pic)
+            load_image_into_picture(details.get("background"), self.backdrop_pic, is_priority=True)
             
         cover = self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster")
         if not cover:
@@ -1346,7 +1429,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     print(f"[CARD CLICK Step 8c ERROR] Poster load failed for '{cover}'. Triggering fetch_fallback_poster.")
                     from .movie_widget import fetch_fallback_poster
                     fetch_fallback_poster(details.get("id") or self.movie_stub.get("id"), self.media_type, self.poster, details.get("title") or self.movie_stub.get("title"))
-                load_image_into_picture(cover, self.poster, width=360, height=540, on_error=on_poster_error)
+                load_image_into_picture(cover, self.poster, width=360, height=540, on_error=on_poster_error, is_priority=True)
             
         self.title_label.set_text(details.get("title", ""))
 
@@ -1450,12 +1533,11 @@ class MovieDetailsPage(Gtk.Overlay):
         self.update_continue_btn(details)
 
         trailer_url = details.get("trailer")
-        self.trailer_url = trailer_url
-        self.reset_trailer_btn_ui()
         if trailer_url:
-            self.trailer_btn.set_sensitive(True)
-            self._trailer_btn_hid = self.trailer_btn.connect("clicked", lambda x: self.on_trailer_clicked(trailer_url))
-        else:
+            self._apply_trailer_url(trailer_url, self._details_fetch_id)
+        elif not getattr(self, "trailer_url", None):
+            self.trailer_url = None
+            self.reset_trailer_btn_ui()
             self.trailer_btn.set_sensitive(False)
 
         if hasattr(self, 'play_next_check'):
@@ -1593,6 +1675,13 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.row2_box.set_visible(False)
             self.fetch_torrents_async()
 
+    def destroy_page(self):
+        self._destroyed = True
+        if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
+            self.stream_abort_event.set()
+        if hasattr(self, '_trailer_fast_abort') and self._trailer_fast_abort:
+            self._trailer_fast_abort.set()
+
     def fetch_torrents_async(self, force=False):
         selected_video = getattr(self, 'selected_video', None)
         video_id = selected_video.get("id") if (selected_video and isinstance(selected_video, dict)) else None
@@ -1621,6 +1710,11 @@ class MovieDetailsPage(Gtk.Overlay):
         self._fetch_gen = getattr(self, '_fetch_gen', 0) + 1
         current_gen = self._fetch_gen
         target_title = (selected_video.get("title") if selected_video else None) or self.movie_stub.get("title")
+        
+        if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
+            self.stream_abort_event.set()
+        self.stream_abort_event = threading.Event()
+        current_abort_event = self.stream_abort_event
         
         batch_timer = [None]
         latest_batch = [None]
@@ -1684,7 +1778,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 sel_season,
                 sel_episode,
                 callback=lambda t, is_cached=False, is_complete=False: GLib.idle_add(on_stream_batch, t, is_cached, is_complete),
-                title=target_title
+                title=target_title,
+                abort_event=current_abort_event
             )
         threading.Thread(target=fetch, daemon=True).start()
 
@@ -1695,6 +1790,25 @@ class MovieDetailsPage(Gtk.Overlay):
         self.update_provider_dropdown_model()
             
         all_torrents = getattr(self, 'torrents', []) or []
+
+        # Check if trailer button needs activating from discovered stream addons (e.g. Streailer).
+        # Guard with _fetch_gen so stale stream batches can't corrupt a newly loaded page.
+        if not getattr(self, 'trailer_url', None) and all_torrents:
+            current_fetch_gen = getattr(self, '_fetch_gen', 0)
+            found_yt = None
+            for t in all_torrents:
+                t_yt = t.get("ytId")
+                t_url = t.get("url") or ""
+                if t_yt:
+                    found_yt = t_yt
+                    break
+                elif "youtube.com" in t_url.lower() or "youtu.be" in t_url.lower():
+                    found_yt = t_url
+                    break
+            if found_yt and getattr(self, '_fetch_gen', 0) == current_fetch_gen:
+                # Use _apply_trailer_url for race-safe connection management
+                self._apply_trailer_url(found_yt, self._details_fetch_id)
+
         if not all_torrents:
             self.current_t_list = []
             self.selected_torrent = None
@@ -1935,18 +2049,36 @@ class MovieDetailsPage(Gtk.Overlay):
             has_trailer = bool(getattr(self, 'trailer_url', None))
             self.trailer_btn.set_sensitive(has_trailer)
 
-    def on_trailer_clicked(self, trailer_url):
-        if not trailer_url: return
-        from . import player
+    def on_trailer_clicked(self, *args, **kwargs):
+        trailer_url = None
+        for a in args:
+            if isinstance(a, str) and a.strip():
+                trailer_url = a.strip()
+                break
+        if not trailer_url:
+            trailer_url = getattr(self, "trailer_url", None)
+        if not trailer_url and hasattr(self, "movie_details") and self.movie_details:
+            trailer_url = self.movie_details.get("trailer")
+        if not trailer_url and hasattr(self, "movie_stub") and self.movie_stub:
+            trailer_url = self.movie_stub.get("trailer") or self.movie_stub.get("ytId")
+
+        if not trailer_url:
+            print("[Trailer] No trailer URL found.")
+            return
+
+        print(f"[Trailer] Playing trailer: {trailer_url}")
+
+        stub_title = self.movie_stub.get('name') or self.movie_stub.get('title') if hasattr(self, 'movie_stub') else ""
+        details_title = self.movie_details.get('name') or self.movie_details.get('title') if (hasattr(self, 'movie_details') and self.movie_details) else ""
+        trailer_title = f"{details_title or stub_title or 'Unknown Title'} (Trailer)"
 
         if hasattr(self, 'trailer_icon'):
             self.trailer_icon.set_visible(False)
         if hasattr(self, 'trailer_spinner'):
             self.trailer_spinner.set_visible(True)
             self.trailer_spinner.start()
-        self.trailer_btn.set_sensitive(False)
-
-        trailer_title = f"{self.movie_stub.get('name') or self.movie_stub.get('title', 'Unknown Title')} (Trailer)"
+        if hasattr(self, 'trailer_btn'):
+            self.trailer_btn.set_sensitive(False)
 
         if self.window:
             self.window.show_player_loading(_("Loading trailer..."), title=trailer_title)
@@ -1955,17 +2087,25 @@ class MovieDetailsPage(Gtk.Overlay):
             if not isinstance(stats, dict): return
             url = stats.get("url")
             if url and self.window:
-                self.window._play_stream(url, trailer_title)
-            elif stats.get("closed") or stats.get("opened_browser"):
+                headers = {}
+                if stats.get("user_agent"):
+                    headers["User-Agent"] = stats.get("user_agent")
+                audio_url = stats.get("audio_url")
+                self.window._play_stream(url, trailer_title, headers=headers, audio_url=audio_url)
+                self.reset_trailer_btn_ui()
+            elif stats.get("closed") or stats.get("error"):
                 self.reset_trailer_btn_ui()
                 if self.window:
                     self.window.hide_player_loading()
-                    if hasattr(self.window, '_show_toast') and stats.get("status"):
+                    if stats.get("status"):
                         self.window._show_toast(stats.get("status"))
             elif stats.get("status") and self.window:
                 self.window.update_player_loading(stats.get("status"))
 
+        from . import player
         player.play_trailer(trailer_url, progress_callback=progress_callback)
+
+
 
     def on_stop_clicked(self, btn):
         if self.window and hasattr(self.window, 'mpv'):
@@ -2202,31 +2342,50 @@ class MovieDetailsPage(Gtk.Overlay):
             "title": media_title,
             "stream_title": media_title,
         }
-        database.save_working_stream(primary_id, season, episode, st_obj)
-        self.remembered_working_stream = st_obj
+        # Check if the stream is a trailer (from Streailer, YouTube, or labeled as trailer)
+        is_trailer = False
+        if st_obj:
+            if st_obj.get("ytId") or st_obj.get("behaviorHints", {}).get("bingeGroup") == "trailer":
+                is_trailer = True
+            if any("trailer" in str(a).lower() or "streailer" in str(a).lower() for a in st_obj.get("addon_names", [])):
+                is_trailer = True
+            if any(k in str(st_obj.get("title", "")).lower() or k in str(st_obj.get("name", "")).lower() or k in str(st_obj.get("stream_title", "")).lower() for k in ["🎬 trailer", "trailer"]):
+                is_trailer = True
+            if "youtube.com" in str(magnet).lower() or "youtu.be" in str(magnet).lower():
+                is_trailer = True
 
-        if self.window:
-            import time
-            details = getattr(self, "movie_details", {}) or {}
-            cover = details.get("medium_cover_image") or self.movie_stub.get("medium_cover_image") or details.get("poster") or self.movie_stub.get("poster")
+        if not is_trailer:
+            database.save_working_stream(primary_id, season, episode, st_obj)
+            self.remembered_working_stream = st_obj
+
+            if self.window:
+                import time
+                details = getattr(self, "movie_details", {}) or {}
+                cover = details.get("medium_cover_image") or self.movie_stub.get("medium_cover_image") or details.get("poster") or self.movie_stub.get("poster")
+                self.window._current_playing_item = {
+                    "id": primary_id,
+                    "imdb_id": primary_id,
+                    "title": media_title,
+                    "type": self.media_type,
+                    "medium_cover_image": cover,
+                    "season": season,
+                    "episode": episode,
+                    "magnet": magnet,
+                    "file_index": file_index,
+                    "stream_title": media_title,
+                    "last_watched": int(time.time()),
+                    "progress": 0.01,
+                    "position": 0.0,
+                    "selected_torrent": st_obj,
+                    "is_trailer": False,
+                }
+                database.save_continue_watching(self.window._current_playing_item)
+                self.update_continue_btn()
+        elif self.window:
             self.window._current_playing_item = {
-                "id": primary_id,
-                "imdb_id": primary_id,
+                "is_trailer": True,
                 "title": media_title,
-                "type": self.media_type,
-                "medium_cover_image": cover,
-                "season": season,
-                "episode": episode,
-                "magnet": magnet,
-                "file_index": file_index,
-                "stream_title": media_title,
-                "last_watched": int(time.time()),
-                "progress": 0.01,
-                "position": 0.0,
-                "selected_torrent": st_obj,
             }
-            database.save_continue_watching(self.window._current_playing_item)
-            self.update_continue_btn()
 
         if magnet and any(d in magnet.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
             if self.window:
@@ -2434,7 +2593,9 @@ class CineWindow(Adw.ApplicationWindow):
     time_total_label: Gtk.Label = Gtk.Template.Child()
 
     def __init__(self, is_activate=False, **kwargs):
+        debug_log("CineWindow.__init__ BEGIN")
         super().__init__(**kwargs)
+        debug_log("CineWindow.__init__ super().__init__ DONE (GTK template bound)")
         self.app: Adw.Application = cast(Adw.Application, kwargs.get("application"))
         self.app_mpris: MPRIS = self.app.mpris  # type: ignore
 
@@ -2627,6 +2788,7 @@ class CineWindow(Adw.ApplicationWindow):
             volume_max=150,
             keep_open=True,
             ytdl=True,
+            ytdl_format="bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
             ytdl_raw_options="no-playlist=",
             cursor_autohide_fs_only=True,
             directory_filter_types="video,audio",
@@ -3669,8 +3831,9 @@ class CineWindow(Adw.ApplicationWindow):
             else:
                 self.time_elapsed_label.props.label = format_time(curr_time)
 
+            is_trailer = self._is_playing_trailer()
             auto_play_enabled = settings.get_boolean("auto-play-next")
-            if auto_play_enabled and not getattr(self, "next_ep_dismissed", False) and duration > 30 and remaining <= 30 and remaining > 0 and self._has_next_episode():
+            if not is_trailer and auto_play_enabled and not getattr(self, "next_ep_dismissed", False) and duration > 30 and remaining <= 30 and remaining > 0 and self._has_next_episode():
                 if hasattr(self, "next_episode_revealer"):
                     rem_sec = max(1, int(remaining))
                     if hasattr(self, "next_ep_label"):
@@ -3688,13 +3851,13 @@ class CineWindow(Adw.ApplicationWindow):
                     self.next_episode_revealer.set_reveal_child(False)
 
             # Track Continue Watching progress and mark verified working stream
-            if curr_time >= 0.1 and getattr(self, "stream_queue", None):
+            if curr_time >= 0.1 and getattr(self, "stream_queue", None) and not is_trailer:
                 last_marked = getattr(self, "_last_marked_stream_idx", None)
                 if last_marked != self.stream_queue_index:
                     self._last_marked_stream_idx = self.stream_queue_index
                     self._mark_current_stream_as_working()
 
-            if getattr(self, "_current_playing_item", None):
+            if getattr(self, "_current_playing_item", None) and not is_trailer:
                 prog = min(1.0, max(0.0, curr_time / duration)) if duration > 0 else 0.0
                 self._current_playing_item["position"] = curr_time
                 self._current_playing_item["duration"] = duration
@@ -4430,12 +4593,23 @@ class CineWindow(Adw.ApplicationWindow):
             idle_add_once(self.spinner.set_visible, True)
             self.loaded_path = str(self.mpv.path)
 
+        @self.mpv.event_callback("playback-restart")
+        def on_playback_restart(_event):
+            def update():
+                self.hide_player_loading()
+                self.spinner.set_visible(False)
+                if hasattr(self, "gl_area"):
+                    self.gl_area.queue_render()
+            idle_add_once(update)
+
         @self.mpv.event_callback("file-loaded")
         def on_files_loaded(_event):
             def update():
                 try:
                     self.hide_player_loading()
                     self.spinner.set_visible(False)
+                    if hasattr(self, "gl_area"):
+                        self.gl_area.queue_render()
                     if hasattr(self, 'details_box') and self.details_box.get_first_child():
                         page = self.details_box.get_first_child()
                         if hasattr(page, 'reset_trailer_btn_ui'):
@@ -4489,9 +4663,15 @@ class CineWindow(Adw.ApplicationWindow):
 
                     self.error_count += 1
                     is_yt = self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower() or "googlevideo.com" in self.loaded_path.lower())
+                    is_trailer = is_yt or bool(getattr(self, "_current_playing_item", {}).get("is_trailer"))
                     is_web = self.loaded_path and isinstance(self.loaded_path, str) and any(d in self.loaded_path.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"])
-                    if is_yt:
-                        idle_add_once(self._show_toast, _("Trailer unavailable"))
+                    if is_trailer:
+                        idle_add_once(self.hide_player_loading)
+                        if hasattr(self, 'details_box') and self.details_box.get_first_child():
+                            page = self.details_box.get_first_child()
+                            if hasattr(page, 'reset_trailer_btn_ui'):
+                                idle_add_once(page.reset_trailer_btn_ui)
+                        idle_add_once(self._show_toast, _("Failed to play trailer"))
                         idle_add_once(self._close_player)
                     elif is_web:
                         idle_add_once(self._show_toast, _("Opening in web browser..."))
@@ -4510,7 +4690,9 @@ class CineWindow(Adw.ApplicationWindow):
                     idle_add_once(self.start_page.set_sensitive, True)
                     if not self.mpv.keep_open and self.mpv.idle_active and not self.startup:
                         def _handle_eof():
-                            if not self._try_play_next_episode():
+                            if self._is_playing_trailer():
+                                self._close_player()
+                            elif not self._try_play_next_episode():
                                 self._close_player()
                         idle_add_once(_handle_eof)
                 else:
@@ -4587,6 +4769,9 @@ class CineWindow(Adw.ApplicationWindow):
 
         @self.mpv.property_observer("time-pos")
         def on_time_change(_name, value):
+            if value and float(value) > 0.05:
+                if getattr(self, "is_loading_stream", False):
+                    idle_add_once(self.hide_player_loading)
             idle_add_once(self._update_progress, float(value or 0))
 
         @self.mpv.property_observer("seeking")
@@ -4889,22 +5074,52 @@ class CineWindow(Adw.ApplicationWindow):
         self.media_type_labels = media_type_labels
         self.media_type_dropdown.set_model(Gtk.StringList.new(media_type_labels))
         
+        # Cache catalog lists per media type to avoid recomputing on every dropdown change
+        _catalog_list_cache = {}
+
         def on_media_type_changed(dropdown, pspec):
             selected = dropdown.get_selected()
             if selected < len(self.media_type_keys):
                 self.current_media_type = self.media_type_keys[selected]
-            
-            self.all_catalogs = api.get_available_catalogs(self.current_media_type)
-            
-            # Populate catalog dropdown
-            cat_names = [c["display_name"] for c in self.all_catalogs]
-            if not cat_names:
-                cat_names = ["No Catalogs Found"]
-            self.catalog_dropdown.set_model(Gtk.StringList.new(cat_names))
-            
-            # Explicitly trigger catalog change because index 0 might not emit notify::selected
-            on_catalog_changed(self.catalog_dropdown, None)
-            
+
+            m_type = self.current_media_type
+
+            # Fast path: serve from session cache if available
+            if m_type in _catalog_list_cache:
+                self.all_catalogs = _catalog_list_cache[m_type]
+                cat_names = [c["display_name"] for c in self.all_catalogs]
+                if not cat_names:
+                    cat_names = ["No Catalogs Found"]
+                self.catalog_dropdown.set_model(Gtk.StringList.new(cat_names))
+                on_catalog_changed(self.catalog_dropdown, None)
+                # Refresh cache in background for next time
+                def _refresh_cache():
+                    cats = api.get_available_catalogs(m_type)
+                    _catalog_list_cache[m_type] = cats
+                threading.Thread(target=_refresh_cache, daemon=True).start()
+                return
+
+            # Show loading placeholder immediately, then fill async
+            self.catalog_dropdown.set_model(Gtk.StringList.new(["Loading..."]))
+
+            def _fetch_catalogs():
+                cats = api.get_available_catalogs(m_type)
+                _catalog_list_cache[m_type] = cats
+                def _apply():
+                    if self.current_media_type != m_type:
+                        return False  # User switched again before we finished
+                    self.all_catalogs = cats
+                    cat_names = [c["display_name"] for c in self.all_catalogs]
+                    if not cat_names:
+                        cat_names = ["No Catalogs Found"]
+                    self.catalog_dropdown.set_model(Gtk.StringList.new(cat_names))
+                    on_catalog_changed(self.catalog_dropdown, None)
+                    return False
+                GLib.idle_add(_apply)
+
+            threading.Thread(target=_fetch_catalogs, daemon=True).start()
+
+
         self.media_type_dropdown.connect("notify::selected", on_media_type_changed)
         
         def on_catalog_changed(dropdown, pspec):
@@ -4961,24 +5176,29 @@ class CineWindow(Adw.ApplicationWindow):
             self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=filter_addon)
         self.back_to_discover_btn.connect("clicked", on_back_to_discover_clicked)
         
-        self._build_discover_menu()
+        self._init_default_category_menus()
 
         # Action: Switch to Discover
         action = Gio.SimpleAction.new("switch-to-discover", None)
         def on_switch_discover(action, parameter):
+            from .movie_widget import cancel_pending_image_downloads
+            cancel_pending_image_downloads()
+            self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
             self.category_btn_stack.set_visible_child_name("discover")
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
             self._current_discover_type = "all"
             self._current_discover_addon = None
             self._refresh_discover_page(filter_media_type="all")
-            self._schedule_deferred_menu_build(400)
         action.connect("activate", on_switch_discover)
         self.add_action(action)
 
         # Action: Select Discover Filter Type
         action = Gio.SimpleAction.new("select-discover-type", GLib.VariantType.new("s"))
         def on_select_discover_type(action, parameter):
+            from .movie_widget import cancel_pending_image_downloads
+            cancel_pending_image_downloads()
+            self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
             m_type = parameter.get_string()
             self.category_btn_stack.set_visible_child_name("discover")
             self.discover_back_box.set_visible(False)
@@ -4995,6 +5215,9 @@ class CineWindow(Adw.ApplicationWindow):
             val = parameter.get_string()
             parts = val.split("|", 2)
             if len(parts) == 3:
+                from .movie_widget import cancel_pending_image_downloads
+                cancel_pending_image_downloads()
+                self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
                 m_type, m_url, addon_name = parts
                 self._current_discover_type = m_type
                 self._current_discover_addon = m_url
@@ -5022,6 +5245,8 @@ class CineWindow(Adw.ApplicationWindow):
             val = parameter.get_string()
             parts = val.split("|", 3)
             if len(parts) == 4:
+                from .movie_widget import cancel_pending_image_downloads
+                cancel_pending_image_downloads()
                 m_type, m_url, c_id, genre = parts
                 self.current_media_type = m_type
                 self.current_catalog = {"manifest_url": m_url, "catalog_id": c_id}
@@ -5060,46 +5285,51 @@ class CineWindow(Adw.ApplicationWindow):
         # Action: Switch to Movies (multi-row view of all movie catalogs)
         action = Gio.SimpleAction.new("switch-to-movies", None)
         def on_switch_movies(action, parameter):
+            from .movie_widget import cancel_pending_image_downloads
+            cancel_pending_image_downloads()
+            # Don't pre-increment: _refresh_discover_page will increment if a rebuild is needed
             self.category_btn_stack.set_visible_child_name("movies")
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
             self._current_discover_type = "movie"
             self._current_discover_addon = None
             self._refresh_discover_page(filter_media_type="movie")
-            self._schedule_deferred_menu_build(400)
         action.connect("activate", on_switch_movies)
         self.add_action(action)
         
         # Action: Switch to Series (multi-row view of all series catalogs)
         action = Gio.SimpleAction.new("switch-to-series", None)
         def on_switch_series(action, parameter):
+            from .movie_widget import cancel_pending_image_downloads
+            cancel_pending_image_downloads()
+            # Don't pre-increment: _refresh_discover_page will increment if a rebuild is needed
             self.category_btn_stack.set_visible_child_name("series")
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
             self._current_discover_type = "series"
             self._current_discover_addon = None
             self._refresh_discover_page(filter_media_type="series")
-            self._schedule_deferred_menu_build(400)
         action.connect("activate", on_switch_series)
         self.add_action(action)
 
         # Action: Switch to Anime (multi-row view of all anime catalogs)
         action = Gio.SimpleAction.new("switch-to-anime", None)
         def on_switch_anime(action, parameter):
+            from .movie_widget import cancel_pending_image_downloads
+            cancel_pending_image_downloads()
+            # Don't pre-increment: _refresh_discover_page will increment if a rebuild is needed
             self.category_btn_stack.set_visible_child_name("anime")
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
             self._current_discover_type = "anime"
             self._current_discover_addon = None
             self._refresh_discover_page(filter_media_type="anime")
-            self._schedule_deferred_menu_build(400)
         action.connect("activate", on_switch_anime)
         self.add_action(action)
 
         if hasattr(self, "content_scrolled"):
             adj = self.content_scrolled.get_vadjustment()
             adj.connect("value-changed", self._on_content_scroll)
-            adj.connect("changed", self._on_content_scroll)
 
         if hasattr(self, "discover_scrolled"):
             discover_adj = self.discover_scrolled.get_vadjustment()
@@ -5108,6 +5338,7 @@ class CineWindow(Adw.ApplicationWindow):
             
         self._discover_views = {}
         self._discover_catalog_list_cache = {}
+        debug_log("CineWindow.__init__ calling _populate_addons")
         self._populate_addons()
         
         # Default Launch Option: Discover View and Discover Mode Active
@@ -5118,6 +5349,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.current_genre = None
         self.category_btn_stack.set_visible_child_name("discover")
         self.library_stack.set_visible_child_name("discover")
+        debug_log("CineWindow.__init__ calling initial _refresh_discover_page(filter_media_type='all')")
         self._refresh_discover_page(filter_media_type="all")
         
         self.search_entry.connect("search-changed", self._on_search_changed)
@@ -5133,7 +5365,9 @@ class CineWindow(Adw.ApplicationWindow):
         search_key_ctrl.connect("key-pressed", on_search_key_pressed)
         self.search_entry.add_controller(search_key_ctrl)
 
+        debug_log("CineWindow.__init__ updating category buttons visibility")
         self.update_category_buttons_visibility()
+        debug_log("CineWindow.__init__ ALL DONE")
         settings.connect("changed::show-movies-button", lambda *a: self.update_category_buttons_visibility())
         settings.connect("changed::show-series-button", lambda *a: self.update_category_buttons_visibility())
         settings.connect("changed::show-anime-button", lambda *a: self.update_category_buttons_visibility())
@@ -5199,43 +5433,82 @@ class CineWindow(Adw.ApplicationWindow):
     def _fetch_content_page(self):
         if not self.current_catalog or not getattr(self, "has_more_content", True):
             return
-            
+
         if getattr(self, "is_fetching_content", False):
             return
-            
+
         self.is_fetching_content = True
-        
+
         current_req_id = getattr(self, "content_request_id", 0)
         page_to_fetch = getattr(self, "content_page", 1)
         media_type = self.current_media_type
         catalog = dict(self.current_catalog)
         genre = self.current_genre
-        
+
         def fetch():
-            from . import api
+            from . import api, database
             items = []
             try:
                 cat_url = catalog.get("manifest_url")
                 cat_id = catalog.get("catalog_id")
-                
+                genre_suffix = f":{genre}" if genre else ""
+                cache_key = f"discover:{cat_url}:{cat_id}:{media_type}{genre_suffix}:p{page_to_fetch}"
+
+                # Cache-first: show instantly if we have a recent result
+                cached = database.get_cached_catalog(cache_key, max_age_hours=6)
+                if cached:
+                    def apply_cached(cached_items=cached):
+                        if current_req_id != getattr(self, "content_request_id", 0):
+                            return False
+                        self.is_fetching_content = False
+                        if cached_items:
+                            self.content_error_count = 0
+                            if page_to_fetch == 1:
+                                self._populate_flowbox(self.content_flowbox, cached_items, self.content_seen_ids)
+                                self._schedule_deferred_menu_build(1000)
+                            else:
+                                self._append_flowbox(self.content_flowbox, cached_items, self.content_seen_ids)
+                            self.content_page = page_to_fetch + 1
+                        if getattr(self, "has_more_content", True) and hasattr(self, "content_scrolled"):
+                            self._on_content_scroll(self.content_scrolled.get_vadjustment())
+                        return False
+                    GLib.idle_add(apply_cached)
+                    # Silent background refresh — update cache only, don't redraw
+                    try:
+                        fresh = api.fetch_items(
+                            media_type=media_type,
+                            catalog_id=cat_id,
+                            catalog_url=cat_url,
+                            genre=genre,
+                            page=page_to_fetch
+                        )
+                        if fresh:
+                            database.save_cached_catalog(cache_key, fresh)
+                    except Exception:
+                        pass
+                    return
+
+                # No cache — fetch from network and save
                 items = api.fetch_items(
-                    media_type=media_type, 
-                    catalog_id=cat_id, 
-                    catalog_url=cat_url, 
-                    genre=genre, 
+                    media_type=media_type,
+                    catalog_id=cat_id,
+                    catalog_url=cat_url,
+                    genre=genre,
                     page=page_to_fetch
                 )
+                if items:
+                    database.save_cached_catalog(cache_key, items)
             except Exception as e:
                 logger.error(f"Error fetching content: {e}")
                 items = None
-                
+
             def apply_results():
                 # Race condition guard: ignore if user selected another tab or catalog
                 if current_req_id != getattr(self, "content_request_id", 0):
                     return False
-                    
+
                 self.is_fetching_content = False
-                
+
                 if items is None:
                     err_count = getattr(self, "content_error_count", 0) + 1
                     self.content_error_count = err_count
@@ -5261,6 +5534,7 @@ class CineWindow(Adw.ApplicationWindow):
             GLib.idle_add(apply_results)
 
         threading.Thread(target=fetch, daemon=True).start()
+
 
     def _open_catalog_grid(self, media_type, catalog, title):
         self._suppress_discover_grid_switch = True
@@ -5381,8 +5655,11 @@ class CineWindow(Adw.ApplicationWindow):
     def _get_discover_catalog_list(self, filter_media_type=None, filter_addon_url=None):
         cache_key = (filter_media_type or "all", filter_addon_url or "")
         if hasattr(self, "_discover_catalog_list_cache") and cache_key in self._discover_catalog_list_cache:
-            return list(self._discover_catalog_list_cache[cache_key])
+            cached_res = list(self._discover_catalog_list_cache[cache_key])
+            debug_log(f"_get_discover_catalog_list CACHE HIT for {cache_key}", f"{len(cached_res)} rows")
+            return cached_res
 
+        debug_log(f"_get_discover_catalog_list START for {cache_key}")
         from . import database, api
         addons = database.get_addons()
         rows = []
@@ -5404,6 +5681,8 @@ class CineWindow(Adw.ApplicationWindow):
             addon_name = addon.get('name', 'Addon')
             m_url = addon.get('manifest_url', '')
             if not m_url or m_url.startswith('builtin:'):
+                continue
+            if not api.is_addon_online(m_url):
                 continue
             if filter_addon_url and m_url != filter_addon_url:
                 continue
@@ -5482,10 +5761,22 @@ class CineWindow(Adw.ApplicationWindow):
                         'manifest_url': m_url,
                         'title': row_title
                     })
-                    
+
+        # Deduplicate row titles to avoid GTK "duplicate child name" warnings
+        seen_titles = {}
+        for row in rows:
+            title = row['title']
+            if title in seen_titles:
+                seen_titles[title] += 1
+                # Make the duplicate title unique by appending a counter
+                row['title'] = f"{title} ({seen_titles[title]})"
+            else:
+                seen_titles[title] = 1
+
         if not hasattr(self, "_discover_catalog_list_cache"):
             self._discover_catalog_list_cache = {}
         self._discover_catalog_list_cache[cache_key] = rows
+        debug_log(f"_get_discover_catalog_list DONE for {cache_key}", f"Generated {len(rows)} catalog rows")
         return rows
 
     def _open_continue_watching_grid(self):
@@ -5520,10 +5811,13 @@ class CineWindow(Adw.ApplicationWindow):
             target_box = self.discover_box
             
         if not target_box:
+            debug_log("_update_continue_watching_section SKIPPED (no target_box)")
             return
             
+        debug_log("_update_continue_watching_section START")
         cw_items = database.get_continue_watching()
         display_cw_items = cw_items[:15]
+        debug_log(f"_update_continue_watching_section DB returned {len(cw_items)} items (displaying {len(display_cw_items)})")
         
         # Scan target_box to identify any existing Continue Watching header and scroll widgets
         existing_header = None
@@ -5557,10 +5851,12 @@ class CineWindow(Adw.ApplicationWindow):
                 target_box.remove(existing_header)
             if existing_scroll and existing_scroll.get_parent() == target_box:
                 target_box.remove(existing_scroll)
+            debug_log("_update_continue_watching_section DONE (no items to display)")
             return
 
         new_cw_ids = [str(item.get("id") or item.get("imdb_id")) + ":" + str(item.get("last_watched", 0)) for item in display_cw_items]
         if existing_scroll and getattr(existing_scroll, "_cw_item_ids", None) == new_cw_ids and existing_scroll.get_child():
+            debug_log("_update_continue_watching_section SKIPPED (already rendered matching cw_item_ids)")
             return
             
         if not existing_header:
@@ -5605,7 +5901,9 @@ class CineWindow(Adw.ApplicationWindow):
         cw_scroll._cw_item_ids = new_cw_ids
         cw_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         cw_row.add_css_class("discover-row-box")
+        cw_scroll.set_child(cw_row)
         
+        # Populate Continue Watching cards
         for item in display_cw_items:
             card = ContinueWatchingWidget(
                 item, 
@@ -5614,14 +5912,20 @@ class CineWindow(Adw.ApplicationWindow):
                 on_play_clicked=self._on_continue_watching_clicked
             )
             cw_row.append(card)
-        cw_scroll.set_child(cw_row)
 
         page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
         if page and hasattr(page, "update_continue_btn"):
             page.update_continue_btn()
+        debug_log("_update_continue_watching_section DONE")
 
     def _refresh_discover_page(self, filter_media_type=None, filter_addon_url=None, custom_title=None, force_refresh=False):
+        debug_log(f"_refresh_discover_page START (media_type={filter_media_type}, addon={filter_addon_url}, force={force_refresh})")
         from . import database
+        
+        # Increment request ID to cancel any pending background loaders from previous tab
+        self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
+        req_id = self.discover_request_id
+        self._discover_is_loading_rows = False
         
         self._current_discover_type = filter_media_type or "all"
         self._current_discover_addon = filter_addon_url
@@ -5631,13 +5935,14 @@ class CineWindow(Adw.ApplicationWindow):
             
         view_key = f"{self._current_discover_type}|{self._current_discover_addon or 'all'}"
         
-        # 1. Instant cache hit: Switch visible view immediately
+        # 1. Instant cache hit: Switch visible view immediately with zero refetch
         if not force_refresh and view_key in self._discover_views:
+            debug_log(f"_refresh_discover_page INSTANT CACHE HIT for view '{view_key}'")
             view_data = self._discover_views[view_key]
             target_box = view_data["box"]
             self._discover_catalog_list = view_data["catalog_list"]
             self._discover_next_row_index = view_data["next_row_index"]
-            self.discover_request_id = view_data["request_id"]
+            view_data["request_id"] = req_id
             
             if hasattr(self, "discover_scrolled") and self.discover_scrolled.get_child() != target_box:
                 self.discover_scrolled.set_child(target_box)
@@ -5652,14 +5957,13 @@ class CineWindow(Adw.ApplicationWindow):
                 page_size = adj.get_page_size()
                 upper = adj.get_upper()
                 if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
-                    self._load_next_discover_batch(self.discover_request_id, batch_size=6)
+                    self._load_next_discover_batch(self.discover_request_id, batch_size=4)
+            debug_log(f"_refresh_discover_page DONE (cache hit)")
             return
 
+        debug_log(f"_refresh_discover_page CACHE MISS for view '{view_key}', constructing new view")
         from .movie_widget import cancel_pending_image_downloads
         cancel_pending_image_downloads()
-        
-        self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
-        req_id = self.discover_request_id
         
         new_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         new_box.set_margin_top(12)
@@ -5678,7 +5982,6 @@ class CineWindow(Adw.ApplicationWindow):
         # Setup Sequential Row Loading List
         self._discover_catalog_list = self._get_discover_catalog_list(filter_media_type=filter_media_type, filter_addon_url=filter_addon_url)
         self._discover_next_row_index = 0
-        self._discover_is_loading_rows = False
         
         self._discover_views[view_key] = {
             "box": new_box,
@@ -5687,15 +5990,20 @@ class CineWindow(Adw.ApplicationWindow):
             "request_id": req_id
         }
         
-        # Load initial batch (4 rows for instant viewport fill)
-        self._load_next_discover_batch(req_id, batch_size=4)
+        # Load initial batch of 6 rows to cleanly fill viewport without flooding (lazy load rest on scroll)
+        debug_log(f"_refresh_discover_page dispatching initial batch of 6 rows (req_id={req_id})")
+        self._load_next_discover_batch(req_id, batch_size=6)
+        debug_log(f"_refresh_discover_page DONE")
 
     def _load_next_discover_batch(self, req_id, batch_size=4):
         if getattr(self, "_discover_is_loading_rows", False):
+            debug_log(f"_load_next_discover_batch SKIPPED: already loading rows (req_id={req_id})")
             return
         if req_id != getattr(self, "discover_request_id", 0):
+            debug_log(f"_load_next_discover_batch SKIPPED: outdated req_id {req_id} vs current {getattr(self, 'discover_request_id', 0)}")
             return
         if not hasattr(self, "_discover_catalog_list") or self._discover_next_row_index >= len(self._discover_catalog_list):
+            debug_log(f"_load_next_discover_batch SKIPPED: all rows loaded ({self._discover_next_row_index}/{len(self._discover_catalog_list) if hasattr(self, '_discover_catalog_list') else 0})")
             return
             
         self._discover_is_loading_rows = True
@@ -5706,128 +6014,161 @@ class CineWindow(Adw.ApplicationWindow):
         self._discover_next_row_index = end_idx
         batch_items = self._discover_catalog_list[start_idx:end_idx]
         
+        debug_log(f"_load_next_discover_batch START (req_id={req_id}, rows {start_idx}..{end_idx} of {len(self._discover_catalog_list)})", f"Titles: {[b.get('title') for b in batch_items]}")
+        
         view_key = f"{getattr(self, '_current_discover_type', 'all')}|{getattr(self, '_current_discover_addon', None) or 'all'}"
         if hasattr(self, "_discover_views") and view_key in self._discover_views:
             self._discover_views[view_key]["next_row_index"] = end_idx
 
         def worker():
             from . import api, database
-            from concurrent.futures import ThreadPoolExecutor
-            rendered_count = 0
+            import concurrent.futures
+            debug_log(f"discover worker START (req_id={req_id}, batch {start_idx}..{end_idx})")
             try:
-                def _fetch_row(row_info):
+                def _fetch_single_row(row_info):
+                    """Fetch a single catalog row's items. Runs in parallel."""
                     if req_id != getattr(self, "discover_request_id", 0):
                         return None
                     m_type = row_info.get("media_type", "movie")
                     c_id = row_info.get("catalog_id")
                     m_url = row_info.get("manifest_url")
                     row_title = row_info.get("title", "Catalog")
-                    c_name = row_info.get("catalog_name", c_id)
-                    
-                    cache_key = f"discover:{m_url}:{c_id}:{m_type}"
-                    cached = database.get_cached_catalog(cache_key, max_age_hours=6)
-                    if cached is not None:
-                        items = cached
-                    else:
-                        try:
-                            items = api.fetch_items(
-                                media_type=m_type,
-                                catalog_id=c_id,
-                                catalog_url=m_url,
-                                page=1,
-                                limit=15
-                            )
-                            database.save_cached_catalog(cache_key, items if items else [])
-                        except Exception as e:
-                            logger.error(f"Error fetching discover row {row_title}: {e}")
-                            items = None
-                            database.save_cached_catalog(cache_key, [])
-                            
-                    if not items or len(items) == 0:
-                        return None
-                        
-                    return (row_title, items, m_type, c_id, c_name, m_url)
 
-                with ThreadPoolExecutor(max_workers=4) as pool:
-                    futures = [pool.submit(_fetch_row, item) for item in batch_items]
-                    for future in futures:
-                        if req_id != getattr(self, "discover_request_id", 0):
+                    if m_url and not api.is_addon_online(m_url):
+                        debug_log(f"discover row SKIPPED (addon offline for session): '{row_title}'")
+                        return None
+
+                    cache_key = f"discover:{m_url}:{c_id}:{m_type}"
+                    cached = database.get_cached_catalog(cache_key, max_age_hours=48)
+                    if cached is not None:
+                        debug_log(f"discover row CACHE HIT: '{row_title}'", f"{len(cached)} items")
+                        return (row_info, cached)
+                    try:
+                        debug_log(f"discover row FETCHING from API: '{row_title}' (type={m_type}, id={c_id})")
+                        items = api.fetch_items(
+                            media_type=m_type,
+                            catalog_id=c_id,
+                            catalog_url=m_url,
+                            page=1,
+                            limit=15
+                        )
+                        debug_log(f"discover row FETCHED from API: '{row_title}'", f"Got {len(items) if items else 0} items")
+                        database.save_cached_catalog(cache_key, items if items else [])
+                    except Exception as e:
+                        logger.error(f"Error fetching discover row {row_title}: {e}")
+                        items = None
+                        database.save_cached_catalog(cache_key, [])
+                    return (row_info, items)
+
+                # Fetch all rows in this batch in parallel
+                results = [None] * len(batch_items)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_items), 6)) as executor:
+                    future_to_idx = {executor.submit(_fetch_single_row, ri): idx for idx, ri in enumerate(batch_items)}
+                    try:
+                        for future in concurrent.futures.as_completed(future_to_idx, timeout=10):
+                            if req_id != getattr(self, "discover_request_id", 0):
+                                break
+                            idx = future_to_idx[future]
                             try:
-                                pool.shutdown(wait=False, cancel_futures=True)
+                                results[idx] = future.result()
                             except Exception:
                                 pass
-                            return
-                        try:
-                            result = future.result(timeout=4.0)
-                            if result and req_id == getattr(self, "discover_request_id", 0):
-                                rendered_count += 1
-                                r_title, r_items, mt, cid, cname, murl = result
-                                def _render_row(r_title=r_title, r_items=r_items, mt=mt, cid=cid, cname=cname, murl=murl, t_box=target_box):
-                                    if req_id != getattr(self, "discover_request_id", 0):
-                                        return False
-                                        
-                                    from .movie_widget import MovieWidget
-                                    
-                                    sec_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-                                    sec_header.add_css_class("discover-section-header")
-                                    
-                                    sec_title = Gtk.Label(label=r_title, halign=Gtk.Align.START)
-                                    sec_title.add_css_class("discover-section-title")
-                                    sec_header.append(sec_title)
-                                    
-                                    see_all_btn = Gtk.Button(label=_("See All"))
-                                    see_all_btn.add_css_class("discover-see-all-btn")
-                                    see_all_btn.add_css_class("flat")
-                                    see_all_btn.set_halign(Gtk.Align.END)
-                                    see_all_btn.set_hexpand(True)
-                                    
-                                    cat_obj = {
-                                        "catalog_id": cid,
-                                        "catalog_name": cname,
-                                        "manifest_url": murl,
-                                        "display_name": r_title
-                                    }
-                                    see_all_btn.connect("clicked", lambda *a, cat_dict=cat_obj, m_type_val=mt, title_val=r_title: self._open_catalog_grid(m_type_val, cat_dict, title_val))
-                                    sec_header.append(see_all_btn)
-                                    
-                                    sec_scroll = Gtk.ScrolledWindow()
-                                    sec_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-                                    sec_scroll.set_hexpand(True)
-                                    sec_scroll.add_css_class("discover-row-scroll")
-                                    
-                                    sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-                                    sec_row.add_css_class("discover-row-box")
-                                    
-                                    for it in r_items:
-                                        if not it.get("type"):
-                                             it["type"] = mt
-                                        card = MovieWidget(it, self._on_movie_clicked)
-                                        card.set_hexpand(False)
-                                        sec_row.append(card)
-                                        
-                                    sec_scroll.set_child(sec_row)
-                                    
-                                    if t_box:
-                                        t_box.append(sec_header)
-                                        t_box.append(sec_scroll)
-                                    return False
+                    except concurrent.futures.TimeoutError:
+                        pass
 
-                                GLib.idle_add(_render_row)
-                        except Exception as e:
-                            logger.debug(f"Row fetch future error: {e}")
-            finally:
-                self._discover_is_loading_rows = False
-                if req_id == getattr(self, "discover_request_id", 0) and self._discover_next_row_index < len(self._discover_catalog_list):
-                    def check_fill_viewport():
-                        if req_id == getattr(self, "discover_request_id", 0) and hasattr(self, "discover_scrolled"):
+                debug_log(f"discover worker fetched all {len(results)} rows for batch {start_idx}..{end_idx}, queueing _apply_batch_results on GLib idle")
+
+                # Render batch results on the main thread
+                def _apply_batch_results():
+                    if req_id != getattr(self, "discover_request_id", 0):
+                        self._discover_is_loading_rows = False
+                        debug_log(f"_apply_batch_results CANCELLED (req_id {req_id} != {getattr(self, 'discover_request_id', 0)})")
+                        return False
+                        
+                    debug_log(f"_apply_batch_results START on main thread for req_id={req_id}")
+                    from .movie_widget import MovieWidget
+                    
+                    for result in results:
+                        if result is None:
+                            continue
+                        row_info, items = result
+                        if not items or len(items) == 0:
+                            continue
+
+                        m_type = row_info.get("media_type", "movie")
+                        c_id = row_info.get("catalog_id")
+                        m_url = row_info.get("manifest_url")
+                        row_title = row_info.get("title", "Catalog")
+                        c_name = row_info.get("catalog_name", c_id)
+
+                        sec_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+                        sec_header.add_css_class("discover-section-header")
+                        
+                        sec_title = Gtk.Label(label=row_title, halign=Gtk.Align.START)
+                        sec_title.add_css_class("discover-section-title")
+                        sec_header.append(sec_title)
+                        
+                        see_all_btn = Gtk.Button(label=_("See All"))
+                        see_all_btn.add_css_class("discover-see-all-btn")
+                        see_all_btn.add_css_class("flat")
+                        see_all_btn.set_halign(Gtk.Align.END)
+                        see_all_btn.set_hexpand(True)
+                        
+                        cat_obj = {
+                            "catalog_id": c_id,
+                            "catalog_name": c_name,
+                            "manifest_url": m_url,
+                            "display_name": row_title
+                        }
+                        see_all_btn.connect("clicked", lambda *a, cat_dict=cat_obj, m_type_val=m_type, title_val=row_title: getattr(self, "_open_catalog_grid")(m_type_val, cat_dict, title_val))
+                        sec_header.append(see_all_btn)
+                        
+                        sec_scroll = Gtk.ScrolledWindow()
+                        sec_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+                        sec_scroll.set_hexpand(True)
+                        sec_scroll.add_css_class("discover-row-scroll")
+                        
+                        sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+                        sec_row.add_css_class("discover-row-box")
+                        
+                        for it in items:
+                            if not it.get("type"):
+                                 it["type"] = m_type
+                            card = MovieWidget(it, self._on_movie_clicked)
+                            card.set_hexpand(False)
+                            sec_row.append(card)
+                            
+                        sec_scroll.set_child(sec_row)
+                        
+                        if target_box:
+                            target_box.append(sec_header)
+                            target_box.append(sec_scroll)
+                        debug_log(f"_apply_batch_results appended row: '{row_title}' ({len(items)} cards)")
+
+                    self._discover_is_loading_rows = False
+                    debug_log(f"_apply_batch_results FINISHED for req_id={req_id}")
+
+                    # Check if viewport still has unfilled room on extra-large displays
+                    if req_id == getattr(self, "discover_request_id", 0) and self._discover_next_row_index < len(self._discover_catalog_list):
+                        if hasattr(self, "discover_scrolled"):
                             adj = self.discover_scrolled.get_vadjustment()
                             val = adj.get_value()
                             page_size = adj.get_page_size()
                             upper = adj.get_upper()
+                            debug_log(f"check_fill_viewport: val={val:.1f}, page_size={page_size:.1f}, upper={upper:.1f}")
                             if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
-                                self._load_next_discover_batch(req_id, batch_size=6)
-                        return False
-                    GLib.idle_add(check_fill_viewport)
+                                debug_log(f"check_fill_viewport TRIGGERING NEXT BATCH (upper <= page_size or near bottom)")
+                                self._load_next_discover_batch(req_id, batch_size=4)
+                    return False
+
+                GLib.idle_add(_apply_batch_results)
+            except Exception as e:
+                logger.error(f"Error in discover batch worker: {e}")
+                def _reset_flag():
+                    if req_id == getattr(self, "discover_request_id", 0):
+                        self._discover_is_loading_rows = False
+                    return False
+                GLib.idle_add(_reset_flag)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -5843,8 +6184,56 @@ class CineWindow(Adw.ApplicationWindow):
         page_size = adj.get_page_size()
         upper = adj.get_upper()
         
+        # Fetch next batch if user scrolled near the bottom (or viewport is unfilled)
         if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
-            self._load_next_discover_batch(getattr(self, "discover_request_id", 0), batch_size=6)
+            debug_log(f"_on_discover_scroll TRIGGERING NEXT BATCH: val={val:.1f}, page_size={page_size:.1f}, upper={upper:.1f}")
+            self._load_next_discover_batch(getattr(self, "discover_request_id", 0), batch_size=4)
+
+    def _prewarm_discover_views(self):
+        """Pre-fetch Movie, Series, and Anime discover catalog data in the background into SQLite cache."""
+        debug_log("_prewarm_discover_views scheduling background prewarm thread")
+        def bg_prewarm():
+            import time
+            import concurrent.futures
+            time.sleep(1.5)  # Wait for initial app startup and UI rendering to complete
+            debug_log("bg_prewarm thread woke up after 1.5s delay")
+            from . import api, database
+
+            all_uncached = []
+            for m_type in ["movie", "series", "anime"]:
+                try:
+                    cat_list = self._get_discover_catalog_list(filter_media_type=m_type)
+                    if not cat_list:
+                        continue
+                    for row_info in cat_list[:4]:
+                        mt = row_info.get("media_type", m_type)
+                        c_id = row_info.get("catalog_id")
+                        m_url = row_info.get("manifest_url")
+                        cache_key = f"discover:{m_url}:{c_id}:{mt}"
+                        if database.get_cached_catalog(cache_key, max_age_hours=48) is None:
+                            all_uncached.append((mt, c_id, m_url, cache_key))
+                except Exception as e:
+                    logger.debug(f"Prewarm error for {m_type}: {e}")
+
+            if not all_uncached:
+                debug_log("bg_prewarm: All initial catalogs already cached, nothing to prewarm")
+                return
+
+            debug_log(f"bg_prewarm: Fetching {len(all_uncached)} uncached catalog rows")
+            def _fetch_one(args):
+                mt, c_id, m_url, cache_key = args
+                try:
+                    items = api.fetch_items(media_type=mt, catalog_id=c_id, catalog_url=m_url, page=1, limit=15)
+                    if items:
+                        database.save_cached_catalog(cache_key, items)
+                except Exception:
+                    pass
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(all_uncached), 6)) as executor:
+                list(executor.map(_fetch_one, all_uncached))
+            debug_log("bg_prewarm: Completed prewarming all rows")
+
+        threading.Thread(target=bg_prewarm, daemon=True).start()
 
     def _clean_cat_name(self, cat, addon_name, media_type):
         raw_name = cat.get("catalog_name") or cat.get("catalog_id") or "Catalog"
@@ -5885,6 +6274,8 @@ class CineWindow(Adw.ApplicationWindow):
         for cat in catalogs:
             addon_name = cat.get("addon_name") or "Addon"
             m_url = cat.get("manifest_url") or ""
+            if not m_url or not api.is_addon_online(m_url):
+                continue
             key = (addon_name, m_url)
             if key not in addons_map:
                 addons_map[key] = []
@@ -5926,8 +6317,7 @@ class CineWindow(Adw.ApplicationWindow):
         return result_addons
 
     def _build_addon_submenu(self, addon_name, m_url, media_type, addon_cat_items):
-        """Build a single addon's Gio.Menu from its prepared data. Very fast (~<1ms)."""
-        import hashlib
+        """Build a single addon's Gio.Menu from its prepared data. Runs in background thread."""
         addon_menu = Gio.Menu.new()
         
         # 1. Top item: All catalogs from this addon (e.g. "All Cinemeta Movies")
@@ -5958,9 +6348,9 @@ class CineWindow(Adw.ApplicationWindow):
                         item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", target_str))
                         cat_menu.append_item(item)
                     sub_item = Gio.MenuItem.new_submenu(cat_data["name"], cat_menu)
-                    h = hashlib.md5(f"{media_type}:{m_url}:{cat_data.get('cat_id', '')}:{cat_idx}:{cat_data['name']}".encode()).hexdigest()[:12]
-                    sub_item.set_attribute_value("submenu-action", GLib.Variant("s", f"cat_{h}"))
-                    sub_item.set_attribute_value("id", GLib.Variant("s", f"cat_{h}"))
+                    # Assign unique id attribute so GtkPopoverMenu's internal GtkStack never has duplicate child name warnings
+                    cat_h = hashlib.md5(f"{media_type}:{m_url}:{cat_data.get('cat_id', '')}:{cat_idx}:{cat_data['name']}".encode()).hexdigest()[:12]
+                    sub_item.set_attribute_value("id", GLib.Variant("s", f"cat_{cat_h}"))
                     addon_menu.append_item(sub_item)
                 else:
                     item = Gio.MenuItem.new(cat_data["name"], None)
@@ -5988,9 +6378,36 @@ class CineWindow(Adw.ApplicationWindow):
             
         self.discover_active_btn.set_menu_model(menu)
 
-    def _apply_menu_model(self, media_type, prepared_data, btn):
-        """Construct and apply the full Gio.Menu model cleanly to the button."""
-        import hashlib
+    def _attach_lazy_menu_model(self, m_type, btn):
+        if not hasattr(self, "_attached_menu_types"):
+            self._attached_menu_types = set()
+        if m_type in self._attached_menu_types:
+            return
+        built_model = getattr(self, "_built_menu_models", {}).get(m_type)
+        if built_model and btn:
+            btn.set_menu_model(built_model)
+            self._attached_menu_types.add(m_type)
+
+    def _init_default_category_menus(self):
+        """Immediately assign valid initial menu models and defer background full menu construction."""
+        debug_log("_init_default_category_menus START")
+        self._build_discover_menu()
+        for m_type, btn_name in [("movie", "movies_active_btn"), ("series", "series_active_btn"), ("anime", "anime_active_btn")]:
+            btn = getattr(self, btn_name, None)
+            if btn and btn.get_menu_model() is None:
+                m_label = "Movies" if m_type == "movie" else ("Series" if m_type == "series" else "Anime")
+                menu = Gio.Menu.new()
+                top_item = Gio.MenuItem.new(f"★ All {m_label} (All Catalogs)", None)
+                action_name = "win.switch-to-movies" if m_type == "movie" else ("win.switch-to-series" if m_type == "series" else "win.switch-to-anime")
+                top_item.set_action_and_target_value(action_name, None)
+                menu.append_item(top_item)
+                btn.set_menu_model(menu)
+                btn.connect("notify::active", lambda b, pspec, mt=m_type: self._attach_lazy_menu_model(mt, b) if b.get_active() else None)
+        debug_log("_init_default_category_menus applied placeholder models, scheduling deferred full menu build")
+        self._schedule_deferred_menu_build(1000)
+
+    def _build_full_menu_model(self, media_type, prepared_data):
+        """Construct the complete Gio.Menu model in the background thread."""
         m_label = "Movies" if media_type == "movie" else ("Series" if media_type == "series" else ("Anime" if media_type == "anime" else media_type.title()))
         menu = Gio.Menu.new()
         
@@ -6007,18 +6424,18 @@ class CineWindow(Adw.ApplicationWindow):
             try:
                 addon_menu = self._build_addon_submenu(addon_name, m_url, media_type, addon_cat_items)
                 addon_sub_item = Gio.MenuItem.new_submenu(addon_name, addon_menu)
-                h = hashlib.md5(f"{media_type}:{m_url}:{addon_idx}:{addon_name}".encode()).hexdigest()[:12]
-                addon_sub_item.set_attribute_value("submenu-action", GLib.Variant("s", f"addon_{h}"))
-                addon_sub_item.set_attribute_value("id", GLib.Variant("s", f"addon_{h}"))
+                addon_h = hashlib.md5(f"{media_type}:{m_url}:{addon_name}:{addon_idx}".encode()).hexdigest()[:12]
+                addon_sub_item.set_attribute_value("id", GLib.Variant("s", f"addon_{addon_h}"))
                 menu.append_item(addon_sub_item)
             except Exception as e:
                 logger.error(f"Error appending addon menu '{addon_name}': {e}")
 
-        btn.set_menu_model(menu)
+        return menu
 
     def _ensure_all_menus_built(self):
         self._build_discover_menu()
         if getattr(self, "_menus_building", False) or getattr(self, "_menus_built", False):
+            debug_log(f"_ensure_all_menus_built SKIPPED (building={getattr(self, '_menus_building', False)}, built={getattr(self, '_menus_built', False)})")
             return
         self._menus_building = True
 
@@ -6030,24 +6447,26 @@ class CineWindow(Adw.ApplicationWindow):
             btn_map["anime"] = getattr(self, "anime_active_btn", None)
 
         media_types = list(btn_map.keys())
+        debug_log(f"_ensure_all_menus_built starting bg_prepare thread for media_types: {media_types}")
 
         def bg_prepare():
-            all_data = {}
+            debug_log("bg_prepare menus thread START")
+            built_menus = {}
             for m_type in media_types:
                 try:
-                    all_data[m_type] = self._prepare_menu_data(m_type)
+                    data = self._prepare_menu_data(m_type)
+                    built_menus[m_type] = self._build_full_menu_model(m_type, data)
+                    debug_log(f"bg_prepare built full Gio.Menu model for {m_type} ({len(data)} online addons)")
                 except Exception as e:
                     logger.error(f"Error preparing menu data for {m_type}: {e}")
-                    all_data[m_type] = []
+                    built_menus[m_type] = None
 
             def apply_all():
-                for m_type in media_types:
-                    btn = btn_map.get(m_type)
-                    data = all_data.get(m_type, [])
-                    if btn and data:
-                        self._apply_menu_model(m_type, data, btn)
+                debug_log("apply_all menus storing built models (non-blocking)")
+                self._built_menu_models = built_menus
                 self._menus_built = True
                 self._menus_building = False
+                debug_log("apply_all menus on main thread DONE (_menus_built = True)")
                 return False
 
             GLib.idle_add(apply_all)
@@ -6067,7 +6486,10 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_content_scroll(self, adj):
         if getattr(self, "is_fetching_content", False) or not getattr(self, "has_more_content", True):
             return
-        if adj.get_value() >= adj.get_upper() - adj.get_page_size() - 400:
+        val = adj.get_value()
+        page_size = adj.get_page_size()
+        upper = adj.get_upper()
+        if page_size > 0 and upper > (page_size + 100) and (val + page_size >= upper - 400):
             if getattr(self, "current_catalog", None):
                 self._fetch_content_page()
 
@@ -6094,11 +6516,14 @@ class CineWindow(Adw.ApplicationWindow):
         from . import database
         from .movie_widget import cancel_pending_image_downloads
         cancel_pending_image_downloads()
+        self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
         print(f"[CARD CLICK Step 2] Canceled pending image downloads for clean navigation.")
         database.add_history(movie_data)
         
         while child := self.details_box.get_first_child():
-            if hasattr(child, "_destroyed"):
+            if hasattr(child, "destroy_page"):
+                child.destroy_page()
+            elif hasattr(child, "_destroyed"):
                 child._destroyed = True
             if hasattr(child, "_live_check_abort_event"):
                 child._live_check_abort_event.set()
@@ -6106,6 +6531,8 @@ class CineWindow(Adw.ApplicationWindow):
             
         def on_back():
             print(f"[CARD CLICK Nav] Back button clicked. Returning to previous view.")
+            if hasattr(page, "destroy_page"):
+                page.destroy_page()
             self._go_back()
             
         self._push_current_nav_state()
@@ -6190,7 +6617,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue = []
         self.stream_queue_index = 0
 
-    def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None):
+    def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None, audio_url=None):
         if not preserve_queue:
             self._clear_stream_failover()
         if url and isinstance(url, str) and any(d in url.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
@@ -6201,9 +6628,14 @@ class CineWindow(Adw.ApplicationWindow):
         from . import player
         if url and isinstance(url, str) and not url.startswith("http://127.0.0.1") and not url.startswith("http://localhost"):
             player.stop_player()
-        is_youtube_trailer = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower())
-        if is_youtube_trailer:
-            self.show_player_loading(_("Loading trailer..."), title=title)
+
+        is_youtube_raw_url = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower()) and ("googlevideo.com" not in url.lower())
+        is_youtube_trailer = url and isinstance(url, str) and ("googlevideo.com" in url.lower())
+        is_youtube = bool(is_youtube_raw_url or is_youtube_trailer or (title and "(trailer)" in str(title).lower()))
+        if is_youtube:
+            self._current_playing_item = {"is_trailer": True, "title": title, "stream_url": url}
+            if is_youtube_raw_url:
+                self.show_player_loading(_("Loading trailer..."), title=title)
         else:
             self.hide_player_loading()
             page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
@@ -6285,14 +6717,12 @@ class CineWindow(Adw.ApplicationWindow):
             else:
                 custom_headers[k] = v
 
-        is_youtube = url and isinstance(url, str) and (
-            "youtube.com" in url.lower() or "youtu.be" in url.lower() or "googlevideo.com" in url.lower()
-        )
-
-        if is_youtube:
-            # Let MPV's ytdl_hook.lua handle everything — don't override any headers
+        if is_youtube_raw_url:
+            # Let MPV's ytdl_hook.lua handle raw youtube URLs
             self.show_player_loading(_("Loading trailer..."), title=title)
             try:
+                self.mpv["ytdl"] = True
+                self.mpv["ytdl-raw-options"] = "no-playlist="
                 self.mpv["user-agent"] = ""
                 self.mpv["http-header-fields"] = []
                 self.mpv["demuxer-lavf-o"] = ""
@@ -6327,8 +6757,9 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
 
-        self.next_ep_dismissed = False
-        self.next_ep_auto_triggered = False
+        is_playing_tr = self._is_playing_trailer() or bool(is_youtube_trailer or is_youtube_raw_url or (title and "(trailer)" in str(title).lower()))
+        self.next_ep_dismissed = is_playing_tr
+        self.next_ep_auto_triggered = is_playing_tr
         if hasattr(self, "next_episode_revealer"):
             self.next_episode_revealer.set_reveal_child(False)
 
@@ -6350,8 +6781,16 @@ class CineWindow(Adw.ApplicationWindow):
         else:
             self.mpv.loadfile(url, "replace")
 
+        if audio_url:
+            try:
+                self.mpv.command("audio-add", audio_url, "auto")
+            except Exception as e:
+                logger.error(f"Error adding audio track to trailer: {e}")
+
         self.mpv.pause = False
         self.is_inactive = False
+        if hasattr(self, "gl_area"):
+            self.gl_area.queue_render()
 
     def fetch_and_add_subtitles(self, imdb_id, media_type, season, episode, stream_subtitles=None, stream_title=None):
         """Fetch subtitles in a background thread and inject them into MPV when ready."""
@@ -6538,6 +6977,20 @@ class CineWindow(Adw.ApplicationWindow):
 
         import time
         self._last_marked_stream_idx = None
+
+        # Check if the current queue stream is a trailer
+        is_stream_trailer = bool(
+            current_stream.get("is_trailer")
+            or current_stream.get("ytId")
+            or (isinstance(current_stream, dict) and current_stream.get("behaviorHints", {}).get("bingeGroup") == "trailer")
+            or any("trailer" in str(a).lower() or "streailer" in str(a).lower() for a in current_stream.get("addon_names", []))
+            or "(trailer)" in str(title).lower()
+            or "trailer" in str(current_stream.get("title", "")).lower()
+            or "trailer" in str(current_stream.get("name", "")).lower()
+            or "trailer" in str(current_stream.get("stream_title", "")).lower()
+            or ("youtube.com" in str(current_stream.get("url", "")).lower() or "youtu.be" in str(current_stream.get("url", "")).lower())
+        )
+
         self._current_playing_item = {
             "id": target_id,
             "imdb_id": imdb_id or details.get("imdb_id") or stub.get("imdb_id") or target_id,
@@ -6553,17 +7006,19 @@ class CineWindow(Adw.ApplicationWindow):
             "progress": saved_prog,
             "position": saved_pos,
             "duration": saved_dur,
+            "is_trailer": is_stream_trailer,
         }
 
-        if self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id") or self._current_playing_item.get("title"):
-            database.save_continue_watching(self._current_playing_item)
-            if hasattr(self, "_update_continue_watching_section"):
-                curr_stack = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
-                if curr_stack != "player":
-                    self._update_continue_watching_section()
+        if not is_stream_trailer:
+            if self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id") or self._current_playing_item.get("title"):
+                database.save_continue_watching(self._current_playing_item)
+                if hasattr(self, "_update_continue_watching_section"):
+                    curr_stack = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
+                    if curr_stack != "player":
+                        self._update_continue_watching_section()
 
-        logger.info(f"[SUBS] play_stream_with_failover: imdb_id={imdb_id}, media_type={media_type}, S{season}E{episode}, title={title}")
-        self.fetch_and_add_subtitles(imdb_id, media_type, season, episode, stream_subtitles=all_subs, stream_title=title)
+            logger.info(f"[SUBS] play_stream_with_failover: imdb_id={imdb_id}, media_type={media_type}, S{season}E{episode}, title={title}")
+            self.fetch_and_add_subtitles(imdb_id, media_type, season, episode, stream_subtitles=all_subs, stream_title=title)
 
         self._play_current_stream_from_queue(self.stream_request_id)
 
@@ -6616,6 +7071,22 @@ class CineWindow(Adw.ApplicationWindow):
             self.hide_player_loading()
             self._show_toast(_("Opening in web browser..."))
             open_uri(ext_url, self)
+            return
+
+        is_yt_stream = bool(
+            torrent.get("ytId")
+            or (magnet and isinstance(magnet, str) and ("youtube.com" in magnet.lower() or "youtu.be" in magnet.lower()) and "googlevideo.com" not in magnet.lower())
+        )
+
+        if is_yt_stream:
+            yt_target = magnet or torrent.get("ytId")
+            from . import player
+            clean_id = player.extract_youtube_id(yt_target) or yt_target
+            if clean_id and not str(clean_id).startswith("http"):
+                clean_target = f"https://www.youtube.com/watch?v={clean_id}"
+            else:
+                clean_target = yt_target
+            self._play_stream(clean_target, display_title, headers=headers, preserve_queue=True)
             return
 
         if magnet and (magnet.startswith("http://") or magnet.startswith("https://")):
@@ -6728,7 +7199,21 @@ class CineWindow(Adw.ApplicationWindow):
                 videos = cached.get("videos", [])
         return videos
 
+    def _is_playing_trailer(self):
+        playing_item = getattr(self, "_current_playing_item", {}) or {}
+        if playing_item.get("is_trailer"):
+            return True
+        title = str(playing_item.get("title") or playing_item.get("stream_title") or getattr(self.mpv, "media_title", "") or "").lower()
+        if "(trailer)" in title or "trailer" in title:
+            return True
+        stream_url = str(playing_item.get("stream_url") or getattr(self, "loaded_path", "") or getattr(self.mpv, "path", "") or "").lower()
+        if "googlevideo.com" in stream_url or "youtube.com" in stream_url or "youtu.be" in stream_url:
+            return True
+        return False
+
     def _has_next_episode(self):
+        if self._is_playing_trailer():
+            return False
         page = self.details_box.get_first_child()
         if not page:
             return False
@@ -6761,6 +7246,8 @@ class CineWindow(Adw.ApplicationWindow):
             self.next_episode_revealer.set_reveal_child(False)
 
     def _try_play_next_episode(self):
+        if self._is_playing_trailer():
+            return False
         self.next_ep_auto_triggered = False
         page = self.details_box.get_first_child()
         if not page:
@@ -6899,7 +7386,10 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _on_addons_changed(self):
         from .movie_widget import cancel_pending_image_downloads
+        from . import api
         cancel_pending_image_downloads()
+        # Reset session-blocked addons so they get a fresh attempt after the list changes
+        api.reset_addon_session_status()
 
         # 1. Invalidate all cached discover views & catalog lists
         if hasattr(self, "_discover_views"):
@@ -6914,6 +7404,7 @@ class CineWindow(Adw.ApplicationWindow):
             self.discover_active_btn.set_menu_model(None)
         self._ensure_all_menus_built()
         self._update_search_catalog_dropdown()
+        self._prewarm_discover_views()
 
         # 3. Update active view state (Discover / Movies / Series / Anime / Content grid)
         from . import api, database
@@ -6931,7 +7422,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.library_stack.set_visible_child_name("discover")
                 if hasattr(self, "category_btn_stack"):
                     self.category_btn_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type="all", force_refresh=True)
+                self._refresh_discover_page(filter_media_type="all")
             else:
                 self._refresh_content()
         elif hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() == "discover":
@@ -6944,17 +7435,19 @@ class CineWindow(Adw.ApplicationWindow):
                     cur_type = "all"
                     if hasattr(self, "category_btn_stack"):
                         self.category_btn_stack.set_visible_child_name("discover")
-            self._refresh_discover_page(filter_media_type=cur_type, filter_addon_url=cur_addon, force_refresh=True)
+            self._refresh_discover_page(filter_media_type=cur_type, filter_addon_url=cur_addon)
         else:
-            self._refresh_discover_page(filter_media_type="all", force_refresh=True)
+            self._refresh_discover_page(filter_media_type="all")
 
     def _populate_addons(self):
+        debug_log("_populate_addons START")
         while self.addons_listbox.get_first_child() is not None:
             self.addons_listbox.remove(self.addons_listbox.get_first_child())
             
         from . import database
         import urllib.request
         addons = database.get_addons()
+        debug_log(f"_populate_addons DB returned {len(addons)} addons")
         for addon in addons:
             name_str = GLib.markup_escape_text(addon.get("name", "Unknown") or "Unknown")
             desc_str = GLib.markup_escape_text(addon.get("description", "") or "")
@@ -6965,7 +7458,7 @@ class CineWindow(Adw.ApplicationWindow):
             
             manifest_url = addon.get("manifest_url", "")
             
-            def check_online(url, lbl):
+            def check_online(url, lbl, aname=addon.get("name", "Unknown")):
                 from . import api
                 import urllib.request
                 if url.startswith("builtin:"):
@@ -6978,6 +7471,10 @@ class CineWindow(Adw.ApplicationWindow):
                     except Exception:
                         is_on = False
                 api.set_addon_online_status(url, is_on)
+                if is_on:
+                    # Clear session block so this addon is immediately re-queried
+                    api.reset_addon_session_status(url)
+                debug_log(f"check_online result for '{aname}' ({url})", "🟢 Online" if is_on else "🔴 Offline")
                 GLib.idle_add(lbl.set_label, "🟢" if is_on else "🔴")
                 
             if manifest_url:

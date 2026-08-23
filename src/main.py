@@ -42,7 +42,7 @@ from .window import CineWindow
 from .preferences import Preferences, settings
 from .mpris import MPRIS
 from .save_session import is_same_playlist
-from .utils import logger
+from .utils import logger, debug_log
 
 os.environ["GSK_RENDERER"] = "gl"
 
@@ -55,6 +55,7 @@ class CineApplication(Adw.Application):
     """The main application singleton class."""
 
     def __init__(self):
+        debug_log("CineApplication.__init__ START")
         super().__init__(
             application_id="io.github.fastrizwaan.PopcornBox",
             flags=Gio.ApplicationFlags.HANDLES_OPEN,
@@ -71,9 +72,12 @@ class CineApplication(Adw.Application):
         )
 
         self.connect("shutdown", self._on_shutdown)
+        debug_log("CineApplication.__init__ DONE")
 
     def do_startup(self):
+        debug_log("CineApplication.do_startup START")
         self.mpris = MPRIS(self)
+        debug_log("CineApplication.do_startup MPRIS ready")
 
         Adw.Application.do_startup(self)
         Adw.StyleManager.get_default().props.color_scheme = Adw.ColorScheme.FORCE_DARK
@@ -84,10 +88,14 @@ class CineApplication(Adw.Application):
         self._create_action(
             "preferences", self.on_preferences_action, ["<primary>comma"]
         )
+        debug_log("CineApplication.do_startup DONE")
 
     def do_activate(self):
+        debug_log("CineApplication.do_activate START - Instantiating CineWindow")
         win = CineWindow(application=self, is_activate=True)
+        debug_log("CineApplication.do_activate - CineWindow created, calling win.present()")
         win.present()
+        debug_log("CineApplication.do_activate DONE - win.present() finished")
 
     def do_open(self, files, n_files, hint):
         win: CineWindow = cast(CineWindow, self.props.active_window)

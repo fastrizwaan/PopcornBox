@@ -288,21 +288,78 @@ def is_adult_item(item):
 
     return False
 
-_ADDON_ONLINE_STATUS = {}
+# Session-level addon circuit breaker.
+# Tracks consecutive timeout/error failures per manifest URL for this app session.
+# An addon is skipped once it has failed _ADDON_FAIL_THRESHOLD times in a row.
+# Status is NOT persisted to disk and resets on app restart.
+_ADDON_SESSION_FAILURES = {}   # manifest_url -> consecutive_fail_count
+_ADDON_SESSION_BLOCKED = set() # manifest_urls blocked for this session
 _ADDON_ONLINE_LOCK = threading.Lock()
+# Also keep the legacy dict for the addon manager UI compatibility
+_ADDON_ONLINE_STATUS = {}
+
+_ADDON_FAIL_THRESHOLD = 2  # Block after this many consecutive timeout/connection errors
 
 def set_addon_online_status(manifest_url, is_online):
-    if not manifest_url: return
+    """Called by addon manager UI to override session status."""
+    if not manifest_url:
+        return
     with _ADDON_ONLINE_LOCK:
         _ADDON_ONLINE_STATUS[manifest_url] = is_online
+        if is_online:
+            # UI explicitly says online — clear session block
+            _ADDON_SESSION_BLOCKED.discard(manifest_url)
+            _ADDON_SESSION_FAILURES.pop(manifest_url, None)
+        else:
+            _ADDON_SESSION_BLOCKED.add(manifest_url)
+    invalidate_catalogs_cache()
+
+def _record_addon_failure(manifest_url):
+    """Record a network failure for an addon. Blocks it after threshold failures."""
+    if not manifest_url or manifest_url.startswith("builtin:"):
+        return
+    with _ADDON_ONLINE_LOCK:
+        count = _ADDON_SESSION_FAILURES.get(manifest_url, 0) + 1
+        _ADDON_SESSION_FAILURES[manifest_url] = count
+        if count >= _ADDON_FAIL_THRESHOLD:
+            _ADDON_SESSION_BLOCKED.add(manifest_url)
+            logging.info(f"[Addon] Blocked for this session after {count} failures: {manifest_url}")
+
+def _record_addon_success(manifest_url):
+    """Clear failure count on a successful addon response."""
+    if not manifest_url or manifest_url.startswith("builtin:"):
+        return
+    with _ADDON_ONLINE_LOCK:
+        _ADDON_SESSION_FAILURES.pop(manifest_url, None)
+        _ADDON_SESSION_BLOCKED.discard(manifest_url)
+
+def reset_addon_session_status(manifest_url=None):
+    """Reset session block for a specific addon (or all addons) — called on manual reload."""
+    with _ADDON_ONLINE_LOCK:
+        if manifest_url:
+            _ADDON_SESSION_BLOCKED.discard(manifest_url)
+            _ADDON_SESSION_FAILURES.pop(manifest_url, None)
+        else:
+            _ADDON_SESSION_BLOCKED.clear()
+            _ADDON_SESSION_FAILURES.clear()
+    invalidate_catalogs_cache()
 
 def is_addon_online(manifest_url):
     if not manifest_url or manifest_url.startswith("builtin:"):
         return True
     with _ADDON_ONLINE_LOCK:
-        if manifest_url in _ADDON_ONLINE_STATUS:
-            return _ADDON_ONLINE_STATUS[manifest_url]
+        # Check explicit UI override first
+        if manifest_url in _ADDON_ONLINE_STATUS and not _ADDON_ONLINE_STATUS[manifest_url]:
+            return False
+        # Check session circuit breaker
+        if manifest_url in _ADDON_SESSION_BLOCKED:
+            return False
     return True
+
+def get_session_blocked_addons():
+    """Return set of manifest URLs blocked for this session (for UI display)."""
+    with _ADDON_ONLINE_LOCK:
+        return set(_ADDON_SESSION_BLOCKED)
 
 def addon_has_resource(addon, resource_name, media_type=None, item_id=None):
     """
@@ -468,7 +525,18 @@ def is_catalog_browsable(cat):
                     return False
     return True
 
+_AVAILABLE_CATALOGS_CACHE = {}
+_AVAILABLE_CATALOGS_LOCK = threading.Lock()
+
+def invalidate_catalogs_cache():
+    with _AVAILABLE_CATALOGS_LOCK:
+        _AVAILABLE_CATALOGS_CACHE.clear()
+
 def get_available_catalogs(c_type="movie"):
+    with _AVAILABLE_CATALOGS_LOCK:
+        if c_type in _AVAILABLE_CATALOGS_CACHE:
+            return list(_AVAILABLE_CATALOGS_CACHE[c_type])
+
     from . import database
     catalogs = []
     addons = [a for a in database.get_addons() if has_catalog_resource(a, media_type=c_type)]
@@ -530,7 +598,12 @@ def get_available_catalogs(c_type="movie"):
             if "anime" in n: return 3
             return 4
         catalogs.sort(key=get_anime_priority)
+
+    with _AVAILABLE_CATALOGS_LOCK:
+        _AVAILABLE_CATALOGS_CACHE[c_type] = catalogs
+
     return catalogs
+
 
 def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
     if not has_catalog_resource(addon, media_type=c_type):
@@ -1251,6 +1324,115 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         "videos": []
     }, imdb_id, media_type, title, poster=poster)
 
+def fetch_trailer_link_fast(imdb_id, media_type="movie", abort_event=None):
+    """
+    Quickly query trailer-capable addons (Streailer, TMDB) for a trailer ytId.
+    Returns a ytId string on success, or None if nothing found within ~3 seconds.
+    Designed to be called in a background thread right after page open.
+    """
+    if not imdb_id:
+        return None
+
+    primary_id = imdb_id[0] if isinstance(imdb_id, list) else imdb_id
+
+    def _aborted():
+        return abort_event is not None and abort_event.is_set()
+
+    # 1. Check cached metadata first — trailer may already be known
+    try:
+        cached = database.get_cached_metadata(primary_id)
+        if cached and cached.get("trailer"):
+            return cached["trailer"]
+    except Exception:
+        pass
+
+    if _aborted():
+        return None
+
+    c_type = "series" if media_type in ["series", "anime"] else "movie"
+
+    # 2. Query TMDB addon (fast, usually <1s cached)
+    try:
+        tmdb_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{urllib.parse.quote(str(primary_id), safe=':')}.json"
+        tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168, timeout=2.5)
+        if tmdb_data and "meta" in tmdb_data:
+            tm_meta = tmdb_data["meta"]
+            tr_id = tm_meta.get("trailer")
+            if not tr_id:
+                for ts in tm_meta.get("trailerStreams", []):
+                    if isinstance(ts, dict) and ts.get("ytId"):
+                        tr_id = ts.get("ytId")
+                        break
+            if not tr_id:
+                for t in tm_meta.get("trailers", []):
+                    if isinstance(t, dict):
+                        tr_id = t.get("source") or t.get("ytId")
+                    elif isinstance(t, str):
+                        tr_id = t
+                    if tr_id:
+                        break
+            if tr_id:
+                return tr_id
+    except Exception:
+        pass
+
+    if _aborted():
+        return None
+
+    # 3. Query Streailer and other trailer-capable stream addons
+    try:
+        all_addons = database.get_addons()
+        trailer_addons = [
+            a for a in all_addons
+            if a.get("enabled", True)
+            and not a.get("manifest_url", "").startswith("builtin:")
+            and any(kw in a.get("manifest_url", "").lower() or kw in a.get("name", "").lower()
+                    for kw in ["streailer", "trailer"])
+        ]
+
+        def _fetch_addon_streams(addon):
+            if _aborted():
+                return None
+            try:
+                m_url = addon.get("manifest_url", "")
+                base_url = m_url.rsplit("manifest.json", 1)[0]
+                if not base_url.endswith("/"):
+                    base_url += "/"
+                stream_url = f"{base_url}stream/{c_type}/{urllib.parse.quote(str(primary_id), safe=':')}.json"
+                data = _get_cached_request(stream_url, max_age_hours=2, timeout=3.0)
+                if data and isinstance(data.get("streams"), list):
+                    for s in data["streams"]:
+                        if isinstance(s, dict):
+                            yt = s.get("ytId")
+                            if yt:
+                                return yt
+                            bh = s.get("behaviorHints", {})
+                            if isinstance(bh, dict) and bh.get("bingeGroup") == "trailer":
+                                url = s.get("url", "")
+                                if "youtube.com" in url or "youtu.be" in url:
+                                    return url
+            except Exception:
+                pass
+            return None
+
+        if trailer_addons:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(trailer_addons), 4)) as executor:
+                futures = {executor.submit(_fetch_addon_streams, a): a for a in trailer_addons}
+                try:
+                    for future in concurrent.futures.as_completed(futures, timeout=3.5):
+                        if _aborted():
+                            break
+                        result = future.result()
+                        if result:
+                            return result
+                except concurrent.futures.TimeoutError:
+                    pass
+    except Exception:
+        pass
+
+    return None
+
+
 def find_episode_file_index(files, season, episode, strict=False):
     import re
     patterns = [
@@ -1328,10 +1510,14 @@ def process_raw_streams(all_streams):
     valid_streams = []
     seen_keys = {}  # {dedup_key: index in valid_streams} for O(1) duplicate lookup
     for s in all_streams:
+        yt_id = str(s.get("ytId") or "").strip()
         raw_stream_url = str(s.get("url") or "")
         external_url = str(s.get("externalUrl") or "")
         info_hash = str(s.get("infoHash") or "").lower()
         
+        if yt_id and not raw_stream_url and not external_url:
+            raw_stream_url = f"https://www.youtube.com/watch?v={yt_id}"
+
         is_external = bool(external_url and not raw_stream_url)
         stream_url = raw_stream_url or external_url
         
@@ -1418,6 +1604,14 @@ def process_raw_streams(all_streams):
             filename = title_str.split('\n')[0] if '\n' in title_str else ""
         if not filename:
             filename = name_and_title.replace('/', '_')
+
+        is_trailer = bool(
+            yt_id
+            or s.get("is_trailer")
+            or (isinstance(behavior_hints, dict) and behavior_hints.get("bingeGroup") == "trailer")
+            or any("trailer" in str(a).lower() or "streailer" in str(a).lower() for a in [s.get("addon_name", ""), s.get("name", ""), s.get("title", "")])
+            or "youtube.com" in stream_url.lower() or "youtu.be" in stream_url.lower()
+        )
             
         valid_streams.append({
             "hash": raw_id,
@@ -1425,6 +1619,8 @@ def process_raw_streams(all_streams):
             "externalUrl": external_url,
             "is_external": is_external,
             "is_http": is_http,
+            "is_trailer": is_trailer,
+            "ytId": yt_id or s.get("ytId", ""),
             "quality": quality,
             "q_val": q_val,
             "size": size,
@@ -1556,20 +1752,33 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
             with urllib.request.urlopen(req, timeout=12, context=_SSL_CONTEXT) as response:
                 data = json.loads(response.read().decode('utf-8'))
+            _record_addon_success(manifest_url)
             if isinstance(data, dict):
                 return addon.get("name", "Unknown"), data.get("streams", [])
             elif isinstance(data, list):
                 return addon.get("name", "Unknown"), data
             return addon.get("name", "Unknown"), []
         except urllib.error.HTTPError as e:
-            print(f"HTTP Error {e.code} fetching from addon {addon.get('name')}")
+            code = e.code
+            logging.debug(f"HTTP Error {code} fetching from addon {addon.get('name')}")
+            if code >= 500:
+                _record_addon_failure(manifest_url)
+            else:
+                _record_addon_success(manifest_url)
             try:
                 e.close()
             except Exception:
                 pass
             return addon.get("name", "Unknown"), []
+        except urllib.error.URLError as e:
+            print(f"Error fetching from addon {addon.get('name')}: {e.reason}")
+            _record_addon_failure(manifest_url)
+            return addon.get("name", "Unknown"), []
         except Exception as e:
+            err_str = str(e).lower()
             print(f"Error fetching from addon {addon.get('name')}: {e}")
+            if any(kw in err_str for kw in ["timed out", "timeout", "connection refused", "connection reset", "no route", "name or service"]):
+                _record_addon_failure(manifest_url)
             return addon.get("name", "Unknown"), []
             
     all_streams = []
@@ -1685,8 +1894,12 @@ def ping_and_filter_streams(streams):
             filtered.append(s)
     return filtered
 
-def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None):
+def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None):
     if not imdb_id:
+        if callback: callback([], is_cached=False, is_complete=True)
+        return []
+
+    if abort_event and abort_event.is_set():
         if callback: callback([], is_cached=False, is_complete=True)
         return []
 
@@ -1721,6 +1934,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         return cached or []
 
     def fetch_from_addon(addon_orig, cur_id):
+        if abort_event and abort_event.is_set():
+            return addon_orig.get("name", "Unknown"), []
         addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
         resources = addon.get("resources")
         manifest_url = addon.get("manifest_url", "")
@@ -1803,17 +2018,34 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 return addon.get("name", "Unknown"), data
             return addon.get("name", "Unknown"), []
         except urllib.error.HTTPError as e:
-            print(f"HTTP Error {e.code} fetching from addon {addon.get('name')}")
+            code = e.code
+            logging.debug(f"HTTP Error {code} fetching from addon {addon.get('name')}: {url}")
+            # 4xx means the addon is up but doesn't have this content — don't block it
+            # 5xx / connection issues means the server is down
+            if code >= 500:
+                _record_addon_failure(manifest_url)
+            else:
+                _record_addon_success(manifest_url)  # 404 etc means addon is alive
             try:
                 e.close()
             except Exception:
                 pass
             return addon.get("name", "Unknown"), []
         except urllib.error.URLError as e:
-            print(f"Error fetching from addon {addon.get('name')}: {e.reason}")
+            reason = str(e.reason)
+            print(f"Error fetching from addon {addon.get('name')}: {reason}")
+            _record_addon_failure(manifest_url)
+            return addon.get("name", "Unknown"), []
+        except TimeoutError as e:
+            print(f"Timeout fetching from addon {addon.get('name')}")
+            _record_addon_failure(manifest_url)
             return addon.get("name", "Unknown"), []
         except Exception as e:
+            err_str = str(e).lower()
             print(f"Error fetching from addon {addon.get('name')}: {e}")
+            # Only penalise on connection/timeout errors, not data parse issues
+            if any(kw in err_str for kw in ["timed out", "timeout", "connection refused", "connection reset", "no route", "name or service"]):
+                _record_addon_failure(manifest_url)
             return addon.get("name", "Unknown"), []
 
     all_raw_streams = []
@@ -1823,10 +2055,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             raw = {
                 "infoHash": c.get("hash"),
                 "url": c.get("url"),
+                "ytId": c.get("ytId"),
+                "is_trailer": c.get("is_trailer"),
                 "name": c.get("title") or "",
                 "title": c.get("stream_title") or "",
                 "fileIdx": c.get("file_index"),
-                "behaviorHints": {"filename": c.get("filename")},
+                "behaviorHints": c.get("behaviorHints") or ({"filename": c.get("filename")} if c.get("filename") else {}),
                 "addon_name": c.get("addon_names")[0] if c.get("addon_names") else "Cache"
             }
             all_raw_streams.append(raw)
@@ -1858,7 +2092,19 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             futures.add(resolve_future)
             
             while futures:
+                if abort_event and abort_event.is_set():
+                    try:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        pass
+                    return []
                 done, futures = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED, timeout=12)
+                if abort_event and abort_event.is_set():
+                    try:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        pass
+                    return []
                 if not done:
                     print("Timeout fetching streams")
                     break
@@ -1880,8 +2126,13 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                             print(f"Error resolving IDs: {e}")
                     else:
                         try:
+                            addon_orig_info = future_to_addon.get(future, (None, None))
+                            addon_obj = addon_orig_info[0] if addon_orig_info else None
                             addon_name, streams = future.result()
                             if streams:
+                                # Successful response — clear any previous failure count
+                                if addon_obj:
+                                    _record_addon_success(addon_obj.get("manifest_url", ""))
                                 for s in streams:
                                     s["addon_name"] = addon_name
                                     all_raw_streams.append(s)

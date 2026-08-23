@@ -37,6 +37,19 @@ from gi.repository import (
 logger = logging.getLogger("cine")
 logging.basicConfig(format="%(levelname)s: [%(filename)s:%(lineno)d] %(message)s")
 
+import time
+import threading
+
+_APP_START_TIME = time.perf_counter()
+
+def debug_log(step_name, detail=""):
+    elapsed = time.perf_counter() - _APP_START_TIME
+    thread_name = threading.current_thread().name
+    msg = f"[DEBUG-STARTUP +{elapsed:6.3f}s | {thread_name}] {step_name}"
+    if detail:
+        msg += f" -> {detail}"
+    print(msg, flush=True)
+
 gtk = ctypes.CDLL("libgtk-4.so.1")
 display = Gdk.Display.get_default()
 

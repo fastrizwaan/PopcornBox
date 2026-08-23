@@ -517,7 +517,7 @@ def _normalize_stream_for_storage(stream):
     if not stream or not isinstance(stream, dict):
         return None
     res = {}
-    for k in ["url", "magnet", "hash", "infoHash", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "stream_title", "title", "filename", "is_http", "addon_names", "behaviorHints", "subtitles"]:
+    for k in ["url", "magnet", "hash", "infoHash", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "stream_title", "title", "filename", "is_http", "is_external", "ytId", "externalUrl", "addon_names", "behaviorHints", "subtitles"]:
         if k in stream and stream[k] is not None:
             res[k] = stream[k]
     return res
@@ -875,9 +875,23 @@ def delete_cached_subtitles(cache_key):
     except Exception as e:
         print(f"Error deleting cached subtitles: {e}")
 
-def get_cached_catalog(cache_key, max_age_hours=6):
+_MEM_CATALOG_CACHE = {}
+_MEM_CATALOG_LOCK = threading.Lock()
+
+def get_cached_catalog(cache_key, max_age_hours=24):
     if not cache_key:
         return None
+    now = time.time()
+    # 1. Fast in-memory check
+    with _MEM_CATALOG_LOCK:
+        if cache_key in _MEM_CATALOG_CACHE:
+            data, ts = _MEM_CATALOG_CACHE[cache_key]
+            if (now - ts) / 3600 < max_age_hours:
+                return data
+            else:
+                del _MEM_CATALOG_CACHE[cache_key]
+
+    # 2. SQLite cache check
     try:
         with _cache_db_lock:
             conn = _get_cache_db()
@@ -886,8 +900,13 @@ def get_cached_catalog(cache_key, max_age_hours=6):
             row = cursor.fetchone()
             if row and row[0]:
                 updated_at = row[1]
-                if (time.time() - updated_at) / 3600 < max_age_hours:
-                    return json.loads(row[0])
+                if (now - updated_at) / 3600 < max_age_hours:
+                    data = json.loads(row[0])
+                    with _MEM_CATALOG_LOCK:
+                        if len(_MEM_CATALOG_CACHE) > 500:
+                            _MEM_CATALOG_CACHE.clear()
+                        _MEM_CATALOG_CACHE[cache_key] = (data, updated_at)
+                    return data
     except Exception as e:
         print(f"Error reading catalog cache: {e}")
     return None
@@ -895,16 +914,23 @@ def get_cached_catalog(cache_key, max_age_hours=6):
 def save_cached_catalog(cache_key, items):
     if not cache_key or items is None:
         return
+    now = time.time()
+    with _MEM_CATALOG_LOCK:
+        if len(_MEM_CATALOG_CACHE) > 500:
+            _MEM_CATALOG_CACHE.clear()
+        _MEM_CATALOG_CACHE[cache_key] = (items, now)
+
     try:
         with _cache_db_lock:
             conn = _get_cache_db()
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT OR REPLACE INTO catalog_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
-                (str(cache_key), json.dumps(items), time.time())
+                (str(cache_key), json.dumps(items), now)
             )
             conn.commit()
     except Exception as e:
         print(f"Error saving catalog cache: {e}")
+
 
 

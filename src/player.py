@@ -498,24 +498,157 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
     threading.Thread(target=launch, daemon=True).start()
     return None
 
+def extract_youtube_id(url_or_id):
+    """Extract standard 11-character YouTube video ID from various URL patterns or raw ID."""
+    if not url_or_id:
+        return ""
+    s = str(url_or_id).strip()
+    import re
+    if re.match(r'^[a-zA-Z0-9_-]{11}$', s):
+        return s
+    patterns = [
+        r'(?:v=|v\/|vi=|vi\/|youtu\.be\/|embed\/|shorts\/|e\/|watch\?.*v=)([a-zA-Z0-9_-]{11})',
+        r'^([a-zA-Z0-9_-]{11})$'
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, s)
+        if m:
+            return m.group(1)
+    if "v=" in s:
+        return s.split("v=")[-1].split("&")[0]
+    elif "youtu.be/" in s:
+        return s.split("youtu.be/")[-1].split("?")[0]
+    elif "embed/" in s:
+        return s.split("embed/")[-1].split("?")[0]
+    elif "/" in s and not s.startswith("http"):
+        return s.split("/")[-1]
+    return s
+
+
+def resolve_youtube_url(clean_id_or_url, watch_url=None):
+    """
+    Multi-tier resolution for YouTube streams:
+    1. SQLite trailer_stream_cache (up to 4 hours TTL)
+    2. Local yt-dlp binary with robust extractor-args
+    Returns (video_url, audio_url, user_agent) or (None, None, "").
+    """
+    clean_id = extract_youtube_id(clean_id_or_url)
+    if not clean_id:
+        clean_id = str(clean_id_or_url or "").strip()
+
+    if not watch_url:
+        if clean_id.startswith("http://") or clean_id.startswith("https://"):
+            watch_url = clean_id
+        elif clean_id:
+            watch_url = f"https://www.youtube.com/watch?v={clean_id}"
+        else:
+            return (None, None, "")
+
+    from . import database
+    # 1. Check SQLite trailer stream cache
+    if clean_id and not clean_id.startswith("http"):
+        cached = database.get_cached_trailer_stream(clean_id, max_age_hours=4)
+        if cached:
+            cached_url, cached_ua = cached
+            if cached_url:
+                return (cached_url, None, cached_ua or "")
+
+    # 2. Try yt-dlp binary if available
+    yt_dlp_bin = shutil.which("yt-dlp")
+    if not yt_dlp_bin:
+        for p in ["/app/bin/yt-dlp", "/usr/bin/yt-dlp", "/usr/local/bin/yt-dlp", os.path.expanduser("~/.local/bin/yt-dlp")]:
+            if os.path.exists(p):
+                yt_dlp_bin = p
+                break
+    if not yt_dlp_bin:
+        yt_dlp_bin = shutil.which("youtube-dl")
+
+    if yt_dlp_bin:
+        try:
+            cmd = [
+                yt_dlp_bin,
+                "-j",
+                "--no-warnings",
+                "--no-playlist",
+                "--no-check-certificates",
+                "--no-cache-dir",
+                "--socket-timeout", "6",
+                "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+                "--extractor-args", "youtube:player_client=android,web",
+                watch_url
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+            if res.returncode == 0 and res.stdout.strip():
+                import json
+                try:
+                    info = json.loads(res.stdout.strip().splitlines()[0])
+                    ua = info.get("http_headers", {}).get("User-Agent", "")
+                    req_formats = info.get("requested_formats") or []
+                    if req_formats:
+                        v_url = req_formats[0].get("url", "")
+                        a_url = req_formats[1].get("url", "") if len(req_formats) > 1 else None
+                        if v_url:
+                            return (v_url, a_url, ua)
+                    direct_url = info.get("url", "")
+                    if direct_url:
+                        if clean_id and not clean_id.startswith("http"):
+                            database.save_cached_trailer_stream(clean_id, direct_url, ua)
+                        return (direct_url, None, ua)
+                except Exception as e:
+                    print(f"[Trailer] yt-dlp JSON parse error: {e}")
+        except Exception as e:
+            print(f"[Trailer] yt-dlp execution error: {e}")
+
+    return (None, None, "")
+
+
 def play_trailer(youtube_id, progress_callback=None):
-    """Pass YouTube watch URL directly to MPV — ytdl_hook handles everything."""
-    clean_id = str(youtube_id or "").strip()
-    if "v=" in clean_id:
-        clean_id = clean_id.split("v=")[-1].split("&")[0]
-    elif "youtu.be/" in clean_id:
-        clean_id = clean_id.split("youtu.be/")[-1].split("?")[0]
+    """Resolve and play trailer directly in the inbuilt player."""
+    clean_id = extract_youtube_id(youtube_id)
+    if not clean_id:
+        clean_id = str(youtube_id or "").strip()
 
     if clean_id.startswith("http://") or clean_id.startswith("https://"):
         watch_url = clean_id
-    else:
+    elif clean_id:
         watch_url = f"https://www.youtube.com/watch?v={clean_id}"
+    else:
+        if progress_callback:
+            from gi.repository import GLib
+            GLib.idle_add(lambda: progress_callback({"status": "Trailer unavailable", "closed": True}))
+        return None
 
-    if progress_callback:
-        import gi
+    def launch():
         from gi.repository import GLib
-        GLib.idle_add(lambda: progress_callback({
-            "status": "Playing Trailer!", "url": watch_url, "is_trailer": True
-        }))
+
+        if progress_callback:
+            GLib.idle_add(lambda: progress_callback({"status": "Resolving trailer..."}))
+
+        video_url, audio_url, ua = resolve_youtube_url(clean_id, watch_url)
+        if video_url:
+            if progress_callback:
+                GLib.idle_add(lambda: progress_callback({
+                    "status": "Playing Trailer!",
+                    "url": video_url,
+                    "audio_url": audio_url,
+                    "user_agent": ua,
+                    "is_trailer": True,
+                    "is_direct": True
+                }))
+            return
+
+        # Fallback to watch URL directly
+        if progress_callback:
+            GLib.idle_add(lambda: progress_callback({
+                "status": "Loading trailer in player...",
+                "url": watch_url,
+                "audio_url": None,
+                "user_agent": "",
+                "is_trailer": True,
+                "is_direct": False
+            }))
+
+    threading.Thread(target=launch, daemon=True).start()
+    return None
 
 
