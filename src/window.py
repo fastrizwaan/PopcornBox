@@ -146,6 +146,20 @@ class MovieDetailsPage(Gtk.Overlay):
         
         item_raw_id = str(self.movie_stub.get("id", ""))
         poster_raw = str(self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster") or "")
+        
+        if item_raw_id.startswith("bolly:s:") or item_raw_id.startswith("hub:s:") or ":s:" in item_raw_id:
+            self.media_type = "series"
+        elif item_raw_id.startswith("bolly:m:") or item_raw_id.startswith("hub:m:") or ":m:" in item_raw_id:
+            self.media_type = "movie"
+        elif self.media_type in ["series", "tvshow", "tv_series"]:
+            self.media_type = "series"
+        elif self.media_type in ["tv", "channel", "tvchannel"]:
+            self.media_type = "tv"
+        elif self.media_type in ["music", "radio"]:
+            self.media_type = "music"
+        elif self.media_type not in ["movie", "series", "anime", "tv", "channel", "tvchannel", "music", "radio"]:
+            self.media_type = "movie"
+
         if item_raw_id.startswith("tpb_ctl:"):
             try:
                 import base64, json
@@ -1294,6 +1308,14 @@ class MovieDetailsPage(Gtk.Overlay):
         self.movie_details = details
         if details.get("type"):
             self.media_type = details["type"]
+        resolved_id = details.get("id") or details.get("imdb_id")
+        if resolved_id and str(resolved_id).startswith("tt"):
+            self.movie_stub["imdb_id"] = resolved_id
+            alias_ids = self.movie_stub.get("alias_ids") or []
+            if isinstance(alias_ids, list):
+                if resolved_id not in alias_ids:
+                    alias_ids.insert(0, resolved_id)
+                self.movie_stub["alias_ids"] = alias_ids
         item_id = details.get("id") or self.movie_stub.get("id")
         print(f"[CARD CLICK Step 8] build_ui() running for '{item_id}'")
         if details.get("videos"):
@@ -1575,7 +1597,8 @@ class MovieDetailsPage(Gtk.Overlay):
         selected_video = getattr(self, 'selected_video', None)
         video_id = selected_video.get("id") if (selected_video and isinstance(selected_video, dict)) else None
         
-        item_id = video_id or self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
+        details_id = getattr(self, "movie_details", {}).get("id") if hasattr(self, "movie_details") and self.movie_details else None
+        item_id = video_id or (details_id if (details_id and str(details_id).startswith("tt")) else None) or self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
         
         req_media_type = self.media_type
         if video_id and str(video_id).startswith("tt") and self.media_type not in ["series", "anime"]:
@@ -2321,6 +2344,7 @@ class CineWindow(Adw.ApplicationWindow):
     favorites_box: Gtk.Box = Gtk.Template.Child()
     history_box: Gtk.Box = Gtk.Template.Child()
     watched_box: Gtk.Box = Gtk.Template.Child()
+    continue_watching_box: Gtk.Box = Gtk.Template.Child()
     downloads_listbox: Gtk.ListBox = Gtk.Template.Child()
     
     fav_all_btn: Gtk.ToggleButton = Gtk.Template.Child()
@@ -2338,11 +2362,18 @@ class CineWindow(Adw.ApplicationWindow):
     watch_series_btn: Gtk.ToggleButton = Gtk.Template.Child()
     watch_anime_btn: Gtk.ToggleButton = Gtk.Template.Child()
     watch_tv_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    cw_all_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    cw_movies_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    cw_series_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    cw_anime_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    cw_tv_btn: Gtk.ToggleButton = Gtk.Template.Child()
     
     fav_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
     hist_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
     watch_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
+    cw_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
     
+    cw_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
     fav_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
     hist_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
     watch_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
@@ -2449,27 +2480,32 @@ class CineWindow(Adw.ApplicationWindow):
                 self.fav_all_btn.set_active(True)
                 self.hist_all_btn.set_active(True)
                 self.watch_all_btn.set_active(True)
+                self.cw_all_btn.set_active(True)
             elif m_type == "movie":
                 self.fav_movies_btn.set_active(True)
                 self.hist_movies_btn.set_active(True)
                 self.watch_movies_btn.set_active(True)
+                self.cw_movies_btn.set_active(True)
             elif m_type == "series":
                 self.fav_series_btn.set_active(True)
                 self.hist_series_btn.set_active(True)
                 self.watch_series_btn.set_active(True)
+                self.cw_series_btn.set_active(True)
             elif m_type == "anime":
                 self.fav_anime_btn.set_active(True)
                 self.hist_anime_btn.set_active(True)
                 self.watch_anime_btn.set_active(True)
+                self.cw_anime_btn.set_active(True)
             elif m_type == "tv":
                 self.fav_tv_btn.set_active(True)
                 self.hist_tv_btn.set_active(True)
                 self.watch_tv_btn.set_active(True)
+                self.cw_tv_btn.set_active(True)
                 
             self._syncing_local_btns = False
             
             page = self.main_stack.get_visible_child_name()
-            if page in ["favorites", "history", "watched"]:
+            if page in ["favorites", "history", "watched", "continue_watching"]:
                 self._populate_local_db_page(page)
 
         self.fav_all_btn.connect("toggled", on_local_btn_toggled, "all")
@@ -2487,14 +2523,19 @@ class CineWindow(Adw.ApplicationWindow):
         self.watch_series_btn.connect("toggled", on_local_btn_toggled, "series")
         self.watch_anime_btn.connect("toggled", on_local_btn_toggled, "anime")
         self.watch_tv_btn.connect("toggled", on_local_btn_toggled, "tv")
+        self.cw_all_btn.connect("toggled", on_local_btn_toggled, "all")
+        self.cw_movies_btn.connect("toggled", on_local_btn_toggled, "movie")
+        self.cw_series_btn.connect("toggled", on_local_btn_toggled, "series")
+        self.cw_anime_btn.connect("toggled", on_local_btn_toggled, "anime")
+        self.cw_tv_btn.connect("toggled", on_local_btn_toggled, "tv")
         
         def on_local_search_changed(entry):
             page = self.main_stack.get_visible_child_name()
-            if page in ["favorites", "history", "watched"]:
+            if page in ["favorites", "history", "watched", "continue_watching"]:
                 self._populate_local_db_page(page)
                 
-        for se in [self.fav_search_entry, self.hist_search_entry, self.watch_search_entry]:
-            if hasattr(self, "fav_search_entry") and se:
+        for se in [self.fav_search_entry, self.hist_search_entry, self.watch_search_entry, self.cw_search_entry]:
+            if se:
                 se.connect("search-changed", on_local_search_changed)
                 se.connect("changed", on_local_search_changed)
         
@@ -2503,6 +2544,7 @@ class CineWindow(Adw.ApplicationWindow):
                 btn.set_active(True)
                 self._back_to_library()
                 
+        self.cw_active_btn.connect("toggled", on_active_btn_toggled)
         self.fav_active_btn.connect("toggled", on_active_btn_toggled)
         self.hist_active_btn.connect("toggled", on_active_btn_toggled)
         self.watch_active_btn.connect("toggled", on_active_btn_toggled)
@@ -2659,6 +2701,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action("search-addons", self._on_search_addons)
         self._create_action("open-search", self._open_search)
         self._create_action("close-search", self._close_search)
+        self._create_action("open-continue-watching", lambda *a: self._open_local_page("continue_watching"))
         self._create_action("open-favorites", lambda *a: self._open_local_page("favorites"))
         self._create_action("open-downloads", lambda *a: self._open_local_page("downloads"))
         self._create_action("open-watched", lambda *a: self._open_local_page("watched"))
@@ -4918,31 +4961,18 @@ class CineWindow(Adw.ApplicationWindow):
             self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=filter_addon)
         self.back_to_discover_btn.connect("clicked", on_back_to_discover_clicked)
         
-        def on_btn_active(btn, pspec):
-            if btn.get_active():
-                self._ensure_all_menus_built()
-
-        if hasattr(self, "discover_active_btn"):
-            self.discover_active_btn.connect("notify::active", on_btn_active)
-        if hasattr(self, "movies_active_btn"):
-            self.movies_active_btn.connect("notify::active", on_btn_active)
-        if hasattr(self, "series_active_btn"):
-            self.series_active_btn.connect("notify::active", on_btn_active)
-        if hasattr(self, "anime_active_btn"):
-            self.anime_active_btn.connect("notify::active", on_btn_active)
-
         self._build_discover_menu()
 
         # Action: Switch to Discover
         action = Gio.SimpleAction.new("switch-to-discover", None)
         def on_switch_discover(action, parameter):
-            self._ensure_all_menus_built()
-            self._current_discover_type = "all"
-            self._current_discover_addon = None
             self.category_btn_stack.set_visible_child_name("discover")
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
+            self._current_discover_type = "all"
+            self._current_discover_addon = None
             self._refresh_discover_page(filter_media_type="all")
+            self._schedule_deferred_menu_build(400)
         action.connect("activate", on_switch_discover)
         self.add_action(action)
 
@@ -4950,11 +4980,11 @@ class CineWindow(Adw.ApplicationWindow):
         action = Gio.SimpleAction.new("select-discover-type", GLib.VariantType.new("s"))
         def on_select_discover_type(action, parameter):
             m_type = parameter.get_string()
-            self._current_discover_type = m_type
-            self._current_discover_addon = None
             self.category_btn_stack.set_visible_child_name("discover")
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
+            self._current_discover_type = m_type
+            self._current_discover_addon = None
             self._refresh_discover_page(filter_media_type=m_type)
         action.connect("activate", on_select_discover_type)
         self.add_action(action)
@@ -5030,39 +5060,39 @@ class CineWindow(Adw.ApplicationWindow):
         # Action: Switch to Movies (multi-row view of all movie catalogs)
         action = Gio.SimpleAction.new("switch-to-movies", None)
         def on_switch_movies(action, parameter):
-            self._ensure_all_menus_built()
-            self._current_discover_type = "movie"
-            self._current_discover_addon = None
             self.category_btn_stack.set_visible_child_name("movies")
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
+            self._current_discover_type = "movie"
+            self._current_discover_addon = None
             self._refresh_discover_page(filter_media_type="movie")
+            self._schedule_deferred_menu_build(400)
         action.connect("activate", on_switch_movies)
         self.add_action(action)
         
         # Action: Switch to Series (multi-row view of all series catalogs)
         action = Gio.SimpleAction.new("switch-to-series", None)
         def on_switch_series(action, parameter):
-            self._ensure_all_menus_built()
-            self._current_discover_type = "series"
-            self._current_discover_addon = None
             self.category_btn_stack.set_visible_child_name("series")
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
+            self._current_discover_type = "series"
+            self._current_discover_addon = None
             self._refresh_discover_page(filter_media_type="series")
+            self._schedule_deferred_menu_build(400)
         action.connect("activate", on_switch_series)
         self.add_action(action)
 
         # Action: Switch to Anime (multi-row view of all anime catalogs)
         action = Gio.SimpleAction.new("switch-to-anime", None)
         def on_switch_anime(action, parameter):
-            self._ensure_all_menus_built()
-            self._current_discover_type = "anime"
-            self._current_discover_addon = None
             self.category_btn_stack.set_visible_child_name("anime")
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
+            self._current_discover_type = "anime"
+            self._current_discover_addon = None
             self._refresh_discover_page(filter_media_type="anime")
+            self._schedule_deferred_menu_build(400)
         action.connect("activate", on_switch_anime)
         self.add_action(action)
 
@@ -5077,6 +5107,7 @@ class CineWindow(Adw.ApplicationWindow):
             discover_adj.connect("changed", self._on_discover_scroll)
             
         self._discover_views = {}
+        self._discover_catalog_list_cache = {}
         self._populate_addons()
         
         # Default Launch Option: Discover View and Discover Mode Active
@@ -5348,6 +5379,10 @@ class CineWindow(Adw.ApplicationWindow):
                         box.remove(grandparent)
 
     def _get_discover_catalog_list(self, filter_media_type=None, filter_addon_url=None):
+        cache_key = (filter_media_type or "all", filter_addon_url or "")
+        if hasattr(self, "_discover_catalog_list_cache") and cache_key in self._discover_catalog_list_cache:
+            return list(self._discover_catalog_list_cache[cache_key])
+
         from . import database, api
         addons = database.get_addons()
         rows = []
@@ -5448,6 +5483,9 @@ class CineWindow(Adw.ApplicationWindow):
                         'title': row_title
                     })
                     
+        if not hasattr(self, "_discover_catalog_list_cache"):
+            self._discover_catalog_list_cache = {}
+        self._discover_catalog_list_cache[cache_key] = rows
         return rows
 
     def _open_continue_watching_grid(self):
@@ -5485,6 +5523,7 @@ class CineWindow(Adw.ApplicationWindow):
             return
             
         cw_items = database.get_continue_watching()
+        display_cw_items = cw_items[:15]
         
         # Scan target_box to identify any existing Continue Watching header and scroll widgets
         existing_header = None
@@ -5513,11 +5552,15 @@ class CineWindow(Adw.ApplicationWindow):
         for s in extra_scrolls:
             target_box.remove(s)
             
-        if not cw_items:
+        if not display_cw_items:
             if existing_header and existing_header.get_parent() == target_box:
                 target_box.remove(existing_header)
             if existing_scroll and existing_scroll.get_parent() == target_box:
                 target_box.remove(existing_scroll)
+            return
+
+        new_cw_ids = [str(item.get("id") or item.get("imdb_id")) + ":" + str(item.get("last_watched", 0)) for item in display_cw_items]
+        if existing_scroll and getattr(existing_scroll, "_cw_item_ids", None) == new_cw_ids and existing_scroll.get_child():
             return
             
         if not existing_header:
@@ -5559,10 +5602,11 @@ class CineWindow(Adw.ApplicationWindow):
             cw_scroll.add_css_class("continue-watching-scroll")
             cw_scroll._is_cw_scroll = True
 
+        cw_scroll._cw_item_ids = new_cw_ids
         cw_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         cw_row.add_css_class("discover-row-box")
         
-        for item in cw_items:
+        for item in display_cw_items:
             card = ContinueWatchingWidget(
                 item, 
                 self._on_movie_clicked,
@@ -5643,10 +5687,10 @@ class CineWindow(Adw.ApplicationWindow):
             "request_id": req_id
         }
         
-        # Load initial batch (8 rows)
-        self._load_next_discover_batch(req_id, batch_size=8)
+        # Load initial batch (4 rows for instant viewport fill)
+        self._load_next_discover_batch(req_id, batch_size=4)
 
-    def _load_next_discover_batch(self, req_id, batch_size=6):
+    def _load_next_discover_batch(self, req_id, batch_size=4):
         if getattr(self, "_discover_is_loading_rows", False):
             return
         if req_id != getattr(self, "discover_request_id", 0):
@@ -5915,6 +5959,7 @@ class CineWindow(Adw.ApplicationWindow):
                         cat_menu.append_item(item)
                     sub_item = Gio.MenuItem.new_submenu(cat_data["name"], cat_menu)
                     h = hashlib.md5(f"{media_type}:{m_url}:{cat_data.get('cat_id', '')}:{cat_idx}:{cat_data['name']}".encode()).hexdigest()[:12]
+                    sub_item.set_attribute_value("submenu-action", GLib.Variant("s", f"cat_{h}"))
                     sub_item.set_attribute_value("id", GLib.Variant("s", f"cat_{h}"))
                     addon_menu.append_item(sub_item)
                 else:
@@ -5943,17 +5988,12 @@ class CineWindow(Adw.ApplicationWindow):
             
         self.discover_active_btn.set_menu_model(menu)
 
-    def _stream_menu_build(self, media_type, prepared_data, btn):
-        """Stream menu construction: append one addon per idle tick to button's menu model."""
+    def _apply_menu_model(self, media_type, prepared_data, btn):
+        """Construct and apply the full Gio.Menu model cleanly to the button."""
         import hashlib
-        menu = btn.get_menu_model()
-        if not menu or not isinstance(menu, Gio.Menu):
-            menu = Gio.Menu.new()
-            btn.set_menu_model(menu)
-
-        menu.remove_all()
-
         m_label = "Movies" if media_type == "movie" else ("Series" if media_type == "series" else ("Anime" if media_type == "anime" else media_type.title()))
+        menu = Gio.Menu.new()
+        
         top_item = Gio.MenuItem.new(f"★ All {m_label} (All Catalogs)", None)
         if media_type == "movie":
             top_item.set_action_and_target_value("win.switch-to-movies", None)
@@ -5963,24 +6003,18 @@ class CineWindow(Adw.ApplicationWindow):
             top_item.set_action_and_target_value("win.switch-to-anime", None)
         menu.append_item(top_item)
 
-        work = list(enumerate(prepared_data))
-        def append_next():
-            if not work:
-                return False
-            addon_idx, (addon_name, m_url, addon_cat_items) = work.pop(0)
+        for addon_idx, (addon_name, m_url, addon_cat_items) in enumerate(prepared_data):
             try:
                 addon_menu = self._build_addon_submenu(addon_name, m_url, media_type, addon_cat_items)
                 addon_sub_item = Gio.MenuItem.new_submenu(addon_name, addon_menu)
                 h = hashlib.md5(f"{media_type}:{m_url}:{addon_idx}:{addon_name}".encode()).hexdigest()[:12]
+                addon_sub_item.set_attribute_value("submenu-action", GLib.Variant("s", f"addon_{h}"))
                 addon_sub_item.set_attribute_value("id", GLib.Variant("s", f"addon_{h}"))
                 menu.append_item(addon_sub_item)
             except Exception as e:
                 logger.error(f"Error appending addon menu '{addon_name}': {e}")
-            if work:
-                GLib.idle_add(append_next)
-            return False
 
-        GLib.idle_add(append_next)
+        btn.set_menu_model(menu)
 
     def _ensure_all_menus_built(self):
         self._build_discover_menu()
@@ -6006,21 +6040,21 @@ class CineWindow(Adw.ApplicationWindow):
                     logger.error(f"Error preparing menu data for {m_type}: {e}")
                     all_data[m_type] = []
 
-            def start_streaming():
+            def apply_all():
                 for m_type in media_types:
                     btn = btn_map.get(m_type)
                     data = all_data.get(m_type, [])
                     if btn and data:
-                        self._stream_menu_build(m_type, data, btn)
+                        self._apply_menu_model(m_type, data, btn)
                 self._menus_built = True
                 self._menus_building = False
                 return False
 
-            GLib.idle_add(start_streaming)
+            GLib.idle_add(apply_all)
 
         threading.Thread(target=bg_prepare, daemon=True).start()
 
-    def _schedule_deferred_menu_build(self, delay_ms=1000):
+    def _schedule_deferred_menu_build(self, delay_ms=500):
         if getattr(self, "_menu_build_scheduled", False) or getattr(self, "_menus_built", False):
             return
         self._menu_build_scheduled = True
@@ -6867,9 +6901,11 @@ class CineWindow(Adw.ApplicationWindow):
         from .movie_widget import cancel_pending_image_downloads
         cancel_pending_image_downloads()
 
-        # 1. Invalidate all cached discover views
+        # 1. Invalidate all cached discover views & catalog lists
         if hasattr(self, "_discover_views"):
             self._discover_views.clear()
+        if hasattr(self, "_discover_catalog_list_cache"):
+            self._discover_catalog_list_cache.clear()
 
         # 2. Reset menu build flags and rebuild category & discover menus
         self._menus_built = False
@@ -7241,6 +7277,8 @@ class CineWindow(Adw.ApplicationWindow):
             items = database.get_history()
         elif page_name == "watched":
             items = database.get_watched()
+        elif page_name == "continue_watching":
+            items = database.get_continue_watching()
         elif page_name == "downloads":
             items = database.get_downloads()
             self._populate_downloads_listbox(self.downloads_listbox, items)
@@ -7254,7 +7292,7 @@ class CineWindow(Adw.ApplicationWindow):
             
         m_type = getattr(self, "local_media_type_filter", "all")
         
-        prefix_map = {"favorites": "fav", "history": "hist", "watched": "watch"}
+        prefix_map = {"favorites": "fav", "history": "hist", "watched": "watch", "continue_watching": "cw"}
         prefix = prefix_map.get(page_name, page_name)
         search_entry = getattr(self, f"{prefix}_search_entry", None)
         query = search_entry.get_text().strip().lower() if search_entry else ""
@@ -7281,6 +7319,10 @@ class CineWindow(Adw.ApplicationWindow):
                 database.remove_history(item_id)
             elif page_name == "watched":
                 database.remove_watched(item_id)
+            elif page_name == "continue_watching":
+                database.remove_continue_watching(item_id)
+                if hasattr(self, "_update_continue_watching_section"):
+                    self._update_continue_watching_section()
                 
             parent = card_widget.get_parent()
             if parent and isinstance(parent, Gtk.FlowBoxChild):
@@ -7304,17 +7346,40 @@ class CineWindow(Adw.ApplicationWindow):
                 valign=Gtk.Align.START,
                 row_spacing=12, column_spacing=2
             )
-            self._populate_flowbox(flowbox, data, on_remove_clicked=_on_remove_local_item)
+            if page_name == "continue_watching":
+                from .movie_widget import ContinueWatchingWidget
+                for item in data:
+                    card = ContinueWatchingWidget(
+                        item,
+                        self._on_movie_clicked,
+                        on_remove_clicked=_on_remove_local_item,
+                        on_play_clicked=self._on_continue_watching_clicked
+                    )
+                    flowbox.append(card)
+            else:
+                self._populate_flowbox(flowbox, data, on_remove_clicked=_on_remove_local_item)
             container.append(flowbox)
 
-        if m_type in ["all", "movie"]:
+        has_sections = False
+        if m_type in ["all", "movie"] and movies:
             _add_section(_("Movies"), movies)
-        if m_type in ["all", "series"]:
+            has_sections = True
+        if m_type in ["all", "series"] and series:
             _add_section(_("Series"), series)
-        if m_type in ["all", "anime"]:
+            has_sections = True
+        if m_type in ["all", "anime"] and anime:
             _add_section(_("Anime"), anime)
-        if m_type in ["all", "tv"]:
+            has_sections = True
+        if m_type in ["all", "tv"] and tv:
             _add_section(_("TV Channels"), tv)
+            has_sections = True
+
+        if not has_sections:
+            empty_msg = _("No in-progress items to continue watching.") if page_name == "continue_watching" else (_("No watched items yet.") if page_name == "watched" else (_("No favorites yet.") if page_name == "favorites" else _("No history yet.")))
+            empty_lbl = Gtk.Label(label=empty_msg)
+            empty_lbl.add_css_class("dim-label")
+            empty_lbl.set_margin_top(32)
+            container.append(empty_lbl)
 
     def _populate_downloads_listbox(self, listbox, items):
         while child := listbox.get_first_child():

@@ -34,7 +34,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 child: Adw.HeaderBar library_header {
                 [start]
                   Stack category_btn_stack {
-                    transition-type: crossfade;
+                    transition-type: none;
                     StackPage {
                       name: "discover";
                       child: Box {
@@ -179,6 +179,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 [end]
                 Box {
                   spacing: 2;
+                  Button { action-name: "win.open-continue-watching"; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
                   Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
                   Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
                   Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
@@ -423,6 +424,7 @@ template $CineWindow: Adw.ApplicationWindow {
               [end]
               Box {
                 spacing: 2;
+                Button { action-name: "win.open-continue-watching"; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
                 ToggleButton fav_active_btn { active: true; child: Adw.ButtonContent { icon-name: "starred-symbolic"; label: _("Favorites"); }; styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
@@ -494,6 +496,7 @@ template $CineWindow: Adw.ApplicationWindow {
               [end]
               Box {
                 spacing: 2;
+                Button { action-name: "win.open-continue-watching"; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
                 ToggleButton hist_active_btn { active: true; child: Adw.ButtonContent { icon-name: "document-open-recent-symbolic"; label: _("History"); }; styles ["flat", "local-nav-btn"] }
@@ -565,6 +568,7 @@ template $CineWindow: Adw.ApplicationWindow {
               [end]
               Box {
                 spacing: 2;
+                Button { action-name: "win.open-continue-watching"; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
                 ToggleButton watch_active_btn { active: true; child: Adw.ButtonContent { icon-name: "view-visible-symbolic"; label: _("Watched"); }; styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
@@ -601,6 +605,78 @@ template $CineWindow: Adw.ApplicationWindow {
         }
 
         Adw.ViewStackPage {
+          name: "continue_watching";
+          child: Box {
+            orientation: vertical;
+            Adw.HeaderBar {
+              [start]
+              Button {
+                icon-name: "go-previous-symbolic";
+                action-name: "win.back-to-library";
+                tooltip-text: _("Library");
+                styles ["flat", "circular"]
+              }
+              [start]
+              Box {
+                styles ["linked"]
+                ToggleButton cw_all_btn { label: _("All"); active: true; styles ["category-filter-btn"] }
+                ToggleButton cw_movies_btn { label: _("Movies"); group: cw_all_btn; styles ["category-filter-btn"] }
+                ToggleButton cw_series_btn { label: _("Series"); group: cw_all_btn; styles ["category-filter-btn"] }
+                ToggleButton cw_anime_btn { label: _("Anime"); group: cw_all_btn; styles ["category-filter-btn"] }
+                ToggleButton cw_tv_btn { label: _("TV"); group: cw_all_btn; styles ["category-filter-btn"] }
+              }
+              [title]
+              Adw.WindowTitle {
+                title: _("PopcornBox");
+              }
+              [end]
+              MenuButton {
+                valign: center;
+                primary: true;
+                icon-name: "open-menu-symbolic";
+                tooltip-text: _("Main Menu");
+                menu-model: primary_menu;
+              }
+              [end]
+              Box {
+                spacing: 2;
+                ToggleButton cw_active_btn { active: true; child: Adw.ButtonContent { icon-name: "media-playback-start-symbolic"; label: _("Continue Watching"); }; styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
+              }
+              [end]
+              ToggleButton cw_search_btn {
+                icon-name: "system-search-symbolic";
+                tooltip-text: _("Search");
+                styles ["flat", "circular"]
+              }
+            }
+            ScrolledWindow continue_watching_scrolled {
+              vexpand: true;
+              Box {
+                orientation: vertical;
+                Revealer cw_search_revealer {
+                  reveal-child: bind cw_search_btn.active;
+                  SearchEntry cw_search_entry {
+                    margin-top: 12; margin-bottom: 0; margin-start: 12; margin-end: 12;
+                    placeholder-text: _("Search Continue Watching...");
+                  }
+                }
+                Box continue_watching_box {
+                  orientation: vertical;
+                  spacing: 12;
+                  margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;
+                }
+              }
+            }
+          };
+        }
+
+        Adw.ViewStackPage {
           name: "downloads";
           child: Box {
             orientation: vertical;
@@ -627,6 +703,7 @@ template $CineWindow: Adw.ApplicationWindow {
               [end]
               Box {
                 spacing: 2;
+                Button { action-name: "win.open-continue-watching"; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
@@ -672,6 +749,7 @@ template $CineWindow: Adw.ApplicationWindow {
               [end]
               Box {
                 spacing: 2;
+                Button { action-name: "win.open-continue-watching"; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
@@ -844,6 +922,7 @@ template $CineWindow: Adw.ApplicationWindow {
                     }
                   }
                   section {
+                    item (_("Continue Watching"), "win.open-continue-watching")
                     item (_("History"), "win.open-history")
                     item (_("Downloads"), "win.open-downloads")
                     item (_("Watched"), "win.open-watched")

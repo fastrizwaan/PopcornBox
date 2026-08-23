@@ -427,7 +427,16 @@ def get_stream_addons(media_type=None, item_id=None):
 
 def has_stream_addons(media_type=None, item_id=None):
     """Return True if there is at least one enabled stream/torrent addon for this media type and item."""
-    return len(get_stream_addons(media_type=media_type, item_id=item_id)) > 0
+    from . import database
+    addons = [a for a in database.get_addons() if a.get("enabled", True)]
+    for a in addons:
+        if not a.get("manifest_url", "").startswith("builtin://"):
+            if item_id and str(item_id).startswith("tt"):
+                if has_stream_resource(a, media_type=media_type, item_id=item_id):
+                    return True
+            elif has_stream_resource(a, media_type=media_type):
+                return True
+    return False
 
 def has_catalog_resource(addon, media_type=None):
     """Return True if the addon supports catalog ('catalog') resource for this media type."""
@@ -777,11 +786,23 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 if database.is_adult_content_hidden() and is_adult_item(m):
                     continue
                 imdb_id = m.get("imdb_id") or m.get("id")
+                if not imdb_id or str(imdb_id).startswith("hub:upsell") or imdb_id == "upsell" or str(m.get("name", "")).lower() == "unlock every stream":
+                    continue
                 poster = extract_image_url(m)
                 title = m.get("name", "")
                 year = str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else ""
                 item_type = m.get("type") or media_type
+                if str(imdb_id).startswith("bolly:m:") or str(imdb_id).startswith("hub:m:"):
+                    item_type = "movie"
+                elif str(imdb_id).startswith("bolly:s:") or str(imdb_id).startswith("hub:s:"):
+                    item_type = "series"
+
                 alias_ids = [imdb_id] if imdb_id else []
+
+                if str(imdb_id).startswith("bolly:") or str(imdb_id).startswith("hub:"):
+                    tmdb_num = str(imdb_id).split(":")[-1]
+                    if tmdb_num.isdigit():
+                        alias_ids.append(f"tmdb:{tmdb_num}")
 
                 if str(imdb_id).startswith("tpb_ctl:"):
                     try:
@@ -975,6 +996,21 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         if tt_m:
             imdb_id = tt_m.group(1)
 
+    # Normalize media_type and c_type to standard formats
+    str_imdb = str(imdb_id or "")
+    if str_imdb.startswith("bolly:s:") or str_imdb.startswith("hub:s:") or ":s:" in str_imdb:
+        media_type = "series"
+    elif str_imdb.startswith("bolly:m:") or str_imdb.startswith("hub:m:") or ":m:" in str_imdb:
+        media_type = "movie"
+    elif media_type in ["series", "tvshow", "tv_series"]:
+        media_type = "series"
+    elif media_type in ["tv", "channel", "tvchannel"]:
+        media_type = "tv"
+    elif media_type in ["music", "radio"]:
+        media_type = "music"
+    elif media_type not in ["movie", "series", "anime", "tv", "channel", "tvchannel", "music", "radio"]:
+        media_type = "movie"
+
     # Resolve TMDB ids to IMDB format if needed
     imdb_id = resolve_to_imdb_id(imdb_id, media_type, title)
 
@@ -1010,7 +1046,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                     database.save_cached_metadata(imdb_id, media_type, res)
                     return res
 
-    c_type = media_type
+    c_type = "series" if media_type in ["series", "anime"] else ("tv" if media_type in ["tv", "channel", "tvchannel"] else ("music" if media_type in ["music", "radio"] else "movie"))
 
     def fetch_addon_meta(addon_orig, req_type=None):
         addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
@@ -1067,6 +1103,9 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         
         meta_url = f"{base_url}meta/{matched_type}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
         data = _get_cached_request(meta_url, max_age_hours=168)
+        if not data and "v3-cinemeta.strem.io" in meta_url:
+            alt_url = meta_url.replace("v3-cinemeta.strem.io", "cinemeta-live.strem.io")
+            data = _get_cached_request(alt_url, max_age_hours=168)
         
         if data and data.get("meta"):
             cm = data["meta"]
@@ -1676,7 +1715,10 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if callback: callback(cached or [], is_cached=False, is_complete=True)
         return cached or []
         
-    stremio_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://") and has_stream_resource(a, media_type=actual_media, item_id=imdb_id)]
+    all_stream_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://") and has_stream_resource(a, media_type=actual_media)]
+    if not all_stream_addons:
+        if callback: callback(cached or [], is_cached=False, is_complete=True)
+        return cached or []
 
     def fetch_from_addon(addon_orig, cur_id):
         addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
@@ -1792,14 +1834,17 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     final_streams = process_raw_streams(all_raw_streams)
 
     import concurrent.futures
-    num_workers = min(len(stremio_addons), 8) if stremio_addons else 1
-    if num_workers > 0 and stremio_addons:
+    num_workers = min(len(all_stream_addons), 8) if all_stream_addons else 1
+    if num_workers > 0 and all_stream_addons:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
             future_to_addon = {}
+            queried_addon_ids = set()
             
-            # Submit immediately for the known item_id
-            for addon in stremio_addons:
-                future_to_addon[executor.submit(fetch_from_addon, addon, imdb_id)] = (addon, imdb_id)
+            # Submit immediately for any addon that directly supports initial imdb_id
+            for addon in all_stream_addons:
+                if has_stream_resource(addon, media_type=actual_media, item_id=imdb_id):
+                    future_to_addon[executor.submit(fetch_from_addon, addon, imdb_id)] = (addon, imdb_id)
+                    queried_addon_ids.add((addon.get("manifest_url", ""), str(imdb_id)))
                 
             # Fire off ID resolution in the background
             def resolve_and_submit():
@@ -1823,11 +1868,13 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                         try:
                             resolved_ids = future.result()
                             if resolved_ids:
-                                for addon in stremio_addons:
-                                    for cur_id in resolved_ids[:1]:
-                                        if has_stream_resource(addon, media_type=media_type, item_id=cur_id):
+                                for addon in all_stream_addons:
+                                    for cur_id in resolved_ids:
+                                        addon_key = (addon.get("manifest_url", ""), str(cur_id))
+                                        if addon_key not in queried_addon_ids and has_stream_resource(addon, media_type=actual_media, item_id=cur_id):
                                             new_fut = executor.submit(fetch_from_addon, addon, cur_id)
                                             future_to_addon[new_fut] = (addon, cur_id)
+                                            queried_addon_ids.add(addon_key)
                                             futures.add(new_fut)
                         except Exception as e:
                             print(f"Error resolving IDs: {e}")
@@ -1848,7 +1895,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     if final_streams:
         database.save_cached_streams(cache_key, final_streams)
-    elif stremio_addons:
+    elif all_stream_addons:
         database.delete_cached_streams(cache_key)
 
     if callback:

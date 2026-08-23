@@ -37,7 +37,14 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
     is_tmdb = False
     if imdb_id:
         str_id = str(imdb_id).strip()
-        is_tmdb = str_id.startswith("tmdb:") or str_id.startswith("ctmdb.") or str_id.isdigit()
+        if str_id.startswith("bolly:") or str_id.startswith("hub:"):
+            is_tmdb = True
+            if ":s:" in str_id:
+                media_type = "series"
+            elif ":m:" in str_id:
+                media_type = "movie"
+        else:
+            is_tmdb = str_id.startswith("tmdb:") or str_id.startswith("ctmdb.") or str_id.isdigit()
         if not is_tmdb and not title:
             return str_id
         
@@ -109,6 +116,18 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
             if i: ids.add(str(i))
     elif item_id:
         ids.add(str(item_id))
+
+    # Add TMDB format if item starts with bolly: or hub:
+    for single_id in list(ids):
+        str_s = str(single_id)
+        if str_s.startswith("bolly:") or str_s.startswith("hub:"):
+            tmdb_num = str_s.split(":")[-1]
+            if tmdb_num.isdigit():
+                ids.add(f"tmdb:{tmdb_num}")
+                if ":s:" in str_s:
+                    media_type = "series"
+                elif ":m:" in str_s:
+                    media_type = "movie"
 
     # Determine what prefixes are actually needed by installed stream addons
     installed_addons = [a for a in database.get_addons() if a.get("enabled", True) and not a.get("manifest_url", "").startswith("builtin://")]

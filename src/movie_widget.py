@@ -43,18 +43,6 @@ def _clear_failed_images():
         FAILED_IMAGE_URLS.clear()
 
 def cancel_pending_image_downloads():
-    global _image_pool, _disk_pool, _meta_fallback_pool
-    try:
-        _image_pool.shutdown(wait=False, cancel_futures=True)
-        _disk_pool.shutdown(wait=False, cancel_futures=True)
-        _meta_fallback_pool.shutdown(wait=False, cancel_futures=True)
-    except TypeError:
-        _image_pool.shutdown(wait=False)
-        _disk_pool.shutdown(wait=False)
-        _meta_fallback_pool.shutdown(wait=False)
-    _image_pool = ThreadPoolExecutor(max_workers=10)
-    _disk_pool = ThreadPoolExecutor(max_workers=6)
-    _meta_fallback_pool = ThreadPoolExecutor(max_workers=2)
     _clear_failed_images()
 
 def extract_image_url(m):
@@ -398,6 +386,8 @@ class MovieWidget(Gtk.Box):
             self.append(year_label)
 
     def _on_card_released(self, gesture, n_press, x, y):
+        if n_press > 1:
+            return
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
         picked = self.pick(x, y, Gtk.PickFlags.DEFAULT)
         target = picked
@@ -562,6 +552,8 @@ class ContinueWatchingWidget(Gtk.Box):
             self.append(sub_label)
 
     def _on_card_released(self, gesture, n_press, x, y):
+        if n_press > 1:
+            return
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
         picked = self.pick(x, y, Gtk.PickFlags.DEFAULT)
         target = picked
