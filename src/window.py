@@ -2606,6 +2606,7 @@ class CineWindow(Adw.ApplicationWindow):
                 fb = getattr(self, name)
                 fb.set_valign(Gtk.Align.START)
                 fb.set_row_spacing(12)
+                fb.set_column_spacing(10)
 
         self.gl_area: Gtk.GLArea = Gtk.GLArea()
         self.offload: Gtk.GraphicsOffload = Gtk.GraphicsOffload(child=self.gl_area)
@@ -7841,7 +7842,7 @@ class CineWindow(Adw.ApplicationWindow):
                 max_children_per_line=20, min_children_per_line=2, 
                 selection_mode=Gtk.SelectionMode.NONE, halign=Gtk.Align.START,
                 valign=Gtk.Align.START,
-                row_spacing=12, column_spacing=2
+                row_spacing=12, column_spacing=10
             )
             if page_name == "continue_watching":
                 from .movie_widget import ContinueWatchingWidget

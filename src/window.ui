@@ -434,8 +434,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                         <property name="spacing">12</property>
                                         <property name="margin-top">12</property>
                                         <property name="margin-bottom">24</property>
-                                        <property name="margin-start">16</property>
-                                        <property name="margin-end">16</property>
+                                        <property name="margin-start">12</property>
+                                        <property name="margin-end">12</property>
                                       </object>
                                     </child>
                                   </object>
@@ -454,8 +454,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                       <object class="GtkBox" id="discover_back_box">
                                         <property name="orientation">0</property>
                                         <property name="spacing">8</property>
-                                        <property name="margin-start">16</property>
-                                        <property name="margin-end">16</property>
+                                        <property name="margin-start">12</property>
+                                        <property name="margin-end">12</property>
                                         <property name="margin-top">12</property>
                                         <property name="margin-bottom">4</property>
                                         <property name="visible">false</property>
@@ -494,7 +494,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                             <property name="halign">3</property>
                                             <property name="valign">1</property>
                                             <property name="row-spacing">12</property>
-                                            <property name="column-spacing">2</property>
+                                            <property name="column-spacing">10</property>
                                           </object>
                                         </child>
                                       </object>
@@ -528,8 +528,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 </style>
                                                 <property name="halign">1</property>
                                                 <property name="margin-bottom">8</property>
-                                                <property name="margin-start">12</property>
-                                              </object>
+                                                </object>
                                             </child>
                                             <child>
                                               <object class="GtkSeparator">
@@ -544,7 +543,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <property name="halign">3</property>
                                                 <property name="valign">1</property>
                                                 <property name="row-spacing">12</property>
-                                                <property name="column-spacing">2</property>
+                                                <property name="column-spacing">10</property>
                                               </object>
                                             </child>
                                           </object>
@@ -562,8 +561,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <property name="halign">1</property>
                                                 <property name="margin-top">16</property>
                                                 <property name="margin-bottom">8</property>
-                                                <property name="margin-start">12</property>
-                                              </object>
+                                                </object>
                                             </child>
                                             <child>
                                               <object class="GtkSeparator">
@@ -578,7 +576,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <property name="halign">3</property>
                                                 <property name="valign">1</property>
                                                 <property name="row-spacing">12</property>
-                                                <property name="column-spacing">2</property>
+                                                <property name="column-spacing">10</property>
                                               </object>
                                             </child>
                                           </object>
@@ -596,8 +594,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <property name="halign">1</property>
                                                 <property name="margin-top">16</property>
                                                 <property name="margin-bottom">8</property>
-                                                <property name="margin-start">12</property>
-                                              </object>
+                                                </object>
                                             </child>
                                             <child>
                                               <object class="GtkSeparator">
@@ -612,7 +609,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <property name="halign">3</property>
                                                 <property name="valign">1</property>
                                                 <property name="row-spacing">12</property>
-                                                <property name="column-spacing">2</property>
+                                                <property name="column-spacing">10</property>
                                               </object>
                                             </child>
                                           </object>
@@ -630,8 +627,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <property name="halign">1</property>
                                                 <property name="margin-top">16</property>
                                                 <property name="margin-bottom">8</property>
-                                                <property name="margin-start">12</property>
-                                              </object>
+                                                </object>
                                             </child>
                                             <child>
                                               <object class="GtkSeparator">
@@ -646,7 +642,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <property name="halign">3</property>
                                                 <property name="valign">1</property>
                                                 <property name="row-spacing">12</property>
-                                                <property name="column-spacing">2</property>
+                                                <property name="column-spacing">10</property>
                                               </object>
                                             </child>
                                           </object>
