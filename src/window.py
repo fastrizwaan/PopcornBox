@@ -604,28 +604,25 @@ class MovieDetailsPage(Gtk.Overlay):
                 if sel_prov != "All Providers":
                     matching = [t for t in getattr(self, 'torrents', []) if sel_prov in t.get("addon_names", [])]
                     if matching:
-                        all_http = all(t.get('is_http') for t in matching)
-                        all_torrent = all(not t.get('is_http') for t in matching)
-                        if all_http and getattr(self, 'source_idx', 0) != 1:
+                        current_source = getattr(self, 'source_idx', 0)
+                        matching_current = matching
+                        if current_source == 1:
+                            matching_current = [t for t in matching if t.get('is_http')]
+                        elif current_source == 2:
+                            matching_current = [t for t in matching if not t.get('is_http')]
+
+                        # If current source filter excludes all streams from this provider, reset source to All
+                        if not matching_current:
                             self._ignore_source_toggle_signals = True
                             try:
-                                self.source_idx = 1
-                                self.source_direct_btn.set_active(True)
-                                if hasattr(self, 'check_live_btn'):
-                                    self.check_live_btn.set_visible(True)
-                            finally:
-                                self._ignore_source_toggle_signals = False
-                        elif all_torrent and getattr(self, 'source_idx', 0) != 2:
-                            self._ignore_source_toggle_signals = True
-                            try:
-                                self.source_idx = 2
-                                self.source_torrent_btn.set_active(True)
+                                self.source_idx = 0
+                                self.source_all_btn.set_active(True)
                                 if hasattr(self, 'check_live_btn'):
                                     self.check_live_btn.set_visible(False)
                             finally:
                                 self._ignore_source_toggle_signals = False
 
-            self.update_quality_dropdown()
+            GLib.idle_add(self.update_quality_dropdown)
 
         self.provider_dropdown.connect("notify::selected", on_provider_changed)
         self.stream_header_box.append(self.provider_dropdown)
@@ -917,15 +914,7 @@ class MovieDetailsPage(Gtk.Overlay):
     def update_provider_dropdown_model(self):
         if not hasattr(self, 'provider_dropdown'): return
         all_addons = set()
-        source_idx = getattr(self, 'source_idx', 0)
-        
-        streams = getattr(self, 'torrents', [])
-        if source_idx == 1:
-            streams = [t for t in streams if t.get('is_http')]
-        elif source_idx == 2:
-            streams = [t for t in streams if not t.get('is_http')]
-
-        for t in streams:
+        for t in getattr(self, 'torrents', []):
             for a in t.get("addon_names", []):
                 if a: all_addons.add(a)
         provider_strings = ["All Providers"] + sorted(list(all_addons))
@@ -938,7 +927,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 
         if curr_strings != provider_strings:
             curr_sel = self.provider_dropdown.get_selected()
-            curr_name = curr_strings[curr_sel] if (curr_strings and curr_sel < len(curr_strings)) else "All Providers"
+            curr_name = curr_strings[curr_sel] if (curr_strings and curr_sel != Gtk.INVALID_LIST_POSITION and 0 <= curr_sel < len(curr_strings)) else "All Providers"
             
             self._ignore_provider_signals = True
             try:
