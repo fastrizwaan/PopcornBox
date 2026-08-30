@@ -2692,7 +2692,11 @@ class CineWindow(Adw.ApplicationWindow):
         
         def on_active_btn_toggled(btn):
             if not btn.get_active():
+                if getattr(self, "_syncing_active_btns", False):
+                    return
+                self._syncing_active_btns = True
                 btn.set_active(True)
+                self._syncing_active_btns = False
                 self._back_to_library()
                 
         self.cw_active_btn.connect("toggled", on_active_btn_toggled)
@@ -3854,8 +3858,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._current_playing_item["progress"] = prog
                 
                 last_cw_save = getattr(self, "_last_cw_save_time", 0)
-                import time
-                now = time.time()
+                now = time()
                 if now - last_cw_save >= 4:
                     self._last_cw_save_time = now
                     from . import database
@@ -4524,6 +4527,10 @@ class CineWindow(Adw.ApplicationWindow):
             timeout_add_once(350, self.revealer_icon_indicator.set_reveal_child, False)
 
     def do_close_request(self) -> bool:
+        # Shut down search thread pool cleanly
+        if hasattr(self, "_search_pool"):
+            self._search_pool.shutdown(wait=False, cancel_futures=True)
+
         try:
             if self.preview_player:
                 self.preview_player.terminate()
@@ -4552,7 +4559,7 @@ class CineWindow(Adw.ApplicationWindow):
 
             if (
                 self.has_some_doc_path
-                or f"/run/user/{os.getuid()}/doc/" not in item.get("filename")
+                or f"/run/user/{os.getuid()}/doc/" not in (item.get("filename") or "")
                 or has_host_permission
             ):
                 continue
@@ -4573,7 +4580,6 @@ class CineWindow(Adw.ApplicationWindow):
             if hasattr(self, "toast_overlay"):
                 self.toast_overlay.dismiss_all()
                 self.toast_overlay.add_toast(toast)
-                GLib.timeout_add_seconds(timeout, lambda: (toast.dismiss(), False)[1])
         except Exception as e:
             logger.error(f"Error showing toast: {e}")
 
@@ -7294,8 +7300,11 @@ class CineWindow(Adw.ApplicationWindow):
             seasons = sorted(list(set([v.get("season", 1) for v in videos])))
             if target_season in seasons:
                 idx = seasons.index(target_season)
-                page.season_dropdown.set_selected(idx)
+                if hasattr(page, 'season_dropdown'):
+                    page.season_dropdown.set_selected(idx)
         else:
+            if not hasattr(page, 'current_episodes') or not page.current_episodes:
+                return False
             ep_nums = [e.get('episode') for e in page.current_episodes]
             if target_episode in ep_nums:
                 idx = ep_nums.index(target_episode)

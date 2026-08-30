@@ -18,9 +18,9 @@ _cache_conn = None
 _cache_db_initialized = False
 
 if os.environ.get("FLATPAK_ID"):
-    BASE_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "popcorn-box"
-else:
     BASE_DIR = Path.home() / ".var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box"
+else:
+    BASE_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "popcorn-box"
 
 CONFIG_DIR = BASE_DIR / "config"
 os.makedirs(CONFIG_DIR, exist_ok=True)
