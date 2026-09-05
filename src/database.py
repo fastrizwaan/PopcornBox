@@ -18,9 +18,13 @@ _cache_conn = None
 _cache_db_initialized = False
 
 if os.environ.get("FLATPAK_ID"):
-    BASE_DIR = Path.home() / ".var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box"
-else:
     BASE_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "popcorn-box"
+else:
+    flatpak_data = Path.home() / ".var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box"
+    if flatpak_data.exists():
+        BASE_DIR = flatpak_data
+    else:
+        BASE_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "popcorn-box"
 
 CONFIG_DIR = BASE_DIR / "config"
 os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -577,10 +581,9 @@ _PROGRESS_FLUSH_INTERVAL = 10  # seconds
 def save_progress(key, position):
     """Buffer progress in memory, flush to disk at most every 10 seconds."""
     global _progress_last_flush
-    import time as _time
     with _db_lock:
         _progress_buffer[key] = position
-        now = _time.time()
+        now = time.time()
         should_flush = now - _progress_last_flush >= _PROGRESS_FLUSH_INTERVAL
     if should_flush:
         flush_progress()
@@ -588,7 +591,6 @@ def save_progress(key, position):
 def flush_progress():
     """Write all buffered progress to disk immediately."""
     global _progress_last_flush
-    import time as _time
     with _db_lock:
         if not _progress_buffer:
             return
@@ -597,7 +599,7 @@ def flush_progress():
         progress.update(_progress_buffer)
         if _write_db(db):
             _progress_buffer.clear()
-            _progress_last_flush = _time.time()
+            _progress_last_flush = time.time()
 
 def get_progress(key):
     # Check in-memory buffer first (most recent), then disk

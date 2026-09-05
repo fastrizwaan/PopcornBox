@@ -22,6 +22,11 @@ import re
 import gi
 import mpv
 import ctypes
+import json
+import base64
+import shutil
+import urllib.request
+import urllib.parse
 from typing import cast
 from gettext import gettext as _
 from urllib.parse import urlparse
@@ -59,6 +64,7 @@ from .utils import (
     CONFIG_DIR,
     INPUT_CONF,
     WATCH_HISTORY_JSONL,
+    LAST_PLAYLIST_FILE,
 )
 
 from .history import HistoryDialog
@@ -70,8 +76,17 @@ from .mpris import MPRIS
 import threading
 import concurrent.futures
 from . import database
+from . import api
+from . import player
 from .api import fetch_items, fetch_movie_details, get_torrents_streamed
-from .movie_widget import MovieWidget, ContinueWatchingWidget
+from .movie_widget import (
+    MovieWidget,
+    ContinueWatchingWidget,
+    load_image_into_picture,
+    cancel_pending_image_downloads,
+    fetch_fallback_poster,
+)
+from .download_row import DownloadItemRow
 
 gi.require_version("Adw", "1")
 gi.require_version("Gio", "2.0")
@@ -1222,7 +1237,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
         return False
 
-
+    def toggle_favorite(self, details):
         from . import database
         item_id = details.get("id")
         if database.is_favorite(item_id):
@@ -3485,9 +3500,6 @@ class CineWindow(Adw.ApplicationWindow):
             idle_add_once(self._show_toast, _("Session Saved"))
 
     def _on_clear_session(self, *args):
-        from .utils import LAST_PLAYLIST_FILE, CONFIG_DIR
-        import os
-        import shutil
         try:
             if os.path.exists(LAST_PLAYLIST_FILE):
                 os.remove(LAST_PLAYLIST_FILE)

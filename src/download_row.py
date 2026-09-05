@@ -1,4 +1,5 @@
 import os
+import shutil
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Pango', '1.0')
@@ -265,7 +266,6 @@ class DownloadItemRow(Gtk.Box):
         player.stop_engine_explicit(self.info_hash)
         database.remove_download(self.info_hash)
         path = os.path.join(player.DOWNLOAD_BASE, self.info_hash)
-        import shutil
         if os.path.exists(path):
             try:
                 shutil.rmtree(path, ignore_errors=True)

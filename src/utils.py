@@ -19,6 +19,9 @@
 
 import gi
 import os
+import shutil
+import subprocess
+import webbrowser
 import ctypes
 import logging
 from urllib.parse import urlparse
@@ -83,9 +86,7 @@ try:
             open(file, "w").close()
 
     if os.path.exists(OLD_PL_FILE):
-        from shutil import move
-
-        move(OLD_PL_FILE, PLAYLIST_DIR)
+        shutil.move(OLD_PL_FILE, PLAYLIST_DIR)
 except Exception as e:
     logger.error(f"Error creating files/folders: {e}", exc_info=True)
 
@@ -173,7 +174,6 @@ def open_uri(uri, parent=None):
                 logger.warning(f"Failed to launch scheme handler for {scheme}: {e}")
 
             try:
-                import webbrowser
                 if webbrowser.open(uri_str):
                     return True
             except Exception as e:
@@ -181,7 +181,6 @@ def open_uri(uri, parent=None):
 
         elif scheme == "magnet":
             try:
-                import subprocess
                 # xdg-open handles shell escaping and DE-specific quirks better than Gio for magnet links
                 subprocess.Popen(["xdg-open", uri_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return True

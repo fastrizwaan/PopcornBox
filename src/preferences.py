@@ -17,6 +17,8 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import os
+import shutil
 import gi
 from gettext import gettext as _
 
@@ -26,7 +28,8 @@ gi.require_version("GLib", "2.0")
 gi.require_version("Gio", "2.0")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, Gtk
-from .utils import logger, CONFIG_DIR, display, has_host_permission, is_flatpak
+from .utils import logger, CONFIG_DIR, display, has_host_permission, is_flatpak, LAST_PLAYLIST_FILE
+from . import database
 
 settings = Gio.Settings.new("io.github.fastrizwaan.PopcornBox")
 
@@ -126,10 +129,21 @@ class Preferences(Adw.Dialog):
 
         bg_hex = settings.get_string("subtitle-bg-color").lstrip("#")
         self.sub_bg_color = Gdk.RGBA()
-        self.sub_bg_color.alpha = int(bg_hex[0:2], 16) / 255
-        self.sub_bg_color.red = int(bg_hex[2:4], 16) / 255
-        self.sub_bg_color.green = int(bg_hex[4:6], 16) / 255
-        self.sub_bg_color.blue = int(bg_hex[6:8], 16) / 255
+        if len(bg_hex) >= 8:
+            self.sub_bg_color.alpha = int(bg_hex[0:2], 16) / 255
+            self.sub_bg_color.red = int(bg_hex[2:4], 16) / 255
+            self.sub_bg_color.green = int(bg_hex[4:6], 16) / 255
+            self.sub_bg_color.blue = int(bg_hex[6:8], 16) / 255
+        elif len(bg_hex) >= 6:
+            self.sub_bg_color.alpha = 1.0
+            self.sub_bg_color.red = int(bg_hex[0:2], 16) / 255
+            self.sub_bg_color.green = int(bg_hex[2:4], 16) / 255
+            self.sub_bg_color.blue = int(bg_hex[4:6], 16) / 255
+        else:
+            self.sub_bg_color.alpha = 0.6
+            self.sub_bg_color.red = 0.0
+            self.sub_bg_color.green = 0.0
+            self.sub_bg_color.blue = 0.0
 
         self.sub_bg_color_btn.set_dialog(
             Gtk.ColorDialog(title=_("Subtitle Background"), modal=True, with_alpha=True)

@@ -22,7 +22,7 @@ import os
 import json
 import datetime
 from gettext import gettext as _
-from .utils import logger, is_local_path, idle_add_once
+from .utils import logger, is_local_path, idle_add_once, open_uri
 
 gi.require_version("Adw", "1")
 gi.require_version("Gio", "2.0")

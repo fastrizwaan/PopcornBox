@@ -1,6 +1,14 @@
 import re
 import urllib.parse
+import json
+import base64
+import concurrent.futures
 from . import database
+
+def _get_cached_request(*args, **kwargs):
+    from .api import _get_cached_request as req
+    return req(*args, **kwargs)
+
 
 def resolve_to_imdb_id(imdb_id, media_type, title=None):
     """
@@ -19,7 +27,6 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
             return str_id.split(":")[0]
         if str_id.startswith("tpb_ctl:"):
             try:
-                import base64, json
                 raw_b64 = str_id.split("tpb_ctl:", 1)[1]
                 payload = json.loads(base64.b64decode(raw_b64).decode('utf-8', errors='ignore'))
                 p_url = payload.get("poster", "")
@@ -32,8 +39,6 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
         if tt_match:
             return tt_match.group(1)
 
-    from .api import _get_cached_request
-    
     is_tmdb = False
     if imdb_id:
         str_id = str(imdb_id).strip()
@@ -109,7 +114,6 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
     for the given media item so all stream addons (Torrentio, Castle, DesiFlix, etc.) can be queried.
     Optimized to only perform network lookups if at least one installed stream addon requires that ID prefix.
     """
-    import concurrent.futures
     ids = set()
     if isinstance(item_id, list):
         for i in item_id:
@@ -160,7 +164,6 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
         has_dsf = any(str(i).startswith("dsf:") for i in ids)
         if not has_dsf and title and title != "Loading...":
             try:
-                from .api import _get_cached_request
                 c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                 search_url = f"https://desiflix.stremioaddon.workers.dev/catalog/{c_type}/desiflix/search={urllib.parse.quote(title)}.json"
                 data = _get_cached_request(search_url, max_age_hours=168, timeout=2.5)
@@ -177,7 +180,6 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
         has_tt_curr = any(str(i).startswith("tt") for i in ids)
         if not has_tt_curr and title and title != "Loading...":
             try:
-                from .api import _get_cached_request
                 c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                 search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(title)}.json"
                 data = _get_cached_request(search_url, max_age_hours=168, timeout=2.5)
@@ -200,7 +202,6 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
             root_tt_id = str(tt_id).split(":")[0] if tt_id else None
             if root_tt_id:
                 try:
-                    from .api import _get_cached_request
                     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                     meta_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{root_tt_id}.json"
                     meta_data = _get_cached_request(meta_url, max_age_hours=168, timeout=2.5)
@@ -212,7 +213,6 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
                     pass
             if not res and title and title != "Loading...":
                 try:
-                    from .api import _get_cached_request
                     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                     search_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/catalog/{c_type}/tmdb.top/search={urllib.parse.quote(title)}.json"
                     search_data = _get_cached_request(search_url, max_age_hours=168, timeout=2.5)

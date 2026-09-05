@@ -5,13 +5,24 @@ from gi.repository import Gtk, GObject, GLib, Gdk, GdkPixbuf, Gio, Pango
 import urllib.request
 import os
 import hashlib
+import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from .utils import debug_log
+from . import database
+
+def _get_cached_request(*args, **kwargs):
+    from .api import _get_cached_request as req
+    return req(*args, **kwargs)
 
 if os.environ.get("FLATPAK_ID"):
     BASE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "popcorn-box")
 else:
-    BASE_DIR = os.path.expanduser("~/.var/app/io.github.fastrizwaan.PopcornBox/cache/popcorn-box")
+    flatpak_cache = os.path.expanduser("~/.var/app/io.github.fastrizwaan.PopcornBox/cache/popcorn-box")
+    if os.path.exists(flatpak_cache):
+        BASE_DIR = flatpak_cache
+    else:
+        BASE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "popcorn-box")
 IMAGE_CACHE_DIR = os.path.join(BASE_DIR, 'images')
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
@@ -253,19 +264,16 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             })
             with urllib.request.urlopen(req, timeout=2.5) as response:
-                import json
                 data = json.loads(response.read().decode('utf-8', errors='ignore'))
                 if data and "d" in data and len(data["d"]) > 0:
                     for item in data["d"]:
                         if item.get("id") == item_id and "i" in item and "imageUrl" in item["i"]:
                             poster_url = item["i"]["imageUrl"]
-                            import re
                             poster_url = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX500_.jpg', poster_url)
                             try:
-                                from .database import get_cached_metadata, save_cached_metadata
-                                existing = get_cached_metadata(item_id, item_type) or {}
+                                existing = database.get_cached_metadata(item_id, item_type) or {}
                                 existing["medium_cover_image"] = poster_url
-                                save_cached_metadata(item_id, item_type, existing)
+                                database.save_cached_metadata(item_id, item_type, existing)
                             except Exception:
                                 pass
                             GLib.idle_add(load_image_into_picture, poster_url, poster_widget, width, height)
@@ -274,17 +282,15 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
         pass
         
     try:
-        from .api import _get_cached_request
         if str(item_id).startswith("tt"):
             url = f"https://v3-cinemeta.strem.io/meta/{item_type}/{item_id}.json"
             meta_data = _get_cached_request(url, max_age_hours=168, timeout=2.5)
             if meta_data and "meta" in meta_data and meta_data["meta"].get("poster"):
                 poster_url = meta_data["meta"]["poster"]
                 try:
-                    from .database import get_cached_metadata, save_cached_metadata
-                    existing = get_cached_metadata(item_id, item_type) or {}
+                    existing = database.get_cached_metadata(item_id, item_type) or {}
                     existing["medium_cover_image"] = poster_url
-                    save_cached_metadata(item_id, item_type, existing)
+                    database.save_cached_metadata(item_id, item_type, existing)
                 except Exception:
                     pass
                 GLib.idle_add(load_image_into_picture, poster_url, poster_widget, width, height)
@@ -297,10 +303,9 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
             if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
                 poster_url = tmdb_data["meta"]["poster"]
                 try:
-                    from .database import get_cached_metadata, save_cached_metadata
-                    existing = get_cached_metadata(item_id, item_type) or {}
+                    existing = database.get_cached_metadata(item_id, item_type) or {}
                     existing["medium_cover_image"] = poster_url
-                    save_cached_metadata(item_id, item_type, existing)
+                    database.save_cached_metadata(item_id, item_type, existing)
                 except Exception:
                     pass
                 GLib.idle_add(load_image_into_picture, poster_url, poster_widget, width, height)

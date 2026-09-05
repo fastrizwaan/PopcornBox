@@ -5,8 +5,16 @@ import re
 import atexit
 import shutil
 import time
+import json
+import glob
 
-from .libtorrent_stream import TorrentStreamEngine
+import gi
+gi.require_version("GLib", "2.0")
+from gi.repository import GLib
+
+from .libtorrent_stream import TorrentStreamEngine, info_hash_from_magnet
+from . import database
+from . import api
 
 # Global state for the streaming engines
 _engines = {}
@@ -329,7 +337,6 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
             if target_file_index is None and season is not None and episode is not None:
                 try:
                     if hasattr(engine, '_files'):
-                        from . import api
                         files_data = [{"name": f["path"], "size": f["size"]} for f in engine._files()]
                         found = api.find_episode_file_index(files_data, season, episode)
                         if found is not None:

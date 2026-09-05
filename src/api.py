@@ -7,6 +7,9 @@ import time
 import hashlib
 import logging
 import ssl
+import gzip
+import zlib
+import base64
 from . import database
 from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids
 import concurrent.futures
