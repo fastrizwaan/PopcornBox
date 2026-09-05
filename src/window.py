@@ -139,6 +139,15 @@ def _find_stream_index_exact(stream, stream_list):
             return idx
     return -1
 
+def _stream_matches_provider(stream, provider_name):
+    if not provider_name or not isinstance(stream, dict):
+        return False
+    if provider_name in stream.get("addon_names", []):
+        return True
+    if stream.get("addon_name") == provider_name:
+        return True
+    return False
+
 libegl = ctypes.CDLL("libEGL.so.1")
 egl_get_proc_address = libegl.eglGetProcAddress
 egl_get_proc_address.restype = ctypes.c_void_p
@@ -220,6 +229,7 @@ class MovieDetailsPage(Gtk.Overlay):
         
 
         self.remembered_working_stream = None
+        self.preferred_direct_provider = None
         from . import database
         item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
         primary_id = item_id[0] if isinstance(item_id, list) else item_id
@@ -227,6 +237,15 @@ class MovieDetailsPage(Gtk.Overlay):
             self.remembered_working_stream = database.get_working_stream(primary_id, self.selected_season, self.selected_episode)
             if self.remembered_working_stream:
                 self.selected_torrent = self.remembered_working_stream
+            self.preferred_direct_provider = database.get_setting(f"preferred_direct_provider_{primary_id}", None)
+        if not self.preferred_direct_provider and hasattr(self, "window") and self.window:
+            self.preferred_direct_provider = getattr(self.window, "preferred_direct_provider", None)
+        if not self.preferred_direct_provider:
+            self.preferred_direct_provider = database.get_setting("last_direct_provider", None)
+        if self.remembered_working_stream and self.remembered_working_stream.get("is_http"):
+            anames = self.remembered_working_stream.get("addon_names", [])
+            if anames:
+                self.preferred_direct_provider = anames[0]
         
         self.backdrop_pic = Gtk.Picture()
         self.backdrop_pic.set_can_shrink(True)
@@ -1599,6 +1618,8 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.remembered_working_stream = database.get_working_stream(primary_id, getattr(self, 'selected_season', None), self.selected_episode)
                     if self.remembered_working_stream:
                         self.selected_torrent = self.remembered_working_stream
+                    else:
+                        self.selected_torrent = None
                     if hasattr(self, 'stream_ep_title_label'):
                         s_val = getattr(self, 'selected_season', 1)
                         ep_title = self.selected_video.get("title") or self.selected_video.get("name") or f"Episode {self.selected_episode}"
@@ -1742,7 +1763,20 @@ class MovieDetailsPage(Gtk.Overlay):
             self.update_quality_dropdown()
             self.update_continue_btn()
 
-            if self.torrents and getattr(self, '_auto_play_on_streams_loaded', False):
+            pref_prov = getattr(self, 'preferred_direct_provider', None)
+            has_pref_stream = (
+                pref_prov and any(
+                    t.get('is_http') and _stream_matches_provider(t, pref_prov)
+                    for t in (self.torrents or [])
+                )
+            )
+
+            ready_for_auto_play = False
+            if self.torrents:
+                if not pref_prov or has_pref_stream or is_complete:
+                    ready_for_auto_play = True
+
+            if ready_for_auto_play and getattr(self, '_auto_play_on_streams_loaded', False):
                 self._auto_play_on_streams_loaded = False
                 GLib.idle_add(self.on_watch_clicked, self.watch_btn)
             elif is_complete and not self.torrents and getattr(self, '_auto_play_on_streams_loaded', False):
@@ -1751,7 +1785,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.window.hide_player_loading()
                 if hasattr(self, 'progress_label') and self.progress_label:
                     self.progress_label.set_text("No streams available.")
-            elif self.torrents and getattr(self, '_auto_play_next', False):
+            elif ready_for_auto_play and getattr(self, '_auto_play_next', False):
                 self._auto_play_next = False
                 GLib.idle_add(self.on_watch_clicked, self.watch_btn)
             elif is_complete and not self.torrents and getattr(self, '_auto_play_next', False):
@@ -1773,6 +1807,17 @@ class MovieDetailsPage(Gtk.Overlay):
                 process_batch()
             elif not batch_timer[0]:
                 batch_timer[0] = GLib.timeout_add(300, process_batch)
+
+        if getattr(self, '_auto_play_next', False) or getattr(self, '_auto_play_on_streams_loaded', False):
+            def _fallback_autoplay_check():
+                if not self._is_current_details_page() or getattr(self, '_fetch_gen', 0) != current_gen:
+                    return False
+                if (getattr(self, '_auto_play_next', False) or getattr(self, '_auto_play_on_streams_loaded', False)) and getattr(self, 'torrents', None):
+                    self._auto_play_next = False
+                    self._auto_play_on_streams_loaded = False
+                    GLib.idle_add(self.on_watch_clicked, self.watch_btn)
+                return False
+            GLib.timeout_add(2500, _fallback_autoplay_check)
 
         def fetch():
             from . import api
@@ -1885,21 +1930,25 @@ class MovieDetailsPage(Gtk.Overlay):
         while child := self.quality_button_box.get_first_child():
             self.quality_button_box.remove(child)
 
+        pref_prov = getattr(self, 'preferred_direct_provider', None)
+
         def _stream_sort_key_1080p(t):
+            is_http = 1 if t.get('is_http') else 0
+            is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
             size = float(t.get('size_gb') or 0.0)
             is_under_4gb = (0 < size < 4.0) or (size == 0.0)
             p_size = 1 if is_under_4gb else 0
             seeds = int(t.get('seeders') or 0)
-            is_http = 1 if t.get('is_http') else 0
             ping_ok = 1 if t.get('ping_status') is True else 0
-            return (p_size, ping_ok, is_http, seeds, size)
+            return (is_pref, p_size, ping_ok, is_http, seeds, size)
 
         def _stream_sort_key_general(t):
-            seeds = int(t.get('seeders') or 0)
             is_http = 1 if t.get('is_http') else 0
+            is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
+            seeds = int(t.get('seeders') or 0)
             ping_ok = 1 if t.get('ping_status') is True else 0
             size = float(t.get('size_gb') or 0.0)
-            return (ping_ok, is_http, seeds, size)
+            return (is_pref, ping_ok, is_http, seeds, size)
 
         for q_label in ["4K", "1080p", "720p", "More"]:
             if quality_groups[q_label]:
@@ -2013,11 +2062,23 @@ class MovieDetailsPage(Gtk.Overlay):
                             self.selected_torrent = t_list[idx]
                             break
 
-            # 2. Second priority: User explicitly selected quality in this session
+            # 2. Second priority: If preferred direct provider is active, prefer quality containing it
+            if not target_btn and pref_prov:
+                if saved_label and saved_label in btn_by_label:
+                    if any(t.get('is_http') and _stream_matches_provider(t, pref_prov) for t in quality_groups[saved_label]):
+                        target_btn, target_t_list = btn_by_label[saved_label]
+                if not target_btn:
+                    for q_label in preferred_order:
+                        if q_label in btn_by_label:
+                            if any(t.get('is_http') and _stream_matches_provider(t, pref_prov) for t in quality_groups[q_label]):
+                                target_btn, target_t_list = btn_by_label[q_label]
+                                break
+
+            # 3. Third priority: User explicitly selected quality in this session
             if not target_btn and saved_label and saved_label in btn_by_label:
                 target_btn, target_t_list = btn_by_label[saved_label]
 
-            # 3. Third priority: Preference rule:
+            # 4. Fourth priority: Preference rule:
             # Prefer 1080p if size < 4 GB, if not found in 1080p choose 720p, then others
             if not target_btn:
                 has_1080p_under_4gb = any(
@@ -2167,9 +2228,19 @@ class MovieDetailsPage(Gtk.Overlay):
                 matching_items = [t for t in t_list if _streams_match(working_stream, t)]
                 self.selected_torrent = matching_items[0]
             elif t_list:
-                self.selected_torrent = t_list[0]
+                pref_prov = getattr(self, 'preferred_direct_provider', None)
+                pref_matches = [t for t in t_list if t.get('is_http') and _stream_matches_provider(t, pref_prov)] if pref_prov else []
+                if pref_matches:
+                    self.selected_torrent = pref_matches[0]
+                else:
+                    self.selected_torrent = t_list[0]
             elif raw_t_list and source_idx == 0:
-                self.selected_torrent = raw_t_list[0]
+                pref_prov = getattr(self, 'preferred_direct_provider', None)
+                pref_matches = [t for t in raw_t_list if t.get('is_http') and _stream_matches_provider(t, pref_prov)] if pref_prov else []
+                if pref_matches:
+                    self.selected_torrent = pref_matches[0]
+                else:
+                    self.selected_torrent = raw_t_list[0]
             else:
                 if not getattr(self, 'torrents', None):
                     media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
@@ -2194,6 +2265,24 @@ class MovieDetailsPage(Gtk.Overlay):
         )
         database.save_working_stream(primary_id, getattr(self, "selected_season", None), getattr(self, "selected_episode", None), self.selected_torrent)
         self.remembered_working_stream = self.selected_torrent
+
+        # Remember direct stream provider for subsequent episodes
+        if self.selected_torrent.get("is_http"):
+            addon_names = self.selected_torrent.get("addon_names", [])
+            prov = addon_names[0] if addon_names else self.selected_torrent.get("addon_name")
+            if prov:
+                self.preferred_direct_provider = prov
+                if self.window:
+                    self.window.preferred_direct_provider = prov
+                if primary_id:
+                    database.set_setting(f"preferred_direct_provider_{primary_id}", prov)
+                database.set_setting("last_direct_provider", prov)
+        elif self.media_type in ["series", "anime", "tv"]:
+            self.preferred_direct_provider = None
+            if self.window:
+                self.window.preferred_direct_provider = None
+            if primary_id:
+                database.set_setting(f"preferred_direct_provider_{primary_id}", "")
 
         media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
         if self.media_type == "series" and getattr(self, "selected_season", None) is not None:
@@ -2225,13 +2314,28 @@ class MovieDetailsPage(Gtk.Overlay):
         else:
             all_matching = [t for t in all_matching if not t.get("is_http")]
 
-        queue = [self.selected_torrent]
+        pref_prov = getattr(self, 'preferred_direct_provider', None)
+
+        def _queue_sort_priority(t):
+            t_http = bool(t.get("is_http"))
+            if t_http and pref_prov and _stream_matches_provider(t, pref_prov):
+                return (0, -int(t.get("ping_status") is True), -float(t.get("size_gb") or 0.0))
+            if t_http:
+                return (1, -int(t.get("ping_status") is True), -float(t.get("size_gb") or 0.0))
+            return (2, -int(t.get("seeders") or 0), -float(t.get("size_gb") or 0.0))
+
+        candidates = []
         for t in t_list:
-            if not _streams_match(t, self.selected_torrent):
-                queue.append(t)
+            if not _streams_match(t, self.selected_torrent) and not any(_streams_match(t, c) for c in candidates):
+                candidates.append(t)
         for t in all_matching:
-            if not any(_streams_match(t, q) for q in queue):
-                queue.append(t)
+            if not _streams_match(t, self.selected_torrent) and not any(_streams_match(t, c) for c in candidates):
+                candidates.append(t)
+
+        if is_direct or pref_prov:
+            candidates.sort(key=_queue_sort_priority)
+
+        queue = [self.selected_torrent] + candidates
         init_idx = 0
 
         # Subtitle fetching is handled by play_stream_with_failover — do NOT call it here too
@@ -7170,6 +7274,26 @@ class CineWindow(Adw.ApplicationWindow):
         if p_id:
             database.save_working_stream(p_id, season, episode, working_stream)
 
+        # Update preferred direct provider if this is a direct http stream
+        if working_stream.get("is_http"):
+            addon_names = working_stream.get("addon_names", [])
+            prov = addon_names[0] if addon_names else working_stream.get("addon_name")
+            if prov:
+                self.preferred_direct_provider = prov
+                if p_id:
+                    database.set_setting(f"preferred_direct_provider_{p_id}", prov)
+                database.set_setting("last_direct_provider", prov)
+                page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+                if page:
+                    page.preferred_direct_provider = prov
+        elif getattr(self, "_current_playing_item", {}).get("type") in ["series", "anime", "tv"]:
+            self.preferred_direct_provider = None
+            if p_id:
+                database.set_setting(f"preferred_direct_provider_{p_id}", "")
+            page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+            if page:
+                page.preferred_direct_provider = None
+
         # Update details page if open
         page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
         if page:
@@ -7301,6 +7425,21 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception: pass
         
         page._auto_play_next = True
+
+        # Carry over preferred direct provider
+        prov = getattr(self, 'preferred_direct_provider', None)
+        if not prov and getattr(self, 'stream_queue', None) and self.stream_queue_index < len(self.stream_queue):
+            cur_st = self.stream_queue[self.stream_queue_index]
+            if isinstance(cur_st, dict) and cur_st.get("is_http"):
+                anames = cur_st.get("addon_names", [])
+                prov = anames[0] if anames else cur_st.get("addon_name")
+        if prov:
+            self.preferred_direct_provider = prov
+            page.preferred_direct_provider = prov
+            primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0]
+            if primary_id:
+                from . import database
+                database.set_setting(f"preferred_direct_provider_{primary_id}", prov)
         
         primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0]
         if primary_id:
