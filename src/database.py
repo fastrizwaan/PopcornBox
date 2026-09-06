@@ -307,15 +307,61 @@ def get_continue_watching():
     """Return list of in-progress and played items ordered by last_watched descending."""
     db = _read_db()
     cw_items = list(db.get("continue_watching", []))
-    removed_set = set(db.get("removed_continue_watching", []))
+    user_dismissed = set(db.get("user_dismissed_continue_watching", []))
     
     seen_ids = set()
     valid_cw = []
     for item in cw_items:
         i_id = item.get("id") or item.get("imdb_id")
-        if i_id and str(i_id) not in removed_set and str(i_id) not in seen_ids:
+        if i_id and str(i_id) not in seen_ids and str(i_id) not in user_dismissed:
             seen_ids.add(str(i_id))
             valid_cw.append(item)
+
+    # Auto-heal: If any series in history has saved in-progress episode progress
+    # and is not in valid_cw, include it so it is never lost
+    history_items = db.get("history", [])
+    now = time.time()
+    healed_items = []
+    import re
+    for idx, h in enumerate(history_items):
+        h_id = h.get("id") or h.get("imdb_id")
+        if not h_id or str(h_id) in seen_ids or str(h_id) in user_dismissed:
+            continue
+        if h.get("type") in ["series", "anime", "tv"]:
+            s_val = db.get("settings", {}).get(f"last_s_{h_id}", 1) or 1
+            e_val = db.get("settings", {}).get(f"last_ep_{h_id}_{s_val}", None)
+            if e_val is None:
+                if db.get("settings", {}).get(f"working_stream_{h_id}_{s_val}_1"):
+                    e_val = 1
+            if e_val is not None:
+                seen_ids.add(str(h_id))
+                item_copy = dict(h)
+                item_copy["season"] = s_val
+                item_copy["episode"] = e_val
+                item_copy.setdefault("progress", 0.0)
+                item_copy.setdefault("position", 0.0)
+                base_t = item_copy.get("title") or item_copy.get("name") or "Unknown"
+                base_t = re.sub(r'\s*\(S\d+E\d+\)', '', base_t).strip()
+                item_copy["title"] = base_t
+                item_copy["stream_title"] = f"{base_t} (S{s_val:02d}E{e_val:02d})"
+                lw = h.get("last_watched") or int(now - idx * 60)
+                item_copy["last_watched"] = lw
+                valid_cw.append(item_copy)
+                healed_items.append(item_copy)
+
+    if healed_items:
+        with _db_lock:
+            db_curr = _read_db()
+            curr_cw = db_curr.setdefault("continue_watching", [])
+            rem_list = set(db_curr.get("removed_continue_watching", []))
+            for hi in healed_items:
+                hi_id = str(hi.get("id") or hi.get("imdb_id"))
+                rem_list.discard(hi_id)
+                if not any(str(c.get("id") or c.get("imdb_id")) == hi_id for c in curr_cw):
+                    curr_cw.insert(0, hi)
+            db_curr["removed_continue_watching"] = list(rem_list)
+            db_curr["continue_watching"] = curr_cw[:100]
+            _write_db(db_curr)
 
     return sorted(valid_cw, key=lambda x: x.get("last_watched", 0), reverse=True)
 
@@ -325,21 +371,37 @@ def get_continue_watching_item(item_id):
         return None
     db = _read_db()
     cw_items = list(db.get("continue_watching", []))
-    removed_set = set(db.get("removed_continue_watching", []))
     ids_to_match = [str(x) for x in item_id if x] if isinstance(item_id, (list, set, tuple)) else [str(item_id)]
-    
-    for mid in ids_to_match:
-        if mid in removed_set:
-            return None
             
     for item in cw_items:
         i_id = item.get("id") or item.get("imdb_id")
         i_aliases = [str(i_id)] if i_id else []
         if isinstance(item.get("alias_ids"), list):
-            i_aliases.extend([str(x) for x in item["alias_ids"]])
+            i_aliases.extend([str(x) for x in item["alias_ids"] if x])
         if any(a in ids_to_match for a in i_aliases):
             return item
             
+    # Check history auto-heal on demand
+    for h in db.get("history", []):
+        h_id = h.get("id") or h.get("imdb_id")
+        if h_id and any(str(h_id) == str(m) for m in ids_to_match) and h.get("type") in ["series", "anime", "tv"]:
+            s_val = db.get("settings", {}).get(f"last_s_{h_id}", 1) or 1
+            e_val = db.get("settings", {}).get(f"last_ep_{h_id}_{s_val}", None)
+            if e_val is None and db.get("settings", {}).get(f"working_stream_{h_id}_{s_val}_1"):
+                e_val = 1
+            if e_val is not None:
+                item_copy = dict(h)
+                item_copy["season"] = s_val
+                item_copy["episode"] = e_val
+                item_copy.setdefault("progress", 0.0)
+                item_copy.setdefault("position", 0.0)
+                import re
+                base_t = item_copy.get("title") or item_copy.get("name") or "Unknown"
+                base_t = re.sub(r'\s*\(S\d+E\d+\)', '', base_t).strip()
+                item_copy["title"] = base_t
+                item_copy["stream_title"] = f"{base_t} (S{s_val:02d}E{e_val:02d})"
+                return item_copy
+
     return None
 
 def save_continue_watching(item):
@@ -352,17 +414,23 @@ def save_continue_watching(item):
     with _db_lock:
         db = _read_db()
         cw = db.setdefault("continue_watching", [])
-        removed_set = set(db.get("removed_continue_watching", []))
-        removed_set.discard(str(item_id))
-        db["removed_continue_watching"] = list(removed_set)
         
         ids_to_match = [str(item_id)]
         if isinstance(item.get("alias_ids"), list):
-            ids_to_match.extend([str(x) for x in item["alias_ids"]])
+            ids_to_match.extend([str(x) for x in item["alias_ids"] if x])
         if item.get("id"):
             ids_to_match.append(str(item["id"]))
         if item.get("imdb_id"):
             ids_to_match.append(str(item["imdb_id"]))
+
+        # Remove any matching IDs from removed_continue_watching and user_dismissed_continue_watching
+        removed_set = set(db.get("removed_continue_watching", []))
+        user_dismissed = set(db.get("user_dismissed_continue_watching", []))
+        for mid in ids_to_match:
+            removed_set.discard(mid)
+            user_dismissed.discard(mid)
+        db["removed_continue_watching"] = list(removed_set)
+        db["user_dismissed_continue_watching"] = list(user_dismissed)
 
         existing = None
         new_cw = []
@@ -370,7 +438,7 @@ def save_continue_watching(item):
             e_id = entry.get("id") or entry.get("imdb_id")
             e_aliases = [str(e_id)] if e_id else []
             if isinstance(entry.get("alias_ids"), list):
-                e_aliases.extend([str(x) for x in entry["alias_ids"]])
+                e_aliases.extend([str(x) for x in entry["alias_ids"] if x])
             if any(a in ids_to_match for a in e_aliases):
                 existing = entry
             else:
@@ -383,15 +451,36 @@ def save_continue_watching(item):
         updated_item = dict(existing or {})
         updated_item.update(item)
 
-        # Do not overwrite saved playback position with zero/placeholder position
+        # Check if this is the same episode or a new episode
+        same_ep = True
+        if existing and (item.get("season") is not None or item.get("episode") is not None or existing.get("season") is not None or existing.get("episode") is not None):
+            same_ep = (
+                str(existing.get("season")) == str(item.get("season")) and 
+                str(existing.get("episode")) == str(item.get("episode"))
+            )
+
         new_pos = float(item.get("position") or 0.0)
         new_prog = float(item.get("progress") or 0.0)
-        if new_pos <= 0.0 and existing_pos > 0.0:
-            updated_item["position"] = existing_pos
-        if new_prog <= 0.01 and existing_prog > 0.01:
-            updated_item["progress"] = existing_prog
-        if not updated_item.get("duration") and existing_dur > 0:
-            updated_item["duration"] = existing_dur
+        if same_ep:
+            if new_pos <= 0.0 and existing_pos > 0.0:
+                updated_item["position"] = existing_pos
+            if new_prog <= 0.01 and existing_prog > 0.01:
+                updated_item["progress"] = existing_prog
+            if not updated_item.get("duration") and existing_dur > 0:
+                updated_item["duration"] = existing_dur
+        else:
+            # Different episode: start fresh at the new episode's position and progress
+            updated_item["position"] = new_pos
+            updated_item["progress"] = new_prog
+            if new_pos <= 0.0:
+                updated_item.pop("duration", None)
+            if existing and existing.get("episode") != item.get("episode"):
+                if not item.get("stream_url"):
+                    updated_item.pop("stream_url", None)
+                if not item.get("stream_queue"):
+                    updated_item.pop("stream_queue", None)
+                if not item.get("selected_torrent"):
+                    updated_item.pop("selected_torrent", None)
 
         if "last_watched" not in item:
             import time
@@ -401,7 +490,7 @@ def save_continue_watching(item):
         db["continue_watching"] = new_cw[:100]
         _write_db(db)
 
-def remove_continue_watching(item_id):
+def remove_continue_watching(item_id, blacklist=True, user_action=False):
     """Remove an item from continue_watching."""
     if not item_id:
         return
@@ -412,9 +501,14 @@ def remove_continue_watching(item_id):
             e for e in cw 
             if e.get("id") != item_id and e.get("imdb_id") != item_id
         ]
-        removed_set = set(db.get("removed_continue_watching", []))
-        removed_set.add(str(item_id))
-        db["removed_continue_watching"] = list(removed_set)[-200:]
+        if blacklist:
+            removed_set = set(db.get("removed_continue_watching", []))
+            removed_set.add(str(item_id))
+            db["removed_continue_watching"] = list(removed_set)[-200:]
+        if user_action:
+            user_dismissed = set(db.get("user_dismissed_continue_watching", []))
+            user_dismissed.add(str(item_id))
+            db["user_dismissed_continue_watching"] = list(user_dismissed)[-200:]
         _write_db(db)
 
 # --- Downloads ---

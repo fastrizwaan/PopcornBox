@@ -7,5 +7,7 @@ repo
 .git
 .vscode
 /src/__pycache__
+__pycache__/
+*.pyc
 *.flatpak
 moved/

@@ -1422,6 +1422,36 @@ class MovieDetailsPage(Gtk.Overlay):
         if not cw_item and (self.movie_stub.get("stream_queue") or self.movie_stub.get("stream_url") or float(self.movie_stub.get("position") or 0) > 0):
             cw_item = self.movie_stub
 
+        # Auto-sync/restore to Continue Watching if user previously watched this series/movie
+        if not cw_item and primary_id and self.media_type in ["series", "anime", "tv"]:
+            saved_s = getattr(self, "selected_season", None) or database.get_setting(f"last_s_{primary_id}", 1) or 1
+            saved_ep = getattr(self, "selected_episode", None) or database.get_setting(f"last_ep_{primary_id}_{saved_s}", None)
+            if saved_ep is not None or database.get_working_stream(primary_id, saved_s, 1):
+                ep_val = saved_ep if saved_ep is not None else 1
+                det = details or getattr(self, "movie_details", {}) or {}
+                cov = det.get("medium_cover_image") or self.movie_stub.get("medium_cover_image") or det.get("poster") or self.movie_stub.get("poster")
+                m_title = det.get("title") or self.movie_stub.get("title") or self.movie_stub.get("name") or "Unknown"
+                import re
+                base_t = re.sub(r'\s*\(S\d+E\d+\)', '', m_title).strip()
+                import time as _time
+                cw_item = {
+                    "id": primary_id,
+                    "imdb_id": primary_id,
+                    "title": base_t,
+                    "type": self.media_type,
+                    "medium_cover_image": cov,
+                    "season": saved_s,
+                    "episode": ep_val,
+                    "position": 0.0,
+                    "progress": 0.0,
+                    "duration": 0.0,
+                    "stream_title": f"{base_t} (S{saved_s:02d}E{ep_val:02d})",
+                    "last_watched": int(_time.time()),
+                }
+                database.save_continue_watching(cw_item)
+                if hasattr(self, "window") and self.window and hasattr(self.window, "_update_continue_watching_section"):
+                    self.window._update_continue_watching_section()
+
         working_stream = getattr(self, "remembered_working_stream", None)
         if not working_stream and primary_id:
             working_stream = database.get_working_stream(primary_id, getattr(self, "selected_season", None), getattr(self, "selected_episode", None))
@@ -4366,11 +4396,7 @@ class CineWindow(Adw.ApplicationWindow):
                 if now - last_cw_save >= 4:
                     self._last_cw_save_time = now
                     from . import database
-                    if prog >= 0.92:
-                        item_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
-                        database.remove_continue_watching(item_id)
-                    else:
-                        database.save_continue_watching(self._current_playing_item)
+                    database.save_continue_watching(self._current_playing_item)
                     if hasattr(self, "_update_continue_watching_section"):
                         curr_stack = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
                         if curr_stack != "player":
@@ -6157,7 +6183,7 @@ class CineWindow(Adw.ApplicationWindow):
         from . import database
         item_id = item_data.get("id") or item_data.get("imdb_id")
         if item_id:
-            database.remove_continue_watching(item_id)
+            database.remove_continue_watching(item_id, blacklist=True, user_action=True)
         parent = widget.get_parent()
         if parent and isinstance(parent, Gtk.FlowBoxChild):
             flowbox = parent.get_parent()
@@ -7803,6 +7829,70 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "next_episode_revealer"):
             self.next_episode_revealer.set_reveal_child(False)
 
+    def _advance_continue_watching_for_item(self, item):
+        from . import database
+        item_id = item.get("id") or item.get("imdb_id")
+        if not item_id:
+            return
+            
+        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+        videos = self._get_videos_for_current_page(page) if page else []
+        if not videos:
+            cached = database.get_cached_metadata(item_id)
+            if cached:
+                videos = cached.get("videos", [])
+        
+        current_season = item.get("season", 1) or 1
+        current_episode = item.get("episode", 1) or 1
+        
+        target_season = current_season
+        target_episode = current_episode + 1
+        
+        has_next = True
+        if videos:
+            eps_in_season = [v for v in videos if v.get("season", 1) == current_season]
+            if any(e.get("episode") == target_episode for e in eps_in_season):
+                has_next = True
+            else:
+                next_season = current_season + 1
+                eps_in_next_season = [v for v in videos if v.get("season", 1) == next_season]
+                if eps_in_next_season:
+                    target_season = next_season
+                    target_episode = min((e.get("episode", 1) for e in eps_in_next_season), default=1)
+                    has_next = True
+                else:
+                    has_next = False
+                    
+        if has_next:
+            next_item = dict(item)
+            next_item["season"] = target_season
+            next_item["episode"] = target_episode
+            next_item["position"] = 0.0
+            next_item["progress"] = 0.0
+            next_item["duration"] = 0.0
+            next_item["stream_url"] = None
+            next_item["stream_queue"] = []
+            next_item["selected_torrent"] = None
+            base_title = next_item.get("title", "")
+            import re
+            base_title = re.sub(r'\s*\(S\d+E\d+\)', '', base_title).strip()
+            next_item["title"] = base_title
+            next_item["stream_title"] = f"{base_title} (S{target_season:02d}E{target_episode:02d})"
+            from time import time as _time
+            next_item["last_watched"] = int(_time())
+            
+            database.save_continue_watching(next_item)
+            primary_id = (next_item.get("alias_ids") or [item_id])[0]
+            database.set_setting(f"last_s_{primary_id}", target_season)
+            database.set_setting(f"last_ep_{primary_id}_{target_season}", target_episode)
+            self._current_playing_item = next_item
+            if hasattr(self, "_update_continue_watching_section"):
+                self._update_continue_watching_section()
+        else:
+            database.remove_continue_watching(item_id, blacklist=False)
+            if hasattr(self, "_update_continue_watching_section"):
+                self._update_continue_watching_section()
+
     def _try_play_next_episode(self):
         if self._is_playing_trailer():
             return False
@@ -7891,6 +7981,45 @@ class CineWindow(Adw.ApplicationWindow):
             from . import database
             database.set_setting(f"last_s_{primary_id}", target_season)
             database.set_setting(f"last_ep_{primary_id}_{target_season}", target_episode)
+
+            # Immediately record next episode in Continue Watching
+            cov = (
+                getattr(page, "movie_details", {}).get("medium_cover_image")
+                or (getattr(page, "movie_stub", {}) or {}).get("medium_cover_image")
+                or getattr(page, "movie_details", {}).get("poster")
+                or (getattr(page, "movie_stub", {}) or {}).get("poster")
+                or self._current_playing_item.get("medium_cover_image")
+                or self._current_playing_item.get("poster")
+            )
+            m_title = (
+                getattr(page, "movie_details", {}).get("title")
+                or (getattr(page, "movie_stub", {}) or {}).get("title")
+                or (getattr(page, "movie_stub", {}) or {}).get("name")
+                or self._current_playing_item.get("title")
+                or "Unknown"
+            )
+            m_type = getattr(page, "media_type", None) or self._current_playing_item.get("type", "series")
+            import re
+            base_t = re.sub(r'\s*\(S\d+E\d+\)', '', m_title).strip()
+            from time import time as _time
+            next_cw = {
+                "id": primary_id,
+                "imdb_id": primary_id,
+                "title": base_t,
+                "type": m_type,
+                "medium_cover_image": cov,
+                "season": target_season,
+                "episode": target_episode,
+                "position": 0.0,
+                "progress": 0.0,
+                "duration": 0.0,
+                "stream_title": f"{base_t} (S{target_season:02d}E{target_episode:02d})",
+                "last_watched": int(_time()),
+            }
+            database.save_continue_watching(next_cw)
+            self._current_playing_item = next_cw
+            if hasattr(self, "_update_continue_watching_section"):
+                self._update_continue_watching_section()
         
         if target_season != current_season:
             seasons = sorted(list(set([v.get("season", 1) for v in videos])))
@@ -7929,9 +8058,17 @@ class CineWindow(Adw.ApplicationWindow):
                     self._current_playing_item["duration"] = curr_dur
                     self._current_playing_item["progress"] = prog
                     from . import database
+                    is_series = bool(
+                        self._current_playing_item.get("type") in ["series", "anime", "tv"]
+                        or self._current_playing_item.get("season") is not None
+                        or self._current_playing_item.get("episode") is not None
+                    )
                     if prog >= 0.92:
-                        item_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
-                        database.remove_continue_watching(item_id)
+                        if is_series:
+                            self._advance_continue_watching_for_item(self._current_playing_item)
+                        else:
+                            item_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
+                            database.remove_continue_watching(item_id, blacklist=False)
                     else:
                         database.save_continue_watching(self._current_playing_item)
             except Exception:
@@ -8397,10 +8534,20 @@ class CineWindow(Adw.ApplicationWindow):
                 or query in str(i.get("description") or "").lower()
             ]
             
-        movies = [i for i in items if i.get("type", "movie") == "movie"]
-        series = [i for i in items if i.get("type", "movie") == "series"]
-        anime = [i for i in items if i.get("type", "movie") == "anime"]
-        tv = [i for i in items if i.get("type", "movie") in ["tv", "channel", "tvchannel"]]
+        movies = []
+        series = []
+        anime = []
+        tv = []
+        for i in items:
+            t = str(i.get("type", "")).lower()
+            if t == "anime":
+                anime.append(i)
+            elif t in ["tv", "channel", "tvchannel"]:
+                tv.append(i)
+            elif t == "series" or i.get("season") is not None or i.get("episode") is not None:
+                series.append(i)
+            else:
+                movies.append(i)
         
         def _on_remove_local_item(item_data, card_widget):
             item_id = item_data.get("id") or item_data.get("imdb_id")
@@ -8412,7 +8559,7 @@ class CineWindow(Adw.ApplicationWindow):
             elif page_name == "watched":
                 database.remove_watched(item_id)
             elif page_name == "continue_watching":
-                database.remove_continue_watching(item_id)
+                database.remove_continue_watching(item_id, blacklist=True, user_action=True)
                 if hasattr(self, "_update_continue_watching_section"):
                     self._update_continue_watching_section()
                 
