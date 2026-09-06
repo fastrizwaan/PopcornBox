@@ -1922,29 +1922,57 @@ class MovieDetailsPage(Gtk.Overlay):
             self.prod_hbox.remove(child)
 
         if companies:
+            is_tv = self.media_type in ["series", "anime", "tv"]
+            default_type = "network" if (networks and is_tv) else "company"
             for comp in companies[:15]:
-                card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                card.add_css_class("company-logo-card")
-                card.set_halign(Gtk.Align.CENTER)
-                card.set_valign(Gtk.Align.CENTER)
-                card.set_tooltip_text(comp["name"])
+                card_btn = Gtk.Button()
+                card_btn.add_css_class("company-logo-card")
+                card_btn.set_tooltip_text(comp["name"])
+                card_btn.set_cursor_from_name("pointer")
+
+                inner_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                inner_box.set_halign(Gtk.Align.CENTER)
+                inner_box.set_valign(Gtk.Align.CENTER)
+                card_btn.set_child(inner_box)
 
                 if comp.get("logo"):
                     logo_pic = Gtk.Picture()
-                    logo_pic.set_size_request(110, 38)
+                    logo_pic.set_size_request(100, 36)
                     logo_pic.set_can_shrink(True)
                     logo_pic.set_content_fit(Gtk.ContentFit.CONTAIN)
                     logo_pic.add_css_class("company-logo-pic")
-                    card.append(logo_pic)
-                    load_image_into_picture(comp["logo"], logo_pic, width=140, height=50)
+                    inner_box.append(logo_pic)
+
+                    def make_on_error(box=inner_box, pic=logo_pic, name=comp["name"]):
+                        def _err():
+                            try:
+                                if pic.get_parent() == box:
+                                    box.remove(pic)
+                                fallback_lbl = Gtk.Label(label=name)
+                                fallback_lbl.set_lines(1)
+                                fallback_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+                                fallback_lbl.add_css_class("company-fallback-label")
+                                box.append(fallback_lbl)
+                            except Exception:
+                                pass
+                        return _err
+
+                    load_image_into_picture(comp["logo"], logo_pic, width=130, height=36, on_error=make_on_error(), crop=False)
                 else:
                     comp_lbl = Gtk.Label(label=comp["name"])
                     comp_lbl.set_lines(1)
                     comp_lbl.set_ellipsize(Pango.EllipsizeMode.END)
                     comp_lbl.add_css_class("company-fallback-label")
-                    card.append(comp_lbl)
+                    inner_box.append(comp_lbl)
 
-                self.prod_hbox.append(card)
+                cid = comp.get("id")
+                cname = comp.get("name")
+                clogo = comp.get("logo")
+                ctype = comp.get("type") or default_type
+                if cid:
+                    card_btn.connect("clicked", lambda b, cid=cid, cname=cname, clogo=clogo, ctype=ctype: self._on_company_clicked(cid, cname, clogo, ctype))
+
+                self.prod_hbox.append(card_btn)
 
             self.prod_section_box.set_visible(True)
         else:
@@ -1957,6 +1985,14 @@ class MovieDetailsPage(Gtk.Overlay):
             dialog.present(self.window)
         except Exception as e:
             print(f"[CAST CLICK ERROR] Could not open person details dialog: {e}")
+
+    def _on_company_clicked(self, entity_id, entity_name, logo_url=None, entity_type="company"):
+        try:
+            from .company_dialog import CompanyDetailDialog
+            dialog = CompanyDetailDialog(self.window, entity_id, entity_name, logo_url=logo_url, entity_type=entity_type)
+            dialog.present(self.window)
+        except Exception as e:
+            print(f"[COMPANY CLICK ERROR] Could not open company details dialog: {e}")
 
     def destroy_page(self):
         self._destroyed = True

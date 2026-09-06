@@ -90,7 +90,7 @@ def extract_image_url(m):
                 return url
     return ""
 
-def load_image_into_picture(url, picture_widget, width=None, height=None, on_error=None, is_priority=False):
+def load_image_into_picture(url, picture_widget, width=None, height=None, on_error=None, is_priority=False, crop=True):
     if not url or not isinstance(url, str): return
     url = url.strip()
     if url.startswith("//"):
@@ -105,7 +105,7 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
     setattr(picture_widget, "_popcornbox_image_url", url)
 
     # 1. Fast in-memory pixbuf cache check
-    mem_key = (url, width, height)
+    mem_key = (url, width, height, crop)
     with _MEMORY_PIXBUF_LOCK:
         cached_pixbuf = _MEMORY_PIXBUF_CACHE.get(mem_key)
     if cached_pixbuf:
@@ -193,23 +193,42 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                     orig_w = pixbuf.get_width()
                     orig_h = pixbuf.get_height()
                     if orig_w > 0 and orig_h > 0:
-                        target_ratio = width / height
-                        orig_ratio = orig_w / orig_h
-                        if orig_ratio > target_ratio:
-                            crop_w = int(orig_h * target_ratio)
-                            crop_h = orig_h
-                            crop_x = (orig_w - crop_w) // 2
-                            crop_y = 0
+                        if crop:
+                            target_ratio = width / height
+                            orig_ratio = orig_w / orig_h
+                            if orig_ratio > target_ratio:
+                                crop_w = int(orig_h * target_ratio)
+                                crop_h = orig_h
+                                crop_x = (orig_w - crop_w) // 2
+                                crop_y = 0
+                            else:
+                                crop_w = orig_w
+                                crop_h = int(orig_w / target_ratio)
+                                crop_x = 0
+                                crop_y = (orig_h - crop_h) // 2
+                            try:
+                                sub_pixbuf = GdkPixbuf.Pixbuf.new_subpixbuf(pixbuf, crop_x, crop_y, crop_w, crop_h)
+                                pixbuf = sub_pixbuf.scale_simple(width, height, GdkPixbuf.InterpType.BILINEAR)
+                            except Exception:
+                                pixbuf = pixbuf.scale_simple(width, height, GdkPixbuf.InterpType.BILINEAR)
                         else:
-                            crop_w = orig_w
-                            crop_h = int(orig_w / target_ratio)
-                            crop_x = 0
-                            crop_y = (orig_h - crop_h) // 2
-                        try:
-                            sub_pixbuf = GdkPixbuf.Pixbuf.new_subpixbuf(pixbuf, crop_x, crop_y, crop_w, crop_h)
-                            pixbuf = sub_pixbuf.scale_simple(width, height, GdkPixbuf.InterpType.BILINEAR)
-                        except Exception:
-                            pixbuf = pixbuf.scale_simple(width, height, GdkPixbuf.InterpType.BILINEAR)
+                            scale = min(width / orig_w, height / orig_h)
+                            new_w = max(1, int(orig_w * scale))
+                            new_h = max(1, int(orig_h * scale))
+                            pixbuf = pixbuf.scale_simple(new_w, new_h, GdkPixbuf.InterpType.BILINEAR)
+                elif width or height:
+                    orig_w = pixbuf.get_width()
+                    orig_h = pixbuf.get_height()
+                    if orig_w > 0 and orig_h > 0:
+                        if width:
+                            scale = width / orig_w
+                            new_w = width
+                            new_h = max(1, int(orig_h * scale))
+                        else:
+                            scale = height / orig_h
+                            new_w = max(1, int(orig_w * scale))
+                            new_h = height
+                        pixbuf = pixbuf.scale_simple(new_w, new_h, GdkPixbuf.InterpType.BILINEAR)
 
                 with _MEMORY_PIXBUF_LOCK:
                     if len(_MEMORY_PIXBUF_CACHE) > _MAX_MEMORY_PIXBUFS:

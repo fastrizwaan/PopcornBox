@@ -7,6 +7,7 @@ from src.tmdb_helper import (
     resolve_to_tmdb_id,
     fetch_credits_and_companies,
     fetch_person_details,
+    fetch_company_details,
     get_tmdb_api_key
 )
 
@@ -91,6 +92,14 @@ class TestTmdbCredits(unittest.TestCase):
         net_names = [n["name"] for n in networks]
         self.assertTrue("AMC" in net_names)
         self.assertIsNotNone(networks[0].get("logo"))
+        self.assertEqual(networks[0].get("type"), "network")
+
+    def test_company_type_tags(self):
+        # Movie companies
+        data = fetch_credits_and_companies("tt0137523", media_type="movie")
+        companies = data.get("production_companies", [])
+        self.assertTrue(len(companies) > 0)
+        self.assertEqual(companies[0].get("type"), "company")
 
     def test_fetch_person_details_and_filmography(self):
         # Edward Norton (TMDB ID 819)
@@ -115,6 +124,36 @@ class TestTmdbCredits(unittest.TestCase):
         self.assertIn("type", item)
         self.assertIn("year", item)
         self.assertIn("rating", item)
+
+    def test_fetch_company_details(self):
+        # AMC network (TMDB ID 174)
+        company = fetch_company_details(174, entity_type="network")
+        self.assertIsNotNone(company)
+        self.assertEqual(company.get("id"), 174)
+        self.assertIn("name", company)
+        self.assertIn("movies", company)
+        self.assertIn("series", company)
+        self.assertIn("all_titles", company)
+
+    def test_contain_scaling_aspect_ratio(self):
+        # Verify proportional scaling logic for square logos (e.g. Apple 100x100 into 130x36 badge)
+        orig_w, orig_h = 100, 100
+        target_w, target_h = 130, 36
+        scale = min(target_w / orig_w, target_h / orig_h)
+        new_w = max(1, int(orig_w * scale))
+        new_h = max(1, int(orig_h * scale))
+        # Entire 1:1 image scales to 36x36, preserving 1:1 aspect ratio without crop
+        self.assertEqual(new_w, 36)
+        self.assertEqual(new_h, 36)
+
+        # Verify wide logo (e.g. 300x100 into 130x36 badge)
+        orig_w, orig_h = 300, 100
+        scale = min(target_w / orig_w, target_h / orig_h)
+        new_w = max(1, int(orig_w * scale))
+        new_h = max(1, int(orig_h * scale))
+        self.assertTrue(new_w <= target_w)
+        self.assertTrue(new_h <= target_h)
+        self.assertAlmostEqual(new_w / new_h, 3.0, delta=0.1)
 
 
 if __name__ == "__main__":

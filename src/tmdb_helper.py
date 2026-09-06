@@ -442,7 +442,8 @@ def fetch_credits_and_companies(item_id, media_type="movie", title=None):
                 production_companies.append({
                     "id": c.get("id"),
                     "name": cname,
-                    "logo": f"https://image.tmdb.org/t/p/w300{logo}" if logo else None
+                    "logo": f"https://image.tmdb.org/t/p/w300{logo}" if logo else None,
+                    "type": "company"
                 })
 
             # 4. Networks
@@ -454,7 +455,8 @@ def fetch_credits_and_companies(item_id, media_type="movie", title=None):
                 networks.append({
                     "id": n.get("id"),
                     "name": nname,
-                    "logo": f"https://image.tmdb.org/t/p/w300{logo}" if logo else None
+                    "logo": f"https://image.tmdb.org/t/p/w300{logo}" if logo else None,
+                    "type": "network"
                 })
 
             return {
@@ -517,7 +519,8 @@ def fetch_credits_and_companies(item_id, media_type="movie", title=None):
                 production_companies.append({
                     "id": c.get("id"),
                     "name": cname,
-                    "logo": f"https://image.tmdb.org/t/p/w300{logo}" if logo else None
+                    "logo": f"https://image.tmdb.org/t/p/w300{logo}" if logo else None,
+                    "type": "company"
                 })
 
             return {
@@ -638,4 +641,123 @@ def fetch_person_details(person_id):
     except Exception as e:
         print(f"[TMDB] Failed to fetch person details for {person_id}: {e}")
         return None
+
+
+def fetch_company_details(entity_id, entity_type="company"):
+    """
+    Fetches details for a production company or TV network from TMDB,
+    along with a curated catalog of movies and series produced or broadcast by that entity.
+    """
+    if not entity_id:
+        return None
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return None
+
+    try:
+        is_network = str(entity_type).lower() in ["network", "networks", "tv_network"]
+
+        info_data = None
+        if is_network:
+            info_url = f"https://api.themoviedb.org/3/network/{entity_id}?api_key={api_key}"
+            info_data = _get_cached_request(info_url, max_age_hours=168, timeout=5.0)
+            if not info_data:
+                info_data = _get_cached_request(f"https://api.themoviedb.org/3/company/{entity_id}?api_key={api_key}", max_age_hours=168, timeout=5.0)
+                if info_data:
+                    is_network = False
+        else:
+            info_url = f"https://api.themoviedb.org/3/company/{entity_id}?api_key={api_key}"
+            info_data = _get_cached_request(info_url, max_age_hours=168, timeout=5.0)
+            if not info_data:
+                info_data = _get_cached_request(f"https://api.themoviedb.org/3/network/{entity_id}?api_key={api_key}", max_age_hours=168, timeout=5.0)
+                if info_data:
+                    is_network = True
+
+        movie_url = f"https://api.themoviedb.org/3/discover/movie?api_key={api_key}&with_companies={entity_id}&sort_by=popularity.desc&page=1"
+        if is_network:
+            tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_networks={entity_id}&sort_by=popularity.desc&page=1"
+        else:
+            tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_companies={entity_id}&sort_by=popularity.desc&page=1"
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            fut_movies = executor.submit(_get_cached_request, movie_url, 168, None, False, 5.0)
+            fut_tv = executor.submit(_get_cached_request, tv_url, 168, None, False, 5.0)
+            raw_movies = fut_movies.result() or {}
+            raw_tv = fut_tv.result() or {}
+
+        movies = []
+        for item in raw_movies.get("results", []):
+            mid = item.get("id")
+            poster_path = item.get("poster_path")
+            if not mid or not poster_path:
+                continue
+            title = item.get("title") or item.get("original_title") or "Unknown"
+            rel_date = item.get("release_date") or ""
+            year = rel_date[:4] if len(rel_date) >= 4 else ""
+            poster = f"https://image.tmdb.org/t/p/w300{poster_path}"
+            movies.append({
+                "id": f"tmdb:{mid}",
+                "raw_id": mid,
+                "title": title,
+                "name": title,
+                "type": "movie",
+                "media_type": "movie",
+                "poster": poster,
+                "medium_cover_image": poster,
+                "year": year,
+                "rating": round(float(item.get("vote_average", 0)), 1) if item.get("vote_average") else None,
+                "vote_count": item.get("vote_count", 0),
+                "popularity": item.get("popularity", 0.0),
+                "release_date": rel_date,
+                "overview": (item.get("overview") or "").strip()
+            })
+
+        series = []
+        for item in raw_tv.get("results", []):
+            sid = item.get("id")
+            poster_path = item.get("poster_path")
+            if not sid or not poster_path:
+                continue
+            title = item.get("name") or item.get("original_name") or "Unknown"
+            rel_date = item.get("first_air_date") or ""
+            year = rel_date[:4] if len(rel_date) >= 4 else ""
+            poster = f"https://image.tmdb.org/t/p/w300{poster_path}"
+            series.append({
+                "id": f"tmdb:{sid}",
+                "raw_id": sid,
+                "title": title,
+                "name": title,
+                "type": "series",
+                "media_type": "series",
+                "poster": poster,
+                "medium_cover_image": poster,
+                "year": year,
+                "rating": round(float(item.get("vote_average", 0)), 1) if item.get("vote_average") else None,
+                "vote_count": item.get("vote_count", 0),
+                "popularity": item.get("popularity", 0.0),
+                "release_date": rel_date,
+                "overview": (item.get("overview") or "").strip()
+            })
+
+        all_titles = movies + series
+        all_titles.sort(key=lambda x: (x.get("vote_count", 0) > 10, x.get("popularity", 0.0)), reverse=True)
+
+        logo_path = info_data.get("logo_path") if info_data else None
+        return {
+            "id": entity_id,
+            "type": "network" if is_network else "company",
+            "name": (info_data.get("name") if info_data else "") or "",
+            "description": (info_data.get("description") if info_data else "") or "",
+            "headquarters": (info_data.get("headquarters") if info_data else "") or "",
+            "origin_country": (info_data.get("origin_country") if info_data else "") or "",
+            "homepage": (info_data.get("homepage") if info_data else "") or "",
+            "logo": f"https://image.tmdb.org/t/p/w300{logo_path}" if logo_path else None,
+            "movies": movies,
+            "series": series,
+            "all_titles": all_titles
+        }
+    except Exception as e:
+        print(f"[TMDB] Failed to fetch company details for {entity_id} ({entity_type}): {e}")
+        return None
+
 
