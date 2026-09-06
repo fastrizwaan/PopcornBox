@@ -1507,7 +1507,189 @@ _RE_BITRATE = re.compile(
 )
 _RE_SEED = re.compile(r'(?:👤|👥|[Ss]eeders?[:\s]*)\s*(\d+)')
 
-def process_raw_streams(all_streams):
+MATCH_EXACT = 2
+MATCH_SEASON_PACK = 1
+MATCH_UNKNOWN = 0
+MATCH_MISMATCH = -1
+
+_RE_SXX_EXX = re.compile(
+    r'\bS(\d{1,2})[\s._-]*E(\d{1,3})(?:[\s._-]*(?:E|[-~])(\d{1,3}))?\b',
+    re.IGNORECASE
+)
+_RE_SEASON_EPISODE = re.compile(
+    r'\bseason[\s._-]*(\d{1,2})[\s._-]*(?:episode|ep)[\s._-]*(\d{1,3})(?:[\s._-]*(?:-|to)[\s._-]*(\d{1,3}))?\b',
+    re.IGNORECASE
+)
+_RE_NXMM = re.compile(
+    r'(?<!\d)(\d{1,2})x(\d{1,3})(?:[\s._-]*[-~][\s._-]*(\d{1,3}))?(?!\d|p\b)',
+    re.IGNORECASE
+)
+_RE_STANDALONE_EP = re.compile(
+    r'\b(?:episode|ep)[\s._-]*(\d{1,3})(?:[\s._-]*(?:-|to)[\s._-]*(\d{1,3}))?\b',
+    re.IGNORECASE
+)
+_RE_ANIME_EP = re.compile(
+    r'(?:^|[\s_.-])-\s*(\d{1,3})(?:v\d)?(?:[\s_.-]*(?:-|~)\s*(\d{1,3}))?(?:[\s_.-]+(?:\[|\(|\d{3,4}p|web|bd|dvd|flac|aac|x264|x265|hevc|mkv|mp4)|\.mkv|\.mp4|$)',
+    re.IGNORECASE
+)
+_RE_SEASON_PACK = re.compile(
+    r'\b(?:season[\s._-]*(\d{1,2})|s(\d{1,2}))\b(?!\s*e\d)',
+    re.IGNORECASE
+)
+
+def extract_stream_episode_info(text):
+    """
+    Extracts (season, episode_start, episode_end, is_season_pack) from text.
+    Returns: (int or None, int or None, int or None, bool)
+    """
+    if not text:
+        return None, None, None, False
+    t = str(text)
+
+    # 1. SxxExx
+    m = _RE_SXX_EXX.search(t)
+    if m:
+        s = int(m.group(1))
+        ep1 = int(m.group(2))
+        ep2 = int(m.group(3)) if m.group(3) else None
+        return s, ep1, ep2, False
+
+    # 2. Season X Episode Y
+    m = _RE_SEASON_EPISODE.search(t)
+    if m:
+        s = int(m.group(1))
+        ep1 = int(m.group(2))
+        ep2 = int(m.group(3)) if m.group(3) else None
+        return s, ep1, ep2, False
+
+    # 3. NxMM (e.g. 1x03)
+    m = _RE_NXMM.search(t)
+    if m:
+        s = int(m.group(1))
+        ep1 = int(m.group(2))
+        ep2 = int(m.group(3)) if m.group(3) else None
+        if s < 100 and ep1 < 1000:
+            return s, ep1, ep2, False
+
+    # 4. Standalone Ep/Episode
+    m = _RE_STANDALONE_EP.search(t)
+    if m:
+        ep1 = int(m.group(1))
+        ep2 = int(m.group(2)) if m.group(2) else None
+        m_s = _RE_SEASON_PACK.search(t)
+        s = int(m_s.group(1) or m_s.group(2)) if m_s else None
+        return s, ep1, ep2, False
+
+    # 5. Anime-style delimiter: " - 03 "
+    m = _RE_ANIME_EP.search(t)
+    if m:
+        ep1 = int(m.group(1))
+        ep2 = int(m.group(2)) if m.group(2) else None
+        m_s = _RE_SEASON_PACK.search(t)
+        s = int(m_s.group(1) or m_s.group(2)) if m_s else None
+        return s, ep1, ep2, False
+
+    # 6. Season Pack
+    m = _RE_SEASON_PACK.search(t)
+    if m:
+        s = int(m.group(1) or m.group(2))
+        return s, None, None, True
+
+    return None, None, None, False
+
+def get_stream_search_text(stream):
+    """Collect all searchable text lines/filenames for a stream."""
+    if not isinstance(stream, dict):
+        return str(stream or "")
+    parts = []
+    for k in ("filename", "stream_title", "title", "name"):
+        v = stream.get(k)
+        if v and isinstance(v, str):
+            parts.append(v)
+    bh = stream.get("behaviorHints")
+    if isinstance(bh, dict):
+        for k in ("filename", "videoFilename"):
+            v = bh.get(k)
+            if v and isinstance(v, str):
+                parts.append(v)
+    raw_url = stream.get("url") or stream.get("externalUrl")
+    if raw_url and isinstance(raw_url, str):
+        try:
+            unquoted = urllib.parse.unquote(raw_url.split("?")[0].split("#")[0])
+            last_segment = unquoted.rstrip("/").rsplit("/", 1)[-1]
+            if any(last_segment.lower().endswith(ext) for ext in [".mkv", ".mp4", ".avi", ".webm", ".m4v"]):
+                parts.append(last_segment)
+        except Exception:
+            pass
+    return " \n ".join(parts)
+
+def match_stream_to_episode(stream, target_season, target_episode, ep_title=None, series_title=None):
+    """
+    Evaluates whether a stream corresponds to the requested season and episode.
+    Returns:
+        MATCH_EXACT (2): Explicit match for target season and episode.
+        MATCH_SEASON_PACK (1): Valid season pack containing target season (torrents only).
+        MATCH_UNKNOWN (0): Ambiguous stream with no season or episode indicator.
+        MATCH_MISMATCH (-1): Explicit indicator of a different episode or different season.
+    """
+    if target_season is None and target_episode is None:
+        return MATCH_UNKNOWN
+
+    try:
+        t_season = int(target_season) if target_season is not None else 1
+    except (ValueError, TypeError):
+        t_season = 1
+
+    try:
+        t_episode = int(target_episode) if target_episode is not None else None
+    except (ValueError, TypeError):
+        t_episode = None
+
+    if t_episode is None:
+        return MATCH_UNKNOWN
+
+    text = get_stream_search_text(stream)
+    if not text.strip():
+        return MATCH_UNKNOWN
+
+    s, ep_start, ep_end, is_pack = extract_stream_episode_info(text)
+
+    # 1. Season mismatch check
+    if s is not None and s != t_season:
+        return MATCH_MISMATCH
+
+    # 2. Season pack match
+    if is_pack:
+        is_http = stream.get("is_http") if isinstance(stream, dict) else False
+        if is_http:
+            return MATCH_UNKNOWN
+        return MATCH_SEASON_PACK
+
+    # 3. Explicit episode number matched
+    if ep_start is not None:
+        if ep_end is not None:
+            if ep_start <= t_episode <= ep_end:
+                return MATCH_EXACT
+            else:
+                return MATCH_MISMATCH
+        else:
+            if ep_start == t_episode:
+                return MATCH_EXACT
+            else:
+                return MATCH_MISMATCH
+
+    # 4. Episode title match (fallback when filename has no SxxExx but has episode title)
+    if ep_title and isinstance(ep_title, str):
+        clean_ep_title = ep_title.strip()
+        if len(clean_ep_title) >= 4 and not re.match(r'^(?:episode|ep|part)\s*\d+$', clean_ep_title, re.IGNORECASE):
+            norm_title = re.sub(r'[^a-zA-Z0-9]+', ' ', clean_ep_title).lower().strip()
+            norm_text = re.sub(r'[^a-zA-Z0-9]+', ' ', text).lower()
+            if norm_title and norm_title in norm_text:
+                return MATCH_EXACT
+
+    return MATCH_UNKNOWN
+
+def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
     if not all_streams:
         return []
     valid_streams = []
@@ -1616,7 +1798,7 @@ def process_raw_streams(all_streams):
             or "youtube.com" in stream_url.lower() or "youtu.be" in stream_url.lower()
         )
             
-        valid_streams.append({
+        stream_entry = {
             "hash": raw_id,
             "url": stream_url,
             "externalUrl": external_url,
@@ -1636,9 +1818,21 @@ def process_raw_streams(all_streams):
             "filename": filename,
             "behaviorHints": behavior_hints,
             "addon_names": [s.get("addon_name")] if s.get("addon_name") else []
-        })
+        }
+
+        if season is not None and episode is not None:
+            ep_match = match_stream_to_episode(stream_entry, season, episode, ep_title)
+            # Filter out streams that explicitly belong to a different episode or season!
+            if ep_match == MATCH_MISMATCH:
+                continue
+            stream_entry["ep_match"] = ep_match
+        else:
+            stream_entry["ep_match"] = MATCH_UNKNOWN
+
+        valid_streams.append(stream_entry)
     
     def _rank_key(x):
+        ep_m = x.get("ep_match", 0)
         q_val = x.get("q_val", 0)
         size_gb = float(x.get("size_gb") or 0.0)
         seeders = x.get("seeders", 0) if not x.get("is_http") else 100
@@ -1655,7 +1849,7 @@ def process_raw_streams(all_streams):
             p_tier = 1
         else:
             p_tier = 0
-        return (p_tier, seeders, q_val, size_gb)
+        return (ep_m, p_tier, seeders, q_val, size_gb)
 
     valid_streams.sort(key=_rank_key, reverse=True)
     return valid_streams
@@ -1803,7 +1997,7 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
             except concurrent.futures.TimeoutError:
                 print("Timeout fetching streams from some addons")
             
-    valid_streams = process_raw_streams(all_streams)
+    valid_streams = process_raw_streams(all_streams, season=season, episode=episode)
     if valid_streams:
         database.save_cached_streams(cache_key, valid_streams)
     return valid_streams
@@ -1897,7 +2091,7 @@ def ping_and_filter_streams(streams):
             filtered.append(s)
     return filtered
 
-def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None):
+def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None):
     if not imdb_id:
         if callback: callback([], is_cached=False, is_complete=True)
         return []
@@ -2006,8 +2200,9 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             elif len(parts) == 2 and parts[-1].isdigit() and parts[0].startswith("tt"):
                 clean_cur_id = parts[0]
 
-        if matched_media_type == "series" and season is not None and episode is not None:
-            url = f"{base_url}stream/series/{urllib.parse.quote(clean_cur_id, safe=':')}:{season}:{episode}.json"
+        resource_type = matched_media_type if matched_media_type in ["series", "tv", "anime", "tvshow"] else "series"
+        if (matched_media_type in ["series", "tv", "anime", "tvshow"] or actual_media in ["series", "anime", "tv"]) and season is not None and episode is not None:
+            url = f"{base_url}stream/{resource_type}/{urllib.parse.quote(clean_cur_id, safe=':')}:{season}:{episode}.json"
         else:
             url = f"{base_url}stream/{matched_media_type}/{urllib.parse.quote(str(cur_id), safe=':')}.json"
             
@@ -2068,7 +2263,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             }
             all_raw_streams.append(raw)
 
-    final_streams = process_raw_streams(all_raw_streams)
+    final_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title)
 
     import concurrent.futures
     num_workers = min(len(all_stream_addons), 8) if all_stream_addons else 1
@@ -2140,12 +2335,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                     s["addon_name"] = addon_name
                                     all_raw_streams.append(s)
                                 if callback:
-                                    current_parsed = process_raw_streams(list(all_raw_streams))
+                                    current_parsed = process_raw_streams(list(all_raw_streams), season=season, episode=episode, ep_title=ep_title)
                                     callback(current_parsed, is_cached=False, is_complete=False)
                         except Exception as e:
                             print(f"Error in addon future: {e}")
 
-    final_streams = process_raw_streams(all_raw_streams)
+    final_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title)
 
     if final_streams:
         database.save_cached_streams(cache_key, final_streams)

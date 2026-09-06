@@ -1778,7 +1778,9 @@ class MovieDetailsPage(Gtk.Overlay):
 
         self._fetch_gen = getattr(self, '_fetch_gen', 0) + 1
         current_gen = self._fetch_gen
-        target_title = (selected_video.get("title") if selected_video else None) or self.movie_stub.get("title")
+        series_title = self.movie_stub.get("title") or self.movie_stub.get("name")
+        ep_title = (selected_video.get("title") if selected_video else None) or (selected_video.get("name") if selected_video else None)
+        target_title = series_title or ep_title
         
         if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
             self.stream_abort_event.set()
@@ -1884,7 +1886,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 sel_episode,
                 callback=lambda t, is_cached=False, is_complete=False: GLib.idle_add(on_stream_batch, t, is_cached, is_complete),
                 title=target_title,
-                abort_event=current_abort_event
+                abort_event=current_abort_event,
+                ep_title=ep_title
             )
         threading.Thread(target=fetch, daemon=True).start()
 
@@ -1946,6 +1949,18 @@ class MovieDetailsPage(Gtk.Overlay):
         if sel_prov_name != "All Providers":
             filtered_torrents = [t for t in filtered_torrents if sel_prov_name in t.get("addon_names", [])]
 
+        sel_s = getattr(self, 'selected_season', None) if self.media_type in ["series", "anime", "tv"] else None
+        sel_e = getattr(self, 'selected_episode', None) if self.media_type in ["series", "anime", "tv"] else None
+        sel_v = getattr(self, 'selected_video', None)
+        ep_t = (sel_v.get("title") or sel_v.get("name")) if isinstance(sel_v, dict) else None
+
+        if sel_s is not None and sel_e is not None:
+            from . import api
+            filtered_torrents = [
+                t for t in filtered_torrents
+                if api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH
+            ]
+
         if not filtered_torrents:
             self.current_t_list = []
             self.selected_torrent = None
@@ -1985,6 +2000,8 @@ class MovieDetailsPage(Gtk.Overlay):
         pref_prov = getattr(self, 'preferred_direct_provider', None)
 
         def _stream_sort_key_1080p(t):
+            from . import api
+            ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
             is_http = 1 if t.get('is_http') else 0
             is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
             size = float(t.get('size_gb') or 0.0)
@@ -1992,15 +2009,17 @@ class MovieDetailsPage(Gtk.Overlay):
             p_size = 1 if is_under_4gb else 0
             seeds = int(t.get('seeders') or 0)
             ping_ok = 1 if t.get('ping_status') is True else 0
-            return (is_pref, p_size, ping_ok, is_http, seeds, size)
+            return (ep_m, is_pref, p_size, ping_ok, is_http, seeds, size)
 
         def _stream_sort_key_general(t):
+            from . import api
+            ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
             is_http = 1 if t.get('is_http') else 0
             is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
             seeds = int(t.get('seeders') or 0)
             ping_ok = 1 if t.get('ping_status') is True else 0
             size = float(t.get('size_gb') or 0.0)
-            return (is_pref, ping_ok, is_http, seeds, size)
+            return (ep_m, is_pref, ping_ok, is_http, seeds, size)
 
         for q_label in ["4K", "1080p", "720p", "More"]:
             if quality_groups[q_label]:
@@ -2043,6 +2062,10 @@ class MovieDetailsPage(Gtk.Overlay):
                 strings.append(full_item_str)
             selected_idx = 0
             curr_sel = getattr(self, 'selected_torrent', None)
+            if curr_sel and sel_s is not None and sel_e is not None:
+                from . import api
+                if api.match_stream_to_episode(curr_sel, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
+                    curr_sel = None
             if curr_sel and t_list:
                 selected_idx = _find_stream_index_exact(curr_sel, t_list)
                 if selected_idx < 0:
@@ -2276,7 +2299,23 @@ class MovieDetailsPage(Gtk.Overlay):
         elif source_idx == 2:
             t_list = [t for t in t_list if not t.get('is_http')]
 
+        sel_s = getattr(self, 'selected_season', None) if self.media_type in ["series", "anime", "tv"] else None
+        sel_e = getattr(self, 'selected_episode', None) if self.media_type in ["series", "anime", "tv"] else None
+        sel_v = getattr(self, 'selected_video', None)
+        ep_t = (sel_v.get("title") or sel_v.get("name")) if isinstance(sel_v, dict) else None
+
+        if sel_s is not None and sel_e is not None:
+            from . import api
+            t_list = [t for t in t_list if api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH]
+            raw_t_list = [t for t in raw_t_list if api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH]
+
         selected = getattr(self, 'selected_torrent', None)
+        if selected and sel_s is not None and sel_e is not None:
+            from . import api
+            if api.match_stream_to_episode(selected, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
+                selected = None
+                self.selected_torrent = None
+
         if selected and any(_streams_match(selected, t) for t in t_list):
             self.selected_torrent = next(t for t in t_list if _streams_match(selected, t))
         else:
@@ -2419,12 +2458,15 @@ class MovieDetailsPage(Gtk.Overlay):
                 return (tier, -int(t.get("seeders") or 0), -float(t.get("size_gb") or 0.0))
 
         candidates = []
+        from . import api
         for t in t_list:
             if not _streams_match(t, self.selected_torrent) and not any(_streams_match(t, c) for c in candidates):
-                candidates.append(t)
+                if sel_s is None or sel_e is None or api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH:
+                    candidates.append(t)
         for t in all_matching:
             if not _streams_match(t, self.selected_torrent) and not any(_streams_match(t, c) for c in candidates):
-                candidates.append(t)
+                if sel_s is None or sel_e is None or api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH:
+                    candidates.append(t)
 
         if is_direct or pref_prov or pref_q:
             candidates.sort(key=_queue_sort_priority)
@@ -7557,6 +7599,10 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception: pass
         
         page._auto_play_next = True
+        page.selected_torrent = None
+        page.remembered_working_stream = None
+        self.selected_torrent = None
+        self.remembered_working_stream = None
 
         # Carry over preferred direct provider
         prov = getattr(self, 'preferred_direct_provider', None)

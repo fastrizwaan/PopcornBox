@@ -542,15 +542,25 @@ def get_working_stream(item_id, season=None, episode=None):
     """Get the remembered working stream/torrent for a movie or series episode."""
     if not item_id:
         return None
+
+    def _is_stream_valid_for_ep(st):
+        if season is None or episode is None or not st:
+            return True
+        try:
+            from . import api
+            return api.match_stream_to_episode(st, season, episode) != api.MATCH_MISMATCH
+        except Exception:
+            return True
+
     s_key = f"{season}" if season is not None else ""
     e_key = f"{episode}" if episode is not None else ""
     key = f"working_stream_{item_id}_{s_key}_{e_key}"
     saved = get_setting(key, None)
-    if saved:
+    if saved and _is_stream_valid_for_ep(saved):
         return saved
     if s_key or e_key:
         general_saved = get_setting(f"working_stream_{item_id}__", None)
-        if general_saved:
+        if general_saved and _is_stream_valid_for_ep(general_saved):
             return general_saved
     cw = get_continue_watching_item(item_id)
     if cw:
@@ -558,10 +568,13 @@ def get_working_stream(item_id, season=None, episode=None):
             return None
         if episode is not None and cw.get("episode") is not None and str(cw.get("episode")) != str(episode):
             return None
+        if season is not None and episode is not None and (cw.get("season") is None or cw.get("episode") is None):
+            return None
+        cand = None
         if cw.get("selected_torrent"):
-            return _normalize_stream_for_storage(cw["selected_torrent"])
-        if cw.get("magnet") or cw.get("stream_url") or cw.get("hash"):
-            return {
+            cand = _normalize_stream_for_storage(cw["selected_torrent"])
+        elif cw.get("magnet") or cw.get("stream_url") or cw.get("hash"):
+            cand = {
                 "url": cw.get("stream_url") or cw.get("magnet"),
                 "magnet": cw.get("magnet"),
                 "hash": cw.get("hash"),
@@ -569,6 +582,8 @@ def get_working_stream(item_id, season=None, episode=None):
                 "stream_title": cw.get("stream_title") or cw.get("title"),
                 "is_http": bool(cw.get("stream_url") and not str(cw.get("stream_url")).startswith("magnet:")),
             }
+        if cand and _is_stream_valid_for_ep(cand):
+            return cand
     return None
 
 
