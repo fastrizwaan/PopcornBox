@@ -10,6 +10,24 @@ def _get_cached_request(*args, **kwargs):
     return req(*args, **kwargs)
 
 
+DEFAULT_TMDB_API_KEY = "68e094699525b18a70bab2f86b1fa706"
+
+def get_tmdb_api_key():
+    import os
+    env_key = os.environ.get("TMDB_API_KEY")
+    if env_key:
+        return env_key
+    try:
+        for addon in database.get_addons():
+            m_url = addon.get("manifest_url", "")
+            if "tmdb" in m_url.lower():
+                match = re.search(r'/([a-fA-F0-9]{32})/', m_url)
+                if match:
+                    return match.group(1)
+    except Exception:
+        pass
+    return DEFAULT_TMDB_API_KEY
+
 def resolve_to_imdb_id(imdb_id, media_type, title=None):
     """
     Resolves a TMDB ID or raw ID to an IMDB ID using multiple fallback strategies.
@@ -56,17 +74,9 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
     resolved_id = None
     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
     
-    # 1. Try official TMDB API if user has an addon with the API key
+    # 1. Try official TMDB API
     try:
-        tmdb_api_key = None
-        for addon in database.get_addons():
-            m_url = addon.get("manifest_url", "")
-            if "tmdb" in m_url.lower():
-                match = re.search(r'/([a-fA-F0-9]{32})/', m_url)
-                if match:
-                    tmdb_api_key = match.group(1)
-                    break
-                    
+        tmdb_api_key = get_tmdb_api_key()
         if tmdb_api_key:
             tmdb_id = str(imdb_id).split(":")[-1] if ":" in str(imdb_id) else str(imdb_id).split(".")[-1]
             tmdb_type = "tv" if c_type == "series" else "movie"
@@ -78,7 +88,7 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
     except Exception as e:
         pass
         
-    # 2. Try the public Stremio TMDB addon (requires no API key)
+    # 2. Try the public Stremio TMDB addon
     if not resolved_id:
         try:
             tmdb_id = str(imdb_id).split(":")[-1] if ":" in str(imdb_id) else str(imdb_id).split(".")[-1]
@@ -259,3 +269,373 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
             result_list.append(i)
 
     return result_list
+
+
+def resolve_to_tmdb_id(item_id, media_type="movie", title=None):
+    """
+    Resolves an item_id (IMDB tt..., raw digits, tmdb:..., ctmdb....) or title to a numeric TMDB ID.
+    Returns string of digits (e.g. '550') or None.
+    """
+    if not item_id and not title:
+        return None
+
+    str_id = str(item_id or "").strip()
+    if str_id.startswith("tmdb:"):
+        num = str_id.split("tmdb:")[-1].split(":")[0]
+        if num.isdigit():
+            return num
+    if str_id.startswith("ctmdb."):
+        num = str_id.split(".")[-1]
+        if num.isdigit():
+            return num
+    if (str_id.startswith("bolly:") or str_id.startswith("hub:")) and ":" in str_id:
+        num = str_id.split(":")[-1]
+        if num.isdigit():
+            return num
+    if str_id.isdigit():
+        return str_id
+
+    api_key = get_tmdb_api_key()
+    c_type = "tv" if media_type in ["series", "anime", "tv", "tvshow"] else "movie"
+
+    # If it's an IMDB id (tt...), use TMDB /find endpoint
+    clean_tt = None
+    if str_id.startswith("tt"):
+        clean_tt = str_id.split(":")[0]
+    else:
+        tt_match = re.search(r'\b(tt\d{7,8})\b', str_id)
+        if tt_match:
+            clean_tt = tt_match.group(1)
+
+    if clean_tt and api_key:
+        try:
+            find_url = f"https://api.themoviedb.org/3/find/{clean_tt}?api_key={api_key}&external_source=imdb_id"
+            data = _get_cached_request(find_url, max_age_hours=168)
+            if data:
+                if c_type == "tv" and data.get("tv_results"):
+                    return str(data["tv_results"][0]["id"])
+                elif data.get("movie_results"):
+                    return str(data["movie_results"][0]["id"])
+                elif data.get("tv_results"):
+                    return str(data["tv_results"][0]["id"])
+        except Exception:
+            pass
+
+    # Search by title as fallback
+    if title and title != "Loading..." and api_key:
+        try:
+            search_url = f"https://api.themoviedb.org/3/search/{c_type}?api_key={api_key}&query={urllib.parse.quote(title)}"
+            data = _get_cached_request(search_url, max_age_hours=168)
+            if data and data.get("results"):
+                return str(data["results"][0]["id"])
+        except Exception:
+            pass
+
+    return None
+
+
+def fetch_credits_and_companies(item_id, media_type="movie", title=None):
+    """
+    Fetches cast members, crew (directors, creators, writers), production companies,
+    and networks for the given media item from TMDB.
+    Returns:
+      {
+        "cast": [{"id": int, "name": str, "character": str, "photo": str}, ...],
+        "crew": [{"id": int, "name": str, "job": str, "photo": str}, ...],
+        "production_companies": [{"id": int, "name": str, "logo": str}, ...],
+        "networks": [{"id": int, "name": str, "logo": str}, ...]
+      }
+    """
+    empty_result = {
+        "cast": [],
+        "crew": [],
+        "production_companies": [],
+        "networks": []
+    }
+
+    tmdb_id = resolve_to_tmdb_id(item_id, media_type, title)
+    if not tmdb_id:
+        return empty_result
+
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return empty_result
+
+    c_type = "tv" if media_type in ["series", "anime", "tv", "tvshow"] else "movie"
+
+    try:
+        if c_type == "tv":
+            url = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={api_key}&append_to_response=aggregate_credits,credits"
+            data = _get_cached_request(url, max_age_hours=168)
+            if not data:
+                return empty_result
+
+            # 1. Crew (Creators & Directors)
+            crew = []
+            seen_crew = set()
+            # TV creators
+            for creator in data.get("created_by", []):
+                cid = creator.get("id")
+                cname = creator.get("name", "").strip()
+                if cid and cname and cid not in seen_crew:
+                    seen_crew.add(cid)
+                    prof = creator.get("profile_path")
+                    crew.append({
+                        "id": cid,
+                        "name": cname,
+                        "job": "Creator",
+                        "photo": f"https://image.tmdb.org/t/p/w185{prof}" if prof else None
+                    })
+
+            # Additional TV crew from aggregate or standard credits
+            raw_crew = data.get("aggregate_credits", {}).get("crew", []) or data.get("credits", {}).get("crew", [])
+            for m in raw_crew:
+                cname = m.get("name", "").strip()
+                cid = m.get("id")
+                if not cid or not cname or cid in seen_crew:
+                    continue
+                # Check jobs list if aggregate, or single job
+                job_name = None
+                if "jobs" in m and isinstance(m["jobs"], list) and m["jobs"]:
+                    job_name = m["jobs"][0].get("job")
+                elif "job" in m:
+                    job_name = m.get("job")
+                if job_name in ["Director", "Writer", "Executive Producer"]:
+                    seen_crew.add(cid)
+                    prof = m.get("profile_path")
+                    crew.append({
+                        "id": cid,
+                        "name": cname,
+                        "job": job_name,
+                        "photo": f"https://image.tmdb.org/t/p/w185{prof}" if prof else None
+                    })
+
+            # 2. Cast
+            cast = []
+            seen_cast = set()
+            raw_cast = data.get("aggregate_credits", {}).get("cast", []) or data.get("credits", {}).get("cast", [])
+            for m in raw_cast:
+                cid = m.get("id")
+                cname = m.get("name", "").strip()
+                if not cid or not cname or cid in seen_cast:
+                    continue
+                seen_cast.add(cid)
+                char = ""
+                if "roles" in m and isinstance(m["roles"], list) and m["roles"]:
+                    char = m["roles"][0].get("character", "").strip()
+                elif "character" in m:
+                    char = (m.get("character") or "").strip()
+                prof = m.get("profile_path")
+                cast.append({
+                    "id": cid,
+                    "name": cname,
+                    "character": char,
+                    "photo": f"https://image.tmdb.org/t/p/w185{prof}" if prof else None
+                })
+
+            # 3. Production Companies
+            production_companies = []
+            for c in data.get("production_companies", []):
+                cname = c.get("name", "").strip()
+                if not cname: continue
+                logo = c.get("logo_path")
+                production_companies.append({
+                    "id": c.get("id"),
+                    "name": cname,
+                    "logo": f"https://image.tmdb.org/t/p/w300{logo}" if logo else None
+                })
+
+            # 4. Networks
+            networks = []
+            for n in data.get("networks", []):
+                nname = n.get("name", "").strip()
+                if not nname: continue
+                logo = n.get("logo_path")
+                networks.append({
+                    "id": n.get("id"),
+                    "name": nname,
+                    "logo": f"https://image.tmdb.org/t/p/w300{logo}" if logo else None
+                })
+
+            return {
+                "cast": cast,
+                "crew": crew,
+                "production_companies": production_companies,
+                "networks": networks
+            }
+
+        else:
+            # Movie credits
+            url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={api_key}&append_to_response=credits"
+            data = _get_cached_request(url, max_age_hours=168)
+            if not data:
+                return empty_result
+
+            # 1. Crew (Directors, Writers)
+            crew = []
+            seen_crew = set()
+            raw_crew = data.get("credits", {}).get("crew", [])
+            for m in raw_crew:
+                cid = m.get("id")
+                cname = m.get("name", "").strip()
+                job = m.get("job") or ""
+                if cid and cname and job in ["Director", "Writer", "Screenplay"] and cid not in seen_crew:
+                    seen_crew.add(cid)
+                    prof = m.get("profile_path")
+                    crew.append({
+                        "id": cid,
+                        "name": cname,
+                        "job": job,
+                        "photo": f"https://image.tmdb.org/t/p/w185{prof}" if prof else None
+                    })
+
+            # 2. Cast
+            cast = []
+            seen_cast = set()
+            raw_cast = data.get("credits", {}).get("cast", [])
+            for m in raw_cast:
+                cid = m.get("id")
+                cname = m.get("name", "").strip()
+                if not cid or not cname or cid in seen_cast:
+                    continue
+                seen_cast.add(cid)
+                char = (m.get("character") or "").strip()
+                prof = m.get("profile_path")
+                cast.append({
+                    "id": cid,
+                    "name": cname,
+                    "character": char,
+                    "photo": f"https://image.tmdb.org/t/p/w185{prof}" if prof else None
+                })
+
+            # 3. Production Companies
+            production_companies = []
+            for c in data.get("production_companies", []):
+                cname = c.get("name", "").strip()
+                if not cname: continue
+                logo = c.get("logo_path")
+                production_companies.append({
+                    "id": c.get("id"),
+                    "name": cname,
+                    "logo": f"https://image.tmdb.org/t/p/w300{logo}" if logo else None
+                })
+
+            return {
+                "cast": cast,
+                "crew": crew,
+                "production_companies": production_companies,
+                "networks": []
+            }
+
+    except Exception as e:
+        print(f"[TMDB] Failed to fetch credits/companies for {item_id}: {e}")
+        return empty_result
+
+
+def fetch_person_details(person_id):
+    """
+    Fetches person details (bio, photo, birthday, place of birth, known for)
+    and full filmography (movies and TV shows) from TMDB.
+    Returns dictionary with person info and sorted filmography list.
+    """
+    if not person_id:
+        return None
+
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return None
+
+    try:
+        url = f"https://api.themoviedb.org/3/person/{person_id}?api_key={api_key}&append_to_response=combined_credits"
+        data = _get_cached_request(url, max_age_hours=168)
+        if not data:
+            return None
+
+        # Build combined credits list
+        combined = data.get("combined_credits", {})
+        raw_cast = combined.get("cast", [])
+        raw_crew = combined.get("crew", [])
+
+        filmography = []
+        seen_media = set()
+
+        # Add cast items
+        for item in raw_cast:
+            mid = item.get("id")
+            mtype = item.get("media_type") or "movie"
+            unique_key = f"{mtype}:{mid}"
+            if not mid or unique_key in seen_media:
+                continue
+            seen_media.add(unique_key)
+            title = item.get("title") or item.get("name") or "Unknown"
+            rel_date = item.get("release_date") or item.get("first_air_date") or ""
+            year = rel_date[:4] if len(rel_date) >= 4 else ""
+            poster = f"https://image.tmdb.org/t/p/w300{item['poster_path']}" if item.get("poster_path") else ""
+            filmography.append({
+                "id": f"tmdb:{mid}",
+                "raw_id": mid,
+                "title": title,
+                "name": title,
+                "type": "series" if mtype == "tv" else "movie",
+                "media_type": "series" if mtype == "tv" else "movie",
+                "poster": poster,
+                "medium_cover_image": poster,
+                "year": year,
+                "character": (item.get("character") or "").strip(),
+                "rating": round(float(item.get("vote_average", 0)), 1) if item.get("vote_average") else None,
+                "vote_count": item.get("vote_count", 0),
+                "popularity": item.get("popularity", 0.0),
+                "release_date": rel_date
+            })
+
+        # Add crew items (e.g. Director, Creator, Writer) if not already present
+        for item in raw_crew:
+            mid = item.get("id")
+            mtype = item.get("media_type") or "movie"
+            unique_key = f"{mtype}:{mid}"
+            job = item.get("job") or ""
+            if job not in ["Director", "Creator", "Writer", "Screenplay"]:
+                continue
+            if not mid or unique_key in seen_media:
+                continue
+            seen_media.add(unique_key)
+            title = item.get("title") or item.get("name") or "Unknown"
+            rel_date = item.get("release_date") or item.get("first_air_date") or ""
+            year = rel_date[:4] if len(rel_date) >= 4 else ""
+            poster = f"https://image.tmdb.org/t/p/w300{item['poster_path']}" if item.get("poster_path") else ""
+            filmography.append({
+                "id": f"tmdb:{mid}",
+                "raw_id": mid,
+                "title": title,
+                "name": title,
+                "type": "series" if mtype == "tv" else "movie",
+                "media_type": "series" if mtype == "tv" else "movie",
+                "poster": poster,
+                "medium_cover_image": poster,
+                "year": year,
+                "character": job,
+                "rating": round(float(item.get("vote_average", 0)), 1) if item.get("vote_average") else None,
+                "vote_count": item.get("vote_count", 0),
+                "popularity": item.get("popularity", 0.0),
+                "release_date": rel_date
+            })
+
+        # Sort filmography: primarily by popularity/vote_count and release_date
+        filmography.sort(key=lambda x: (x.get("vote_count", 0) > 10, x.get("popularity", 0.0)), reverse=True)
+
+        prof = data.get("profile_path")
+        return {
+            "id": data.get("id"),
+            "name": data.get("name", ""),
+            "biography": (data.get("biography") or "").strip(),
+            "birthday": data.get("birthday"),
+            "deathday": data.get("deathday"),
+            "place_of_birth": data.get("place_of_birth"),
+            "known_for": data.get("known_for_department") or "Acting",
+            "photo": f"https://image.tmdb.org/t/p/w300{prof}" if prof else None,
+            "filmography": filmography
+        }
+    except Exception as e:
+        print(f"[TMDB] Failed to fetch person details for {person_id}: {e}")
+        return None
+

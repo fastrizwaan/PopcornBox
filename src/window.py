@@ -518,6 +518,50 @@ class MovieDetailsPage(Gtk.Overlay):
 
         left_meta_hbox.append(meta_detail_vbox)
         self.info_vbox.append(left_meta_hbox)
+
+        # Creator and Cast Section Box (Horizontal Scroll)
+        self.cast_section_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.cast_section_box.set_margin_top(16)
+        self.cast_section_box.set_visible(False)
+
+        self.cast_title_label = Gtk.Label(label="Creator and Cast")
+        self.cast_title_label.set_halign(Gtk.Align.START)
+        self.cast_title_label.add_css_class("details-section-title")
+        self.cast_section_box.append(self.cast_title_label)
+
+        self.cast_scrolled = Gtk.ScrolledWindow()
+        self.cast_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        self.cast_scrolled.set_vexpand(False)
+        self.cast_scrolled.add_css_class("details-horizontal-scroll")
+
+        self.cast_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        self.cast_hbox.set_margin_bottom(6)
+        self.cast_scrolled.set_child(self.cast_hbox)
+        self.cast_section_box.append(self.cast_scrolled)
+        self.info_vbox.append(self.cast_section_box)
+
+        # Production / Network Companies Section Box (Horizontal Scroll)
+        self.prod_section_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.prod_section_box.set_margin_top(14)
+        self.prod_section_box.set_margin_bottom(16)
+        self.prod_section_box.set_visible(False)
+
+        self.prod_title_label = Gtk.Label(label="Production")
+        self.prod_title_label.set_halign(Gtk.Align.START)
+        self.prod_title_label.add_css_class("details-section-title")
+        self.prod_section_box.append(self.prod_title_label)
+
+        self.prod_scrolled = Gtk.ScrolledWindow()
+        self.prod_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        self.prod_scrolled.set_vexpand(False)
+        self.prod_scrolled.add_css_class("details-horizontal-scroll")
+
+        self.prod_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.prod_hbox.set_margin_bottom(6)
+        self.prod_scrolled.set_child(self.prod_hbox)
+        self.prod_section_box.append(self.prod_scrolled)
+        self.info_vbox.append(self.prod_section_box)
+
         self.split_hbox.append(left_scroll)
 
         # Right Column (Fixed Glassmorphism Sidebar)
@@ -1237,6 +1281,25 @@ class MovieDetailsPage(Gtk.Overlay):
                             self._start_fast_trailer_fetch(item_id, fetch_id, fast_abort)
                     return False
                 GLib.idle_add(apply_details)
+
+                # Fetch TMDB credits (Cast & Crew) and Production / Networks
+                def fetch_credits():
+                    try:
+                        from .tmdb_helper import fetch_credits_and_companies
+                        c_id = details.get("id") or item_id
+                        c_title = details.get("title") or self.movie_stub.get("title")
+                        cc = fetch_credits_and_companies(c_id, self.media_type, title=c_title)
+                        if cc and (cc.get("cast") or cc.get("crew") or cc.get("production_companies") or cc.get("networks")):
+                            details["credits_data"] = cc
+                            def apply_credits():
+                                if fetch_id == self._details_fetch_id and self._is_current_details_page():
+                                    self.render_cast_and_production(cc)
+                                return False
+                            GLib.idle_add(apply_credits)
+                    except Exception as e:
+                        print(f"[CREDITS] Failed to fetch credits: {e}")
+
+                threading.Thread(target=fetch_credits, daemon=True).start()
             else:
                 print(f"[CARD CLICK Step 7 WARNING] api.fetch_movie_details returned None for '{item_id}'")
                 def try_fast_trailer():
@@ -1576,9 +1639,14 @@ class MovieDetailsPage(Gtk.Overlay):
         self.desc_label.set_text(details.get("description", ""))
         
         cast_str = ", ".join(details.get("cast", []))
-        if cast_str:
+        if cast_str and not self.cast_section_box.get_visible():
             self.cast_label.set_text(f"Cast: {cast_str}")
             self.cast_label.set_visible(True)
+        else:
+            self.cast_label.set_visible(False)
+
+        if details.get("credits_data"):
+            self.render_cast_and_production(details["credits_data"])
             
         item_id = details.get("id")
         if database.is_favorite(item_id):
@@ -1743,6 +1811,152 @@ class MovieDetailsPage(Gtk.Overlay):
             if hasattr(self, 'row2_box'):
                 self.row2_box.set_visible(False)
             self.fetch_torrents_async()
+
+    def render_cast_and_production(self, credits_data):
+        if not credits_data or getattr(self, '_destroyed', False):
+            return
+        crew = credits_data.get("crew", [])
+        cast = credits_data.get("cast", [])
+        prod_companies = credits_data.get("production_companies", [])
+        networks = credits_data.get("networks", [])
+
+        # Combine crew (directors/creators first) and cast
+        members = []
+        seen_ids = set()
+        for m in crew:
+            mid = m.get("id")
+            if mid and mid not in seen_ids:
+                seen_ids.add(mid)
+                members.append({
+                    "id": mid,
+                    "name": m.get("name", ""),
+                    "role": m.get("job") or "Crew",
+                    "photo": m.get("photo")
+                })
+        for m in cast:
+            mid = m.get("id")
+            if mid and mid not in seen_ids:
+                seen_ids.add(mid)
+                members.append({
+                    "id": mid,
+                    "name": m.get("name", ""),
+                    "role": m.get("character") or "",
+                    "photo": m.get("photo")
+                })
+
+        # Clear previous cast widgets
+        while child := self.cast_hbox.get_first_child():
+            self.cast_hbox.remove(child)
+
+        from .movie_widget import load_image_into_picture
+
+        if members:
+            # Hide the text-only cast label since rich avatars are present
+            if hasattr(self, 'cast_label'):
+                self.cast_label.set_visible(False)
+
+            for member in members[:30]:
+                card_btn = Gtk.Button()
+                card_btn.add_css_class("cast-member-btn")
+                role_tip = f" ({member['role']})" if member['role'] else ""
+                card_btn.set_tooltip_text(f"{member['name']}{role_tip}")
+
+                btn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                btn_box.set_size_request(104, -1)
+
+                circle = Gtk.Box()
+                circle.add_css_class("cast-avatar-circle")
+                circle.set_halign(Gtk.Align.CENTER)
+                circle.set_valign(Gtk.Align.CENTER)
+
+                if member.get("photo"):
+                    pic = Gtk.Picture()
+                    pic.set_size_request(96, 96)
+                    pic.set_can_shrink(True)
+                    pic.set_content_fit(Gtk.ContentFit.COVER)
+                    pic.add_css_class("cast-avatar-pic")
+                    circle.append(pic)
+                    load_image_into_picture(member["photo"], pic, width=96, height=96)
+                else:
+                    initial = (member["name"][:1] if member["name"] else "?").upper()
+                    init_lbl = Gtk.Label(label=initial)
+                    init_lbl.add_css_class("cast-avatar-initials")
+                    circle.append(init_lbl)
+
+                btn_box.append(circle)
+
+                name_lbl = Gtk.Label(label=member["name"])
+                name_lbl.set_lines(2)
+                name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+                name_lbl.set_wrap(True)
+                name_lbl.set_halign(Gtk.Align.CENTER)
+                name_lbl.set_justify(Gtk.Justification.CENTER)
+                name_lbl.add_css_class("cast-member-name")
+                btn_box.append(name_lbl)
+
+                if member["role"]:
+                    role_lbl = Gtk.Label(label=member["role"])
+                    role_lbl.set_lines(1)
+                    role_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+                    role_lbl.set_halign(Gtk.Align.CENTER)
+                    role_lbl.add_css_class("cast-member-role")
+                    btn_box.append(role_lbl)
+
+                card_btn.set_child(btn_box)
+                mid = member["id"]
+                mname = member["name"]
+                mph = member.get("photo")
+                card_btn.connect("clicked", lambda b, mid=mid, mname=mname, mph=mph: self._on_cast_member_clicked(mid, mname, mph))
+                self.cast_hbox.append(card_btn)
+
+            self.cast_section_box.set_visible(True)
+        else:
+            self.cast_section_box.set_visible(False)
+
+        # Render Companies / Networks
+        companies = networks if (networks and self.media_type in ["series", "anime", "tv"]) else (prod_companies or networks)
+        title = "Networks" if (networks and self.media_type in ["series", "anime", "tv"]) else "Production"
+        self.prod_title_label.set_text(title)
+
+        while child := self.prod_hbox.get_first_child():
+            self.prod_hbox.remove(child)
+
+        if companies:
+            for comp in companies[:15]:
+                card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                card.add_css_class("company-logo-card")
+                card.set_halign(Gtk.Align.CENTER)
+                card.set_valign(Gtk.Align.CENTER)
+                card.set_tooltip_text(comp["name"])
+
+                if comp.get("logo"):
+                    logo_pic = Gtk.Picture()
+                    logo_pic.set_size_request(110, 38)
+                    logo_pic.set_can_shrink(True)
+                    logo_pic.set_content_fit(Gtk.ContentFit.CONTAIN)
+                    logo_pic.add_css_class("company-logo-pic")
+                    card.append(logo_pic)
+                    load_image_into_picture(comp["logo"], logo_pic, width=140, height=50)
+                else:
+                    comp_lbl = Gtk.Label(label=comp["name"])
+                    comp_lbl.set_lines(1)
+                    comp_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+                    comp_lbl.add_css_class("company-fallback-label")
+                    card.append(comp_lbl)
+
+                self.prod_hbox.append(card)
+
+            self.prod_section_box.set_visible(True)
+        else:
+            self.prod_section_box.set_visible(False)
+
+    def _on_cast_member_clicked(self, member_id, member_name, photo_url=None):
+        try:
+            from .person_dialog import PersonDetailDialog
+            dialog = PersonDetailDialog(self.window, member_id, member_name, photo_url=photo_url)
+            dialog.present(self.window)
+        except Exception as e:
+            print(f"[CAST CLICK ERROR] Could not open person details dialog: {e}")
 
     def destroy_page(self):
         self._destroyed = True

@@ -878,4 +878,147 @@ button.category-filter-btn:checked {
   padding: 1px 5px;
 }
 
+/* Nuvio-style Cast & Creator and Production Sections */
+.details-section-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #ffffff;
+  margin-top: 14px;
+  margin-bottom: 8px;
+}
+
+.details-horizontal-scroll {
+  background: transparent;
+  padding-bottom: 6px;
+}
+
+/* Cast & Creator Cards */
+.cast-member-btn {
+  background: transparent;
+  border: none;
+  border-radius: 12px;
+  padding: 6px;
+  transition: all 200ms ease-in-out;
+  outline: none;
+  box-shadow: none;
+}
+
+.cast-member-btn:hover,
+.cast-member-btn:focus {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.cast-avatar-circle {
+  border-radius: 50%;
+  min-width: 96px;
+  min-height: 96px;
+  max-width: 96px;
+  max-height: 96px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+  border: 2.5px solid transparent;
+  transition: border-color 200ms ease, transform 200ms ease;
+}
+
+.cast-member-btn:hover .cast-avatar-circle,
+.cast-member-btn:focus .cast-avatar-circle {
+  border-color: #22c55e;
+  transform: scale(1.04);
+}
+
+.cast-avatar-pic {
+  border-radius: 50%;
+}
+
+.cast-avatar-initials {
+  font-size: 32px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.cast-member-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f1f5f9;
+  margin-top: 6px;
+  text-align: center;
+}
+
+.cast-member-role {
+  font-size: 11px;
+  font-weight: 400;
+  color: #94a3b8;
+  margin-top: 1px;
+  text-align: center;
+}
+
+/* Production Company & Network Logo Cards */
+.company-logo-card {
+  background-color: #ffffff;
+  border-radius: 10px;
+  min-width: 140px;
+  height: 52px;
+  padding: 6px 14px;
+  border: 2px solid transparent;
+  transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.company-logo-card:hover {
+  transform: scale(1.03);
+  border-color: #22c55e;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.company-logo-pic {
+  min-width: 100px;
+  height: 40px;
+}
+
+.company-fallback-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1e293b;
+  text-align: center;
+}
+
+/* Person Detail Dialog */
+.person-hero-box {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 16px;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.person-portrait-frame {
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.person-portrait {
+  border-radius: 12px;
+}
+
+.person-bio-label {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #cbd5e1;
+}
+
+.person-bio-toggle {
+  font-size: 12px;
+  font-weight: 600;
+  color: #38bdf8;
+  padding: 0;
+  margin-top: 2px;
+}
+
+.person-bio-toggle:hover {
+  color: #7dd3fc;
+  text-decoration: underline;
+}
+
+
 

@@ -51,6 +51,7 @@ cine_sources = [
   'movie_widget.py',
   'mpris.py',
   'options.py',
+  'person_dialog.py',
   'player.py',
   'playlist.py',
   'preferences.py',
