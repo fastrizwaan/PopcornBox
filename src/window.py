@@ -3342,7 +3342,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action("add-playlist-files", self._on_add_playlist_dialog)
         self._create_action("open-folder", self._on_open_folder_dialog)
         self._create_action("open-url", self._on_open_url)
-        self._create_action("close-player", self._close_player)
+        self._create_action("close-player", lambda *a: self._close_player(*a, remove_torrent=True))
         self._create_action("add-addon", self._add_addon)
         self._create_action("add-url", self._on_add_url)
         self._create_action("open-history", lambda *a: self._open_local_page("history"))
@@ -5140,6 +5140,10 @@ class CineWindow(Adw.ApplicationWindow):
         @self.mpv.event_callback("end-file")
         def on_end_file(event):
             try:
+                # If we are currently loading or buffering a stream, do not process end-file events
+                if getattr(self, "is_loading_stream", False):
+                    return
+
                 curr_pos = self.mpv.playlist_pos
                 info = event.as_dict()
                 reason = info["reason"]
@@ -5172,11 +5176,11 @@ class CineWindow(Adw.ApplicationWindow):
                             if hasattr(page, 'reset_trailer_btn_ui'):
                                 idle_add_once(page.reset_trailer_btn_ui)
                         idle_add_once(self._show_toast, _("Failed to play trailer"))
-                        idle_add_once(self._close_player)
+                        idle_add_once(self._close_player, remove_torrent=False)
                     elif is_web:
                         idle_add_once(self._show_toast, _("Opening in web browser..."))
                         idle_add_once(open_uri, self.loaded_path, self)
-                        idle_add_once(self._close_player)
+                        idle_add_once(self._close_player, remove_torrent=False)
                     elif getattr(self, "stream_queue", None) and len(self.stream_queue) > 0:
                         idle_add_once(self._try_next_stream_in_queue)
                     else:
@@ -5191,15 +5195,13 @@ class CineWindow(Adw.ApplicationWindow):
                     if not self.mpv.keep_open and self.mpv.idle_active and not self.startup:
                         def _handle_eof():
                             if self._is_playing_trailer():
-                                self._close_player()
+                                self._close_player(remove_torrent=False)
                             elif not self._try_play_next_episode():
-                                self._close_player()
+                                self._close_player(remove_torrent=False)
                         idle_add_once(_handle_eof)
                 else:
                     idle_add_once(self.spinner.set_visible, False)
                     idle_add_once(self.start_page.set_sensitive, True)
-                    if not self.mpv.keep_open and self.mpv.idle_active and not self.startup:
-                        idle_add_once(self._close_player)
             except mpv.ShutdownError:
                 pass
 
@@ -7147,8 +7149,8 @@ class CineWindow(Adw.ApplicationWindow):
             open_uri(url, self)
             return
         from . import player
-        if url and isinstance(url, str) and not url.startswith("http://127.0.0.1") and not url.startswith("http://localhost"):
-            player.stop_player()
+        if url and isinstance(url, str) and not url.startswith("http://127.0.0.1") and not url.startswith("http://localhost") and not url.startswith(player.DOWNLOAD_BASE) and not url.startswith("file://"):
+            player.stop_player(remove_torrent=False)
 
         is_youtube_raw_url = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower()) and ("googlevideo.com" not in url.lower())
         is_youtube_trailer = url and isinstance(url, str) and ("googlevideo.com" in url.lower())
@@ -7909,7 +7911,7 @@ class CineWindow(Adw.ApplicationWindow):
                 
         return True
 
-    def _close_player(self, *args):
+    def _close_player(self, *args, remove_torrent=True):
         self.hide_player_loading()
         if hasattr(self, 'details_box') and self.details_box.get_first_child():
             page = self.details_box.get_first_child()
@@ -7938,7 +7940,7 @@ class CineWindow(Adw.ApplicationWindow):
             try: self.mpv.stop()
             except Exception: pass
         from . import player
-        player.stop_player()
+        player.stop_player(remove_torrent=remove_torrent)
         if hasattr(self, "_update_continue_watching_section"):
             self._update_continue_watching_section()
         page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None

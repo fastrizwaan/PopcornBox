@@ -31,7 +31,7 @@ else:
     DOWNLOAD_BASE = os.path.expanduser("~/.var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box/torrents")
 os.makedirs(DOWNLOAD_BASE, exist_ok=True)
 
-def stop_player(keep_downloading=False):
+def stop_player(remove_torrent=False, keep_downloading=True):
     """Stop the currently streaming video, unless it's fully downloaded or keep_downloading is True."""
     global _streaming_hash, _trailer_process
     from . import database
@@ -42,7 +42,8 @@ def stop_player(keep_downloading=False):
             if engine and engine.is_alive():
                 stats = engine.stats()
                 prog = stats.get("progress", 0)
-                if prog < 1.0 and not keep_downloading:
+                is_dl_only = getattr(engine, 'is_download_only', False)
+                if remove_torrent and not is_dl_only:
                     print(f"Stopping and deleting partially downloaded engine: {_streaming_hash}")
                     info_hash_to_delete = _streaming_hash
                     import threading
@@ -64,10 +65,11 @@ def stop_player(keep_downloading=False):
                                 print(f"Error deleting partial torrent {info_hash_to_delete}: {e}")
                     threading.Thread(target=_delete_files, daemon=True).start()
                 else:
-                    print(f"Leaving engine running: {_streaming_hash} (progress={prog:.2f}, keep_downloading={keep_downloading})")
+                    print(f"Leaving engine running: {_streaming_hash} (progress={prog:.2f}, remove_torrent={remove_torrent}, is_download_only={is_dl_only})")
                     if prog >= 1.0:
                         database.set_download_finished(_streaming_hash, True)
-            _streaming_hash = None
+            if remove_torrent:
+                _streaming_hash = None
 
     with _trailer_lock:
         if _trailer_process:
@@ -217,6 +219,7 @@ def download_magnet_background(magnet_link, file_index=None, item_id=None, media
     def launch():
         try:
             engine = TorrentStreamEngine(magnet_link, DOWNLOAD_BASE, file_index, item_id, media_type, season, episode)
+            engine.is_download_only = True
             engine.start()
             
             # Throttle the background download to 2MB/s so it doesn't freeze the active stream
@@ -240,7 +243,7 @@ def download_magnet_background(magnet_link, file_index=None, item_id=None, media
 
     threading.Thread(target=launch, daemon=True).start()
 
-def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=None, item_id=None, media_type=None, season=None, episode=None):
+def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=None, item_id=None, media_type=None, season=None, episode=None, is_download=False):
     global _streaming_hash
     import gi
     from gi.repository import GLib
@@ -301,7 +304,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                     
         threading.Thread(target=poll, daemon=True).start()
 
-    stop_player()
+    stop_player(remove_torrent=False)
 
     with _engines_lock:
         to_stop = [h for h in _engines if h != info_hash]
@@ -356,6 +359,8 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                 engine.episode = episode
 
             print("Reusing existing libtorrent engine")
+            if is_download:
+                engine.is_download_only = True
             engine.item_id = item_id
             engine.media_type = media_type
             _streaming_hash = info_hash
@@ -450,6 +455,8 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
         try:
             if progress_callback: GLib.idle_add(progress_callback, {"status": f"Initializing stream engine (Attempt {attempt})..."})
             engine = TorrentStreamEngine(magnet_link, DOWNLOAD_BASE, file_index, item_id, media_type, season, episode)
+            if is_download:
+                engine.is_download_only = True
             engine.start()
             
             with _engines_lock:

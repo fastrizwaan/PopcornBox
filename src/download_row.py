@@ -242,7 +242,8 @@ class DownloadItemRow(Gtk.Box):
             item_id=self.download.get("item_id"), 
             media_type=self.download.get("media_type", "movie"),
             season=self.download.get("season"),
-            episode=self.download.get("episode")
+            episode=self.download.get("episode"),
+            is_download=True
         )
         
     def on_stop_clicked(self, btn):
