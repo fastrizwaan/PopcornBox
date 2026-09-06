@@ -954,21 +954,37 @@ class MovieDetailsPage(Gtk.Overlay):
                     self._user_navigated_to_streams = True
                     self.selected_video = episode_item
                     self.selected_episode = episode_num
-                    s_val = getattr(self, 'selected_season', 1)
+                    s_val = episode_item.get("season") or getattr(self, 'selected_season', 1) or 1
+                    self.selected_season = s_val
+                    self.movie_stub["season"] = s_val
+                    self.movie_stub["episode"] = episode_num
                     primary_id = (self.movie_stub.get("alias_ids") or [self.movie_stub.get("id") or self.movie_stub.get("imdb_id")])[0]
                     if primary_id:
                         database.set_setting(f"last_ep_{primary_id}_{s_val}", episode_num)
+                        database.set_setting(f"last_s_{primary_id}", s_val)
                         self.remembered_working_stream = database.get_working_stream(primary_id, s_val, episode_num)
                         self.selected_torrent = self.remembered_working_stream if self.remembered_working_stream else None
+                    else:
+                        self.remembered_working_stream = None
+                        self.selected_torrent = None
                     if hasattr(self, 'stream_ep_title_label'):
-                        if self.media_type in ["series", "anime"]:
-                            self.stream_ep_title_label.set_text(f"▶ S{s_val}E{episode_num}: {ep_title}")
+                        this_ep_title = episode_item.get("title") or episode_item.get("name") or f"Episode {episode_num}"
+                        if self.media_type in ["series", "anime", "tv"]:
+                            self.stream_ep_title_label.set_text(f"▶ S{s_val}E{episode_num}: {this_ep_title}")
                         else:
-                            self.stream_ep_title_label.set_text(f"▶ {ep_title}")
+                            self.stream_ep_title_label.set_text(f"▶ {this_ep_title}")
                         self.stream_ep_title_label.set_visible(True)
+                    if hasattr(self, 'episode_dropdown') and hasattr(self, 'current_episodes') and self.current_episodes:
+                        ep_nums = [e.get('episode') for e in self.current_episodes]
+                        if episode_num in ep_nums:
+                            ep_idx = ep_nums.index(episode_num)
+                            self._ignore_dropdown_changes = True
+                            self.episode_dropdown.set_selected(ep_idx)
+                            self._ignore_dropdown_changes = False
+                    self.update_continue_btn()
                     self.sidebar_stack.set_visible_child_name("streams")
                     self.render_episodes_list()
-                    self.fetch_torrents_async()
+                    self.fetch_torrents_async(force=True)
                 return cb
 
             btn.connect("clicked", make_ep_cb(ep, ep_num))
@@ -1754,25 +1770,28 @@ class MovieDetailsPage(Gtk.Overlay):
                 if hasattr(self, 'current_episodes') and idx < len(self.current_episodes):
                     self.selected_video = self.current_episodes[idx]
                     self.selected_episode = self.selected_video.get("episode")
+                    self.movie_stub["episode"] = self.selected_episode
+                    s_val = getattr(self, 'selected_season', 1)
+                    self.movie_stub["season"] = s_val
                     primary_id = (self.movie_stub.get("alias_ids") or [self.movie_stub.get("id") or self.movie_stub.get("imdb_id")])[0]
                     if primary_id and getattr(self, 'selected_season', None) is not None and self.selected_episode is not None:
                         database.set_setting(f"last_ep_{primary_id}_{self.selected_season}", self.selected_episode)
+                        database.set_setting(f"last_s_{primary_id}", self.selected_season)
                     self.remembered_working_stream = database.get_working_stream(primary_id, getattr(self, 'selected_season', None), self.selected_episode)
                     if self.remembered_working_stream:
                         self.selected_torrent = self.remembered_working_stream
                     else:
                         self.selected_torrent = None
                     if hasattr(self, 'stream_ep_title_label'):
-                        s_val = getattr(self, 'selected_season', 1)
                         ep_title = self.selected_video.get("title") or self.selected_video.get("name") or f"Episode {self.selected_episode}"
-                        if self.media_type in ["series", "anime"]:
+                        if self.media_type in ["series", "anime", "tv"]:
                             self.stream_ep_title_label.set_text(f"▶ S{s_val}E{self.selected_episode}: {ep_title}")
                         else:
                             self.stream_ep_title_label.set_text(f"▶ {ep_title}")
                         self.stream_ep_title_label.set_visible(True)
                     self.update_continue_btn()
                     self.render_episodes_list()
-                    self.fetch_torrents_async()
+                    self.fetch_torrents_async(force=True)
                 
             self._on_episode_dropdown_changed = on_episode_changed
             self._ep_dropdown_hid = self.episode_dropdown.connect("notify::selected", on_episode_changed)
@@ -1784,6 +1803,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 if idx >= len(self.seasons): return
                 s = self.seasons[idx]
                 self.selected_season = s
+                self.movie_stub["season"] = s
                 if item_id:
                     database.set_setting(f"last_s_{item_id}", s)
                 eps = [v for v in self.videos if v.get("season", 1) == s]
@@ -1797,7 +1817,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 unique_eps.sort(key=lambda x: x.get("episode", 0))
                 self.current_episodes = unique_eps
                 
-                if self.media_type in ["series", "anime"]:
+                if self.media_type in ["series", "anime", "tv"]:
                     ep_strings = [f"Ep {e.get('episode')}: {e.get('title') or e.get('name', '')}" for e in unique_eps]
                 else:
                     ep_strings = [f"{e.get('episode', idx+1)}. {e.get('title') or e.get('name', '')}" for idx, e in enumerate(unique_eps)]
@@ -1807,7 +1827,12 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.episode_dropdown.set_model(Gtk.StringList.new(ep_strings))
                     ep_nums = [e.get('episode') for e in unique_eps]
                     
-                    saved_ep = self.movie_stub.get("episode") or (database.get_setting(f"last_ep_{item_id}_{s}", None) if item_id else None)
+                    curr_ep = getattr(self, "selected_episode", None)
+                    if curr_ep is not None and curr_ep in ep_nums:
+                        saved_ep = curr_ep
+                    else:
+                        saved_ep = (database.get_setting(f"last_ep_{item_id}_{s}", None) if item_id else None) or self.movie_stub.get("episode")
+
                     if saved_ep in ep_nums:
                         default_ep_idx = ep_nums.index(saved_ep)
                     else:
@@ -1818,13 +1843,24 @@ class MovieDetailsPage(Gtk.Overlay):
                 finally:
                     self._ignore_dropdown_changes = False
 
-                on_episode_changed(self.episode_dropdown)
-                self.render_episodes_list()
+                target_ep = ep_nums[default_ep_idx] if default_ep_idx < len(ep_nums) else None
+                curr_ep_num = getattr(self, "selected_episode", None)
+                if curr_ep_num is None or curr_ep_num != target_ep or getattr(self, 'selected_video', None) is None:
+                    on_episode_changed(self.episode_dropdown)
+                else:
+                    if default_ep_idx < len(unique_eps):
+                        self.selected_video = unique_eps[default_ep_idx]
+                    self.update_continue_btn()
+                    self.render_episodes_list()
                 
             self._season_dropdown_hid = self.season_dropdown.connect("notify::selected", on_season_changed)
             
             if self.seasons:
-                saved_s = self.movie_stub.get("season") or (database.get_setting(f"last_s_{item_id}", None) if item_id else None)
+                curr_s = getattr(self, "selected_season", None)
+                if curr_s is not None and curr_s in self.seasons:
+                    saved_s = curr_s
+                else:
+                    saved_s = (database.get_setting(f"last_s_{item_id}", None) if item_id else None) or self.movie_stub.get("season")
                 if saved_s in self.seasons:
                     default_s_idx = self.seasons.index(saved_s)
                 else:
@@ -2042,8 +2078,8 @@ class MovieDetailsPage(Gtk.Overlay):
         if video_id and str(video_id).startswith("tt") and self.media_type not in ["series", "anime"]:
             req_media_type = "movie"
 
-        sel_season = getattr(self, 'selected_season', None) if req_media_type in ["series", "anime"] else None
-        sel_episode = getattr(self, 'selected_episode', None) if req_media_type in ["series", "anime"] else None
+        sel_season = getattr(self, 'selected_season', None) if req_media_type in ["series", "anime", "tv"] else None
+        sel_episode = getattr(self, 'selected_episode', None) if req_media_type in ["series", "anime", "tv"] else None
         
         fetch_key = f"{item_id}_{sel_season}_{sel_episode}"
         if not force and getattr(self, '_last_fetch_key', None) == fetch_key:
@@ -2055,6 +2091,12 @@ class MovieDetailsPage(Gtk.Overlay):
         
         while child := self.quality_button_box.get_first_child():
             self.quality_button_box.remove(child)
+
+        if hasattr(self, 'streams_list_box') and self.streams_list_box:
+            while child := self.streams_list_box.get_first_child():
+                self.streams_list_box.remove(child)
+        self.current_t_list = []
+        self.torrents = []
 
         self._fetch_gen = getattr(self, '_fetch_gen', 0) + 1
         current_gen = self._fetch_gen
@@ -2685,7 +2727,7 @@ class MovieDetailsPage(Gtk.Overlay):
             database.set_setting("preferred_quality", chosen_q)
 
         media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
-        if self.media_type == "series" and getattr(self, "selected_season", None) is not None:
+        if self.media_type in ["series", "anime", "tv"] and getattr(self, "selected_season", None) is not None:
             try:
                 s_int = int(self.selected_season)
                 e_int = int(self.selected_episode)
@@ -2842,7 +2884,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if not magnet: return
         
         media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
-        if self.media_type == "series" and getattr(self, "selected_season", None) is not None:
+        if self.media_type in ["series", "anime", "tv"] and getattr(self, "selected_season", None) is not None:
             try:
                 s_int = int(self.selected_season)
                 e_int = int(self.selected_episode)
