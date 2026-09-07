@@ -229,7 +229,15 @@ class DownloadItemRow(Gtk.Box):
         def progress_callback(stats):
             url = stats.get("url")
             if url and hasattr(window, '_play_stream'):
-                window._play_stream(url, title)
+                window._play_stream(
+                    url,
+                    title,
+                    item_id=self.download.get("item_id"),
+                    media_type=self.download.get("media_type", "movie"),
+                    season=self.download.get("season"),
+                    episode=self.download.get("episode"),
+                    is_download=True
+                )
             elif isinstance(stats, dict) and hasattr(window, 'format_stream_stats'):
                 text = window.format_stream_stats(stats)
                 if hasattr(window, 'update_player_loading'):

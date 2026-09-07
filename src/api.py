@@ -923,6 +923,12 @@ def is_valid_meta(res):
     lower_title = title.lower()
     if "error getting meta" in lower_title or lower_title.startswith("error ") or lower_title == "failed to load details":
         return False
+    if lower_title == "media item" and not res.get("description"):
+        return False
+    if "synopsis temporarily unavailable" in str(res.get("description", "")).lower() and not res.get("videos"):
+        return False
+    if str(res.get("id", "")).startswith("ctmdb.") and not res.get("videos"):
+        return False
     return True
 
 def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=None):
@@ -1015,15 +1021,20 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
     if existing and existing.get("background") and not res.get("background"):
         res["background"] = existing["background"]
 
-    database.save_cached_metadata(imdb_id, media_type, res)
-    if res.get("id") and res.get("id") != imdb_id:
-        database.save_cached_metadata(res.get("id"), media_type, res)
+    if is_valid_meta(res):
+        database.save_cached_metadata(imdb_id, media_type, res)
+        if res.get("id") and res.get("id") != imdb_id:
+            database.save_cached_metadata(res.get("id"), media_type, res)
     return res
 
 def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True, poster=None):
     if isinstance(imdb_id, list):
         if not imdb_id: return {}
-        primary_id = next((i for i in imdb_id if str(i).startswith('tt')), imdb_id[0])
+        col_id = next((i for i in imdb_id if str(i).startswith('ctmdb.')), None)
+        if col_id:
+            primary_id = col_id
+        else:
+            primary_id = next((i for i in imdb_id if str(i).startswith('tt')), imdb_id[0])
         return fetch_movie_details(primary_id, media_type, title, use_cache, poster)
 
     if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
@@ -1067,7 +1078,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         except Exception:
             pass
 
-    if poster and not (str(imdb_id).startswith("tt") or str(imdb_id).startswith("tmdb:")):
+    if poster and not (str(imdb_id).startswith("tt") or str(imdb_id).startswith("tmdb:") or str(imdb_id).startswith("ctmdb.")):
         tt_m = re.search(r'\b(tt\d{7,8})\b', str(poster))
         if tt_m:
             imdb_id = tt_m.group(1)
@@ -1078,13 +1089,15 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         media_type = "series"
     elif str_imdb.startswith("bolly:m:") or str_imdb.startswith("hub:m:") or ":m:" in str_imdb:
         media_type = "movie"
+    elif str_imdb.startswith("ctmdb.") or media_type == "collections":
+        media_type = "collections"
     elif media_type in ["series", "tvshow", "tv_series"]:
         media_type = "series"
     elif media_type in ["tv", "channel", "tvchannel"]:
         media_type = "tv"
     elif media_type in ["music", "radio"]:
         media_type = "music"
-    elif media_type not in ["movie", "series", "anime", "tv", "channel", "tvchannel", "music", "radio"]:
+    elif media_type not in ["movie", "series", "anime", "tv", "channel", "tvchannel", "music", "radio", "collections"]:
         media_type = "movie"
 
     # Resolve TMDB ids to IMDB format if needed
@@ -1150,7 +1163,9 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 pass
                 
         matched_type = target_m_type
-        if addon_types is not None:
+        if str(imdb_id).startswith("ctmdb."):
+            matched_type = "movie"
+        elif addon_types is not None:
             type_match = next((t for t in addon_types if is_type_match(t, target_m_type)), None)
             if type_match:
                 matched_type = type_match
@@ -1261,7 +1276,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 "videos": videos,
                 "cast": cm.get("cast", []),
                 "genres": cm.get("genres", []),
-                "type": cm.get("type") or matched_type,
+                "type": "collections" if str(imdb_id).startswith("ctmdb.") else (cm.get("type") or matched_type),
                 "adult": cm.get("adult") or cm.get("isAdult") or False
             }
             if database.is_adult_content_hidden() and is_adult_item(res_dict):
@@ -1313,7 +1328,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
     if cinemeta_res:
         return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
 
-    return _save_and_return_meta({
+    return {
         "id": imdb_id,
         "title": title or "Media Item",
         "year": "",
@@ -1324,8 +1339,9 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         "genre": "",
         "imdbRating": "",
         "trailer": None,
-        "videos": []
-    }, imdb_id, media_type, title, poster=poster)
+        "videos": [],
+        "type": media_type
+    }
 
 def fetch_trailer_link_fast(imdb_id, media_type="movie", abort_event=None):
     """

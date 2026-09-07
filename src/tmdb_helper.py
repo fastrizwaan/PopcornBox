@@ -41,6 +41,8 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
 
     if imdb_id:
         str_id = str(imdb_id).strip()
+        if str_id.startswith("ctmdb."):
+            return str_id
         if str_id.startswith("tt"):
             return str_id.split(":")[0]
         if str_id.startswith("tpb_ctl:"):
@@ -67,7 +69,7 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
             elif ":m:" in str_id:
                 media_type = "movie"
         else:
-            is_tmdb = str_id.startswith("tmdb:") or str_id.startswith("ctmdb.") or str_id.isdigit()
+            is_tmdb = str_id.startswith("tmdb:") or str_id.isdigit()
         if not is_tmdb and not title:
             return str_id
         

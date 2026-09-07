@@ -207,13 +207,15 @@ class MovieDetailsPage(Gtk.Overlay):
             self.media_type = "series"
         elif item_raw_id.startswith("bolly:m:") or item_raw_id.startswith("hub:m:") or ":m:" in item_raw_id:
             self.media_type = "movie"
+        elif item_raw_id.startswith("ctmdb.") or self.media_type == "collections":
+            self.media_type = "collections"
         elif self.media_type in ["series", "tvshow", "tv_series"]:
             self.media_type = "series"
         elif self.media_type in ["tv", "channel", "tvchannel"]:
             self.media_type = "tv"
         elif self.media_type in ["music", "radio"]:
             self.media_type = "music"
-        elif self.media_type not in ["movie", "series", "anime", "tv", "channel", "tvchannel", "music", "radio"]:
+        elif self.media_type not in ["movie", "series", "anime", "tv", "channel", "tvchannel", "music", "radio", "collections"]:
             self.media_type = "movie"
 
         if item_raw_id.startswith("tpb_ctl:"):
@@ -227,7 +229,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     poster_raw = payload["poster"]
             except Exception:
                 pass
-        if poster_raw and not item_raw_id.startswith("tt"):
+        if poster_raw and not item_raw_id.startswith("tt") and not item_raw_id.startswith("ctmdb."):
             tt_m = re.search(r'\b(tt\d{7,8})\b', poster_raw)
             if tt_m:
                 alias_ids = self.movie_stub.get("alias_ids") or []
@@ -1433,6 +1435,12 @@ class MovieDetailsPage(Gtk.Overlay):
                     ids_to_check.append(str(val))
 
         primary_id = ids_to_check[0] if ids_to_check else None
+
+        if (self.media_type == "collections" or str(primary_id).startswith("ctmdb.")) and hasattr(self, "videos") and self.videos:
+            for v in self.videos:
+                v_id = v.get("id")
+                if v_id and str(v_id) not in ids_to_check:
+                    ids_to_check.append(str(v_id))
 
         cw_item = database.get_continue_watching_item(ids_to_check)
         if not cw_item and (self.movie_stub.get("stream_queue") or self.movie_stub.get("stream_url") or float(self.movie_stub.get("position") or 0) > 0):
@@ -2810,6 +2818,15 @@ class MovieDetailsPage(Gtk.Overlay):
                 or self.movie_stub.get("imdb_id")
                 or self.movie_stub.get("id")
             )
+            req_media_type = self.media_type
+            if self.media_type == "collections" or str(imdb_id).startswith("ctmdb."):
+                sel_v = getattr(self, 'selected_video', None)
+                if sel_v and isinstance(sel_v, dict) and sel_v.get("id"):
+                    imdb_id = sel_v.get("id")
+                    req_media_type = "movie"
+                    v_title = sel_v.get("title") or sel_v.get("name")
+                    if v_title:
+                        media_title = v_title
             stream_subs = self.selected_torrent.get("subtitles") if hasattr(self, "selected_torrent") and isinstance(self.selected_torrent, dict) else None
             self.window.play_stream_with_failover(
                 queue,
@@ -2819,7 +2836,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 season=getattr(self, "selected_season", None),
                 episode=getattr(self, "selected_episode", None),
                 imdb_id=imdb_id,
-                media_type=self.media_type,
+                media_type=req_media_type,
                 stream_subtitles=stream_subs
             )
         else:
@@ -7214,7 +7231,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue = []
         self.stream_queue_index = 0
 
-    def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None, audio_url=None):
+    def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None, audio_url=None, item_id=None, media_type=None, season=None, episode=None, is_download=False):
         if not preserve_queue:
             self._clear_stream_failover()
         if url and isinstance(url, str) and any(d in url.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
@@ -7235,21 +7252,34 @@ class CineWindow(Adw.ApplicationWindow):
                 self.show_player_loading(_("Loading trailer..."), title=title)
         else:
             self.hide_player_loading()
-            page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
-            details = getattr(page, 'movie_details', {}) or {} if page else {}
-            stub = getattr(page, 'movie_stub', {}) or {} if page else {}
-            p_id = details.get("imdb_id") or details.get("id") or stub.get("imdb_id") or stub.get("id")
-            cover = details.get("medium_cover_image") or stub.get("medium_cover_image") or details.get("poster") or stub.get("poster")
-            m_type = getattr(page, 'media_type', 'movie') if page else 'movie'
-            s_num = getattr(page, 'selected_season', None) if page else None
-            e_num = getattr(page, 'selected_episode', None) if page else None
+            if is_download or item_id:
+                self.previous_page_before_player = "downloads" if is_download else getattr(self, "previous_page_before_player", "details")
+                p_id = item_id
+                m_type = media_type or "movie"
+                s_num = season
+                e_num = episode
+                cover = None
+                if p_id:
+                    from . import database
+                    cached = database.get_cached_metadata(p_id)
+                    if cached:
+                        cover = cached.get("medium_cover_image")
+            else:
+                page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+                details = getattr(page, 'movie_details', {}) or {} if page else {}
+                stub = getattr(page, 'movie_stub', {}) or {} if page else {}
+                p_id = details.get("imdb_id") or details.get("id") or stub.get("imdb_id") or stub.get("id")
+                cover = details.get("medium_cover_image") or stub.get("medium_cover_image") or details.get("poster") or stub.get("poster")
+                m_type = getattr(page, 'media_type', 'movie') if page else 'movie'
+                s_num = getattr(page, 'selected_season', None) if page else None
+                e_num = getattr(page, 'selected_episode', None) if page else None
 
-            if not getattr(self, "_current_playing_item", None):
-                import time
+            import time
+            if is_download or not getattr(self, "_current_playing_item", None):
                 self._current_playing_item = {
                     "id": p_id,
                     "imdb_id": p_id,
-                    "title": title or stub.get("title") or stub.get("name") or "Stream",
+                    "title": title or (stub.get("title") if not is_download and 'stub' in locals() else None) or (stub.get("name") if not is_download and 'stub' in locals() else None) or "Stream",
                     "type": m_type,
                     "medium_cover_image": cover,
                     "season": s_num,
@@ -7257,6 +7287,7 @@ class CineWindow(Adw.ApplicationWindow):
                     "last_watched": int(time.time()),
                     "progress": 0.01,
                     "position": 0.0,
+                    "is_download": is_download,
                 }
             else:
                 if p_id and not self._current_playing_item.get("id"):
@@ -7278,7 +7309,7 @@ class CineWindow(Adw.ApplicationWindow):
             from . import database
             if self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id"):
                 database.save_continue_watching(self._current_playing_item)
-                if page and hasattr(page, "update_continue_btn"):
+                if not is_download and page and hasattr(page, "update_continue_btn"):
                     page.update_continue_btn()
 
         self.main_stack.set_visible_child_name("player")
@@ -8121,6 +8152,7 @@ class CineWindow(Adw.ApplicationWindow):
                         database.save_continue_watching(self._current_playing_item)
             except Exception:
                 pass
+        self._current_playing_item = None
         if hasattr(self, 'mpv'):
             try: self.mpv.stop()
             except Exception: pass
@@ -8128,10 +8160,19 @@ class CineWindow(Adw.ApplicationWindow):
         player.stop_player(remove_torrent=remove_torrent)
         if hasattr(self, "_update_continue_watching_section"):
             self._update_continue_watching_section()
+
+        prev_page = getattr(self, 'previous_page_before_player', None)
         page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
-        if page:
-            if hasattr(page, 'update_continue_btn'):
-                page.update_continue_btn()
+        if page and hasattr(page, 'update_continue_btn'):
+            page.update_continue_btn()
+
+        if prev_page and prev_page in ['details', 'library', 'favorites', 'history', 'watched', 'downloads', 'addons']:
+            self.main_stack.set_visible_child_name(prev_page)
+        elif prev_page in ['discover', 'content', 'search_results']:
+            self.main_stack.set_visible_child_name('library')
+            if hasattr(self, 'library_stack'):
+                self.library_stack.set_visible_child_name(prev_page)
+        elif page:
             self.main_stack.set_visible_child_name("details")
         else:
             self.main_stack.set_visible_child_name("library")

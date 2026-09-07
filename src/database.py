@@ -829,7 +829,11 @@ def get_cached_metadata(item_id, media_type=None):
             cursor.execute("SELECT data FROM metadata_cache WHERE id = ?", (str(item_id),))
             row = cursor.fetchone()
             if row and row[0]:
-                return json.loads(row[0])
+                data = json.loads(row[0])
+                if str(item_id).startswith("ctmdb."):
+                    if not data.get("videos") or len(data.get("videos", [])) == 0 or str(data.get("title", "")).lower() == "media item":
+                        return None
+                return data
     except Exception as e:
         print(f"Error reading metadata cache: {e}")
     return None
