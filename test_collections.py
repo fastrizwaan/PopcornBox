@@ -68,6 +68,7 @@ class TestCollections(unittest.TestCase):
         self.patcher1.stop()
         self.patcher2.stop()
         self.temp_dir.cleanup()
+        database.reset_json_cache()
 
     def test_resolve_to_imdb_id_preserves_collection(self):
         from src.tmdb_helper import resolve_to_imdb_id
@@ -268,6 +269,79 @@ class TestCollections(unittest.TestCase):
             win.main_stack.set_visible_child_name.assert_called_with("downloads")
             # _current_playing_item must be cleared
             self.assertIsNone(win._current_playing_item)
+
+    def test_fetch_collection_details_structure(self):
+        from src.tmdb_helper import fetch_collection_details
+        mock_tmdb_col = {
+            "id": 726871,
+            "name": "Dune Collection",
+            "overview": "The Dune Collection chronicles a mythic journey...",
+            "poster_path": "/lxIGYkpvYjLtYtZH684AQft0FhD.jpg",
+            "backdrop_path": "/lzWHmYZrWnDK7tc1Elsa58x7pmb.jpg",
+            "parts": [
+                {
+                    "id": 438631,
+                    "title": "Dune",
+                    "overview": "Paul Atreides leads nomadic tribes...",
+                    "release_date": "2021-09-15",
+                    "vote_average": 7.8,
+                    "genre_ids": [878, 12]
+                },
+                {
+                    "id": 693134,
+                    "title": "Dune: Part Two",
+                    "overview": "Follow the mythic journey...",
+                    "release_date": "2024-02-27",
+                    "vote_average": 8.2,
+                    "genre_ids": [878, 12]
+                }
+            ]
+        }
+        with patch("src.tmdb_helper._get_cached_request", return_value=mock_tmdb_col):
+            with patch("src.tmdb_helper.resolve_to_imdb_id", side_effect=lambda mid, mtype, title: "tt1160419" if "438631" in mid else "tt15239678"):
+                col = fetch_collection_details("ctmdb.726871")
+                self.assertIsNotNone(col)
+                self.assertEqual(col["title"], "Dune Collection")
+                self.assertEqual(col["imdbRating"], "8.0")
+                self.assertEqual(len(col["videos"]), 2)
+                self.assertEqual(col["videos"][0]["id"], "tt1160419")
+                self.assertEqual(col["videos"][0]["title"], "Dune")
+                self.assertEqual(col["videos"][0]["episode"], 1)
+                self.assertEqual(col["videos"][1]["id"], "tt15239678")
+                self.assertEqual(col["videos"][1]["title"], "Dune: Part Two")
+                self.assertEqual(col["videos"][1]["episode"], 2)
+                self.assertIn("Science Fiction", col["genres"])
+
+    def test_fetch_movie_details_collection_fallback(self):
+        from src import api
+        # When addon returns empty meta ({"meta": []}), fetch_movie_details must fall back to fetch_collection_details
+        mock_collection = {
+            "id": "ctmdb.726871",
+            "title": "Dune Collection",
+            "year": "2021",
+            "medium_cover_image": "https://image.tmdb.org/t/p/w500/dune.jpg",
+            "background": "",
+            "description": "Dune collection overview",
+            "runtime": "",
+            "genre": "Science Fiction",
+            "imdbRating": "8.0",
+            "trailer": None,
+            "videos": [
+                {"id": "tt1160419", "season": 1, "episode": 1, "title": "Dune", "overview": "", "released": "2021-09-15", "thumbnail": ""},
+                {"id": "tt15239678", "season": 1, "episode": 2, "title": "Dune: Part Two", "overview": "", "released": "2024-02-27", "thumbnail": ""}
+            ],
+            "cast": [],
+            "genres": ["Science Fiction"],
+            "type": "collections",
+            "is_collection": True
+        }
+        with patch("src.tmdb_helper.fetch_collection_details", return_value=mock_collection):
+            with patch("src.api._get_cached_request", return_value={"meta": []}):
+                details = api.fetch_movie_details("ctmdb.726871", media_type="collections", use_cache=False)
+                self.assertIsNotNone(details)
+                self.assertEqual(details["title"], "Dune Collection")
+                self.assertEqual(len(details["videos"]), 2)
+                self.assertEqual(details["videos"][0]["id"], "tt1160419")
 
 if __name__ == "__main__":
     unittest.main()

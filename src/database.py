@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import threading
 import sqlite3
 import time
@@ -17,11 +18,18 @@ _json_cache_valid = False
 _cache_conn = None
 _cache_db_initialized = False
 
+def _is_testing():
+    return (
+        "unittest" in sys.modules
+        or "pytest" in sys.modules
+        or bool(os.environ.get("POPCORN_TEST"))
+    )
+
 if os.environ.get("FLATPAK_ID"):
     BASE_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "popcorn-box"
 else:
     flatpak_data = Path.home() / ".var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box"
-    if flatpak_data.exists():
+    if flatpak_data.exists() and not _is_testing():
         BASE_DIR = flatpak_data
     else:
         BASE_DIR = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share"))) / "popcorn-box"
@@ -200,10 +208,18 @@ def _read_db():
             _db_corrupted = True
             return {"favorites": [], "watched": [], "history": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}
 
+def reset_json_cache():
+    global _json_cache, _json_cache_valid
+    _json_cache = None
+    _json_cache_valid = False
+
 def _write_db(data):
     global _json_cache, _json_cache_valid
     if _db_corrupted:
         print("Database read failed previously. Refusing to write to avoid overwriting with defaults.")
+        return False
+    if _is_testing() and ("io.github.fastrizwaan.PopcornBox" in str(DB_FILE) or str(DB_FILE) == str(Path.home() / ".var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box/config/data.json")):
+        print(f"[SECURITY] Blocked unittests from writing to user database: {DB_FILE}")
         return False
     with _db_lock:
         _ensure_db()

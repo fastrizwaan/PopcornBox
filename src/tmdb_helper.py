@@ -762,4 +762,96 @@ def fetch_company_details(entity_id, entity_type="company"):
         print(f"[TMDB] Failed to fetch company details for {entity_id} ({entity_type}): {e}")
         return None
 
+TMDB_GENRES = {
+    28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
+    99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
+    27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Science Fiction",
+    10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western"
+}
+
+def fetch_collection_details(cid, title=None, poster=None):
+    """
+    Fetches full movie collection details (parts, overview, posters, ratings)
+    directly from the TMDB API when collection addon metadata is missing or empty.
+    """
+    clean_id = str(cid).replace("ctmdb.", "").strip()
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return None
+    url = f"https://api.themoviedb.org/3/collection/{clean_id}?api_key={api_key}"
+    data = _get_cached_request(url, max_age_hours=168)
+    if not data or not isinstance(data, dict) or not data.get("name"):
+        return None
+
+    parts = list(data.get("parts", []))
+    parts.sort(key=lambda p: p.get("release_date") or "9999-99-99")
+
+    def resolve_part(p_tuple):
+        idx, p = p_tuple
+        pid = p.get("id")
+        t = p.get("title") or f"Part {idx+1}"
+        imdb_id = resolve_to_imdb_id(f"tmdb:{pid}", "movie", t) or f"tmdb:{pid}"
+        return idx, imdb_id
+
+    resolved_ids = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(parts), 5) or 1) as executor:
+        for idx, i_id in executor.map(resolve_part, enumerate(parts)):
+            resolved_ids[idx] = i_id
+
+    videos = []
+    genre_names = set()
+    total_vote = 0.0
+    vote_count = 0
+
+    for idx, p in enumerate(parts):
+        t = p.get("title") or f"Part {idx+1}"
+        rel = p.get("release_date") or ""
+        overview = p.get("overview") or ""
+        vote = p.get("vote_average", 0.0)
+        if vote > 0:
+            total_vote += vote
+            vote_count += 1
+        for gid in p.get("genre_ids", []):
+            if gid in TMDB_GENRES:
+                genre_names.add(TMDB_GENRES[gid])
+
+        b_path = p.get("backdrop_path") or p.get("poster_path")
+        thumb = f"https://image.tmdb.org/t/p/w500{b_path}" if b_path else ""
+        part_id = p.get("id")
+
+        videos.append({
+            "id": resolved_ids.get(idx, f"tmdb:{part_id}"),
+            "season": 1,
+            "episode": idx + 1,
+            "title": t,
+            "overview": f"[IMDB: {vote:.1f}⭐] {overview}" if vote > 0 else overview,
+            "released": rel,
+            "thumbnail": thumb
+        })
+
+    avg_rating = f"{total_vote / vote_count:.1f}" if vote_count > 0 else ""
+    p_path = data.get("poster_path")
+    cov = f"https://image.tmdb.org/t/p/w500{p_path}" if p_path else (poster or "")
+    bg_path = data.get("backdrop_path")
+    backdrop = f"https://image.tmdb.org/t/p/original{bg_path}" if bg_path else ""
+    year = parts[0].get("release_date", "")[:4] if parts and parts[0].get("release_date") else ""
+
+    return {
+        "id": f"ctmdb.{clean_id}",
+        "title": data.get("name") or title or "Collection",
+        "year": year,
+        "medium_cover_image": cov,
+        "background": backdrop,
+        "description": data.get("overview") or "No synopsis available.",
+        "runtime": "",
+        "genre": ", ".join(sorted(genre_names)) if genre_names else "Collection",
+        "imdbRating": avg_rating,
+        "trailer": None,
+        "videos": videos,
+        "cast": [],
+        "genres": sorted(list(genre_names)),
+        "type": "collections",
+        "is_collection": True
+    }
+
 

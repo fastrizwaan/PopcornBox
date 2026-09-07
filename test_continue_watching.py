@@ -22,6 +22,8 @@ class TestContinueWatching(unittest.TestCase):
         database._json_cache = None
 
     def tearDown(self):
+        from src import database
+        database.reset_json_cache()
         self.patcher1.stop()
         self.patcher2.stop()
         self.temp_dir.cleanup()

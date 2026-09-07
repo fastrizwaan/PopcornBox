@@ -1549,6 +1549,31 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.on_watch_clicked(btn)
 
             self._continue_btn_hid = self.continue_btn.connect("clicked", on_continue_clicked)
+        elif self.media_type == "collections" or str(self.movie_stub.get("id", "")).startswith("ctmdb."):
+            sel_v = getattr(self, 'selected_video', None)
+            v_title = sel_v.get("title") if isinstance(sel_v, dict) else None
+            pos = float((cw_item or {}).get("position") or 0.0)
+            dur = float((cw_item or {}).get("duration") or 0.0)
+            if pos > 0:
+                lbl_parts = ["Continue"]
+                if v_title:
+                    lbl_parts.append(v_title)
+                if dur > pos:
+                    rem_mins = int((dur - pos) / 60)
+                    if rem_mins > 0:
+                        lbl_parts.append(f"({rem_mins}m left)")
+                self.continue_label.set_text(" ".join(lbl_parts))
+                self.continue_btn.set_tooltip_text("Continue Watching")
+            else:
+                lbl_text = f"Play {v_title}" if v_title else "Play"
+                self.continue_label.set_text(lbl_text)
+                self.continue_btn.set_tooltip_text(lbl_text)
+            self.continue_btn.set_visible(True)
+
+            def on_play_clicked(btn):
+                self.on_watch_clicked(btn)
+
+            self._continue_btn_hid = self.continue_btn.connect("clicked", on_play_clicked)
         else:
             pos = float((cw_item or {}).get("position") or 0.0)
             dur = float((cw_item or {}).get("duration") or 0.0)

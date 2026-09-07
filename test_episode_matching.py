@@ -1,9 +1,24 @@
 import unittest
 import re
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 from src import api, database
 
 class TestEpisodeMatching(unittest.TestCase):
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_dir = Path(self.temp_dir.name) / "popcorn-box" / "config"
+        self.db_dir.mkdir(parents=True, exist_ok=True)
+        self.db_file = self.db_dir / "data.json"
+
+        self.patcher1 = patch("src.database.DB_FILE", self.db_file)
+        self.patcher2 = patch("src.database.CONFIG_DIR", self.db_dir)
+        self.patcher1.start()
+        self.patcher2.start()
+
+        database.reset_json_cache()
+
         self.raw_streams = [
             {
                 "name": "4KHDHub HubDrive 1080P",
@@ -104,6 +119,12 @@ class TestEpisodeMatching(unittest.TestCase):
         database.save_working_stream("test_show_123", season=1, episode=1, stream_info=poisoned)
         # Direct query for S1E3 should NOT return the S1E1 stream
         self.assertIsNone(database.get_working_stream("test_show_123", season=1, episode=3))
+
+    def tearDown(self):
+        self.patcher1.stop()
+        self.patcher2.stop()
+        self.temp_dir.cleanup()
+        database.reset_json_cache()
 
 if __name__ == "__main__":
     unittest.main()

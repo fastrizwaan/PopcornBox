@@ -122,11 +122,18 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
             try:
                 with open(cache_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    with _MEM_CACHE_LOCK:
-                        if len(_MEM_CACHE) > _MEM_CACHE_MAX_ITEMS:
-                            _MEM_CACHE.clear()
-                        _MEM_CACHE[url] = (data, now)
-                    return data
+                    if isinstance(data, dict) and data.get("meta") == []:
+                        try:
+                            os.remove(cache_file)
+                        except Exception:
+                            pass
+                        data = None
+                    if data is not None:
+                        with _MEM_CACHE_LOCK:
+                            if len(_MEM_CACHE) > _MEM_CACHE_MAX_ITEMS:
+                                _MEM_CACHE.clear()
+                            _MEM_CACHE[url] = (data, now)
+                        return data
             except Exception as e:
                 logging.debug(f"Cache corrupted, falling back to fetch: {e}")
                 
@@ -160,6 +167,8 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
         if not data_str or not data_str.strip():
             return None
         data = json.loads(data_str)
+        if isinstance(data, dict) and data.get("meta") == []:
+            return None
         
         # Host is healthy: remove from offline list
         if parsed_host:
@@ -1327,6 +1336,15 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
     if cinemeta_res:
         return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
+
+    if str(imdb_id).startswith("ctmdb.") or media_type == "collections":
+        try:
+            from .tmdb_helper import fetch_collection_details
+            col_res = fetch_collection_details(imdb_id, title=title, poster=poster)
+            if col_res and is_valid_meta(col_res):
+                return _save_and_return_meta(col_res, imdb_id, "collections", title, poster=poster)
+        except Exception as e:
+            print(f"[COLLECTIONS] Failed to fetch TMDB collection details for {imdb_id}: {e}")
 
     return {
         "id": imdb_id,
