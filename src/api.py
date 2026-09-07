@@ -373,6 +373,35 @@ def get_session_blocked_addons():
     with _ADDON_ONLINE_LOCK:
         return set(_ADDON_SESSION_BLOCKED)
 
+def get_addon_catalogs(addon, cache_only=False):
+    """Return the catalogs for an addon. If catalogs is empty, attempts to fetch
+    from cached/remote manifest and persists to database."""
+    if not addon or not isinstance(addon, dict):
+        return []
+    catalogs = addon.get("catalogs")
+    if catalogs:
+        return catalogs
+        
+    m_url = addon.get("manifest_url", "")
+    if not m_url or m_url.startswith("builtin:"):
+        return []
+        
+    try:
+        manifest_data = _get_cached_request(m_url, max_age_hours=168, cache_only=cache_only, timeout=3.5)
+        if manifest_data and isinstance(manifest_data.get("catalogs"), list) and manifest_data["catalogs"]:
+            found_cats = manifest_data["catalogs"]
+            addon["catalogs"] = found_cats
+            try:
+                from . import database
+                database.update_addon_catalogs(m_url, found_cats)
+            except Exception:
+                pass
+            return found_cats
+    except Exception:
+        pass
+        
+    return []
+
 def addon_has_resource(addon, resource_name, media_type=None, item_id=None):
     """
     Check if an addon supports a given resource ('catalog', 'meta', 'stream', 'subtitles'),
@@ -419,7 +448,7 @@ def addon_has_resource(addon, resource_name, media_type=None, item_id=None):
     
     # If resources is missing or None, infer based on catalogs or defaults
     if resources is None:
-        if resource_name == "catalog" and addon.get("catalogs"):
+        if resource_name == "catalog" and get_addon_catalogs(addon, cache_only=True):
             resources = ["catalog"]
         elif resource_name == "stream":
             resources = ["stream"]
@@ -460,11 +489,11 @@ def addon_has_resource(addon, resource_name, media_type=None, item_id=None):
     if addon_types is not None and media_type:
         type_match = any(is_type_match(t, media_type) for t in addon_types)
         if not type_match and media_type == "anime":
-            type_match = any("anime" in str(t).lower() for t in addon_types) or any("anime" in str(c.get("type", "")).lower() for c in addon.get("catalogs", []))
+            type_match = any("anime" in str(t).lower() for t in addon_types) or any("anime" in str(c.get("type", "")).lower() for c in get_addon_catalogs(addon, cache_only=True))
         if not type_match:
             # Fallback check catalogs if catalog resource
             if resource_name == "catalog":
-                type_match = any(is_type_match(c.get("type"), media_type) for c in addon.get("catalogs", []))
+                type_match = any(is_type_match(c.get("type"), media_type) for c in get_addon_catalogs(addon, cache_only=True))
             if not type_match:
                 return False
 
@@ -562,7 +591,7 @@ def get_available_catalogs(c_type="movie"):
         base_url = manifest_url.rsplit("manifest.json", 1)[0]
         if not base_url.endswith("/"): base_url += "/"
             
-        addon_catalogs = addon.get("catalogs", [])
+        addon_catalogs = get_addon_catalogs(addon, cache_only=False)
         for cat in addon_catalogs:
             if not is_catalog_browsable(cat):
                 continue
@@ -574,6 +603,12 @@ def get_available_catalogs(c_type="movie"):
             matched = is_type_match(cat_type, c_type)
             if not matched and c_type == "anime":
                 if "anime" in str(cat_type).lower() or "anime" in cat_name.lower() or "anime" in cat_id.lower() or "anime" in addon_name.lower():
+                    matched = True
+            elif not matched and c_type == "movie":
+                if "movie" in str(cat_type).lower() or "movie" in cat_name.lower() or "movie" in str(cat_id).lower() or "film" in cat_name.lower():
+                    matched = True
+            elif not matched and c_type == "series":
+                if "series" in str(cat_type).lower() or "series" in cat_name.lower() or "series" in str(cat_id).lower() or "tv" in str(cat_id).lower():
                     matched = True
 
             if matched:
@@ -621,17 +656,7 @@ def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
     if not has_catalog_resource(addon, media_type=c_type):
         return []
         
-    catalogs = addon.get("catalogs", [])
-    if not catalogs:
-        m_url = addon.get("manifest_url", "")
-        if m_url and not m_url.startswith("builtin:"):
-            try:
-                manifest_data = _get_cached_request(m_url, max_age_hours=168, cache_only=cache_only, timeout=3)
-                if manifest_data:
-                    catalogs = manifest_data.get("catalogs", [])
-            except Exception:
-                pass
-
+    catalogs = get_addon_catalogs(addon, cache_only=cache_only)
     if not catalogs:
         return []
 
@@ -841,9 +866,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         for a in database.get_addons():
             m_url = a.get("manifest_url", "")
             if m_url and (m_url == catalog_url or catalog_url.startswith(m_url.rsplit("manifest.json", 1)[0])):
-                for cat in a.get("catalogs", []):
+                for cat in get_addon_catalogs(a, cache_only=True):
                     cat_type = cat.get("type")
-                    if str(cat.get("id")) == str(catalog_id) and is_type_match(cat_type, c_type):
+                    if str(cat.get("id")) == str(catalog_id):
                         actual_cat_type = cat_type or c_type
                         break
 

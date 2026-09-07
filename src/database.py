@@ -178,6 +178,47 @@ def _read_db():
                         data["addons"].append(default_addon)
                         migrated = True
 
+                # Migrate HdHub catalogs if missing or empty
+                for a in data["addons"]:
+                    if (a.get("id") == "com.stremio.HdHub" or "hdhub" in str(a.get("manifest_url", "")).lower()) and not a.get("catalogs"):
+                        a["catalogs"] = [
+                            {
+                                "type": "HdHub",
+                                "id": "hdhub-featured-movies",
+                                "name": "Featured Movies",
+                                "extra": [{"name": "search", "isRequired": False}],
+                                "extraSupported": ["search"]
+                            },
+                            {
+                                "type": "HdHub",
+                                "id": "hdhub-featured-series",
+                                "name": "Featured Series",
+                                "extra": [{"name": "search", "isRequired": False}],
+                                "extraSupported": ["search"]
+                            },
+                            {
+                                "type": "HdHub",
+                                "id": "hdhub-popular-movies",
+                                "name": "Popular Movies",
+                                "extra": [{"name": "search", "isRequired": False}],
+                                "extraSupported": ["search"]
+                            },
+                            {
+                                "type": "HdHub",
+                                "id": "hdhub-popular-series",
+                                "name": "Popular Series",
+                                "extra": [{"name": "search", "isRequired": False}],
+                                "extraSupported": ["search"]
+                            }
+                        ]
+                        migrated = True
+
+                # Ensure stream-only addons do not retain stale catalogs
+                for a in data["addons"]:
+                    if a.get("id") == "com.penguplay" and a.get("catalogs"):
+                        a["catalogs"] = []
+                        migrated = True
+
                 # Deduplicate addons by ID or name
                 unique_addons = []
                 seen_addon_ids = set()
@@ -748,6 +789,24 @@ def add_addon(addon):
         addons.append(addon)
         db["addons"] = addons
         _write_db(db)
+
+def update_addon_catalogs(manifest_url, catalogs):
+    """Update an addon's catalogs list if it was empty or missing."""
+    if not manifest_url or not catalogs:
+        return False
+    with _db_lock:
+        db = _read_db()
+        updated = False
+        for a in db.get("addons", []):
+            if a.get("manifest_url") == manifest_url:
+                if not a.get("catalogs"):
+                    a["catalogs"] = list(catalogs)
+                    updated = True
+                break
+        if updated:
+            _write_db(db)
+            return True
+    return False
 
 def remove_addon(addon_id):
     with _db_lock:

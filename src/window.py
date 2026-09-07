@@ -5650,7 +5650,7 @@ class CineWindow(Adw.ApplicationWindow):
                 if not addon.get("enabled", True): continue
                 for t in addon.get("types", []):
                     if t: types_found.add(str(t).lower())
-                for cat in addon.get("catalogs", []):
+                for cat in api.get_addon_catalogs(addon, cache_only=True):
                     if cat.get("type"):
                         types_found.add(str(cat.get("type")).lower())
             return types_found
@@ -6323,10 +6323,12 @@ class CineWindow(Adw.ApplicationWindow):
                 continue
             if not api.is_addon_online(m_url):
                 continue
+            if not api.has_catalog_resource(addon):
+                continue
             if filter_addon_url and m_url != filter_addon_url:
                 continue
                 
-            catalogs = addon.get('catalogs', [])
+            catalogs = api.get_addon_catalogs(addon, cache_only=False)
             if not catalogs:
                 continue
                 
@@ -6344,6 +6346,12 @@ class CineWindow(Adw.ApplicationWindow):
                     if not api.is_type_match(c_type, filter_media_type):
                         if filter_media_type == "anime":
                             if "anime" not in str(c_type).lower() and "anime" not in c_name.lower() and "anime" not in str(c_id).lower() and "anime" not in addon_name.lower():
+                                continue
+                        elif filter_media_type == "movie":
+                            if "movie" not in str(c_type).lower() and "movie" not in c_name.lower() and "movie" not in str(c_id).lower() and "film" not in c_name.lower():
+                                continue
+                        elif filter_media_type == "series":
+                            if "series" not in str(c_type).lower() and "series" not in c_name.lower() and "series" not in str(c_id).lower() and "tv" not in str(c_id).lower():
                                 continue
                         else:
                             continue
@@ -6389,6 +6397,8 @@ class CineWindow(Adw.ApplicationWindow):
                         row_title = f'{clean_name.title()} - {type_display}'
                     elif addon_name.lower() in clean_name.lower():
                         row_title = f'{clean_name} ({type_display})'
+                    elif type_display.lower() == addon_name.lower() or type_display.lower() in clean_name.lower():
+                        row_title = f'{addon_name} - {clean_name}'
                     else:
                         row_title = f'{addon_name} - {clean_name} ({type_display})'
                         
