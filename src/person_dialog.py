@@ -90,6 +90,7 @@ class PersonDetailDialog(Adw.Dialog):
 
         self.portrait_frame = Gtk.Box()
         self.portrait_frame.add_css_class("person-portrait-frame")
+        self.portrait_frame.set_overflow(Gtk.Overflow.HIDDEN)
         self.portrait_frame.append(self.portrait_pic)
         self.hero_box.append(self.portrait_frame)
 

@@ -1934,6 +1934,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 circle.add_css_class("cast-avatar-circle")
                 circle.set_halign(Gtk.Align.CENTER)
                 circle.set_valign(Gtk.Align.CENTER)
+                circle.set_overflow(Gtk.Overflow.HIDDEN)
 
                 if member.get("photo"):
                     pic = Gtk.Picture()
@@ -1965,6 +1966,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     role_lbl.set_lines(1)
                     role_lbl.set_ellipsize(Pango.EllipsizeMode.END)
                     role_lbl.set_halign(Gtk.Align.CENTER)
+                    role_lbl.set_justify(Gtk.Justification.CENTER)
                     role_lbl.add_css_class("cast-member-role")
                     btn_box.append(role_lbl)
 
@@ -2017,6 +2019,8 @@ class MovieDetailsPage(Gtk.Overlay):
                                 fallback_lbl = Gtk.Label(label=name)
                                 fallback_lbl.set_lines(1)
                                 fallback_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+                                fallback_lbl.set_halign(Gtk.Align.CENTER)
+                                fallback_lbl.set_justify(Gtk.Justification.CENTER)
                                 fallback_lbl.add_css_class("company-fallback-label")
                                 box.append(fallback_lbl)
                             except Exception:
@@ -2028,6 +2032,8 @@ class MovieDetailsPage(Gtk.Overlay):
                     comp_lbl = Gtk.Label(label=comp["name"])
                     comp_lbl.set_lines(1)
                     comp_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+                    comp_lbl.set_halign(Gtk.Align.CENTER)
+                    comp_lbl.set_justify(Gtk.Justification.CENTER)
                     comp_lbl.add_css_class("company-fallback-label")
                     inner_box.append(comp_lbl)
 

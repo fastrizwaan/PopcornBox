@@ -912,9 +912,6 @@ button.category-filter-btn:checked {
   border-radius: 50%;
   min-width: 96px;
   min-height: 96px;
-  max-width: 96px;
-  max-height: 96px;
-  overflow: hidden;
   background: rgba(255, 255, 255, 0.1);
   border: 2.5px solid transparent;
   transition: border-color 200ms ease, transform 200ms ease;
@@ -941,7 +938,6 @@ button.category-filter-btn:checked {
   font-weight: 600;
   color: #f1f5f9;
   margin-top: 6px;
-  text-align: center;
 }
 
 .cast-member-role {
@@ -949,7 +945,6 @@ button.category-filter-btn:checked {
   font-weight: 400;
   color: #94a3b8;
   margin-top: 1px;
-  text-align: center;
 }
 
 /* Production Company & Network Logo Cards */
@@ -960,12 +955,10 @@ button.company-logo-card,
   background-image: none;
   border-radius: 10px;
   min-width: 120px;
-  max-width: 200px;
-  height: 48px;
+  min-height: 48px;
   padding: 6px 14px;
   border: 2px solid transparent;
   outline: none;
-  cursor: pointer;
   transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
@@ -984,15 +977,13 @@ button.company-logo-card:active,
 
 .company-logo-pic {
   min-width: 50px;
-  max-width: 140px;
-  height: 36px;
+  min-height: 36px;
 }
 
 .company-fallback-label {
   font-size: 13px;
   font-weight: 700;
   color: #1e293b;
-  text-align: center;
 }
 
 /* Person Detail Dialog */
@@ -1005,7 +996,6 @@ button.company-logo-card:active,
 
 .person-portrait-frame {
   border-radius: 12px;
-  overflow: hidden;
   background: rgba(0, 0, 0, 0.3);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
@@ -1016,7 +1006,7 @@ button.company-logo-card:active,
 
 .person-bio-label {
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 18px;
   color: #cbd5e1;
 }
 
@@ -1053,6 +1043,5 @@ button.company-logo-card:active,
 
 .company-dialog-logo-pic {
   min-width: 80px;
-  max-width: 160px;
-  height: 48px;
+  min-height: 48px;
 }
