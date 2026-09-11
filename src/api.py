@@ -1801,11 +1801,17 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
 
         dedup_key = f"{raw_id}:{full_title}"
         if dedup_key in seen_keys:
-            vs = valid_streams[seen_keys[dedup_key]]
-            if s.get("addon_name") and s["addon_name"] not in vs["addon_names"]:
-                vs["addon_names"].append(s["addon_name"])
+            idx = seen_keys[dedup_key]
+            if idx is not None and 0 <= idx < len(valid_streams):
+                vs = valid_streams[idx]
+                if s.get("addon_name") and s["addon_name"] not in vs.get("addon_names", []):
+                    vs["addon_names"].append(s["addon_name"])
+                if s.get("sources"):
+                    existing_sources = vs.setdefault("sources", [])
+                    for src in s["sources"]:
+                        if src and src not in existing_sources:
+                            existing_sources.append(src)
             continue
-        seen_keys[dedup_key] = len(valid_streams)
 
         quality, q_val = _extract_quality(name_str)
         if not quality:
@@ -1890,11 +1896,13 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             ep_match = match_stream_to_episode(stream_entry, season, episode, ep_title)
             # Filter out streams that explicitly belong to a different episode or season!
             if ep_match == MATCH_MISMATCH:
+                seen_keys[dedup_key] = None
                 continue
             stream_entry["ep_match"] = ep_match
         else:
             stream_entry["ep_match"] = MATCH_UNKNOWN
 
+        seen_keys[dedup_key] = len(valid_streams)
         valid_streams.append(stream_entry)
     
     def _rank_key(x):

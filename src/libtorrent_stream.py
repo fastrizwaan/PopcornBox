@@ -396,6 +396,7 @@ class TorrentStreamEngine:
         self.http_thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.http_thread.start()
 
+    def _metadata_worker(self):
         loops = 0
         try:
             while not self.stopped.is_set():

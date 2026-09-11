@@ -46,5 +46,21 @@ class TestTorrentTrackers(unittest.TestCase):
         norm = database._normalize_stream_for_storage(st)
         self.assertEqual(norm.get("sources"), ["tracker:udp://tracker.opentrackr.org:1337/announce"])
 
+    def test_dedup_and_mismatch_filtering(self):
+        # Two addons returning same mismatched stream
+        s1 = {"infoHash": "abc1", "title": "Show - S01E01", "addon_name": "AddonA"}
+        s2 = {"infoHash": "abc1", "title": "Show - S01E01", "addon_name": "AddonB"}
+        res = api.process_raw_streams([s1, s2], season=1, episode=5)
+        self.assertEqual(len(res), 0)
+
+        # Two addons returning same valid matching stream
+        g1 = {"infoHash": "abc2", "title": "Show - S01E05", "addon_name": "AddonA", "sources": ["tracker:udp://t1:1337"]}
+        g2 = {"infoHash": "abc2", "title": "Show - S01E05", "addon_name": "AddonB", "sources": ["tracker:udp://t2:1337"]}
+        res2 = api.process_raw_streams([g1, g2], season=1, episode=5)
+        self.assertEqual(len(res2), 1)
+        self.assertEqual(res2[0]["addon_names"], ["AddonA", "AddonB"])
+        self.assertIn("tracker:udp://t1:1337", res2[0]["sources"])
+        self.assertIn("tracker:udp://t2:1337", res2[0]["sources"])
+
 if __name__ == "__main__":
     unittest.main()
