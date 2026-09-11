@@ -2867,20 +2867,28 @@ class MovieDetailsPage(Gtk.Overlay):
         else:
             torrent = self.selected_torrent
             magnet = torrent.get("url") or torrent.get("magnet")
+            sources = torrent.get("sources") if isinstance(torrent, dict) else None
             if not magnet and torrent.get("hash"):
                 from . import api
                 t_name = torrent.get("stream_title") or torrent.get("filename") or torrent.get("name") or torrent.get("title") or self.movie_stub.get("title", "")
-                magnet = api.build_magnet(torrent.get("hash"), t_name)
+                magnet = api.build_magnet(torrent.get("hash"), t_name, sources=sources)
+            elif magnet and sources:
+                from . import api
+                magnet = api.add_trackers_to_magnet(magnet, sources=sources)
             file_index = torrent.get("file_index")
             self._start_streaming(magnet, file_index)
 
     def _download_stream_item(self, torrent):
         if not torrent: return
         url = torrent.get("url") or torrent.get("magnet")
+        sources = torrent.get("sources") if isinstance(torrent, dict) else None
         if not url and torrent.get("hash"):
             from . import api
             t_name = torrent.get("stream_title") or torrent.get("filename") or torrent.get("name") or torrent.get("title") or self.movie_stub.get("title", "")
-            url = api.build_magnet(torrent.get("hash"), t_name)
+            url = api.build_magnet(torrent.get("hash"), t_name, sources=sources)
+        elif url and sources:
+            from . import api
+            url = api.add_trackers_to_magnet(url, sources=sources)
             
         if url:
             try:
@@ -2896,10 +2904,14 @@ class MovieDetailsPage(Gtk.Overlay):
     def _copy_stream_url(self, torrent):
         if not torrent: return
         url = torrent.get("url") or torrent.get("magnet")
+        sources = torrent.get("sources") if isinstance(torrent, dict) else None
         if not url and torrent.get("hash"):
             from . import api
             t_name = torrent.get("stream_title") or torrent.get("filename") or torrent.get("name") or torrent.get("title") or self.movie_stub.get("title", "")
-            url = api.build_magnet(torrent.get("hash"), t_name)
+            url = api.build_magnet(torrent.get("hash"), t_name, sources=sources)
+        elif url and sources:
+            from . import api
+            url = api.add_trackers_to_magnet(url, sources=sources)
             
         if url:
             try:
@@ -3007,6 +3019,18 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.window._show_toast(_("Opening in web browser..."))
             open_uri(magnet, self.window if self.window else None)
             return
+
+        if not (magnet.startswith("http://") or magnet.startswith("https://")):
+            from . import api
+            from .libtorrent_stream import info_hash_from_magnet
+            hash_val = (self.selected_torrent.get("hash") or self.selected_torrent.get("infoHash")) if isinstance(getattr(self, "selected_torrent", None), dict) else None
+            if not hash_val:
+                hash_val = info_hash_from_magnet(magnet)
+            sources = self.selected_torrent.get("sources") if isinstance(getattr(self, "selected_torrent", None), dict) else None
+            if hash_val and api.is_stremio_server_running():
+                stremio_url = api.build_stremio_stream_url(hash_val, file_index=file_index, sources=sources, magnet_link=magnet)
+                if stremio_url:
+                    magnet = stremio_url
 
         if magnet.startswith("http://") or magnet.startswith("https://"):
             if self.window:
@@ -6264,6 +6288,24 @@ class CineWindow(Adw.ApplicationWindow):
                 self._show_toast(_("Opening in web browser..."))
                 open_uri(target, self)
                 return
+            if str(target).startswith("magnet:"):
+                fake_stream = {
+                    "magnet": target,
+                    "title": title,
+                    "file_index": item_data.get("file_index"),
+                    "sources": item_data.get("sources")
+                }
+                self.play_stream_with_failover(
+                    [fake_stream],
+                    initial_index=0,
+                    title=title,
+                    previous_page=prev_page,
+                    season=item_data.get("season"),
+                    episode=item_data.get("episode"),
+                    imdb_id=p_id,
+                    media_type=item_data.get("type", "movie")
+                )
+                return
             self.previous_page_before_player = prev_page
             self._play_stream(target, title, start_time=self._pending_seek_position)
         else:
@@ -7703,10 +7745,25 @@ class CineWindow(Adw.ApplicationWindow):
         torrent = self.stream_queue[self.stream_queue_index]
         magnet = torrent.get("url") or torrent.get("magnet") if isinstance(torrent, dict) else None
         hash_val = torrent.get("hash") or torrent.get("infoHash") if isinstance(torrent, dict) else None
+        sources = torrent.get("sources") if isinstance(torrent, dict) else None
+        file_index = torrent.get("file_index") if isinstance(torrent, dict) else None
+        if file_index is None and isinstance(torrent, dict):
+            file_index = torrent.get("fileIdx")
+
         if not magnet and hash_val:
             from . import api
             t_name = torrent.get("filename") or torrent.get("stream_title") or torrent.get("name") or torrent.get("title") or self.stream_queue_title or ""
-            magnet = api.build_magnet(hash_val, t_name)
+            magnet = api.build_magnet(hash_val, t_name, sources=sources)
+        elif magnet and sources:
+            from . import api
+            magnet = api.add_trackers_to_magnet(magnet, sources=sources)
+
+        # Check if local Stremio streaming server is running (port 11470)
+        stremio_stream_url = None
+        if hash_val and not (magnet and (magnet.startswith("http://") or magnet.startswith("https://"))):
+            from . import api
+            if api.is_stremio_server_running():
+                stremio_stream_url = api.build_stremio_stream_url(hash_val, file_index=file_index, sources=sources)
 
         title_text = self.stream_queue_title or "Stream"
         stream_name = torrent.get("filename") or torrent.get("name") or torrent.get("stream_title") or "" if isinstance(torrent, dict) else ""
@@ -7754,6 +7811,11 @@ class CineWindow(Adw.ApplicationWindow):
             else:
                 clean_target = yt_target
             self._play_stream(clean_target, display_title, headers=headers, preserve_queue=True)
+            return
+
+        if stremio_stream_url:
+            logger.info(f"Streaming via local Stremio server: {stremio_stream_url}")
+            self._play_stream(stremio_stream_url, display_title, headers=headers, preserve_queue=True)
             return
 
         if magnet and (magnet.startswith("http://") or magnet.startswith("https://")):

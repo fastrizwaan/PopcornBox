@@ -22,12 +22,16 @@ def info_hash_from_magnet(magnet):
     return match.group(1).lower() if match else None
 
 
-def add_trackers_to_magnet(magnet):
+def add_trackers_to_magnet(magnet, extra_trackers=None):
     if not magnet.startswith("magnet:?"):
         return magnet
+    trackers = list(extra_trackers or [])
     for tracker in EXTRA_TRACKERS:
+        if tracker not in trackers:
+            trackers.append(tracker)
+    for tracker in trackers:
         encoded = urllib.parse.quote(tracker, safe="")
-        if encoded not in magnet:
+        if encoded not in magnet and tracker not in magnet:
             magnet += f"&tr={encoded}"
     return magnet
 
@@ -220,8 +224,10 @@ class TorrentStreamEngine:
         lt = self.lt
         try:
             settings = {
-                "listen_interfaces": "0.0.0.0:6881,0.0.0.0:0",
+                "listen_interfaces": "0.0.0.0:0,[::]:0",
                 "user_agent": "Transmission 4.1.2",
+                "announce_to_all_trackers": True,
+                "announce_to_all_tiers": True,
                 "enable_outgoing_tcp": True,
                 "enable_outgoing_utp": True,
                 "enable_incoming_tcp": True,
@@ -230,15 +236,28 @@ class TorrentStreamEngine:
                 "enable_lsd": True,
                 "enable_upnp": True,
                 "enable_natpmp": True,
-                "dht_bootstrap_nodes": "router.bittorrent.com:6881,router.utorrent.com:6881,dht.transmissionbt.com:6881",
+                "dht_bootstrap_nodes": "router.bittorrent.com:6881,router.utorrent.com:6881,dht.transmissionbt.com:6881,dht.libtorrent.org:25401,dht.aelitis.com:6881",
                 "connections_limit": 500,
                 "active_downloads": 20,
                 "active_seeds": 50,
                 "active_limit": 100,
                 "share_ratio_limit": 0.0,
                 "seed_time_ratio_limit": 0.0,
+                "stop_tracker_timeout": 1,
             }
-            return lt.session(settings)
+            session = lt.session(settings)
+            for host, port in [
+                ("router.bittorrent.com", 6881),
+                ("dht.transmissionbt.com", 6881),
+                ("dht.libtorrent.org", 25401),
+                ("router.utorrent.com", 6881),
+                ("dht.aelitis.com", 6881),
+            ]:
+                try:
+                    session.add_dht_router(host, port)
+                except Exception:
+                    pass
+            return session
         except Exception:
             session = lt.session()
             try:
@@ -298,16 +317,26 @@ class TorrentStreamEngine:
             pass
 
         try:
+            parsed_mag = urllib.parse.urlparse(magnet)
+            qs_mag = urllib.parse.parse_qs(parsed_mag.query)
+            all_trs = []
+            for tr in qs_mag.get("tr", []):
+                if tr and tr not in all_trs:
+                    all_trs.append(tr)
             for tr in EXTRA_TRACKERS:
-                try:
-                    handle.add_tracker({"url": tr})
-                except Exception:
+                if tr not in all_trs:
+                    all_trs.append(tr)
+            if hasattr(lt, "announce_entry"):
+                for tr in all_trs:
                     try:
                         handle.add_tracker(lt.announce_entry(tr))
                     except Exception:
                         pass
             if hasattr(handle, 'force_reannounce'):
-                handle.force_reannounce()
+                try:
+                    handle.force_reannounce(0, -1)
+                except Exception:
+                    handle.force_reannounce()
             if hasattr(handle, 'force_dht_announce'):
                 handle.force_dht_announce()
         except Exception as e:
@@ -367,7 +396,7 @@ class TorrentStreamEngine:
         self.http_thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.http_thread.start()
 
-    def _metadata_worker(self):
+        loops = 0
         try:
             while not self.stopped.is_set():
                 status = self._status()
@@ -412,6 +441,15 @@ class TorrentStreamEngine:
                     from . import database
                     database.add_download(self.info_hash, name, self.magnet_link, self.file_index, self.item_id, self.media_type, getattr(self, 'season', None), getattr(self, 'episode', None))
                     return
+                loops += 1
+                if loops % 20 == 0:  # Every 5 seconds (20 * 0.25s)
+                    try:
+                        if hasattr(self.handle, 'force_reannounce'):
+                            self.handle.force_reannounce(0, -1)
+                        if hasattr(self.handle, 'force_dht_announce'):
+                            self.handle.force_dht_announce()
+                    except Exception:
+                        pass
                 time.sleep(0.25)
         except Exception as exc:
             self.error = exc

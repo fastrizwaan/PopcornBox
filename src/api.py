@@ -1866,6 +1866,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
         stream_entry = {
             "hash": raw_id,
             "url": stream_url,
+            "sources": s.get("sources") or [],
             "externalUrl": external_url,
             "is_external": is_external,
             "is_http": is_http,
@@ -2654,8 +2655,86 @@ def download_subtitle_to_path(sub_url, file_path):
         print(f"Error downloading subtitle: {e}")
         return None
 
-def build_magnet(hash_string, title):
+def build_magnet(hash_string, title, sources=None):
     title = title or ""
     encoded_title = urllib.parse.quote(title)
-    tracker_str = "&tr=".join([urllib.parse.quote(t) for t in DEFAULT_TRACKERS])
+    trackers = []
+    seen = set()
+    if sources and isinstance(sources, list):
+        for src in sources:
+            if not isinstance(src, str):
+                continue
+            t = src.strip()
+            if t.startswith("tracker:"):
+                t = t[len("tracker:"):].strip()
+            elif t.startswith("dht:"):
+                continue
+            if t and (t.startswith("udp://") or t.startswith("http://") or t.startswith("https://")):
+                if t not in seen:
+                    seen.add(t)
+                    trackers.append(t)
+    for dt in DEFAULT_TRACKERS:
+        if dt not in seen:
+            seen.add(dt)
+            trackers.append(dt)
+    tracker_str = "&tr=".join([urllib.parse.quote(t, safe="") for t in trackers])
     return f"magnet:?xt=urn:btih:{hash_string}&dn={encoded_title}&tr={tracker_str}"
+
+def add_trackers_to_magnet(magnet, sources=None):
+    if not magnet or not magnet.startswith("magnet:?"):
+        return magnet
+    new_trackers = []
+    seen = set()
+    if sources and isinstance(sources, list):
+        for src in sources:
+            if not isinstance(src, str):
+                continue
+            t = src.strip()
+            if t.startswith("tracker:"):
+                t = t[len("tracker:"):].strip()
+            elif t.startswith("dht:"):
+                continue
+            if t and (t.startswith("udp://") or t.startswith("http://") or t.startswith("https://")):
+                if t not in seen:
+                    seen.add(t)
+                    new_trackers.append(t)
+    for dt in DEFAULT_TRACKERS:
+        if dt not in seen:
+            seen.add(dt)
+            new_trackers.append(dt)
+    for t in new_trackers:
+        enc = urllib.parse.quote(t, safe="")
+        if enc not in magnet and t not in magnet:
+            magnet += f"&tr={enc}"
+    return magnet
+
+def is_stremio_server_running(host="127.0.0.1", port=11470, timeout=0.3):
+    """Check if Stremio Streaming Server is active on local machine."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        res = sock.connect_ex((host, port))
+        sock.close()
+        return res == 0
+    except Exception:
+        return False
+
+def build_stremio_stream_url(info_hash, file_index=None, sources=None, host="127.0.0.1", port=11470):
+    f_idx = file_index if file_index is not None and str(file_index).isdigit() and int(file_index) >= 0 else -1
+    base_url = f"http://{host}:{port}/{info_hash}/{f_idx}"
+    query_parts = []
+    if sources and isinstance(sources, list):
+        for s in sources:
+            if not isinstance(s, str) or not s.strip():
+                continue
+            tr = s.strip()
+            if tr.startswith("tracker:"):
+                query_parts.append(f"tr={urllib.parse.quote(tr, safe='')}")
+            elif tr.startswith("dht:"):
+                query_parts.append(f"dht={urllib.parse.quote(tr[4:], safe='')}")
+            elif tr.startswith(("udp://", "http://", "https://")):
+                query_parts.append(f"tr={urllib.parse.quote('tracker:' + tr, safe='')}")
+    if query_parts:
+        base_url += "?" + "&".join(query_parts)
+    return base_url
+
