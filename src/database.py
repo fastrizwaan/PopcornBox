@@ -890,6 +890,16 @@ def _get_cache_db():
             updated_at REAL
         )
     """)
+    # Migration: Invalidate catalog_cache entries where series catalogs were corrupted with movies
+    try:
+        _cache_conn.execute("CREATE TABLE IF NOT EXISTS cache_meta (key TEXT PRIMARY KEY, val TEXT)")
+        cur = _cache_conn.cursor()
+        cur.execute("SELECT val FROM cache_meta WHERE key = 'series_catalog_fix_v1'")
+        if not cur.fetchone():
+            _cache_conn.execute("DELETE FROM catalog_cache WHERE cache_key LIKE '%:series%' OR cache_key LIKE '%:series:%'")
+            _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('series_catalog_fix_v1', '1')")
+    except Exception:
+        pass
     _cache_conn.commit()
     _cache_db_initialized = True
     return _cache_conn

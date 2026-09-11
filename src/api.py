@@ -866,11 +866,17 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         for a in database.get_addons():
             m_url = a.get("manifest_url", "")
             if m_url and (m_url == catalog_url or catalog_url.startswith(m_url.rsplit("manifest.json", 1)[0])):
-                for cat in get_addon_catalogs(a, cache_only=True):
-                    cat_type = cat.get("type")
-                    if str(cat.get("id")) == str(catalog_id):
-                        actual_cat_type = cat_type or c_type
-                        break
+                candidates = [cat for cat in get_addon_catalogs(a, cache_only=True) if str(cat.get("id")) == str(catalog_id)]
+                if len(candidates) == 1:
+                    actual_cat_type = candidates[0].get("type") or c_type
+                elif len(candidates) > 1:
+                    exact = next((cat.get("type") for cat in candidates if cat.get("type") == c_type), None)
+                    if exact:
+                        actual_cat_type = exact
+                    else:
+                        compat = next((cat.get("type") for cat in candidates if is_type_match(cat.get("type"), c_type)), None)
+                        actual_cat_type = compat or c_type
+                break
 
         url = f"{base_url}catalog/{actual_cat_type}/{catalog_id}"
         
