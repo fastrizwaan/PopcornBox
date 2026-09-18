@@ -539,6 +539,12 @@ def save_continue_watching(item):
                 if not item.get("selected_torrent"):
                     updated_item.pop("selected_torrent", None)
 
+        if "provider" not in updated_item:
+            st = updated_item.get("selected_torrent") or {}
+            anames = st.get("addon_names") or ([st.get("addon_name")] if st.get("addon_name") else [])
+            if anames and anames[0]:
+                updated_item["provider"] = anames[0]
+
         if "last_watched" not in item:
             import time
             updated_item["last_watched"] = int(time.time())
@@ -672,10 +678,43 @@ def _normalize_stream_for_storage(stream):
     if not stream or not isinstance(stream, dict):
         return None
     res = {}
-    for k in ["url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "stream_title", "title", "filename", "is_http", "is_external", "ytId", "externalUrl", "addon_names", "behaviorHints", "subtitles"]:
+    for k in ["url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "stream_title", "title", "filename", "is_http", "is_external", "ytId", "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles", "saved_at"]:
         if k in stream and stream[k] is not None:
             res[k] = stream[k]
+    if "addon_name" in stream and "addon_names" not in res:
+        res["addon_names"] = [stream["addon_name"]]
+    elif res.get("addon_names") and not res.get("addon_name"):
+        res["addon_name"] = res["addon_names"][0]
     return res
+
+def is_stream_stale(stream_or_item, max_age_seconds=14400):
+    """Check if an HTTP stream link is stale/expired.
+    
+    Direct HTTP streams from addons/scrapers typically expire after a few hours
+    (e.g., debrid links, tokens). Torrent/magnet links do not expire by time.
+    """
+    if not stream_or_item or not isinstance(stream_or_item, dict):
+        return False
+    
+    url = stream_or_item.get("stream_url") or stream_or_item.get("url") or ""
+    is_http = bool(stream_or_item.get("is_http") or (isinstance(url, str) and url.startswith(("http://", "https://")) and not stream_or_item.get("hash") and not stream_or_item.get("infoHash")))
+    if not is_http:
+        return False
+    
+    saved_at = stream_or_item.get("saved_at")
+    last_refreshed = stream_or_item.get("last_refreshed")
+    last_watched = stream_or_item.get("last_watched")
+    
+    timestamp = last_refreshed or saved_at or last_watched
+    if not timestamp:
+        return True
+    
+    try:
+        import time as _time
+        age = _time.time() - float(timestamp)
+        return age > max_age_seconds
+    except (ValueError, TypeError):
+        return True
 
 def save_working_stream(item_id, season=None, episode=None, stream_info=None):
     """Save the working stream/torrent for a movie or series episode."""
@@ -684,6 +723,9 @@ def save_working_stream(item_id, season=None, episode=None, stream_info=None):
     norm = _normalize_stream_for_storage(stream_info)
     if not norm:
         return
+    import time as _time
+    if "saved_at" not in norm:
+        norm["saved_at"] = _time.time()
     s_key = f"{season}" if season is not None else ""
     e_key = f"{episode}" if episode is not None else ""
     key = f"working_stream_{item_id}_{s_key}_{e_key}"

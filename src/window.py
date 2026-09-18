@@ -97,33 +97,7 @@ gi.require_version("GObject", "2.0")
 from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject, Pango
 
 def _streams_match(s1, s2):
-    if not s1 or not s2: return False
-    if s1 is s2: return True
-    
-    is_http1 = bool(s1.get("is_http") or (isinstance(s1.get("url"), str) and s1.get("url", "").startswith(("http://", "https://")) and not s1.get("hash") and not s1.get("infoHash")))
-    is_http2 = bool(s2.get("is_http") or (isinstance(s2.get("url"), str) and s2.get("url", "").startswith(("http://", "https://")) and not s2.get("hash") and not s2.get("infoHash")))
-    if is_http1 != is_http2:
-        return False
-
-    u1, u2 = s1.get("url") or "", s2.get("url") or ""
-    if u1 and u2 and u1.startswith("http") and u2.startswith("http"):
-        return u1 == u2
-    h1 = (s1.get("hash") or s1.get("infoHash") or "").lower()
-    h2 = (s2.get("hash") or s2.get("infoHash") or "").lower()
-    if h1 and h2 and h1 == h2:
-        idx1 = s1.get("file_index") if s1.get("file_index") is not None else s1.get("fileIdx")
-        idx2 = s2.get("file_index") if s2.get("file_index") is not None else s2.get("fileIdx")
-        if idx1 is None or idx2 is None or idx1 == idx2:
-            return True
-    m1 = s1.get("magnet") or ""
-    m2 = s2.get("magnet") or ""
-    if m1 and m2 and m1 == m2:
-        return True
-    t1 = (s1.get("stream_title") or s1.get("title") or s1.get("filename") or "").strip()
-    t2 = (s2.get("stream_title") or s2.get("title") or s2.get("filename") or "").strip()
-    if t1 and t2 and t1 == t2 and not h1 and not h2 and not u1 and not u2:
-        return True
-    return False
+    return api.streams_match(s1, s2)
 
 def _find_stream_index(stream, stream_list):
     if not stream or not stream_list: return 0
@@ -140,13 +114,10 @@ def _find_stream_index_exact(stream, stream_list):
     return -1
 
 def _stream_matches_provider(stream, provider_name):
-    if not provider_name or not isinstance(stream, dict):
-        return False
-    if provider_name in stream.get("addon_names", []):
-        return True
-    if stream.get("addon_name") == provider_name:
-        return True
-    return False
+    return api.stream_matches_provider(stream, provider_name)
+
+def _find_best_matching_stream(target_stream, candidate_streams, preferred_provider=None, preferred_quality=None):
+    return api.find_best_matching_stream(target_stream, candidate_streams, preferred_provider=preferred_provider, preferred_quality=preferred_quality)
 
 def _normalize_stream_quality(stream):
     if not stream:
@@ -2737,23 +2708,23 @@ class MovieDetailsPage(Gtk.Overlay):
         database.save_working_stream(primary_id, getattr(self, "selected_season", None), getattr(self, "selected_episode", None), self.selected_torrent)
         self.remembered_working_stream = self.selected_torrent
 
-        # Remember direct stream provider for subsequent episodes
-        if self.selected_torrent.get("is_http"):
-            addon_names = self.selected_torrent.get("addon_names", [])
-            prov = addon_names[0] if addon_names else self.selected_torrent.get("addon_name")
-            if prov:
+        # Remember stream provider for subsequent episodes
+        addon_names = self.selected_torrent.get("addon_names", [])
+        prov = addon_names[0] if addon_names else self.selected_torrent.get("addon_name")
+        if prov:
+            if self.selected_torrent.get("is_http"):
                 self.preferred_direct_provider = prov
                 if self.window:
                     self.window.preferred_direct_provider = prov
                 if primary_id:
                     database.set_setting(f"preferred_direct_provider_{primary_id}", prov)
                 database.set_setting("last_direct_provider", prov)
-        elif self.media_type in ["series", "anime", "tv"]:
-            self.preferred_direct_provider = None
             if self.window:
-                self.window.preferred_direct_provider = None
+                self.window.preferred_provider = prov
+            self.preferred_provider = prov
             if primary_id:
-                database.set_setting(f"preferred_direct_provider_{primary_id}", "")
+                database.set_setting(f"preferred_provider_{primary_id}", prov)
+            database.set_setting("last_provider", prov)
 
         # Remember quality for subsequent episodes
         chosen_q = _normalize_stream_quality(self.selected_torrent) or getattr(self, 'user_selected_quality', None)
@@ -6207,21 +6178,68 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _on_continue_watching_clicked(self, item_data):
         if not item_data: return
+        p_id = item_data.get("id") or item_data.get("imdb_id")
+        season = item_data.get("season")
+        episode = item_data.get("episode")
+        title = item_data.get("title") or item_data.get("name") or "Stream"
+        position = float(item_data.get("position") or 0.0)
+
+        from . import database
+        from . import api
+        working_stream = database.get_working_stream(p_id, season, episode) or item_data.get("selected_torrent")
+
+        # Fast targeted refresh if stream link is stale (e.g. app restarted after a day or two)
+        if database.is_stream_stale(working_stream or item_data) and p_id:
+            self.show_player_loading(_("Connecting to stream..."), title)
+            target_prov = item_data.get("provider")
+            if not target_prov and isinstance(working_stream, dict):
+                anames = working_stream.get("addon_names", [])
+                target_prov = anames[0] if anames else working_stream.get("addon_name")
+            if not target_prov:
+                target_prov = getattr(self, "preferred_direct_provider", None) or database.get_setting(f"preferred_direct_provider_{p_id}", None)
+
+            def _refresh_and_play():
+                cur_ws = working_stream
+                cur_item = dict(item_data)
+                try:
+                    refreshed, fresh_queue = api.refresh_stream(
+                        p_id,
+                        media_type=cur_item.get("type", "movie"),
+                        season=season,
+                        episode=episode,
+                        old_stream=cur_ws,
+                        provider=target_prov
+                    )
+                    if refreshed and isinstance(refreshed, dict):
+                        cur_ws = refreshed
+                        database.save_working_stream(p_id, season, episode, refreshed)
+                        cur_item["selected_torrent"] = refreshed
+                        cur_item["stream_url"] = refreshed.get("url") or refreshed.get("magnet")
+                        cur_item["last_refreshed"] = time.time()
+                        if fresh_queue:
+                            cur_item["stream_queue"] = [refreshed] + [s for s in fresh_queue if s != refreshed and (s.get("url") or s.get("magnet")) != (refreshed.get("url") or refreshed.get("magnet"))]
+                            cur_item["stream_queue_index"] = 0
+                        database.save_continue_watching(cur_item)
+                except Exception as e:
+                    logger.error(f"Error refreshing stale stream on continue click: {e}")
+
+                GLib.idle_add(lambda: self._finish_continue_watching_play(cur_item, cur_ws, title, p_id, position))
+
+            threading.Thread(target=_refresh_and_play, daemon=True).start()
+            return
+
+        self._finish_continue_watching_play(item_data, working_stream, title, p_id, position)
+
+    def _finish_continue_watching_play(self, item_data, working_stream, title, p_id, position):
+        if not item_data: return
         stream_url = item_data.get("stream_url")
         magnet = item_data.get("magnet")
-        title = item_data.get("title") or item_data.get("name") or "Stream"
         stream_queue = item_data.get("stream_queue")
-        position = float(item_data.get("position") or 0.0)
 
         if not magnet and not stream_url and item_data.get("hash"):
             from . import api
             t_name = item_data.get("stream_title") or title
             magnet = api.build_magnet(item_data.get("hash"), t_name)
-        p_id = item_data.get("id") or item_data.get("imdb_id")
-        season = item_data.get("season")
-        episode = item_data.get("episode")
-        from . import database
-        working_stream = database.get_working_stream(p_id, season, episode) or item_data.get("selected_torrent")
 
         cw_q = _normalize_stream_quality(working_stream) or _normalize_stream_quality(item_data)
         if cw_q:
@@ -6232,19 +6250,26 @@ class CineWindow(Adw.ApplicationWindow):
             page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
             if page:
                 page.user_selected_quality = cw_q
-        if working_stream and isinstance(working_stream, dict) and working_stream.get("is_http"):
+
+        if working_stream and isinstance(working_stream, dict):
             anames = working_stream.get("addon_names", [])
             prov = anames[0] if anames else working_stream.get("addon_name")
             if prov:
-                self.preferred_direct_provider = prov
+                if working_stream.get("is_http"):
+                    self.preferred_direct_provider = prov
+                    if p_id:
+                        database.set_setting(f"preferred_direct_provider_{p_id}", prov)
+                    database.set_setting("last_direct_provider", prov)
+                self.preferred_provider = prov
                 if p_id:
-                    database.set_setting(f"preferred_direct_provider_{p_id}", prov)
-                database.set_setting("last_direct_provider", prov)
+                    database.set_setting(f"preferred_provider_{p_id}", prov)
+                database.set_setting("last_provider", prov)
                 page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
                 if page:
-                    page.preferred_direct_provider = prov
+                    if working_stream.get("is_http"):
+                        page.preferred_direct_provider = prov
+                    page.preferred_provider = prov
 
-        if working_stream and isinstance(working_stream, dict):
             item_data["selected_torrent"] = working_stream
             if stream_queue and len(stream_queue) > 0:
                 stream_queue = [working_stream] + [s for s in stream_queue if s != working_stream and (s.get("url") or s.get("magnet")) != (working_stream.get("url") or working_stream.get("magnet"))]
@@ -6263,7 +6288,6 @@ class CineWindow(Adw.ApplicationWindow):
 
         self._current_playing_item = dict(item_data)
         
-        position = float(item_data.get("position") or 0.0)
         self._pending_seek_position = position if position > 5.0 else None
         
         curr_page = self.main_stack.get_visible_child_name() or "discover"
@@ -6491,6 +6515,69 @@ class CineWindow(Adw.ApplicationWindow):
         self.discover_back_box.set_visible(True)
         self.library_stack.set_visible_child_name("content")
 
+    def _start_background_continue_watching_refresh(self, cw_items=None):
+        """Proactively refresh stale HTTP stream links in Continue Watching in the background.
+        
+        Runs asynchronously without slowing down or disrupting the UI so that when the
+        user clicks 'Continue Watching', the stream link is already fresh and resolves
+        immediately from the same provider.
+        """
+        import time as _time
+        last_run = getattr(self, "_last_cw_bg_refresh_time", 0)
+        if _time.time() - last_run < 60:
+            return
+        if getattr(self, "_cw_bg_refresh_running", False):
+            return
+        self._last_cw_bg_refresh_time = _time.time()
+
+        def _worker():
+            self._cw_bg_refresh_running = True
+            try:
+                from . import database, api
+                items = cw_items if cw_items is not None else database.get_continue_watching()
+                if not items:
+                    return
+                for item in items[:5]:
+                    item_id = item.get("id") or item.get("imdb_id")
+                    if not item_id:
+                        continue
+                    working_st = database.get_working_stream(item_id, item.get("season"), item.get("episode")) or item.get("selected_torrent")
+                    if not working_st:
+                        continue
+                    if not database.is_stream_stale(working_st or item):
+                        continue
+
+                    target_prov = item.get("provider")
+                    if not target_prov and isinstance(working_st, dict):
+                        anames = working_st.get("addon_names", [])
+                        target_prov = anames[0] if anames else working_st.get("addon_name")
+
+                    try:
+                        refreshed, fresh_queue = api.refresh_stream(
+                            item_id,
+                            media_type=item.get("type", "movie"),
+                            season=item.get("season"),
+                            episode=item.get("episode"),
+                            old_stream=working_st,
+                            provider=target_prov
+                        )
+                        if refreshed and isinstance(refreshed, dict):
+                            database.save_working_stream(item_id, item.get("season"), item.get("episode"), refreshed)
+                            item["selected_torrent"] = refreshed
+                            item["stream_url"] = refreshed.get("url") or refreshed.get("magnet")
+                            item["last_refreshed"] = _time.time()
+                            if fresh_queue:
+                                item["stream_queue"] = [refreshed] + [s for s in fresh_queue if s != refreshed and (s.get("url") or s.get("magnet")) != (refreshed.get("url") or refreshed.get("magnet"))]
+                                item["stream_queue_index"] = 0
+                            database.save_continue_watching(item)
+                            logger.info(f"[CW-REFRESH] Proactively refreshed stream for {item.get('title')} from provider {target_prov}")
+                    except Exception as ex:
+                        logger.debug(f"[CW-REFRESH] Background refresh failed for {item_id}: {ex}")
+            finally:
+                self._cw_bg_refresh_running = False
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _update_continue_watching_section(self):
         from . import database
         from .movie_widget import ContinueWatchingWidget
@@ -6509,6 +6596,8 @@ class CineWindow(Adw.ApplicationWindow):
         cw_items = database.get_continue_watching()
         display_cw_items = cw_items[:15]
         debug_log(f"_update_continue_watching_section DB returned {len(cw_items)} items (displaying {len(display_cw_items)})")
+        
+        self._start_background_continue_watching_refresh(cw_items)
         
         # Scan target_box to identify any existing Continue Watching header and scroll widgets
         existing_header = None
@@ -7696,6 +7785,13 @@ class CineWindow(Adw.ApplicationWindow):
             or ("youtube.com" in str(current_stream.get("url", "")).lower() or "youtu.be" in str(current_stream.get("url", "")).lower())
         )
 
+        cur_prov = None
+        if isinstance(current_stream, dict):
+            an = current_stream.get("addon_names", [])
+            cur_prov = an[0] if an else current_stream.get("addon_name")
+        if not cur_prov:
+            cur_prov = getattr(self, "preferred_direct_provider", None) or getattr(self, "preferred_provider", None)
+
         cur_q = _normalize_stream_quality(current_stream) or getattr(self, "user_selected_quality", None)
 
         self._current_playing_item = {
@@ -7709,9 +7805,13 @@ class CineWindow(Adw.ApplicationWindow):
             "stream_queue": list(queue) if queue else [],
             "stream_queue_index": self.stream_queue_index,
             "stream_title": title,
+            "selected_torrent": current_stream if isinstance(current_stream, dict) else None,
+            "stream_url": (current_stream.get("url") or current_stream.get("magnet")) if isinstance(current_stream, dict) else None,
+            "provider": cur_prov,
             "quality": cur_q,
             "stream_quality": cur_q,
             "last_watched": int(time.time()),
+            "last_refreshed": int(time.time()),
             "progress": saved_prog,
             "position": saved_pos,
             "duration": saved_dur,
@@ -7846,6 +7946,91 @@ class CineWindow(Adw.ApplicationWindow):
         request_id = getattr(self, "stream_request_id", 0)
         if not getattr(self, 'stream_queue', None):
             return
+        if self.stream_queue_index >= len(self.stream_queue):
+            self._handle_all_streams_exhausted()
+            return
+
+        failed_st = self.stream_queue[self.stream_queue_index]
+
+        # 1. If HTTP stream failed and has not been refreshed yet, attempt auto-heal refresh from provider first
+        if isinstance(failed_st, dict) and failed_st.get("is_http") and not failed_st.get("_refreshed"):
+            failed_st["_refreshed"] = True
+            p_id = getattr(self, "_current_playing_item", {}).get("id") or getattr(self, "_current_playing_item", {}).get("imdb_id")
+            season = getattr(self, "_current_playing_item", {}).get("season")
+            episode = getattr(self, "_current_playing_item", {}).get("episode")
+            media_type = getattr(self, "_current_playing_item", {}).get("type", "movie")
+
+            anames = failed_st.get("addon_names", [])
+            target_prov = anames[0] if anames else failed_st.get("addon_name")
+            if not target_prov:
+                target_prov = getattr(self, "preferred_direct_provider", None)
+
+            self.show_player_loading(_("Refreshing stream link..."), self.stream_queue_title or "Stream")
+
+            def _heal_worker():
+                from . import api
+                from . import database
+                try:
+                    refreshed, fresh_queue = api.refresh_stream(
+                        p_id,
+                        media_type=media_type,
+                        season=season,
+                        episode=episode,
+                        old_stream=failed_st,
+                        provider=target_prov
+                    )
+                    if refreshed and isinstance(refreshed, dict) and refreshed.get("url") != failed_st.get("url"):
+                        logger.info(f"[AUTO-HEAL] Refreshed expired stream link for provider {target_prov}")
+                        if p_id:
+                            database.save_working_stream(p_id, season, episode, refreshed)
+                        refreshed["_refreshed"] = True
+
+                        def _apply_refreshed():
+                            if request_id != getattr(self, "stream_request_id", 0):
+                                return
+                            self.stream_queue[self.stream_queue_index] = refreshed
+                            if getattr(self, "_current_playing_item", None):
+                                self._current_playing_item["selected_torrent"] = refreshed
+                                self._current_playing_item["stream_url"] = refreshed.get("url")
+                                self._current_playing_item["last_refreshed"] = time.time()
+                                database.save_continue_watching(self._current_playing_item)
+                            self._play_current_stream_from_queue(request_id)
+
+                        GLib.idle_add(_apply_refreshed)
+                        return
+                except Exception as ex:
+                    logger.error(f"[AUTO-HEAL] Failed to refresh stream link: {ex}")
+
+                GLib.idle_add(lambda: self._advance_to_next_stream_in_queue(request_id, failed_st))
+
+            threading.Thread(target=_heal_worker, daemon=True).start()
+            return
+
+        self._advance_to_next_stream_in_queue(request_id, failed_st)
+
+    def _advance_to_next_stream_in_queue(self, request_id, failed_st=None):
+        if request_id != getattr(self, "stream_request_id", 0):
+            return
+        if not getattr(self, 'stream_queue', None):
+            return
+
+        # Prioritize remaining streams from the same provider!
+        target_prov = None
+        if failed_st and isinstance(failed_st, dict):
+            anames = failed_st.get("addon_names", [])
+            target_prov = anames[0] if anames else failed_st.get("addon_name")
+        if not target_prov:
+            target_prov = getattr(self, "preferred_direct_provider", None) or getattr(self, "preferred_provider", None)
+
+        curr_idx = self.stream_queue_index
+        remaining = self.stream_queue[curr_idx + 1:]
+        if target_prov and remaining:
+            from . import api
+            same_prov_streams = [s for s in remaining if api.stream_matches_provider(s, target_prov)]
+            other_streams = [s for s in remaining if not api.stream_matches_provider(s, target_prov)]
+            if same_prov_streams:
+                self.stream_queue = self.stream_queue[:curr_idx + 1] + same_prov_streams + other_streams
+
         self.stream_queue_index += 1
         if self.stream_queue_index < len(self.stream_queue):
             msg = f"Stream failed. Trying next stream ({self.stream_queue_index + 1}/{len(self.stream_queue)})..."
@@ -7891,25 +8076,23 @@ class CineWindow(Adw.ApplicationWindow):
         if p_id:
             database.save_working_stream(p_id, season, episode, working_stream)
 
-        # Update preferred direct provider if this is a direct http stream
-        if working_stream.get("is_http"):
-            addon_names = working_stream.get("addon_names", [])
-            prov = addon_names[0] if addon_names else working_stream.get("addon_name")
-            if prov:
+        # Update preferred provider
+        addon_names = working_stream.get("addon_names", [])
+        prov = addon_names[0] if addon_names else working_stream.get("addon_name")
+        if prov:
+            if working_stream.get("is_http"):
                 self.preferred_direct_provider = prov
                 if p_id:
                     database.set_setting(f"preferred_direct_provider_{p_id}", prov)
                 database.set_setting("last_direct_provider", prov)
-                page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
-                if page:
-                    page.preferred_direct_provider = prov
-        elif getattr(self, "_current_playing_item", {}).get("type") in ["series", "anime", "tv"]:
-            self.preferred_direct_provider = None
             if p_id:
-                database.set_setting(f"preferred_direct_provider_{p_id}", "")
+                database.set_setting(f"preferred_provider_{p_id}", prov)
+            database.set_setting("last_provider", prov)
             page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
             if page:
-                page.preferred_direct_provider = None
+                if working_stream.get("is_http"):
+                    page.preferred_direct_provider = prov
+                page.preferred_provider = prov
 
         page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
         if page:

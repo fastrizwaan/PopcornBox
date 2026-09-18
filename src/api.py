@@ -1928,7 +1928,209 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
     valid_streams.sort(key=_rank_key, reverse=True)
     return valid_streams
 
-def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cache=True):
+def stream_matches_provider(stream, provider_name):
+    if not provider_name or not isinstance(stream, dict):
+        return False
+    p_lower = str(provider_name).strip().lower()
+    for an in stream.get("addon_names", []):
+        if p_lower in str(an).strip().lower() or str(an).strip().lower() in p_lower:
+            return True
+    an_single = stream.get("addon_name")
+    if an_single and (p_lower in str(an_single).strip().lower() or str(an_single).strip().lower() in p_lower):
+        return True
+    return False
+
+def streams_match(s1, s2):
+    if not s1 or not s2: return False
+    if s1 is s2: return True
+
+    is_http1 = bool(s1.get("is_http") or (isinstance(s1.get("url"), str) and s1.get("url", "").startswith(("http://", "https://")) and not s1.get("hash") and not s1.get("infoHash")))
+    is_http2 = bool(s2.get("is_http") or (isinstance(s2.get("url"), str) and s2.get("url", "").startswith(("http://", "https://")) and not s2.get("hash") and not s2.get("infoHash")))
+    if is_http1 != is_http2:
+        return False
+
+    u1, u2 = s1.get("url") or "", s2.get("url") or ""
+    if u1 and u2 and u1 == u2:
+        return True
+
+    # Same URL path excluding query parameters / session tokens
+    if u1 and u2 and u1.startswith("http") and u2.startswith("http"):
+        p1 = u1.split("?")[0].rstrip("/")
+        p2 = u2.split("?")[0].rstrip("/")
+        if p1 == p2 and len(p1) > 20:
+            return True
+
+    h1 = (s1.get("hash") or s1.get("infoHash") or "").lower()
+    h2 = (s2.get("hash") or s2.get("infoHash") or "").lower()
+    if h1 and h2 and h1 == h2:
+        idx1 = s1.get("file_index") if s1.get("file_index") is not None else s1.get("fileIdx")
+        idx2 = s2.get("file_index") if s2.get("file_index") is not None else s2.get("fileIdx")
+        if idx1 is None or idx2 is None or idx1 == idx2:
+            return True
+
+    m1 = s1.get("magnet") or ""
+    m2 = s2.get("magnet") or ""
+    if m1 and m2 and m1 == m2:
+        return True
+
+    f1 = (s1.get("filename") or "").strip().lower()
+    f2 = (s2.get("filename") or "").strip().lower()
+    t1 = (s1.get("stream_title") or s1.get("title") or "").strip().lower()
+    t2 = (s2.get("stream_title") or s2.get("title") or "").strip().lower()
+
+    # Provider match
+    prov1 = s1.get("addon_names") or ([s1.get("addon_name")] if s1.get("addon_name") else [])
+    prov2 = s2.get("addon_names") or ([s2.get("addon_name")] if s2.get("addon_name") else [])
+    common_prov = any(stream_matches_provider(s2, p) for p in prov1) or any(stream_matches_provider(s1, p) for p in prov2)
+
+    # Same provider + same filename or title or quality
+    if common_prov:
+        if f1 and f2 and f1 == f2:
+            return True
+        if t1 and t2 and t1 == t2:
+            return True
+        q1 = (s1.get("quality") or "").strip().lower()
+        q2 = (s2.get("quality") or "").strip().lower()
+        if q1 and q2 and q1 == q2 and (f1 == f2 or t1 == t2 or (t1 and t2 and (t1 in t2 or t2 in t1))):
+            return True
+
+    # Same specific filename across streams
+    if f1 and f2 and f1 == f2 and len(f1) > 5 and not f1.startswith("stream."):
+        return True
+
+    # Same title and no conflicting hashes/urls
+    if t1 and t2 and t1 == t2 and not h1 and not h2:
+        q1 = (s1.get("quality") or "").strip().lower()
+        q2 = (s2.get("quality") or "").strip().lower()
+        if not q1 or not q2 or q1 == q2:
+            return True
+
+    return False
+
+def find_best_matching_stream(target_stream, candidate_streams, preferred_provider=None, preferred_quality=None):
+    if not candidate_streams:
+        return None
+    if not target_stream or not isinstance(target_stream, dict):
+        if preferred_provider:
+            prov_matches = [c for c in candidate_streams if stream_matches_provider(c, preferred_provider)]
+            if prov_matches:
+                if preferred_quality:
+                    q_matches = [c for c in prov_matches if (c.get("quality") or "").lower() == str(preferred_quality).lower()]
+                    if q_matches:
+                        return q_matches[0]
+                return prov_matches[0]
+        return candidate_streams[0]
+
+    # 1. Exact match via streams_match
+    for c in candidate_streams:
+        if streams_match(target_stream, c):
+            return c
+
+    # 2. Score candidates by similarity to target stream
+    target_prov = preferred_provider
+    if not target_prov:
+        an = target_stream.get("addon_names", [])
+        target_prov = an[0] if an else target_stream.get("addon_name")
+
+    target_q = (target_stream.get("quality") or preferred_quality or "").strip().lower()
+    target_fn = (target_stream.get("filename") or "").strip().lower()
+    target_title = (target_stream.get("stream_title") or target_stream.get("title") or "").strip().lower()
+    target_size = float(target_stream.get("size_gb") or 0.0)
+
+    best_score = -1
+    best_cand = None
+
+    for c in candidate_streams:
+        score = 0
+        c_prov_match = stream_matches_provider(c, target_prov)
+        if c_prov_match:
+            score += 100  # Strongly prioritize same provider
+
+        c_fn = (c.get("filename") or "").strip().lower()
+        if target_fn and c_fn and target_fn == c_fn:
+            score += 80
+        elif target_fn and c_fn and (target_fn in c_fn or c_fn in target_fn):
+            score += 40
+
+        c_title = (c.get("stream_title") or c.get("title") or "").strip().lower()
+        if target_title and c_title and target_title == c_title:
+            score += 60
+        elif target_title and c_title and (target_title in c_title or c_title in target_title):
+            score += 30
+
+        c_q = (c.get("quality") or "").strip().lower()
+        if target_q and c_q and target_q == c_q:
+            score += 40
+
+        c_size = float(c.get("size_gb") or 0.0)
+        if target_size > 0 and c_size > 0:
+            diff = abs(target_size - c_size) / target_size
+            if diff < 0.05:
+                score += 30
+            elif diff < 0.15:
+                score += 15
+
+        if bool(target_stream.get("is_http")) == bool(c.get("is_http")):
+            score += 20
+
+        if score > best_score:
+            best_score = score
+            best_cand = c
+
+    if best_cand and (best_score >= 100 or (best_score >= 40 and not target_prov)):
+        return best_cand
+    elif best_cand and target_prov and stream_matches_provider(best_cand, target_prov):
+        return best_cand
+
+    return None
+
+def refresh_stream(imdb_id, media_type="movie", season=None, episode=None, old_stream=None, provider=None):
+    """Refresh a stale stream by fetching fresh links from addons and matching the original stream.
+    
+    Returns:
+        (refreshed_stream, candidate_streams)
+    """
+    if not imdb_id:
+        return old_stream, []
+    
+    target_provider = provider
+    if not target_provider and old_stream and isinstance(old_stream, dict):
+        anames = old_stream.get("addon_names", [])
+        target_provider = anames[0] if anames else old_stream.get("addon_name")
+    
+    # 1. Fetch fresh streams (bypass cache so fresh URLs/tokens are fetched)
+    fresh_streams = get_torrents(
+        imdb_id,
+        media_type=media_type,
+        season=season,
+        episode=episode,
+        use_cache=False,
+        provider=target_provider
+    )
+    if not fresh_streams and target_provider:
+        fresh_streams = get_torrents(
+            imdb_id,
+            media_type=media_type,
+            season=season,
+            episode=episode,
+            use_cache=False
+        )
+    
+    if not fresh_streams:
+        return old_stream, []
+    
+    pref_q = (old_stream.get("quality") or old_stream.get("stream_quality")) if isinstance(old_stream, dict) else None
+    matched = find_best_matching_stream(old_stream, fresh_streams, preferred_provider=target_provider, preferred_quality=pref_q)
+    
+    if matched:
+        if isinstance(old_stream, dict) and old_stream.get("behaviorHints") and not matched.get("behaviorHints"):
+            matched["behaviorHints"] = old_stream["behaviorHints"]
+        matched["_refreshed"] = True
+        return matched, fresh_streams
+    
+    return old_stream, fresh_streams
+
+def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cache=True, provider=None):
     if not imdb_id:
         return []
         
@@ -1956,6 +2158,9 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
         return []
         
     stremio_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://") and has_stream_resource(a, media_type=actual_media, item_id=imdb_id)]
+    if provider:
+        p_lower = str(provider).strip().lower()
+        stremio_addons.sort(key=lambda a: 0 if (p_lower in a.get("name", "").lower() or a.get("name", "").lower() in p_lower) else 1)
     
     def fetch_from_addon(addon_orig):
         addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
