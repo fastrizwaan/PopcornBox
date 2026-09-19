@@ -297,5 +297,44 @@ class TestStaleStreamRefresh(unittest.TestCase):
         self.assertEqual(win._current_playing_item["quality"], "1080p")
         self.assertEqual(win._current_playing_item["provider"], "Torbox")
 
+    def test_auto_heal_apply_refreshed_sets_last_refreshed(self):
+        win = MagicMock()
+        win.stream_request_id = 1
+        win.stream_queue_index = 0
+        failed_st = {
+            "url": "http://provider.com/stale.mp4",
+            "is_http": True,
+            "addon_names": ["Torbox"],
+            "_refreshed": False
+        }
+        win.stream_queue = [failed_st]
+        win._current_playing_item = {
+            "id": "tt1234567",
+            "selected_torrent": failed_st,
+            "stream_url": failed_st["url"]
+        }
+        refreshed_st = {
+            "url": "http://provider.com/fresh.mp4",
+            "is_http": True,
+            "addon_names": ["Torbox"]
+        }
+
+        from src.window import CineWindow
+        with patch("src.api.refresh_stream", return_value=(refreshed_st, [refreshed_st])), \
+             patch("gi.repository.GLib.idle_add", side_effect=lambda cb, *a: cb(*a) if callable(cb) else None), \
+             patch("threading.Thread") as mock_thread:
+            
+            def fake_start():
+                mock_thread.call_args[1]["target"]()
+            mock_thread.return_value.start = fake_start
+
+            CineWindow._try_next_stream_in_queue(win)
+
+        self.assertEqual(win.stream_queue[0], refreshed_st)
+        self.assertEqual(win._current_playing_item["stream_url"], "http://provider.com/fresh.mp4")
+        self.assertIn("last_refreshed", win._current_playing_item)
+        self.assertIsInstance(win._current_playing_item["last_refreshed"], float)
+        self.assertAlmostEqual(win._current_playing_item["last_refreshed"], time.time(), delta=5)
+
 if __name__ == "__main__":
     unittest.main()

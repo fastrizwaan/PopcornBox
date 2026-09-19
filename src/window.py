@@ -30,7 +30,7 @@ import urllib.parse
 from typing import cast
 from gettext import gettext as _
 from urllib.parse import urlparse
-from time import time
+import time
 import shlex
 import hashlib
 
@@ -4358,7 +4358,7 @@ class CineWindow(Adw.ApplicationWindow):
         if not settings.get_boolean("thumbnail-preview") or not self.is_local_path:
             return
 
-        curr_time = time()
+        curr_time = time.time()
 
         if curr_time - self.last_preview_update > 0.3:
             self.last_preview_update = curr_time
@@ -4477,7 +4477,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._current_playing_item["progress"] = prog
                 
                 last_cw_save = getattr(self, "_last_cw_save_time", 0)
-                now = time()
+                now = time.time()
                 if now - last_cw_save >= 4:
                     self._last_cw_save_time = now
                     from . import database
@@ -7067,31 +7067,12 @@ class CineWindow(Adw.ApplicationWindow):
             for cat in addon_cats:
                 cat_id = cat.get("catalog_id", "")
                 clean_name = self._clean_cat_name(cat, addon_name, media_type)
-                genres = cat.get("genres") or []
-                
-                if genres:
-                    genre_items = []
-                    for g in ["All"] + genres:
-                        target_str = f"{media_type}|{m_url}|{cat_id}|{g}"
-                        genre_items.append((g, target_str))
-                        
-                    is_single_default = (len(addon_cats) == 1 and clean_name.lower() in ["top", "main", "all", "default", "popular", addon_name.lower()])
-                    
-                    addon_cat_items.append({
-                        "type": "submenu",
-                        "name": clean_name,
-                        "cat_id": cat_id,
-                        "items": genre_items,
-                        "is_single_default": is_single_default
-                    })
-                else:
-                    target_str = f"{media_type}|{m_url}|{cat_id}|All"
-                    addon_cat_items.append({
-                        "type": "item",
-                        "name": clean_name,
-                        "target": target_str
-                    })
-                    
+                target_str = f"{media_type}|{m_url}|{cat_id}|All"
+                addon_cat_items.append({
+                    "name": clean_name,
+                    "target": target_str,
+                    "cat_id": cat_id,
+                })
             result_addons.append((addon_name, m_url, addon_cat_items))
             
         return result_addons
@@ -7100,42 +7081,19 @@ class CineWindow(Adw.ApplicationWindow):
         """Build a single addon's Gio.Menu from its prepared data. Runs in background thread."""
         addon_menu = Gio.Menu.new()
         
-        # 1. Top item: All catalogs from this addon (e.g. "All Cinemeta Movies")
+        # 1. Top item: All catalogs from this addon (e.g. "★ All Cinemeta Movies")
         m_label = "Movies" if media_type == "movie" else ("Series" if media_type == "series" else ("Anime" if media_type == "anime" else media_type.title()))
         all_addon_item = Gio.MenuItem.new(f"★ All {addon_name} {m_label}", None)
         target_str = f"{media_type}|{m_url}|{addon_name}"
         all_addon_item.set_action_and_target_value("win.select-addon-discover", GLib.Variant("s", target_str))
         addon_menu.append_item(all_addon_item)
 
-        # 2. Catalogs and Genres
-        if len(addon_cat_items) == 1 and addon_cat_items[0].get("is_single_default"):
-            cat_data = addon_cat_items[0]
-            if cat_data["type"] == "submenu":
-                for label, target_str in cat_data["items"]:
-                    item = Gio.MenuItem.new(label, None)
-                    item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", target_str))
-                    addon_menu.append_item(item)
-            else:
-                item = Gio.MenuItem.new(cat_data["name"], None)
-                item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", cat_data["target"]))
-                addon_menu.append_item(item)
-        else:
-            for cat_idx, cat_data in enumerate(addon_cat_items):
-                if cat_data["type"] == "submenu":
-                    cat_menu = Gio.Menu.new()
-                    for label, target_str in cat_data["items"]:
-                        item = Gio.MenuItem.new(label, None)
-                        item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", target_str))
-                        cat_menu.append_item(item)
-                    sub_item = Gio.MenuItem.new_submenu(cat_data["name"], cat_menu)
-                    # Assign unique id attribute so GtkPopoverMenu's internal GtkStack never has duplicate child name warnings
-                    cat_h = hashlib.md5(f"{media_type}:{m_url}:{cat_data.get('cat_id', '')}:{cat_idx}:{cat_data['name']}".encode()).hexdigest()[:12]
-                    sub_item.set_attribute_value("id", GLib.Variant("s", f"cat_{cat_h}"))
-                    addon_menu.append_item(sub_item)
-                else:
-                    item = Gio.MenuItem.new(cat_data["name"], None)
-                    item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", cat_data["target"]))
-                    addon_menu.append_item(item)
+        # 2. Direct catalog items (genres are selected cleanly via header genre_dropdown in grid view)
+        for cat_data in addon_cat_items:
+            item = Gio.MenuItem.new(cat_data["name"], None)
+            item.set_action_and_target_value("win.select-catalog-genre", GLib.Variant("s", cat_data["target"]))
+            addon_menu.append_item(item)
+            
         return addon_menu
 
     def _build_discover_menu(self):
@@ -7158,16 +7116,6 @@ class CineWindow(Adw.ApplicationWindow):
             
         self.discover_active_btn.set_menu_model(menu)
 
-    def _attach_lazy_menu_model(self, m_type, btn):
-        if not hasattr(self, "_attached_menu_types"):
-            self._attached_menu_types = set()
-        if m_type in self._attached_menu_types:
-            return
-        built_model = getattr(self, "_built_menu_models", {}).get(m_type)
-        if built_model and btn:
-            btn.set_menu_model(built_model)
-            self._attached_menu_types.add(m_type)
-
     def _init_default_category_menus(self):
         """Immediately assign valid initial menu models and defer background full menu construction."""
         debug_log("_init_default_category_menus START")
@@ -7182,9 +7130,8 @@ class CineWindow(Adw.ApplicationWindow):
                 top_item.set_action_and_target_value(action_name, None)
                 menu.append_item(top_item)
                 btn.set_menu_model(menu)
-                btn.connect("notify::active", lambda b, pspec, mt=m_type: self._attach_lazy_menu_model(mt, b) if b.get_active() else None)
-        debug_log("_init_default_category_menus applied placeholder models, scheduling deferred full menu build")
-        self._schedule_deferred_menu_build(1000)
+        debug_log("_init_default_category_menus applied placeholder models, scheduling background full menu build")
+        self._schedule_deferred_menu_build(500)
 
     def _build_full_menu_model(self, media_type, prepared_data):
         """Construct the complete Gio.Menu model in the background thread."""
@@ -7242,11 +7189,34 @@ class CineWindow(Adw.ApplicationWindow):
                     built_menus[m_type] = None
 
             def apply_all():
-                debug_log("apply_all menus storing built models (non-blocking)")
+                debug_log("apply_all menus storing built models and smoothly attaching to buttons ahead of time")
                 self._built_menu_models = built_menus
                 self._menus_built = True
                 self._menus_building = False
-                debug_log("apply_all menus on main thread DONE (_menus_built = True)")
+
+                # Smoothly attach built models to buttons across idle ticks BEFORE click
+                def attach_step(items):
+                    if not items:
+                        return False
+                    m_type, btn = items.pop(0)
+                    model = built_menus.get(m_type)
+                    if btn and model:
+                        if btn.get_active():
+                            # If menu is currently popped up, update once closed to avoid disrupting user
+                            def on_deactivate(b, pspec):
+                                if not b.get_active():
+                                    b.disconnect_by_func(on_deactivate)
+                                    b.set_menu_model(model)
+                            btn.connect("notify::active", on_deactivate)
+                        else:
+                            btn.set_menu_model(model)
+                    if items:
+                        GLib.idle_add(lambda: attach_step(items))
+                    return False
+
+                items_to_attach = [(mt, btn_map[mt]) for mt in media_types if btn_map.get(mt)]
+                GLib.idle_add(lambda: attach_step(items_to_attach))
+                debug_log("apply_all menus on main thread DONE")
                 return False
 
             GLib.idle_add(apply_all)
@@ -7703,10 +7673,8 @@ class CineWindow(Adw.ApplicationWindow):
                 logger.info(f"[SUBS] Injected subtitle into MPV: {lang} ({mode}) -> {path}")
             self.pending_subtitles.clear()
             if added_count > 0:
-                msg = _("Subtitles loaded") if added_count == 1 else _(f"Subtitles loaded ({added_count})")
-                self._show_toast(msg)
+                logger.info(f"[SUBS] Subtitles loaded ({added_count})")
                 try:
-                    self.mpv.show_text(msg)
                     self.mpv["sub-visibility"] = "yes"
                 except Exception:
                     pass
@@ -8501,6 +8469,10 @@ class CineWindow(Adw.ApplicationWindow):
         # 2. Reset menu build flags and rebuild category & discover menus
         self._menus_built = False
         self._menus_building = False
+        if hasattr(self, "_attached_menu_types"):
+            self._attached_menu_types.clear()
+        if hasattr(self, "_built_menu_models"):
+            self._built_menu_models.clear()
         if hasattr(self, "discover_active_btn"):
             self.discover_active_btn.set_menu_model(None)
         self._ensure_all_menus_built()
