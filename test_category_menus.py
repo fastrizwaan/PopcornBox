@@ -166,6 +166,28 @@ class TestCategoryMenus(unittest.TestCase):
         # Now model is smoothly updated
         self.assertEqual(btn.get_menu_model(), new_model)
 
+    def test_open_catalog_grid_does_not_clobber_with_cinemeta(self):
+        """Verify _open_catalog_grid preserves the selected catalog and does not reset to Cinemeta."""
+        win = MagicMock()
+        win.media_type_keys = ["movie", "series"]
+        win._catalog_list_cache = {}
+        win._syncing_dropdowns = False
+
+        cinemeta_cat = {"catalog_id": "top", "manifest_url": "https://cinemeta/manifest.json", "display_name": "Cinemeta - Popular"}
+        tmdb_cat = {"catalog_id": "tmdb.top", "manifest_url": "https://tmdb/manifest.json", "display_name": "TMDB - Popular"}
+        available = [cinemeta_cat, tmdb_cat]
+
+        from src.window import CineWindow
+        with patch("src.api.get_available_catalogs", return_value=available):
+            CineWindow._open_catalog_grid(win, "movie", tmdb_cat, "TMDB - Popular")
+
+        # Must be TMDB, not Cinemeta
+        self.assertEqual(win.current_catalog["catalog_id"], "tmdb.top")
+        self.assertEqual(win.current_catalog["manifest_url"], "https://tmdb/manifest.json")
+        win.catalog_dropdown.set_selected.assert_called_with(1)
+        win.discover_grid_title.set_text.assert_called_with("TMDB - Popular")
+        win._refresh_content.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5688,9 +5688,11 @@ class CineWindow(Adw.ApplicationWindow):
         self.media_type_dropdown.set_model(Gtk.StringList.new(media_type_labels))
         
         # Cache catalog lists per media type to avoid recomputing on every dropdown change
-        _catalog_list_cache = {}
+        self._catalog_list_cache = {}
 
         def on_media_type_changed(dropdown, pspec):
+            if getattr(self, "_syncing_dropdowns", False):
+                return
             selected = dropdown.get_selected()
             if selected < len(self.media_type_keys):
                 self.current_media_type = self.media_type_keys[selected]
@@ -5698,8 +5700,8 @@ class CineWindow(Adw.ApplicationWindow):
             m_type = self.current_media_type
 
             # Fast path: serve from session cache if available
-            if m_type in _catalog_list_cache:
-                self.all_catalogs = _catalog_list_cache[m_type]
+            if hasattr(self, "_catalog_list_cache") and m_type in self._catalog_list_cache:
+                self.all_catalogs = self._catalog_list_cache[m_type]
                 cat_names = [c["display_name"] for c in self.all_catalogs]
                 if not cat_names:
                     cat_names = ["No Catalogs Found"]
@@ -5708,7 +5710,8 @@ class CineWindow(Adw.ApplicationWindow):
                 # Refresh cache in background for next time
                 def _refresh_cache():
                     cats = api.get_available_catalogs(m_type)
-                    _catalog_list_cache[m_type] = cats
+                    if hasattr(self, "_catalog_list_cache"):
+                        self._catalog_list_cache[m_type] = cats
                 threading.Thread(target=_refresh_cache, daemon=True).start()
                 return
 
@@ -5717,8 +5720,11 @@ class CineWindow(Adw.ApplicationWindow):
 
             def _fetch_catalogs():
                 cats = api.get_available_catalogs(m_type)
-                _catalog_list_cache[m_type] = cats
+                if hasattr(self, "_catalog_list_cache"):
+                    self._catalog_list_cache[m_type] = cats
                 def _apply():
+                    if getattr(self, "_syncing_dropdowns", False):
+                        return False
                     if self.current_media_type != m_type:
                         return False  # User switched again before we finished
                     self.all_catalogs = cats
@@ -5736,6 +5742,8 @@ class CineWindow(Adw.ApplicationWindow):
         self.media_type_dropdown.connect("notify::selected", on_media_type_changed)
         
         def on_catalog_changed(dropdown, pspec):
+            if getattr(self, "_syncing_dropdowns", False):
+                return
             selected = dropdown.get_selected()
             if not self.all_catalogs or selected >= len(self.all_catalogs):
                 self.current_catalog = None
@@ -5762,6 +5770,8 @@ class CineWindow(Adw.ApplicationWindow):
         self.catalog_dropdown.connect("notify::selected", on_catalog_changed)
         
         def on_genre_changed(dropdown, pspec):
+            if getattr(self, "_syncing_dropdowns", False):
+                return
             if not self.genre_dropdown.get_visible():
                 return
             selected_item = dropdown.get_selected_item()
@@ -5879,10 +5889,36 @@ class CineWindow(Adw.ApplicationWindow):
                 
                 from . import api
                 cat_info = None
-                for c in api.get_available_catalogs(m_type):
-                    if c.get("catalog_id") == c_id and c.get("manifest_url") == m_url:
-                        cat_info = c
-                        break
+                self._syncing_dropdowns = True
+                try:
+                    if hasattr(self, "media_type_keys") and m_type in self.media_type_keys:
+                        self.media_type_dropdown.set_selected(self.media_type_keys.index(m_type))
+                    self.all_catalogs = api.get_available_catalogs(m_type)
+                    target_idx = 0
+                    for idx, c in enumerate(self.all_catalogs):
+                        if c.get("catalog_id") == c_id and c.get("manifest_url") == m_url:
+                            target_idx = idx
+                            cat_info = c
+                            break
+                    if cat_info:
+                        self.current_catalog = cat_info
+                    cat_names = [c["display_name"] for c in self.all_catalogs] or ["No Catalogs Found"]
+                    self.catalog_dropdown.set_model(Gtk.StringList.new(cat_names))
+                    if self.all_catalogs:
+                        self.catalog_dropdown.set_selected(target_idx)
+                    genres = self.current_catalog.get("genres", []) if self.current_catalog else []
+                    if genres:
+                        genre_names = ["All"] + genres
+                        self.genre_dropdown.set_model(Gtk.StringList.new(genre_names))
+                        g_idx = genre_names.index(genre) if genre in genre_names else 0
+                        self.genre_dropdown.set_selected(g_idx)
+                        self.genre_dropdown.set_visible(True)
+                    else:
+                        self.genre_dropdown.set_visible(False)
+                except Exception as e:
+                    logger.error(f"Error syncing dropdowns in select-catalog-genre: {e}")
+                finally:
+                    self._syncing_dropdowns = False
                 
                 title = (cat_info.get("display_name") if cat_info else c_id.title()) or "Catalog"
                 if self.current_genre:
@@ -6150,28 +6186,56 @@ class CineWindow(Adw.ApplicationWindow):
 
 
     def _open_catalog_grid(self, media_type, catalog, title):
-        self._suppress_discover_grid_switch = True
-        self.current_media_type = media_type
-        self.current_catalog = catalog
-        self.current_genre = None
-        
-        # Sync dropdowns
-        if hasattr(self, "media_type_keys") and media_type in self.media_type_keys:
-            try:
-                self.media_type_dropdown.set_selected(self.media_type_keys.index(media_type))
-                from . import api
+        from .movie_widget import cancel_pending_image_downloads
+        cancel_pending_image_downloads()
+
+        self._syncing_dropdowns = True
+        try:
+            self.current_media_type = media_type
+            self.current_genre = None
+
+            from . import api
+            if hasattr(self, "_catalog_list_cache") and media_type in self._catalog_list_cache:
+                self.all_catalogs = self._catalog_list_cache[media_type]
+            else:
                 self.all_catalogs = api.get_available_catalogs(media_type)
-                cat_names = [c["display_name"] for c in self.all_catalogs] or ["No Catalogs Found"]
-                self.catalog_dropdown.set_model(Gtk.StringList.new(cat_names))
-                for idx, c in enumerate(self.all_catalogs):
-                    if c.get("catalog_id") == catalog.get("catalog_id") and c.get("manifest_url") == catalog.get("manifest_url"):
-                        self.catalog_dropdown.set_selected(idx)
-                        break
-            except Exception:
-                pass
-        self._suppress_discover_grid_switch = False
-        
-        self.discover_grid_title.set_text(title)
+                if not hasattr(self, "_catalog_list_cache"):
+                    self._catalog_list_cache = {}
+                self._catalog_list_cache[media_type] = self.all_catalogs
+
+            target_cat = catalog
+            target_idx = 0
+            for idx, c in enumerate(self.all_catalogs):
+                if c.get("catalog_id") == catalog.get("catalog_id") and c.get("manifest_url") == catalog.get("manifest_url"):
+                    target_cat = c
+                    target_idx = idx
+                    break
+            self.current_catalog = target_cat
+
+            # Sync dropdowns without triggering signal cascades
+            if hasattr(self, "media_type_keys") and media_type in self.media_type_keys:
+                self.media_type_dropdown.set_selected(self.media_type_keys.index(media_type))
+
+            cat_names = [c["display_name"] for c in self.all_catalogs] or ["No Catalogs Found"]
+            self.catalog_dropdown.set_model(Gtk.StringList.new(cat_names))
+            if self.all_catalogs:
+                self.catalog_dropdown.set_selected(target_idx)
+
+            genres = self.current_catalog.get("genres", []) if self.current_catalog else []
+            if genres:
+                genre_names = ["All"] + genres
+                self.genre_dropdown.set_model(Gtk.StringList.new(genre_names))
+                self.genre_dropdown.set_selected(0)
+                self.genre_dropdown.set_visible(True)
+            else:
+                self.genre_dropdown.set_visible(False)
+        except Exception as e:
+            logger.error(f"Error opening catalog grid: {e}")
+        finally:
+            self._syncing_dropdowns = False
+
+        disp_title = title or (self.current_catalog.get("display_name") if self.current_catalog else "Catalog")
+        self.discover_grid_title.set_text(disp_title)
         self.discover_back_box.set_visible(True)
         self.library_stack.set_visible_child_name("content")
         self._refresh_content()
@@ -8463,6 +8527,8 @@ class CineWindow(Adw.ApplicationWindow):
             self._discover_views.clear()
         if hasattr(self, "_discover_catalog_list_cache"):
             self._discover_catalog_list_cache.clear()
+        if hasattr(self, "_catalog_list_cache"):
+            self._catalog_list_cache.clear()
 
         # 2. Reset menu build flags and rebuild category & discover menus
         self._menus_built = False
