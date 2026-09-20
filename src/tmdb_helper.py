@@ -70,36 +70,37 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
                 media_type = "movie"
         else:
             is_tmdb = str_id.startswith("tmdb:") or str_id.isdigit()
-        if not is_tmdb and not title:
+        if not is_tmdb:
             return str_id
         
     resolved_id = None
     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
     
-    # 1. Try official TMDB API
-    try:
-        tmdb_api_key = get_tmdb_api_key()
-        if tmdb_api_key:
-            tmdb_id = str(imdb_id).split(":")[-1] if ":" in str(imdb_id) else str(imdb_id).split(".")[-1]
-            tmdb_type = "tv" if c_type == "series" else "movie"
-            tmdb_url = f"https://api.themoviedb.org/3/{tmdb_type}/{tmdb_id}?api_key={tmdb_api_key}&append_to_response=external_ids"
-            
-            tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168)
-            if tmdb_data and "external_ids" in tmdb_data:
-                resolved_id = tmdb_data["external_ids"].get("imdb_id")
-    except Exception as e:
-        pass
-        
-    # 2. Try the public Stremio TMDB addon
-    if not resolved_id:
+    # 1. Try official TMDB API (only for genuine TMDB IDs)
+    if is_tmdb:
         try:
-            tmdb_id = str(imdb_id).split(":")[-1] if ":" in str(imdb_id) else str(imdb_id).split(".")[-1]
-            addon_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/tmdb:{tmdb_id}.json"
-            addon_data = _get_cached_request(addon_url, max_age_hours=168)
-            if addon_data and "meta" in addon_data:
-                resolved_id = addon_data["meta"].get("imdb_id")
-        except Exception:
+            tmdb_api_key = get_tmdb_api_key()
+            if tmdb_api_key:
+                tmdb_id = str(imdb_id).split(":")[-1] if ":" in str(imdb_id) else str(imdb_id).split(".")[-1]
+                tmdb_type = "tv" if c_type == "series" else "movie"
+                tmdb_url = f"https://api.themoviedb.org/3/{tmdb_type}/{tmdb_id}?api_key={tmdb_api_key}&append_to_response=external_ids"
+                
+                tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168)
+                if tmdb_data and "external_ids" in tmdb_data:
+                    resolved_id = tmdb_data["external_ids"].get("imdb_id")
+        except Exception as e:
             pass
+            
+        # 2. Try the public Stremio TMDB addon
+        if not resolved_id:
+            try:
+                tmdb_id = str(imdb_id).split(":")[-1] if ":" in str(imdb_id) else str(imdb_id).split(".")[-1]
+                addon_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/tmdb:{tmdb_id}.json"
+                addon_data = _get_cached_request(addon_url, max_age_hours=168)
+                if addon_data and "meta" in addon_data:
+                    resolved_id = addon_data["meta"].get("imdb_id")
+            except Exception:
+                pass
 
     # 3. Fallback to Cinemeta Search by title (safe substring matching)
     if not resolved_id and title and title != "Loading...":
