@@ -2817,16 +2817,83 @@ class MovieDetailsPage(Gtk.Overlay):
             from . import api
             url = api.add_trackers_to_magnet(url, sources=sources)
             
-        if url:
+        if not url:
+            return
+
+        from . import api
+        headers = api.extract_stream_headers(torrent, url=url)
+        bh = torrent.get("behaviorHints", {}) if isinstance(torrent, dict) else {}
+        is_direct_http = torrent.get("is_http") or (isinstance(url, str) and url.startswith(("http://", "https://")))
+        requires_headers = bool(bh.get("notWebReady")) or bool(headers.get("Referer")) or bool(headers.get("referer"))
+
+        if is_direct_http and requires_headers:
+            self._download_http_stream(url, torrent, headers)
+            return
+
+        try:
+            open_uri(url, self.window)
+        except Exception as e:
+            print("Open URL error:", e)
+        if hasattr(self, 'progress_label') and self.progress_label:
+            if is_direct_http:
+                self.progress_label.set_text("Opening direct stream in browser...")
+            else:
+                self.progress_label.set_text("Opening stream URL...")
+
+    def _download_http_stream(self, url, torrent, headers):
+        """Download a direct HTTP stream that requires proxy/referer headers directly to Downloads."""
+        import os
+        import re
+        import threading
+        import urllib.request
+
+        filename = torrent.get("filename")
+        if not filename:
+            title = self.movie_stub.get("title") or self.movie_stub.get("name") or "video"
+            ext = "mp4"
+            if ".mkv" in url.lower(): ext = "mkv"
+            filename = f"{title}.{ext}"
+
+        filename = re.sub(r'[\\/*?:"<>|]', "", filename).strip() or "video.mp4"
+        download_dir = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) or os.path.expanduser("~/Downloads")
+        os.makedirs(download_dir, exist_ok=True)
+        dest_path = os.path.join(download_dir, filename)
+
+        base_name, ext = os.path.splitext(filename)
+        counter = 1
+        while os.path.exists(dest_path):
+            dest_path = os.path.join(download_dir, f"{base_name} ({counter}){ext}")
+            counter += 1
+
+        disp_name = os.path.basename(dest_path)
+        if self.window and hasattr(self.window, "_show_toast"):
+            self.window._show_toast(_(f"Downloading {disp_name} to Downloads..."))
+        elif hasattr(self, 'progress_label') and self.progress_label:
+            self.progress_label.set_text(f"Downloading {disp_name}...")
+
+        def _worker():
+            part_path = dest_path + ".part"
             try:
-                open_uri(url, self.window)
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=30) as resp, open(part_path, "wb") as out_f:
+                    while True:
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
+                        out_f.write(chunk)
+                if os.path.exists(part_path):
+                    os.rename(part_path, dest_path)
+                if self.window and hasattr(self.window, "_show_toast"):
+                    GLib.idle_add(lambda: self.window._show_toast(_(f"Download complete: {disp_name}")))
             except Exception as e:
-                print("Open URL error:", e)
-            if hasattr(self, 'progress_label') and self.progress_label:
-                if torrent.get("is_http") or (isinstance(url, str) and url.startswith(("http://", "https://"))):
-                    self.progress_label.set_text("Opening direct stream in browser...")
-                else:
-                    self.progress_label.set_text("Opening stream URL...")
+                logger.error(f"HTTP download failed: {e}")
+                if os.path.exists(part_path):
+                    try: os.remove(part_path)
+                    except Exception: pass
+                if self.window and hasattr(self.window, "_show_toast"):
+                    GLib.idle_add(lambda: self.window._show_toast(_(f"Download failed: {e}")))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _copy_stream_url(self, torrent):
         if not torrent: return
@@ -2973,7 +3040,9 @@ class MovieDetailsPage(Gtk.Overlay):
                 stream_subs = self.selected_torrent.get("subtitles") if hasattr(self, "selected_torrent") and isinstance(self.selected_torrent, dict) else None
                 if hasattr(self.window, "fetch_and_add_subtitles"):
                     self.window.fetch_and_add_subtitles(imdb_id, self.media_type, season, episode, stream_subtitles=stream_subs, stream_title=media_title)
-                self.window._play_stream(magnet, media_title)
+                from . import api
+                headers = api.extract_stream_headers(self.selected_torrent, url=magnet)
+                self.window._play_stream(magnet, media_title, headers=headers)
         else:
             from . import player
             if self.window:
@@ -6403,7 +6472,15 @@ class CineWindow(Adw.ApplicationWindow):
                 )
                 return
             self.previous_page_before_player = prev_page
-            self._play_stream(target, title, start_time=self._pending_seek_position)
+            headers = {}
+            from . import api
+            if working_stream and isinstance(working_stream, dict):
+                headers = api.extract_stream_headers(working_stream, url=target)
+            elif item_data.get("selected_torrent") and isinstance(item_data.get("selected_torrent"), dict):
+                headers = api.extract_stream_headers(item_data["selected_torrent"], url=target)
+            else:
+                headers = api.extract_stream_headers({}, url=target)
+            self._play_stream(target, title, headers=headers, start_time=self._pending_seek_position)
         else:
             self._on_movie_clicked(item_data)
 
@@ -7525,7 +7602,15 @@ class CineWindow(Adw.ApplicationWindow):
         if title:
             self.mpv["force-media-title"] = title
             
+        from . import api
         all_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        cur_item = getattr(self, "_current_playing_item", None)
+        if isinstance(cur_item, dict) and isinstance(cur_item.get("selected_torrent"), dict):
+            extracted = api.extract_stream_headers(cur_item["selected_torrent"], url=url)
+            for ek, ev in extracted.items():
+                if ek not in all_headers:
+                    all_headers[ek] = ev
+
         if headers:
             all_headers.update(headers)
             
@@ -7543,15 +7628,18 @@ class CineWindow(Adw.ApplicationWindow):
                 
         user_agent = None
         referrer = None
-        custom_headers = {}
+        header_fields = []
 
         for k, v in all_headers.items():
-            if k.lower() == "user-agent":
-                user_agent = v
-            elif k.lower() == "referer":
-                referrer = v
-            else:
-                custom_headers[k] = v
+            k_clean = str(k).strip()
+            v_clean = str(v).strip()
+            if not k_clean or not v_clean:
+                continue
+            if k_clean.lower() == "user-agent":
+                user_agent = v_clean
+            elif k_clean.lower() == "referer":
+                referrer = v_clean
+            header_fields.append(f"{k_clean}: {v_clean}")
 
         if is_youtube_raw_url:
             # Let MPV's ytdl_hook.lua handle raw youtube URLs
@@ -7566,21 +7654,9 @@ class CineWindow(Adw.ApplicationWindow):
                 pass
         else:
             self.hide_player_loading()
-            if user_agent:
-                self.mpv["user-agent"] = user_agent
-            else:
-                self.mpv["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-            if referrer:
-                self.mpv["referrer"] = referrer
-            else:
-                self.mpv["referrer"] = ""
-
-            if custom_headers:
-                header_fields = [f"{k}: {v}" for k, v in custom_headers.items()]
-                self.mpv["http-header-fields"] = header_fields
-            else:
-                self.mpv["http-header-fields"] = []
+            self.mpv["user-agent"] = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            self.mpv["referrer"] = referrer or ""
+            self.mpv["http-header-fields"] = header_fields
 
             try:
                 self.mpv["demuxer-lavf-o"] = "probesize=2000000,analyzeduration=2000000"
@@ -7915,18 +7991,8 @@ class CineWindow(Adw.ApplicationWindow):
             display_title
         )
 
-        headers = {}
-        behavior_hints = torrent.get("behaviorHints", {}) if isinstance(torrent, dict) else {}
-        if behavior_hints and "headers" in behavior_hints:
-            headers.update(behavior_hints["headers"])
-            
-        if magnet:
-            import urllib.parse
-            parsed_url = urllib.parse.urlparse(magnet)
-            query_params = urllib.parse.parse_qs(parsed_url.query)
-            for key in ["User-Agent", "Referer", "Origin"]:
-                if key in query_params and query_params[key]:
-                    headers[key] = query_params[key][0]
+        from . import api
+        headers = api.extract_stream_headers(torrent, url=magnet)
 
         if torrent.get("is_external") or (isinstance(torrent, dict) and torrent.get("externalUrl")):
             ext_url = torrent.get("externalUrl") or magnet

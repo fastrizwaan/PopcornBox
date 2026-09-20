@@ -2261,6 +2261,58 @@ def refresh_stream(imdb_id, media_type="movie", season=None, episode=None, old_s
     
     return old_stream, fresh_streams
 
+def extract_stream_headers(stream_entry, url=None):
+    """
+    Extract HTTP headers required for streaming from behaviorHints (proxyHeaders, headers, requestHeaders)
+    or query parameters in the stream URL.
+    """
+    headers = {}
+    if not isinstance(stream_entry, dict) and not url:
+        return headers
+
+    stream_dict = stream_entry if isinstance(stream_entry, dict) else {}
+    target_url = url or stream_dict.get("url") or stream_dict.get("magnet") or ""
+
+    bh = stream_dict.get("behaviorHints")
+    if isinstance(bh, dict):
+        # 1. Stremio proxyHeaders: {"request": {"User-Agent": "...", "Referer": "..."}}
+        proxy_headers = bh.get("proxyHeaders")
+        if isinstance(proxy_headers, dict):
+            req_headers = proxy_headers.get("request")
+            if isinstance(req_headers, dict):
+                headers.update({str(k): str(v) for k, v in req_headers.items()})
+            else:
+                for k, v in proxy_headers.items():
+                    if k != "request" and isinstance(v, (str, int, float)):
+                        headers[str(k)] = str(v)
+
+        # 2. direct headers object: {"headers": {"Referer": "..."}}
+        if isinstance(bh.get("headers"), dict):
+            headers.update({str(k): str(v) for k, v in bh["headers"].items()})
+
+        # 3. requestHeaders: {"requestHeaders": {...}}
+        if isinstance(bh.get("requestHeaders"), dict):
+            headers.update({str(k): str(v) for k, v in bh["requestHeaders"].items()})
+
+    # Also check top-level stream_dict["headers"] if present
+    if isinstance(stream_dict.get("headers"), dict):
+        headers.update({str(k): str(v) for k, v in stream_dict["headers"].items()})
+
+    # Query params fallback: ?User-Agent=...&Referer=...
+    if target_url and isinstance(target_url, str):
+        try:
+            import urllib.parse
+            parsed_url = urllib.parse.urlparse(target_url)
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            for key in ["User-Agent", "Referer", "Origin", "Cookie"]:
+                for qk, qv in query_params.items():
+                    if qk.lower() == key.lower() and qv:
+                        headers[key] = qv[0]
+        except Exception:
+            pass
+
+    return headers
+
 def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cache=True, provider=None):
     if not imdb_id:
         return []
