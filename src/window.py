@@ -7628,7 +7628,7 @@ class CineWindow(Adw.ApplicationWindow):
                 
         user_agent = None
         referrer = None
-        header_fields = []
+        custom_header_fields = []
 
         for k, v in all_headers.items():
             k_clean = str(k).strip()
@@ -7639,7 +7639,10 @@ class CineWindow(Adw.ApplicationWindow):
                 user_agent = v_clean
             elif k_clean.lower() == "referer":
                 referrer = v_clean
-            header_fields.append(f"{k_clean}: {v_clean}")
+            else:
+                # Do NOT include user-agent or referer here, otherwise MPV sends duplicate
+                # headers which causes Cloudflare to block with HTTP 400 Bad Request!
+                custom_header_fields.append(f"{k_clean}: {v_clean}")
 
         if is_youtube_raw_url:
             # Let MPV's ytdl_hook.lua handle raw youtube URLs
@@ -7648,15 +7651,23 @@ class CineWindow(Adw.ApplicationWindow):
                 self.mpv["ytdl"] = True
                 self.mpv["ytdl-raw-options"] = "no-playlist="
                 self.mpv["user-agent"] = ""
+                self.mpv["referrer"] = ""
                 self.mpv["http-header-fields"] = []
                 self.mpv["demuxer-lavf-o"] = ""
             except Exception:
                 pass
         else:
             self.hide_player_loading()
-            self.mpv["user-agent"] = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            # Disable ytdl for direct video streams so yt-dlp does not intercept without Referer
+            # and trigger Cloudflare anti-bot challenge
+            try:
+                self.mpv["ytdl"] = False
+            except Exception:
+                pass
+
+            self.mpv["user-agent"] = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
             self.mpv["referrer"] = referrer or ""
-            self.mpv["http-header-fields"] = header_fields
+            self.mpv["http-header-fields"] = custom_header_fields
 
             try:
                 self.mpv["demuxer-lavf-o"] = "probesize=2000000,analyzeduration=2000000"

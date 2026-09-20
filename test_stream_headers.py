@@ -88,7 +88,8 @@ class TestStreamHeaders(unittest.TestCase):
 
         headers = {
             "Referer": "https://abyssplayer.com/",
-            "User-Agent": "Mozilla/5.0 Chrome/126"
+            "User-Agent": "Mozilla/5.0 Chrome/126",
+            "Origin": "https://abyssplayer.com"
         }
         CineWindow._play_stream(
             win,
@@ -98,9 +99,12 @@ class TestStreamHeaders(unittest.TestCase):
         )
         self.assertEqual(mpv_props.get("referrer"), "https://abyssplayer.com/")
         self.assertEqual(mpv_props.get("user-agent"), "Mozilla/5.0 Chrome/126")
+        self.assertFalse(mpv_props.get("ytdl"))
         http_fields = mpv_props.get("http-header-fields", [])
-        self.assertTrue(any("Referer: https://abyssplayer.com/" in f for f in http_fields))
-        self.assertTrue(any("User-Agent: Mozilla/5.0 Chrome/126" in f for f in http_fields))
+        # Referer and User-Agent are NOT duplicated in http_fields to avoid Cloudflare 400 Bad Request
+        self.assertFalse(any("Referer:" in f for f in http_fields))
+        self.assertFalse(any("User-Agent:" in f for f in http_fields))
+        self.assertTrue(any("Origin: https://abyssplayer.com" in f for f in http_fields))
 
 
 if __name__ == "__main__":
