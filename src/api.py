@@ -2799,6 +2799,212 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
         database.save_cached_subtitles(cache_key, res_list)
     return res_list
 
+SUBTITLE_LANGUAGE_NAMES = {
+    "eng": "English", "en": "English", "english": "English",
+    "spa": "Spanish", "es": "Spanish", "esp": "Spanish", "spanish": "Spanish",
+    "fre": "French", "fra": "French", "fr": "French", "french": "French",
+    "ger": "German", "deu": "German", "de": "German", "german": "German",
+    "ita": "Italian", "it": "Italian", "italian": "Italian",
+    "por": "Portuguese", "pt": "Portuguese", "portuguese": "Portuguese",
+    "pob": "Portuguese (BR)", "pt-br": "Portuguese (BR)",
+    "rus": "Russian", "ru": "Russian", "russian": "Russian",
+    "ara": "Arabic", "ar": "Arabic", "arabic": "Arabic",
+    "hin": "Hindi", "hi": "Hindi", "hindi": "Hindi",
+    "chi": "Chinese", "zho": "Chinese", "zh": "Chinese", "chinese": "Chinese",
+    "jpn": "Japanese", "ja": "Japanese", "japanese": "Japanese",
+    "kor": "Korean", "ko": "Korean", "korean": "Korean",
+    "tur": "Turkish", "tr": "Turkish", "turkish": "Turkish",
+    "pol": "Polish", "pl": "Polish", "polish": "Polish",
+    "dut": "Dutch", "nld": "Dutch", "nl": "Dutch", "dutch": "Dutch",
+    "cze": "Czech", "ces": "Czech", "cs": "Czech", "czech": "Czech",
+    "ell": "Greek", "gre": "Greek", "el": "Greek", "greek": "Greek",
+    "swe": "Swedish", "sv": "Swedish", "swedish": "Swedish",
+    "ind": "Indonesian", "id": "Indonesian", "indonesian": "Indonesian",
+    "mal": "Malayalam", "ml": "Malayalam", "malayalam": "Malayalam",
+    "tam": "Tamil", "ta": "Tamil", "tamil": "Tamil",
+    "tel": "Telugu", "te": "Telugu", "telugu": "Telugu",
+    "kan": "Kannada", "kn": "Kannada", "kannada": "Kannada",
+    "ben": "Bengali", "bn": "Bengali", "bengali": "Bengali",
+    "pan": "Punjabi", "pa": "Punjabi", "punjabi": "Punjabi",
+    "urd": "Urdu", "ur": "Urdu", "urdu": "Urdu",
+    "per": "Persian", "fas": "Persian", "fa": "Persian", "persian": "Persian",
+    "rum": "Romanian", "ron": "Romanian", "ro": "Romanian", "romanian": "Romanian",
+    "hun": "Hungarian", "hu": "Hungarian", "hungarian": "Hungarian",
+    "ukr": "Ukrainian", "uk": "Ukrainian", "ukrainian": "Ukrainian",
+    "heb": "Hebrew", "he": "Hebrew", "hebrew": "Hebrew",
+    "tha": "Thai", "th": "Thai", "thai": "Thai",
+    "vie": "Vietnamese", "vi": "Vietnamese", "vietnamese": "Vietnamese",
+    "dan": "Danish", "da": "Danish", "danish": "Danish",
+    "fin": "Finnish", "fi": "Finnish", "finnish": "Finnish",
+    "nor": "Norwegian", "no": "Norwegian", "norwegian": "Norwegian",
+    "nob": "Norwegian Bokmål",
+    "hrv": "Croatian", "hr": "Croatian", "croatian": "Croatian",
+    "srp": "Serbian", "sr": "Serbian", "serbian": "Serbian",
+    "bul": "Bulgarian", "bg": "Bulgarian", "bulgarian": "Bulgarian",
+    "slv": "Slovenian", "sl": "Slovenian", "slovenian": "Slovenian",
+    "slk": "Slovak", "sk": "Slovak", "slovak": "Slovak",
+    "est": "Estonian", "et": "Estonian", "estonian": "Estonian",
+    "lav": "Latvian", "lv": "Latvian", "latvian": "Latvian",
+    "lit": "Lithuanian", "lt": "Lithuanian", "lithuanian": "Lithuanian",
+}
+
+def get_language_name(code):
+    if not code:
+        return "Unknown"
+    c = str(code).lower().strip().split("-")[0].split("_")[0]
+    return SUBTITLE_LANGUAGE_NAMES.get(str(code).lower().strip(), SUBTITLE_LANGUAGE_NAMES.get(c, str(code).upper()))
+
+def search_subtitles_online(query="", imdb_id=None, media_type="movie", season=None, episode=None):
+    """
+    Search OpenSubtitles and installed subtitle addons for subtitles without language filtering.
+    Returns a list of subtitle dicts with metadata:
+    {
+        'id': ...,
+        'url': ...,
+        'lang': ...,
+        'lang_name': ...,
+        'file_name': ...,
+        'release_name': ...,
+        'fps': ...,
+        'format': ...,
+        'source': ...,
+    }
+    """
+    clean_imdb = None
+    if imdb_id and str(imdb_id).startswith("tt"):
+        clean_imdb = str(imdb_id).split(":")[0]
+    elif imdb_id:
+        clean_imdb = resolve_to_imdb_id(imdb_id, media_type, title=query)
+
+    actual_media = "series" if media_type in ["series", "tv", "anime"] else (media_type or "movie")
+    if season is not None and episode is not None:
+        actual_media = "series"
+
+    # If we still do not have a valid IMDb ID (tt...), search Cinemeta by query
+    if (not clean_imdb or not str(clean_imdb).startswith("tt")) and query:
+        clean_query = re.sub(r'[\(\[\{].*?[\)\]\}]', '', str(query))
+        clean_query = re.sub(r'\b(19\d\d|20\d\d)\b.*', '', clean_query)
+        clean_query = re.sub(r'[sS]\d+[eE]\d+.*', '', clean_query)
+        clean_query = re.sub(r'\b(480p|720p|1080p|2160p|4k|bluray|web-dl|webrip|x264|x265|hevc)\b.*', '', clean_query, flags=re.IGNORECASE)
+        clean_query = clean_query.replace(".", " ").replace("_", " ").strip()
+        if not clean_query:
+            clean_query = str(query).strip()
+
+        search_types = [actual_media, "series" if actual_media == "movie" else "movie"]
+        for stype in search_types:
+            try:
+                c_url = f"https://v3-cinemeta.strem.io/catalog/{stype}/top/search={urllib.parse.quote(clean_query)}.json"
+                req = urllib.request.Request(c_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+                with urllib.request.urlopen(req, timeout=4.0, context=_SSL_CONTEXT) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    metas = data.get("metas", [])
+                    if metas and metas[0].get("id", "").startswith("tt"):
+                        clean_imdb = metas[0]["id"]
+                        if stype == "series":
+                            actual_media = "series"
+                        break
+            except Exception as e:
+                logging.debug(f"Cinemeta subtitle search error: {e}")
+
+    if not clean_imdb or not str(clean_imdb).startswith("tt"):
+        logging.warning(f"Could not resolve valid IMDb ID for subtitles query='{query}', imdb_id='{imdb_id}'")
+        return []
+
+    clean_imdb = str(clean_imdb).split(":")[0]
+    if actual_media == "series" and season is not None and episode is not None:
+        sub_path = f"series/{clean_imdb}:{int(season)}:{int(episode)}.json"
+    else:
+        sub_path = f"movie/{clean_imdb}.json"
+
+    urls_to_try = [
+        ("OpenSubtitles v3", f"https://opensubtitles-v3.strem.io/subtitles/{sub_path}"),
+        ("OpenSubtitles", f"https://subtitles.strem.io/subtitles/{sub_path}"),
+        ("OpenSubtitles", f"https://opensubtitles.strem.io/subtitles/{sub_path}")
+    ]
+
+    try:
+        installed_addons = [a for a in database.get_addons() if has_subtitles_resource(a, media_type=actual_media, item_id=clean_imdb)]
+        for addon in installed_addons:
+            base_url = addon.get("url", "") or addon.get("manifest_url", "")
+            base_url = base_url.rsplit("/manifest.json", 1)[0]
+            addon_name = addon.get("name", "Addon")
+            if base_url:
+                u = f"{base_url}/subtitles/{sub_path}"
+                if not any(existing_url == u for _, existing_url in urls_to_try):
+                    urls_to_try.append((addon_name, u))
+    except Exception:
+        pass
+
+    def _fetch_sub_url(source_name, sub_url):
+        try:
+            req = urllib.request.Request(
+                sub_url,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept-Encoding': 'gzip, deflate'
+                }
+            )
+            with urllib.request.urlopen(req, timeout=4.5, context=_SSL_CONTEXT) as response:
+                raw_data = response.read()
+                encoding = response.headers.get("Content-Encoding", "").lower()
+                if encoding == "gzip" or raw_data.startswith(b"\x1f\x8b"):
+                    import gzip
+                    try:
+                        raw_data = gzip.decompress(raw_data)
+                    except Exception:
+                        pass
+                data = json.loads(raw_data.decode('utf-8'))
+                items = data.get("subtitles", [])
+                for it in items:
+                    if isinstance(it, dict):
+                        it["_source"] = source_name
+                return items
+        except Exception as e:
+            logging.debug(f"Error fetching subtitles from {sub_url}: {e}")
+            return []
+
+    raw_subs = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(urls_to_try), 6)) as executor:
+        fut_to_info = {executor.submit(_fetch_sub_url, s_name, u): (s_name, u) for s_name, u in urls_to_try}
+        try:
+            for fut in concurrent.futures.as_completed(fut_to_info, timeout=5.0):
+                try:
+                    items = fut.result()
+                    if items:
+                        raw_subs.extend(items)
+                except Exception:
+                    pass
+        except concurrent.futures.TimeoutError:
+            pass
+
+    seen_urls = set()
+    results = []
+    for s in raw_subs:
+        url = s.get("url")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        lang_code = s.get("lang") or "und"
+        file_name = s.get("subtitleFileName") or ""
+        release_name = s.get("movieReleaseName") or s.get("name") or file_name or "Subtitle"
+        fps = s.get("fpsMilli")
+        fps_str = f"{fps / 1000:.3f}".rstrip('0').rstrip('.') + " fps" if fps else ""
+        source = s.get("_source", "OpenSubtitles")
+
+        results.append({
+            "id": s.get("id", str(len(results) + 1)),
+            "url": url,
+            "lang": lang_code,
+            "lang_name": get_language_name(lang_code),
+            "file_name": file_name,
+            "release_name": release_name,
+            "fps": fps_str,
+            "format": s.get("format", "SRT"),
+            "source": source,
+        })
+
+    return results
+
 def download_subtitle(sub_url, filename):
     sub_dir = os.path.join(database.CONFIG_DIR, "subtitles")
     os.makedirs(sub_dir, exist_ok=True)

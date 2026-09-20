@@ -3406,6 +3406,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action_stateful("select-video", self._on_video_selected, "i")
         self._create_action_stateful("select-chapter", self._on_chapter_selected, "i")
         self._create_action("add-sub-tracks", self._on_add_sub_dialog)
+        self._create_action("search-subtitles", self._on_search_subtitles_dialog)
         self._create_action("add-audio-tracks", self._on_add_audio_dialog)
         self._create_action("add-playlist-files", self._on_add_playlist_dialog)
         self._create_action("open-folder", self._on_open_folder_dialog)
@@ -3776,6 +3777,7 @@ class CineWindow(Adw.ApplicationWindow):
     def _update_track_menus(self, track_list):
         self.subtitles_menu.remove_all()
         self.subtitles_menu.append(_("Add Subtitle Track"), "win.add-sub-tracks")
+        self.subtitles_menu.append(_("Search Subtitle"), "win.search-subtitles")
 
         item_none_sub = Gio.MenuItem.new(_("None"), None)
         item_none_sub.set_action_and_target_value(
@@ -3803,17 +3805,32 @@ class CineWindow(Adw.ApplicationWindow):
         )
         self.video_tracks_menu_btn.set_visible(video_count > 1)
 
-        def hide_box_first_model_btn(menu_btn):
-            """Hide the space before add track label"""
-            target = menu_btn.get_popover()
-            for _i in range(8):
+        def hide_box_action_buttons(menu_btn, count=1):
+            """Hide the space before action labels"""
+            try:
+                target = menu_btn.get_popover()
+                for _i in range(8):
+                    if target:
+                        target = target.get_first_child()
                 if target:
-                    target = target.get_first_child()
-            if target:
-                target.set_visible(False)
+                    target.set_visible(False)
+                if count > 1 and target:
+                    parent_box = target.get_parent()
+                    if parent_box:
+                        mb1 = parent_box.get_parent()
+                        if mb1:
+                            mb2 = mb1.get_next_sibling()
+                            if mb2:
+                                mb2_child = mb2.get_first_child()
+                                if mb2_child:
+                                    mb2_ind = mb2_child.get_first_child()
+                                    if mb2_ind:
+                                        mb2_ind.set_visible(False)
+            except Exception:
+                pass
 
-        hide_box_first_model_btn(self.subtitles_menu_btn)
-        hide_box_first_model_btn(self.audio_tracks_menu_btn)
+        hide_box_action_buttons(self.subtitles_menu_btn, count=2)
+        hide_box_action_buttons(self.audio_tracks_menu_btn, count=1)
 
     def _add_track_to_menu(self, track):
         track_id = int(track.get("id", 0))
@@ -3902,6 +3919,44 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _on_add_sub_dialog(self, _action, _param):
         self._open_add_dialog(_("Add Subtitle"), "sub-add")
+
+    def _on_search_subtitles_dialog(self, _action=None, _param=None):
+        playing = getattr(self, "_current_playing_item", None) or {}
+
+        title = playing.get("title") or getattr(self, "stream_queue_title", "")
+        if not title:
+            try:
+                title = self.mpv.media_title or self.mpv.filename or ""
+            except Exception:
+                title = ""
+
+        imdb_id = playing.get("imdb_id") or playing.get("id") or getattr(self, "current_imdb_id", None)
+        if not imdb_id and hasattr(self, "details_box"):
+            try:
+                child = self.details_box.get_first_child()
+                if child and hasattr(child, "imdb_id"):
+                    imdb_id = child.imdb_id
+            except Exception:
+                pass
+
+        media_type = playing.get("type") or getattr(self, "selected_media_type", "movie")
+        season = playing.get("season")
+        if season is None:
+            season = getattr(self, "selected_season", None)
+        episode = playing.get("episode")
+        if episode is None:
+            episode = getattr(self, "selected_episode", None)
+
+        from .subtitle_search_dialog import SubtitleSearchDialog
+        dialog = SubtitleSearchDialog(
+            window=self,
+            title=title,
+            imdb_id=imdb_id,
+            media_type=media_type,
+            season=season,
+            episode=episode,
+        )
+        dialog.present(self)
 
     def _on_add_audio_dialog(self, _action, _param):
         self._open_add_dialog(_("Add Audio"), "audio-add")
