@@ -138,5 +138,21 @@ class TestEpisodeSelection(unittest.TestCase):
             self.assertIn("S1:E5", page.continue_label.get_text(), "Continue button should still show S1:E5")
             self.assertEqual(page.episode_dropdown.get_selected(), 4, "Dropdown index should remain 4 (episode 5)")
 
+    def test_no_obsolete_action_buttons_on_streams_page(self):
+        """Verify MovieDetailsPage does not have the old row4_box, watch_btn, or download_btn."""
+        from src.window import MovieDetailsPage
+        stub = {"id": "tt0343818", "title": "I, Robot", "type": "movie"}
+        mock_win = MagicMock()
+
+        with patch.object(MovieDetailsPage, "load_details_async"), \
+             patch.object(MovieDetailsPage, "fetch_torrents_async"):
+            page = MovieDetailsPage(stub, mock_win)
+
+            self.assertFalse(hasattr(page, "row4_box"))
+            self.assertFalse(hasattr(page, "watch_btn"))
+            self.assertFalse(hasattr(page, "download_btn"))
+            self.assertFalse(hasattr(page, "stop_btn"))
+
+
 if __name__ == "__main__":
     unittest.main()

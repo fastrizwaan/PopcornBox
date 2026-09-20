@@ -758,31 +758,7 @@ class MovieDetailsPage(Gtk.Overlay):
         streams_scroll.set_child(self.streams_list_box)
         self.streams_page_vbox.append(streams_scroll)
 
-        # Stream Action Buttons
-        self.row4_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-
-        watch_label = "PLAY STREAM" if self.media_type in ["music", "radio", "live"] else "WATCH IT NOW"
-        self.watch_btn = Gtk.Button(label=watch_label)
-        self.watch_btn.add_css_class("suggested-action")
-        self.watch_btn.add_css_class("pill")
-        self.watch_btn.set_hexpand(True)
-        self.watch_btn.connect("clicked", self.on_watch_clicked)
-        self.row4_box.append(self.watch_btn)
-
-        self.download_btn = Gtk.Button(label="Download")
-        self.download_btn.add_css_class("pill")
-        self.download_btn.connect("clicked", self.on_download_clicked)
-        self.row4_box.append(self.download_btn)
-
-        self.stop_btn = Gtk.Button(label="■ Stop")
-        self.stop_btn.add_css_class("destructive-action")
-        self.stop_btn.add_css_class("pill")
-        self.stop_btn.connect("clicked", self.on_stop_clicked)
-        self.stop_btn.set_visible(False)
-        self.row4_box.append(self.stop_btn)
-
-        self.streams_page_vbox.append(self.row4_box)
-
+        # Status / Buffering Label
         self.progress_label = Gtk.Label(label="")
         self.progress_label.set_halign(Gtk.Align.START)
         self.progress_label.add_css_class("dim-label")
@@ -2168,7 +2144,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
             if ready_for_auto_play and getattr(self, '_auto_play_on_streams_loaded', False):
                 self._auto_play_on_streams_loaded = False
-                GLib.idle_add(self.on_watch_clicked, self.watch_btn)
+                GLib.idle_add(self.on_watch_clicked, None)
             elif is_complete and not self.torrents and getattr(self, '_auto_play_on_streams_loaded', False):
                 self._auto_play_on_streams_loaded = False
                 if self.window:
@@ -2177,7 +2153,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.progress_label.set_text("No streams available.")
             elif ready_for_auto_play and getattr(self, '_auto_play_next', False):
                 self._auto_play_next = False
-                GLib.idle_add(self.on_watch_clicked, self.watch_btn)
+                GLib.idle_add(self.on_watch_clicked, None)
             elif is_complete and not self.torrents and getattr(self, '_auto_play_next', False):
                 self._auto_play_next = False
                 if self.window:
@@ -2205,7 +2181,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 if (getattr(self, '_auto_play_next', False) or getattr(self, '_auto_play_on_streams_loaded', False)) and getattr(self, 'torrents', None):
                     self._auto_play_next = False
                     self._auto_play_on_streams_loaded = False
-                    GLib.idle_add(self.on_watch_clicked, self.watch_btn)
+                    GLib.idle_add(self.on_watch_clicked, None)
                 return False
             GLib.timeout_add(2500, _fallback_autoplay_check)
 
@@ -2254,13 +2230,10 @@ class MovieDetailsPage(Gtk.Overlay):
             self.selected_torrent = None
             self.quality_row_box.set_visible(False)
             if hasattr(self, 'row3_box'): self.row3_box.set_visible(False)
-            if hasattr(self, 'row4_box'): self.row4_box.set_visible(True)
-            self.watch_btn.set_visible(False)
-            if hasattr(self, 'download_btn'):
-                self.download_btn.set_sensitive(False)
             if hasattr(self, 'search_online_btn'):
                 self.search_online_btn.set_visible(True)
                 self.search_online_btn.add_css_class("suggested-action")
+            self.render_streams_list()
             return
 
         source_idx = getattr(self, 'source_idx', 0)
@@ -2301,18 +2274,12 @@ class MovieDetailsPage(Gtk.Overlay):
             if hasattr(self, 'row3_box'): self.row3_box.set_visible(True)
             self.file_dropdown.set_model(Gtk.StringList.new(["No streams available for selected source filter"]))
             self.file_dropdown.set_selected(0)
-            self.watch_btn.set_visible(False)
-            if hasattr(self, 'download_btn'):
-                self.download_btn.set_sensitive(False)
             self.render_streams_list()
             return
 
         self.quality_row_box.set_visible(True)
         self.quality_button_box.set_visible(True)
         if hasattr(self, 'row3_box'): self.row3_box.set_visible(True)
-        if hasattr(self, 'row4_box'): self.row4_box.set_visible(False)
-        self.watch_btn.set_visible(True)
-        self.watch_btn.set_sensitive(True)
         if hasattr(self, 'search_online_btn'):
             self.search_online_btn.set_visible(True)
             self.search_online_btn.remove_css_class("suggested-action")
@@ -2364,8 +2331,6 @@ class MovieDetailsPage(Gtk.Overlay):
             if not t_list:
                 self.file_dropdown.set_model(Gtk.StringList.new(["No working streams"]))
                 self.selected_torrent = None
-                if hasattr(self, 'download_btn'):
-                    self.download_btn.set_sensitive(False)
                 self.render_streams_list()
                 return
             strings = []
@@ -2410,12 +2375,6 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.selected_torrent = t_list[selected_idx]
             finally:
                 self._programmatic_dropdown_switch = False
-            if hasattr(self, 'download_btn'):
-                self.download_btn.set_sensitive(True)
-                if self.selected_torrent.get("is_http"):
-                    self.download_btn.set_tooltip_text("Download Direct Stream (Opens in Browser)")
-                else:
-                    self.download_btn.set_tooltip_text("Download Torrent")
             self.render_streams_list()
             
         def on_quality_btn_clicked(btn, t_list):
@@ -2598,7 +2557,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
 
 
-    def on_stop_clicked(self, btn):
+    def on_stop_clicked(self, btn=None):
         if self.window and hasattr(self.window, 'mpv'):
             self.window.mpv.stop()
         from . import player
@@ -2607,11 +2566,8 @@ class MovieDetailsPage(Gtk.Overlay):
             for h, eng in list(player._engines.items()):
                 if eng.is_alive() and eng.item_id == item_id:
                     player.stop_engine_explicit(h)
-        self.stop_btn.set_visible(False)
-        watch_label = "PLAY STREAM" if self.media_type in ["music", "radio", "live"] else "WATCH IT NOW"
-        self.watch_btn.set_label(watch_label)
 
-    def on_watch_clicked(self, btn):
+    def on_watch_clicked(self, btn=None):
         raw_t_list = getattr(self, 'current_t_list', []) or []
         
         sel_prov_name = "All Providers"
@@ -2899,7 +2855,7 @@ class MovieDetailsPage(Gtk.Overlay):
             except Exception as e:
                 print("Copy stream URL error:", e)
 
-    def on_download_clicked(self, btn):
+    def on_download_clicked(self, btn=None):
         t_list = getattr(self, 'current_t_list', []) or []
         if not getattr(self, 'selected_torrent', None):
             if t_list:
@@ -3033,9 +2989,6 @@ class MovieDetailsPage(Gtk.Overlay):
                     if getattr(self.window, "_current_playing_item", None):
                         self.window._current_playing_item["stream_url"] = url
                     self.window._play_stream(url, display_title)
-                    GLib.idle_add(self.stop_btn.set_visible, True)
-                    continue_label = "▶ Resume Stream" if self.media_type in ["music", "radio", "live"] else "▶ Continue Watching"
-                    GLib.idle_add(self.watch_btn.set_label, continue_label)
                     GLib.idle_add(self.update_continue_btn)
                 elif isinstance(stats, dict):
                     status_msg = stats.get("status", "Buffering...")
