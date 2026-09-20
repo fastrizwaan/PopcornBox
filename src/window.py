@@ -2032,11 +2032,14 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def _on_cast_member_clicked(self, member_id, member_name, photo_url=None):
         try:
-            from .person_dialog import PersonDetailDialog
-            dialog = PersonDetailDialog(self.window, member_id, member_name, photo_url=photo_url)
-            dialog.present(self.window)
+            if hasattr(self.window, "open_person_details"):
+                self.window.open_person_details(member_id, member_name, photo_url=photo_url)
+            else:
+                from .person_dialog import PersonDetailDialog
+                dialog = PersonDetailDialog(self.window, member_id, member_name, photo_url=photo_url)
+                dialog.present(self.window)
         except Exception as e:
-            print(f"[CAST CLICK ERROR] Could not open person details dialog: {e}")
+            print(f"[CAST CLICK ERROR] Could not open person details: {e}")
 
     def _on_company_clicked(self, entity_id, entity_name, logo_url=None, entity_type="company"):
         try:
@@ -3087,6 +3090,7 @@ class CineWindow(Adw.ApplicationWindow):
     toast_overlay: Adw.ToastOverlay = Gtk.Template.Child()
     main_stack: Adw.ViewStack = Gtk.Template.Child()
     details_box: Gtk.Box = Gtk.Template.Child()
+    person_box: Gtk.Box = Gtk.Template.Child()
     library_stack: Adw.ViewStack = Gtk.Template.Child()
     header_stack: Gtk.Stack = Gtk.Template.Child()
     category_btn_stack: Gtk.Stack = Gtk.Template.Child()
@@ -3251,6 +3255,14 @@ class CineWindow(Adw.ApplicationWindow):
 
         self.visible_dialog: Adw.Dialog | None = None
         self.nav_stack: list = []
+        if not hasattr(self, "person_box") or not self.person_box:
+            self.person_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, vexpand=True)
+            if hasattr(self, "main_stack") and self.main_stack:
+                self.main_stack.add_named(self.person_box, "person")
+
+        mouse_back_gesture = Gtk.GestureClick(button=8)
+        mouse_back_gesture.connect("pressed", lambda *a: self._on_mouse_back_clicked())
+        self.add_controller(mouse_back_gesture)
         self.playlist_ls: Gio.ListStore = Gio.ListStore.new(PlaylistItemObj)
         self.playlist_debounce_id: int = 0
         self.playlist_prev_pos: int
@@ -3493,6 +3505,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action("save-session", self._on_save_session)
         self._create_action("open-addons", self._open_addons)
         self._create_action("back-to-library", self._back_to_library)
+        self._create_action("go-back", self._go_back)
         self._create_action("import-addons", self._import_addons)
         self._create_action("export-addons", self._export_addons)
         self._create_action(
@@ -3528,6 +3541,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action("custom-shortcuts", self._present_shortcuts)
         self.app.set_accels_for_action("win.custom-shortcuts", ["<primary>question"])
         self.app.set_accels_for_action("app.shortcuts", [])
+        self.app.set_accels_for_action("win.go-back", ["<Alt>Left", "Back"])
 
         self._create_action("play-pause", self._on_play_pause_clicked)
         self._create_action("previous", self._on_previous_clicked)
@@ -7408,7 +7422,10 @@ class CineWindow(Adw.ApplicationWindow):
                 seen_ids.add(item_id)
             flowbox.append(MovieWidget(item, self._on_movie_clicked, on_remove_clicked=on_remove_clicked))
 
-    def _on_movie_clicked(self, movie_data):
+    def _on_movie_clicked(self, movie_data, push_history=True):
+        if push_history:
+            self._push_current_nav_state()
+
         item_id = movie_data.get("id") or movie_data.get("imdb_id")
         title = movie_data.get("title") or movie_data.get("name")
         print(f"[CARD CLICK Step 1] Clicked movie card: '{title}' (id: {item_id})")
@@ -7434,12 +7451,40 @@ class CineWindow(Adw.ApplicationWindow):
                 page.destroy_page()
             self._go_back()
             
-        self._push_current_nav_state()
         print(f"[CARD CLICK Step 3] Creating MovieDetailsPage widget...")
         page = MovieDetailsPage(movie_data, on_back, window=self)
         self.details_box.append(page)
         self.main_stack.set_visible_child_name("details")
         print(f"[CARD CLICK Step 4] Switched main stack to details view.")
+
+    def open_person_details(self, person_id, person_name="", photo_url=None, push_history=True):
+        if push_history:
+            self._push_current_nav_state()
+
+        if not hasattr(self, "person_box") or not self.person_box:
+            self.person_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, vexpand=True)
+            if hasattr(self, "main_stack") and self.main_stack:
+                self.main_stack.add_named(self.person_box, "person")
+
+        from .movie_widget import cancel_pending_image_downloads
+        cancel_pending_image_downloads()
+
+        while child := self.person_box.get_first_child():
+            if hasattr(child, "destroy_page"):
+                child.destroy_page()
+            elif hasattr(child, "_destroyed"):
+                child._destroyed = True
+            self.person_box.remove(child)
+
+        def on_back():
+            if hasattr(page, "destroy_page"):
+                page.destroy_page()
+            self._go_back()
+
+        from .person_page import PersonPage
+        page = PersonPage(self, person_id, person_name=person_name, photo_url=photo_url, on_back=on_back)
+        self.person_box.append(page)
+        self.main_stack.set_visible_child_name("person")
 
     def show_player_loading(self, text="Fetching metadata...", title=None):
         GLib.idle_add(self._show_player_loading_ui, text, title)
@@ -8165,7 +8210,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue = []
         self.stream_queue_index = 0
         prev_page = getattr(self, 'previous_page_before_player', 'details')
-        if prev_page and prev_page in ['details', 'library', 'favorites', 'history', 'watched', 'downloads', 'addons']:
+        if prev_page and prev_page in ['details', 'library', 'favorites', 'history', 'watched', 'downloads', 'addons', 'person']:
             self.main_stack.set_visible_child_name(prev_page)
         elif prev_page in ['discover', 'content', 'search_results']:
             self.main_stack.set_visible_child_name('library')
@@ -8561,7 +8606,7 @@ class CineWindow(Adw.ApplicationWindow):
         if page and hasattr(page, 'update_continue_btn'):
             page.update_continue_btn()
 
-        if prev_page and prev_page in ['details', 'library', 'favorites', 'history', 'watched', 'downloads', 'addons']:
+        if prev_page and prev_page in ['details', 'library', 'favorites', 'history', 'watched', 'downloads', 'addons', 'person']:
             self.main_stack.set_visible_child_name(prev_page)
         elif prev_page in ['discover', 'content', 'search_results']:
             self.main_stack.set_visible_child_name('library')
@@ -8815,14 +8860,67 @@ class CineWindow(Adw.ApplicationWindow):
         subtitle = row.get_subtitle().lower() if row.get_subtitle() else ""
         return search_text in title or search_text in subtitle
 
+    def _is_same_movie(self, movie_a, movie_b):
+        if not movie_a or not movie_b:
+            return False
+        if movie_a is movie_b:
+            return True
+
+        def _get_ids(m):
+            ids = set()
+            for key in ("id", "imdb_id"):
+                v = m.get(key)
+                if v:
+                    if isinstance(v, (list, tuple, set)):
+                        ids.update(str(x) for x in v if x)
+                    else:
+                        ids.add(str(v))
+            for aid in m.get("alias_ids", []):
+                if aid:
+                    ids.add(str(aid))
+            return ids
+
+        ids_a = _get_ids(movie_a)
+        ids_b = _get_ids(movie_b)
+        if ids_a and ids_b and (ids_a & ids_b):
+            return True
+
+        title_a = (movie_a.get("title") or movie_a.get("name") or "").strip().lower()
+        title_b = (movie_b.get("title") or movie_b.get("name") or "").strip().lower()
+        year_a = str(movie_a.get("year") or "").strip()
+        year_b = str(movie_b.get("year") or "").strip()
+        type_a = str(movie_a.get("type") or "").strip().lower()
+        type_b = str(movie_b.get("type") or "").strip().lower()
+
+        if title_a and title_b and title_a == title_b:
+            if year_a and year_b and year_a == year_b:
+                return True
+            if type_a and type_b and type_a == type_b:
+                return True
+
+        return False
+
+    def _on_mouse_back_clicked(self):
+        self._go_back()
+
     def _push_current_nav_state(self):
         if not hasattr(self, "nav_stack"):
             self.nav_stack = []
+        main_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else "library"
         current = {
-            "main_page": self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else "library",
+            "main_page": main_page,
             "library_page": self.library_stack.get_visible_child_name() if hasattr(self, "library_stack") else "content",
             "category_btn": self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else "movies"
         }
+        if main_page == "details":
+            page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
+            if page and hasattr(page, "movie_stub") and page.movie_stub:
+                current["movie_data"] = page.movie_stub
+        elif main_page == "person":
+            page = self.person_box.get_first_child() if hasattr(self, "person_box") else None
+            if page and hasattr(page, "person_data") and page.person_data:
+                current["person_data"] = page.person_data
+
         if not self.nav_stack or self.nav_stack[-1] != current:
             self.nav_stack.append(current)
             if len(self.nav_stack) > 50:
@@ -8831,17 +8929,64 @@ class CineWindow(Adw.ApplicationWindow):
     def _go_back(self, *args):
         if hasattr(self, "_update_continue_watching_section"):
             self._update_continue_watching_section()
+
+        current_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
+        if current_page == "person" and hasattr(self, "person_box"):
+            while child := self.person_box.get_first_child():
+                if hasattr(child, "destroy_page"):
+                    child.destroy_page()
+                elif hasattr(child, "_destroyed"):
+                    child._destroyed = True
+                self.person_box.remove(child)
+        elif current_page == "details" and hasattr(self, "details_box"):
+            while child := self.details_box.get_first_child():
+                if hasattr(child, "destroy_page"):
+                    child.destroy_page()
+                elif hasattr(child, "_destroyed"):
+                    child._destroyed = True
+                if hasattr(child, "_live_check_abort_event"):
+                    child._live_check_abort_event.set()
+                self.details_box.remove(child)
+
         if hasattr(self, "nav_stack") and self.nav_stack:
             prev = self.nav_stack.pop()
             main_page = prev.get("main_page", "library")
-            self.main_stack.set_visible_child_name(main_page)
-            if main_page == "library":
-                if hasattr(self, "library_stack") and prev.get("library_page"):
-                    self.library_stack.set_visible_child_name(prev["library_page"])
-                if hasattr(self, "category_btn_stack") and prev.get("category_btn"):
-                    self.category_btn_stack.set_visible_child_name(prev["category_btn"])
-            elif main_page in ["favorites", "history", "watched", "downloads"]:
-                self._populate_local_db_page(main_page)
+            if main_page == "details":
+                movie_data = prev.get("movie_data")
+                existing = self.details_box.get_first_child() if hasattr(self, "details_box") else None
+                if existing and not getattr(existing, "_destroyed", False) and self._is_same_movie(getattr(existing, "movie_stub", None), movie_data):
+                    self.main_stack.set_visible_child_name("details")
+                    if hasattr(existing, "update_continue_btn"):
+                        existing.update_continue_btn()
+                elif movie_data:
+                    self._on_movie_clicked(movie_data, push_history=False)
+                else:
+                    self.main_stack.set_visible_child_name("details")
+            elif main_page == "person":
+                p = prev.get("person_data")
+                existing = self.person_box.get_first_child() if hasattr(self, "person_box") else None
+                existing_id = None
+                if existing:
+                    p_data = getattr(existing, "person_data", None)
+                    if isinstance(p_data, dict):
+                        existing_id = p_data.get("id")
+                    if existing_id is None:
+                        existing_id = getattr(existing, "person_id", None)
+                if existing and not getattr(existing, "_destroyed", False) and p and str(existing_id) == str(p.get("id", "")):
+                    self.main_stack.set_visible_child_name("person")
+                elif p:
+                    self.open_person_details(p.get("id"), p.get("name", ""), p.get("photo_url"), push_history=False)
+                else:
+                    self.main_stack.set_visible_child_name("person")
+            else:
+                self.main_stack.set_visible_child_name(main_page)
+                if main_page == "library":
+                    if hasattr(self, "library_stack") and prev.get("library_page"):
+                        self.library_stack.set_visible_child_name(prev["library_page"])
+                    if hasattr(self, "category_btn_stack") and prev.get("category_btn"):
+                        self.category_btn_stack.set_visible_child_name(prev["category_btn"])
+                elif main_page in ["favorites", "history", "watched", "downloads"]:
+                    self._populate_local_db_page(main_page)
         else:
             self.main_stack.set_visible_child_name("library")
 

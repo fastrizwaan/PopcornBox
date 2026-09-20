@@ -804,6 +804,15 @@ template $CineWindow: Adw.ApplicationWindow {
           };
         }
 
+        Adw.ViewStackPage page_person {
+          name: "person";
+          child: Box person_box {
+            orientation: vertical;
+            hexpand: true;
+            vexpand: true;
+          };
+        }
+
         Adw.ViewStackPage page_player {
           name: "player";
           child: Overlay video_overlay {

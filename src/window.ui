@@ -1877,6 +1877,18 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                   </object>
                 </child>
                 <child>
+                  <object class="AdwViewStackPage" id="page_person">
+                    <property name="name">person</property>
+                    <property name="child">
+                      <object class="GtkBox" id="person_box">
+                        <property name="orientation">1</property>
+                        <property name="hexpand">true</property>
+                        <property name="vexpand">true</property>
+                      </object>
+                    </property>
+                  </object>
+                </child>
+                <child>
                   <object class="AdwViewStackPage" id="page_player">
                     <property name="name">player</property>
                     <property name="child">

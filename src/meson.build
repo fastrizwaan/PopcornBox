@@ -53,6 +53,7 @@ cine_sources = [
   'mpris.py',
   'options.py',
   'person_dialog.py',
+  'person_page.py',
   'player.py',
   'playlist.py',
   'preferences.py',
