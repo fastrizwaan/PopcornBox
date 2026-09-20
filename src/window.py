@@ -3519,7 +3519,13 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action("open-favorites", lambda *a: self._open_local_page("favorites"))
         self._create_action("open-downloads", lambda *a: self._open_local_page("downloads"))
         self._create_action("open-watched", lambda *a: self._open_local_page("watched"))
-        self._create_action("open-player", lambda *a: self.main_stack.set_visible_child_name("player"))
+        def _open_player_action(*a):
+            curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
+            if curr_page and curr_page != "player":
+                self.previous_page_before_player = curr_page
+                self._push_current_nav_state()
+            self.main_stack.set_visible_child_name("player")
+        self._create_action("open-player", _open_player_action)
 
         self.app.set_accels_for_action("win.open-folder", ["<primary>i"])
         self.app.set_accels_for_action("win.open-url", ["<primary>u"])
@@ -6445,8 +6451,11 @@ class CineWindow(Adw.ApplicationWindow):
         
         self._pending_seek_position = position if position > 5.0 else None
         
-        curr_page = self.main_stack.get_visible_child_name() or "discover"
-        prev_page = "details" if curr_page == "details" else "discover"
+        curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else "library"
+        prev_page = curr_page or "library"
+        if prev_page != "player":
+            self.previous_page_before_player = prev_page
+            self._push_current_nav_state()
         
         if stream_queue and len(stream_queue) > 0:
             q_idx = int(item_data.get("stream_queue_index") or 0)
@@ -7487,23 +7496,31 @@ class CineWindow(Adw.ApplicationWindow):
         self.main_stack.set_visible_child_name("person")
 
     def show_player_loading(self, text="Fetching metadata...", title=None):
+        curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
+        if curr_page and curr_page != "player":
+            self.previous_page_before_player = curr_page
+            self._push_current_nav_state()
         GLib.idle_add(self._show_player_loading_ui, text, title)
 
     def _show_player_loading_ui(self, text, title=None):
+        curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
+        if curr_page and curr_page != "player":
+            self.previous_page_before_player = curr_page
+            self._push_current_nav_state()
         self.is_loading_stream = True
         self.main_stack.set_visible_child_name("player")
-        if hasattr(self, "start_page"):
+        if hasattr(self, "start_page") and hasattr(self.start_page, "set_visible"):
             self.start_page.set_visible(False)
-        if hasattr(self, "gl_area"):
+        if hasattr(self, "gl_area") and hasattr(self.gl_area, "set_visible"):
             self.gl_area.set_visible(True)
-        if hasattr(self, "player_loading_box"):
+        if hasattr(self, "player_loading_box") and hasattr(self.player_loading_box, "set_visible"):
             self.player_loading_box.set_visible(True)
-        if hasattr(self, "spinner"):
+        if hasattr(self, "spinner") and hasattr(self.spinner, "set_visible"):
             self.spinner.set_visible(True)
-        if hasattr(self, "player_buffering_label"):
+        if hasattr(self, "player_buffering_label") and hasattr(self.player_buffering_label, "set_text"):
             self.player_buffering_label.set_text(text)
             
-        if title and hasattr(self, "title_widget"):
+        if title and hasattr(self, "title_widget") and hasattr(self.title_widget, "set_title"):
             self.title_widget.set_title(title)
             self.title_widget.set_visible(True)
             self._show_ui()
@@ -7562,6 +7579,13 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue_index = 0
 
     def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None, audio_url=None, item_id=None, media_type=None, season=None, episode=None, is_download=False):
+        curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
+        if curr_page and curr_page != "player":
+            self.previous_page_before_player = "downloads" if is_download else curr_page
+            self._push_current_nav_state()
+        elif is_download:
+            self.previous_page_before_player = "downloads"
+
         if not preserve_queue:
             self._clear_stream_failover()
         if url and isinstance(url, str) and any(d in url.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
@@ -7583,7 +7607,8 @@ class CineWindow(Adw.ApplicationWindow):
         else:
             self.hide_player_loading()
             if is_download or item_id:
-                self.previous_page_before_player = "downloads" if is_download else getattr(self, "previous_page_before_player", "details")
+                if is_download:
+                    self.previous_page_before_player = "downloads"
                 p_id = item_id
                 m_type = media_type or "movie"
                 s_num = season
@@ -7883,7 +7908,7 @@ class CineWindow(Adw.ApplicationWindow):
         except Exception as e:
             logger.error(f"[SUBS] Failed to add pending subtitles: {e}")
 
-    def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page="details", season=None, episode=None, imdb_id=None, media_type=None, stream_subtitles=None):
+    def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page=None, season=None, episode=None, imdb_id=None, media_type=None, stream_subtitles=None):
         if season is not None:
             self.selected_season = season
         if episode is not None:
@@ -7892,7 +7917,13 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue = list(queue)
         self.stream_queue_index = max(0, min(int(initial_index or 0), len(self.stream_queue) - 1)) if self.stream_queue else 0
         self.stream_queue_title = title
+
+        curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
+        if not previous_page:
+            previous_page = curr_page if (curr_page and curr_page != "player") else getattr(self, "previous_page_before_player", "library")
         self.previous_page_before_player = previous_page
+        if curr_page and curr_page != "player":
+            self._push_current_nav_state()
 
         # Resolve IMDb ID from the details page if not passed directly
         if not imdb_id:
@@ -8203,21 +8234,7 @@ class CineWindow(Adw.ApplicationWindow):
     def _handle_all_streams_exhausted(self):
         logger.warning("All candidate streams failed or were exhausted.")
         self._show_toast(_("All available streams failed to play."))
-        self.hide_player_loading()
-        if hasattr(self, 'mpv'):
-            try: self.mpv.stop()
-            except Exception: pass
-        self.stream_queue = []
-        self.stream_queue_index = 0
-        prev_page = getattr(self, 'previous_page_before_player', 'details')
-        if prev_page and prev_page in ['details', 'library', 'favorites', 'history', 'watched', 'downloads', 'addons', 'person']:
-            self.main_stack.set_visible_child_name(prev_page)
-        elif prev_page in ['discover', 'content', 'search_results']:
-            self.main_stack.set_visible_child_name('library')
-            if hasattr(self, 'library_stack'):
-                self.library_stack.set_visible_child_name(prev_page)
-        else:
-            self.main_stack.set_visible_child_name('details')
+        self._close_player(remove_torrent=True)
 
     def _mark_current_stream_as_working(self):
         """Save the verified working stream to DB and reorder the queue so it is played first next time."""
@@ -8561,10 +8578,21 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _close_player(self, *args, remove_torrent=True):
         self.hide_player_loading()
+        self._clear_stream_failover()
+        self._show_ui()
+        if hasattr(self, "revealer_ui"):
+            self.revealer_ui.set_reveal_child(True)
+        if hasattr(self, "time_popover"):
+            try: self.time_popover.popdown()
+            except Exception: pass
+
         if hasattr(self, 'details_box') and self.details_box.get_first_child():
             page = self.details_box.get_first_child()
             if hasattr(page, 'reset_trailer_btn_ui'):
                 page.reset_trailer_btn_ui()
+            page._auto_play_on_streams_loaded = False
+            page._auto_play_next = False
+
         if getattr(self, "_current_playing_item", None) and hasattr(self, "mpv"):
             try:
                 curr_pos = float(self.mpv.time_pos or 0.0)
@@ -8598,24 +8626,31 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception: pass
         from . import player
         player.stop_player(remove_torrent=remove_torrent)
+        self.stream_queue = []
+        self.stream_queue_index = 0
         if hasattr(self, "_update_continue_watching_section"):
             self._update_continue_watching_section()
 
-        prev_page = getattr(self, 'previous_page_before_player', None)
-        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
-        if page and hasattr(page, 'update_continue_btn'):
-            page.update_continue_btn()
+        restored = False
+        if hasattr(self, "nav_stack") and self.nav_stack:
+            prev = self.nav_stack.pop()
+            self._restore_nav_entry(prev)
+            restored = True
 
-        if prev_page and prev_page in ['details', 'library', 'favorites', 'history', 'watched', 'downloads', 'addons', 'person']:
-            self.main_stack.set_visible_child_name(prev_page)
-        elif prev_page in ['discover', 'content', 'search_results']:
-            self.main_stack.set_visible_child_name('library')
-            if hasattr(self, 'library_stack'):
-                self.library_stack.set_visible_child_name(prev_page)
-        elif page:
-            self.main_stack.set_visible_child_name("details")
-        else:
-            self.main_stack.set_visible_child_name("library")
+        if not restored:
+            prev_page = getattr(self, 'previous_page_before_player', None)
+            if prev_page:
+                self._restore_nav_entry({"main_page": prev_page})
+            else:
+                page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+                if page and not getattr(page, "_destroyed", False):
+                    self.main_stack.set_visible_child_name("details")
+                    if hasattr(page, 'update_continue_btn'):
+                        page.update_continue_btn()
+                else:
+                    self.main_stack.set_visible_child_name("library")
+
+        self.previous_page_before_player = None
 
     def _update_search_catalog_dropdown(self):
         from . import api, database
@@ -8903,10 +8938,66 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_mouse_back_clicked(self):
         self._go_back()
 
+    def _restore_nav_entry(self, entry):
+        if not entry or not isinstance(entry, dict):
+            self.main_stack.set_visible_child_name("library")
+            return
+
+        main_page = entry.get("main_page", "library")
+        if main_page == "details":
+            movie_data = entry.get("movie_data")
+            existing = self.details_box.get_first_child() if hasattr(self, "details_box") else None
+            if existing and not getattr(existing, "_destroyed", False) and (not movie_data or self._is_same_movie(getattr(existing, "movie_stub", None), movie_data)):
+                self.main_stack.set_visible_child_name("details")
+                if hasattr(existing, "update_continue_btn"):
+                    existing.update_continue_btn()
+            elif movie_data:
+                self._on_movie_clicked(movie_data, push_history=False)
+            elif existing and not getattr(existing, "_destroyed", False):
+                self.main_stack.set_visible_child_name("details")
+            else:
+                self.main_stack.set_visible_child_name("library")
+        elif main_page == "person":
+            p = entry.get("person_data")
+            existing = self.person_box.get_first_child() if hasattr(self, "person_box") else None
+            existing_id = None
+            if existing:
+                p_data = getattr(existing, "person_data", None)
+                if isinstance(p_data, dict):
+                    existing_id = p_data.get("id")
+                if existing_id is None:
+                    existing_id = getattr(existing, "person_id", None)
+            if existing and not getattr(existing, "_destroyed", False) and p and str(existing_id) == str(p.get("id", "")):
+                self.main_stack.set_visible_child_name("person")
+            elif p:
+                self.open_person_details(p.get("id"), p.get("name", ""), p.get("photo_url"), push_history=False)
+            elif existing and not getattr(existing, "_destroyed", False):
+                self.main_stack.set_visible_child_name("person")
+            else:
+                self.main_stack.set_visible_child_name("library")
+        elif main_page == "library":
+            self.main_stack.set_visible_child_name("library")
+            lib_page = entry.get("library_page")
+            if hasattr(self, "library_stack") and lib_page:
+                self.library_stack.set_visible_child_name(lib_page)
+                if lib_page == "search_results" and hasattr(self, "header_stack"):
+                    self.header_stack.set_visible_child_name("search_header")
+            if hasattr(self, "category_btn_stack") and entry.get("category_btn"):
+                self.category_btn_stack.set_visible_child_name(entry["category_btn"])
+        elif main_page in ["favorites", "history", "watched", "downloads", "continue_watching"]:
+            self.main_stack.set_visible_child_name(main_page)
+            self._populate_local_db_page(main_page)
+        elif main_page == "addons":
+            self.main_stack.set_visible_child_name("addons")
+        else:
+            self.main_stack.set_visible_child_name("library")
+
     def _push_current_nav_state(self):
         if not hasattr(self, "nav_stack"):
             self.nav_stack = []
         main_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else "library"
+        if main_page == "player":
+            return
         current = {
             "main_page": main_page,
             "library_page": self.library_stack.get_visible_child_name() if hasattr(self, "library_stack") else "content",
@@ -8931,6 +9022,10 @@ class CineWindow(Adw.ApplicationWindow):
             self._update_continue_watching_section()
 
         current_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
+        if current_page == "player":
+            self._close_player(remove_torrent=True)
+            return
+
         if current_page == "person" and hasattr(self, "person_box"):
             while child := self.person_box.get_first_child():
                 if hasattr(child, "destroy_page"):
@@ -8947,46 +9042,11 @@ class CineWindow(Adw.ApplicationWindow):
                 if hasattr(child, "_live_check_abort_event"):
                     child._live_check_abort_event.set()
                 self.details_box.remove(child)
+            self.previous_page_before_player = None
 
         if hasattr(self, "nav_stack") and self.nav_stack:
             prev = self.nav_stack.pop()
-            main_page = prev.get("main_page", "library")
-            if main_page == "details":
-                movie_data = prev.get("movie_data")
-                existing = self.details_box.get_first_child() if hasattr(self, "details_box") else None
-                if existing and not getattr(existing, "_destroyed", False) and self._is_same_movie(getattr(existing, "movie_stub", None), movie_data):
-                    self.main_stack.set_visible_child_name("details")
-                    if hasattr(existing, "update_continue_btn"):
-                        existing.update_continue_btn()
-                elif movie_data:
-                    self._on_movie_clicked(movie_data, push_history=False)
-                else:
-                    self.main_stack.set_visible_child_name("details")
-            elif main_page == "person":
-                p = prev.get("person_data")
-                existing = self.person_box.get_first_child() if hasattr(self, "person_box") else None
-                existing_id = None
-                if existing:
-                    p_data = getattr(existing, "person_data", None)
-                    if isinstance(p_data, dict):
-                        existing_id = p_data.get("id")
-                    if existing_id is None:
-                        existing_id = getattr(existing, "person_id", None)
-                if existing and not getattr(existing, "_destroyed", False) and p and str(existing_id) == str(p.get("id", "")):
-                    self.main_stack.set_visible_child_name("person")
-                elif p:
-                    self.open_person_details(p.get("id"), p.get("name", ""), p.get("photo_url"), push_history=False)
-                else:
-                    self.main_stack.set_visible_child_name("person")
-            else:
-                self.main_stack.set_visible_child_name(main_page)
-                if main_page == "library":
-                    if hasattr(self, "library_stack") and prev.get("library_page"):
-                        self.library_stack.set_visible_child_name(prev["library_page"])
-                    if hasattr(self, "category_btn_stack") and prev.get("category_btn"):
-                        self.category_btn_stack.set_visible_child_name(prev["category_btn"])
-                elif main_page in ["favorites", "history", "watched", "downloads"]:
-                    self._populate_local_db_page(main_page)
+            self._restore_nav_entry(prev)
         else:
             self.main_stack.set_visible_child_name("library")
 

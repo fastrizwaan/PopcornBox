@@ -26,7 +26,9 @@ class TestPersonPage(unittest.TestCase):
             os.environ["GSETTINGS_SCHEMA_DIR"] = cls.schema_temp_dir.name
 
         from gi.repository import Gio
-        res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+        res_file = Path("cine.gresource")
+        if not res_file.exists():
+            res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
         if res_file.exists():
             try:
                 res = Gio.Resource.load(str(res_file))

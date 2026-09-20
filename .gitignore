@@ -10,4 +10,5 @@ repo
 __pycache__/
 *.pyc
 *.flatpak
+*.gresource
 moved/
