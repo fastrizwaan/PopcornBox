@@ -969,7 +969,74 @@ def is_valid_meta(res):
         return False
     if str(res.get("id", "")).startswith("ctmdb.") and not res.get("videos"):
         return False
+
+    # Check if title is literally just the raw item ID (e.g. "tt43439241" or "bpx-headline")
+    lower_id = str(res.get("id", "")).lower()
+    if lower_title == lower_id or re.match(r'^(tt\d{7,10}|bpx-[\w-]+)$', lower_title):
+        has_real_desc = bool(res.get("description")) and res.get("description") not in (
+            "No synopsis available.", "Synopsis temporarily unavailable.", "HD"
+        )
+        has_videos = bool(res.get("videos"))
+        if not (has_real_desc or has_videos):
+            return False
+
+    # Reject junk descriptions that are just dummy radio/placeholder streams
+    desc = str(res.get("description", ""))
+    if desc.startswith("Stream tt") and "live - Indian FM Radio" in desc:
+        return False
+
+    # Series without videos and without a real synopsis is invalid
+    if res.get("type") in ["series", "anime", "tv"] and not res.get("videos"):
+        has_real_desc = bool(res.get("description")) and res.get("description") not in (
+            "No synopsis available.", "Synopsis temporarily unavailable.", "HD"
+        )
+        if not has_real_desc:
+            return False
+
     return True
+
+def merge_metadata(base, extra):
+    """Merge metadata from multiple providers (e.g. Cinemeta episodes + Addon synopsis/poster/genres)."""
+    if not base:
+        return extra
+    if not extra:
+        return base
+    merged = dict(base)
+
+    b_title = str(base.get("title", "")).strip()
+    e_title = str(extra.get("title", "")).strip()
+    if (not b_title or b_title.lower() == str(base.get("id", "")).lower() or re.match(r'^(tt\d{7,10}|bpx-[\w-]+)$', b_title.lower())) and e_title:
+        merged["title"] = e_title
+
+    b_desc = str(base.get("description", "")).strip()
+    e_desc = str(extra.get("description", "")).strip()
+    if (not b_desc or b_desc in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD")) and e_desc and e_desc not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD"):
+        merged["description"] = e_desc
+
+    if not merged.get("videos") and extra.get("videos"):
+        merged["videos"] = extra["videos"]
+
+    if not merged.get("medium_cover_image") and extra.get("medium_cover_image"):
+        merged["medium_cover_image"] = extra["medium_cover_image"]
+    if not merged.get("background") and extra.get("background"):
+        merged["background"] = extra["background"]
+
+    if (not merged.get("genre") or not merged.get("genres")) and (extra.get("genre") or extra.get("genres")):
+        if extra.get("genre"): merged["genre"] = extra["genre"]
+        if extra.get("genres"): merged["genres"] = extra["genres"]
+
+    if not merged.get("year") and extra.get("year"):
+        merged["year"] = extra["year"]
+    if not merged.get("imdbRating") and extra.get("imdbRating"):
+        merged["imdbRating"] = extra["imdbRating"]
+    if not merged.get("certification") and extra.get("certification"):
+        merged["certification"] = extra["certification"]
+    if not merged.get("trailer") and extra.get("trailer"):
+        merged["trailer"] = extra["trailer"]
+    if not merged.get("director") and extra.get("director"):
+        merged["director"] = extra["director"]
+
+    return merged
 
 def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=None):
     if not res or not isinstance(res, dict):
@@ -1060,6 +1127,20 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
 
     if existing and existing.get("background") and not res.get("background"):
         res["background"] = existing["background"]
+
+    # For series/anime/tv: if no videos were returned by any source, synthesize a fallback S1:E1
+    if res.get("type") in ["series", "anime", "tv"] and not res.get("videos"):
+        ep_title = res.get("title") or title or "Episode 1"
+        res["videos"] = [{
+            "id": f"{imdb_id}:1:1",
+            "season": 1,
+            "episode": 1,
+            "number": 1,
+            "title": ep_title,
+            "name": ep_title,
+            "overview": res.get("description") if res.get("description") not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD") else "",
+            "thumbnail": res.get("medium_cover_image") or ""
+        }]
 
     if is_valid_meta(res):
         database.save_cached_metadata(imdb_id, media_type, res)
@@ -1240,19 +1321,25 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         
         if data and data.get("meta"):
             cm = data["meta"]
-            t_val = cm.get("name", "")
+            t_val = cm.get("name", "") or title or ""
+            if not t_val and cm.get("videos"):
+                t_val = str(imdb_id)
             if not t_val or "error getting meta" in t_val.lower() or t_val.lower().startswith("error"):
                 return None
 
             videos = []
             for v in cm.get("videos", []):
+                ep_num = v.get("episode") or v.get("number") or 1
+                ep_title = v.get("title") or v.get("name") or f"Episode {ep_num}"
                 videos.append({
                     "id": v.get("id", ""),
                     "season": v.get("season", 1),
-                    "episode": v.get("episode", 1),
-                    "title": v.get("title", ""),
+                    "episode": ep_num,
+                    "number": ep_num,
+                    "title": ep_title,
+                    "name": ep_title,
                     "overview": v.get("overview", ""),
-                    "released": v.get("released", ""),
+                    "released": v.get("released") or v.get("firstAired", ""),
                     "thumbnail": v.get("thumbnail", "")
                 })
             
@@ -1303,7 +1390,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
             res_dict = {
                 "id": true_id,
-                "title": cm.get("name", ""),
+                "title": cm.get("name") or title or (t_val if cm.get("videos") else ""),
                 "year": str(cm.get("releaseInfo", "")).split("-")[0] if cm.get("releaseInfo") else "",
                 "medium_cover_image": cm.get("poster", ""),
                 "background": cm.get("background", ""),
@@ -1338,32 +1425,76 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             if alt_res and is_valid_meta(alt_res):
                 cinemeta_res = alt_res
                 media_type = alt_type
-        if cinemeta_res and is_valid_meta(cinemeta_res):
-            return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
 
-    # If Cinemeta failed, fallback to other metadata-supporting addons
-    other_addons = [a for a in addons if a != cinemeta_addon and has_meta_resource(a)]
+    # Determine if cinemeta_res has complete metadata
+    is_cinemeta_complete = False
+    if cinemeta_res and is_valid_meta(cinemeta_res):
+        has_desc = bool(cinemeta_res.get("description")) and cinemeta_res.get("description") not in (
+            "No synopsis available.", "Synopsis temporarily unavailable.", "HD"
+        )
+        has_videos = bool(cinemeta_res.get("videos")) if c_type in ["series", "anime", "tv"] else True
+        has_poster = bool(cinemeta_res.get("medium_cover_image") or poster)
+        has_genres = bool(cinemeta_res.get("genre") or cinemeta_res.get("genres"))
+        if has_desc and has_videos and has_poster and has_genres:
+            is_cinemeta_complete = True
+
+    if is_cinemeta_complete:
+        return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
+
+    # If Cinemeta failed or was incomplete, fallback to / enrich from other metadata-supporting addons
+    other_addons = [a for a in addons if a != cinemeta_addon and has_meta_resource(a, media_type=c_type, item_id=imdb_id)]
     if other_addons:
+        def _addon_meta_priority(a):
+            score = 0
+            prefixes = a.get("idPrefixes") or []
+            m_url = a.get("manifest_url", "").lower()
+            a_id = a.get("id", "").lower()
+            if any(str(imdb_id).startswith(p) for p in prefixes):
+                score += 20
+            if "bpx-" in str(imdb_id) and "banglaplex" in m_url:
+                score += 50
+            elif "banglaplex" in m_url:
+                score += 25
+            elif "tmdb" in a_id or "tmdb" in m_url:
+                score += 15
+            if "javpie" in m_url or "mediafusion" in m_url:
+                score -= 30
+            return -score
+
+        other_addons.sort(key=_addon_meta_priority)
+
         import concurrent.futures
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(other_addons), 4))
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(other_addons), 8))
         future_to_addon = {executor.submit(fetch_addon_meta, addon): addon for addon in other_addons}
+        best_addon_res = None
         try:
-            for future in concurrent.futures.as_completed(future_to_addon, timeout=3.0):
+            for future in concurrent.futures.as_completed(future_to_addon, timeout=4.0):
                 res = future.result()
                 if res and is_valid_meta(res):
-                    if cinemeta_res and not cinemeta_res.get("trailer") and res.get("trailer"):
-                        cinemeta_res["trailer"] = res.get("trailer")
-                        if not cinemeta_res.get("background") and res.get("background"):
-                            cinemeta_res["background"] = res.get("background")
-                        return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
+                    if not best_addon_res:
+                        best_addon_res = res
+                    else:
+                        best_addon_res = merge_metadata(best_addon_res, res)
 
-                    if not cinemeta_res:
-                        return _save_and_return_meta(res, imdb_id, media_type, title, poster=poster)
+                    has_desc = bool(best_addon_res.get("description")) and best_addon_res.get("description") not in (
+                        "No synopsis available.", "Synopsis temporarily unavailable.", "HD"
+                    )
+                    has_vids = bool(best_addon_res.get("videos")) if c_type in ["series", "anime", "tv"] else True
+                    if cinemeta_res:
+                        merged_check = merge_metadata(best_addon_res, cinemeta_res)
+                        if has_desc and (merged_check.get("videos") or c_type not in ["series", "anime", "tv"]):
+                            break
+                    elif has_desc and has_vids:
+                        break
         except concurrent.futures.TimeoutError:
             for future in future_to_addon:
                 future.cancel()
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
+
+        if best_addon_res:
+            final_res = merge_metadata(best_addon_res, cinemeta_res) if cinemeta_res else best_addon_res
+            return _save_and_return_meta(final_res, imdb_id, media_type, title, poster=poster)
 
     if cinemeta_res:
         return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
