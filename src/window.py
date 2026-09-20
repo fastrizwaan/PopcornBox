@@ -7607,7 +7607,6 @@ class CineWindow(Adw.ApplicationWindow):
                 )
             except Exception as e:
                 logger.error(f"[SUBS] Exception in get_subtitles: {e}")
-                GLib.idle_add(lambda: self._show_toast(_("Subtitle fetch error")))
                 return
 
             if current_fetch_id != self._subtitle_fetch_id:
@@ -7638,10 +7637,9 @@ class CineWindow(Adw.ApplicationWindow):
                         else:
                             logger.warning(f"[SUBS] Failed to download subtitle #{idx}: {url}")
                 if downloaded_count == 0:
-                    GLib.idle_add(lambda: self._show_toast(_("Subtitle download failed")))
+                    logger.warning(f"[SUBS] Subtitle download failed for imdb_id={imdb_id}")
             else:
-                logger.info(f"[SUBS] No subtitles found for imdb_id={imdb_id}")
-                GLib.idle_add(lambda: self._show_toast(_("No external subtitles found")))
+                logger.info(f"[SUBS] No external subtitles found for imdb_id={imdb_id}")
                             
         threading.Thread(target=fetch, daemon=True).start()
 
