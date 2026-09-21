@@ -716,6 +716,60 @@ def is_stream_stale(stream_or_item, max_age_seconds=14400):
     except (ValueError, TypeError):
         return True
 
+def save_torrent_files(info_hash, files):
+    """Cache the list of files inside a torrent so episode/file mapping is remembered."""
+    if not info_hash or not files:
+        return
+    with _db_lock:
+        db = _read_db()
+        tf_cache = db.setdefault("torrent_files_cache", {})
+        clean_files = [
+            {
+                "index": int(f.get("index", i)),
+                "path": str(f.get("path") or f.get("name") or ""),
+                "name": str(f.get("path") or f.get("name") or ""),
+                "size": int(f.get("size", 0))
+            }
+            for i, f in enumerate(files)
+        ]
+        tf_cache[str(info_hash).lower()] = clean_files
+        if len(tf_cache) > 200:
+            oldest = list(tf_cache.keys())[:50]
+            for k in oldest:
+                del tf_cache[k]
+        _write_db(db)
+
+def get_torrent_files(info_hash):
+    """Retrieve cached files for a torrent by info_hash."""
+    if not info_hash:
+        return []
+    tf_cache = _read_db().get("torrent_files_cache", {})
+    return tf_cache.get(str(info_hash).lower(), [])
+
+def save_series_pack_torrent(item_id, stream_info, season=None):
+    """Remember the active multi-episode / season pack torrent for a series or collection."""
+    if not item_id or not stream_info:
+        return
+    norm = _normalize_stream_for_storage(stream_info)
+    if not norm:
+        return
+    import time as _time
+    if "saved_at" not in norm:
+        norm["saved_at"] = _time.time()
+    set_setting(f"series_pack_torrent_{item_id}", norm)
+    if season is not None:
+        set_setting(f"season_pack_torrent_{item_id}_{season}", norm)
+
+def get_series_pack_torrent(item_id, season=None):
+    """Get the remembered multi-episode / season pack torrent for a series or collection."""
+    if not item_id:
+        return None
+    if season is not None:
+        saved = get_setting(f"season_pack_torrent_{item_id}_{season}", None)
+        if saved:
+            return saved
+    return get_setting(f"series_pack_torrent_{item_id}", None)
+
 def save_working_stream(item_id, season=None, episode=None, stream_info=None):
     """Save the working stream/torrent for a movie or series episode."""
     if not item_id or not stream_info:
@@ -755,14 +809,30 @@ def get_working_stream(item_id, season=None, episode=None):
         general_saved = get_setting(f"working_stream_{item_id}__", None)
         if general_saved and _is_stream_valid_for_ep(general_saved):
             return general_saved
+
+    # Check remembered season/series pack torrent
+    pack_torrent = get_series_pack_torrent(item_id, season=season)
+    if pack_torrent and not pack_torrent.get("is_http"):
+        info_hash = pack_torrent.get("hash")
+        cached_files = get_torrent_files(info_hash) if info_hash else []
+        if cached_files and season is not None and episode is not None:
+            from . import api
+            ep_idx = api.find_matching_file_index(cached_files, season=season, episode=episode, strict=True)
+            if ep_idx is not None:
+                cand = dict(pack_torrent)
+                cand["file_index"] = ep_idx
+                cand["fileIdx"] = ep_idx
+                if ep_idx < len(cached_files):
+                    cand["filename"] = cached_files[ep_idx]["path"]
+                return cand
+        elif _is_stream_valid_for_ep(pack_torrent):
+            cand = dict(pack_torrent)
+            cand["file_index"] = None
+            cand["fileIdx"] = None
+            return cand
+
     cw = get_continue_watching_item(item_id)
     if cw:
-        if season is not None and cw.get("season") is not None and str(cw.get("season")) != str(season):
-            return None
-        if episode is not None and cw.get("episode") is not None and str(cw.get("episode")) != str(episode):
-            return None
-        if season is not None and episode is not None and (cw.get("season") is None or cw.get("episode") is None):
-            return None
         cand = None
         if cw.get("selected_torrent"):
             cand = _normalize_stream_for_storage(cw["selected_torrent"])
@@ -775,7 +845,29 @@ def get_working_stream(item_id, season=None, episode=None):
                 "stream_title": cw.get("stream_title") or cw.get("title"),
                 "is_http": bool(cw.get("stream_url") and not str(cw.get("stream_url")).startswith("magnet:")),
             }
-        if cand and _is_stream_valid_for_ep(cand):
+        if cand and not cand.get("is_http"):
+            info_hash = cand.get("hash")
+            cached_files = get_torrent_files(info_hash) if info_hash else []
+            if cached_files and season is not None and episode is not None:
+                from . import api
+                ep_idx = api.find_matching_file_index(cached_files, season=season, episode=episode, strict=True)
+                if ep_idx is not None:
+                    cand_copy = dict(cand)
+                    cand_copy["file_index"] = ep_idx
+                    cand_copy["fileIdx"] = ep_idx
+                    if ep_idx < len(cached_files):
+                        cand_copy["filename"] = cached_files[ep_idx]["path"]
+                    return cand_copy
+            elif _is_stream_valid_for_ep(cand):
+                cand_copy = dict(cand)
+                cand_copy["file_index"] = None
+                cand_copy["fileIdx"] = None
+                return cand_copy
+        elif cand and _is_stream_valid_for_ep(cand):
+            if season is not None and cw.get("season") is not None and str(cw.get("season")) != str(season):
+                return None
+            if episode is not None and cw.get("episode") is not None and str(cw.get("episode")) != str(episode):
+                return None
             return cand
     return None
 

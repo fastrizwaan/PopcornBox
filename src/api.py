@@ -1632,52 +1632,105 @@ def fetch_trailer_link_fast(imdb_id, media_type="movie", abort_event=None):
     return None
 
 
-def find_episode_file_index(files, season, episode, strict=False):
+def find_matching_file_index(files, season=None, episode=None, title=None, strict=False):
     import re
-    patterns = [
-        rf"s{season:02d}e{episode:02d}",
-        rf"s{season}e{episode}",
-        rf"{season}x{episode:02d}",
-        rf"{season}x{episode}",
-        rf"ep(?:isode)?\s*{episode:02d}\b",
-        rf"ep(?:isode)?\s*{episode}\b",
-        rf"\b{episode:02d}\b"
-    ]
-    
-    for idx, f in enumerate(files):
-        fname_list = f.get("name")
-        if not fname_list: continue
-        fname = fname_list[0].lower() if isinstance(fname_list, list) else str(fname_list).lower()
-        if not any(fname.endswith(ext) for ext in ['.mkv', '.mp4', '.avi', '.m4v']): continue
-        
-        for p in patterns[:4]:
-            if re.search(p, fname): return idx
-                
-    for idx, f in enumerate(files):
-        fname_list = f.get("name")
-        if not fname_list: continue
-        fname = fname_list[0].lower() if isinstance(fname_list, list) else str(fname_list).lower()
-        if not any(fname.endswith(ext) for ext in ['.mkv', '.mp4', '.avi', '.m4v']): continue
-            
-        for p in patterns[4:]:
-            if re.search(p, fname): return idx
-                
+    if not files:
+        return None
+
+    def _get_fname(f):
+        for key in ("path", "name", "filename"):
+            val = f.get(key)
+            if val:
+                return val[0].lower() if isinstance(val, list) else str(val).lower()
+        return ""
+
+    video_exts = ('.mkv', '.mp4', '.avi', '.m4v', '.webm', '.ts')
+
+    # 1. If season and episode are specified, try standard SxxExx and episode patterns
+    if season is not None and episode is not None:
+        try:
+            s_num = int(season)
+            ep_num = int(episode)
+            patterns_priority = [
+                rf"s{s_num:02d}e{ep_num:02d}\b",
+                rf"s{s_num}e{ep_num}\b",
+                rf"{s_num}x{ep_num:02d}\b",
+                rf"{s_num}x{ep_num}\b",
+            ]
+            patterns_fallback = [
+                rf"ep(?:isode)?[\s._-]*{ep_num:02d}\b",
+                rf"ep(?:isode)?[\s._-]*{ep_num}\b",
+                rf"(?:^|[\s._\-\[/]){ep_num:02d}(?:[\s._\-\]\/]|$)",
+            ]
+            for idx, f in enumerate(files):
+                fname = _get_fname(f)
+                if not any(fname.endswith(ext) for ext in video_exts): continue
+                for p in patterns_priority:
+                    if re.search(p, fname): return idx
+
+            for idx, f in enumerate(files):
+                fname = _get_fname(f)
+                if not any(fname.endswith(ext) for ext in video_exts): continue
+                for p in patterns_fallback:
+                    if re.search(p, fname): return idx
+        except (ValueError, TypeError):
+            pass
+
+    # 2. If episode title is provided (or collection movie title), match significant words
+    if title and isinstance(title, str):
+        clean_title = re.sub(r'[\(\)\[\]{}._\-:,!]', ' ', title).lower().strip()
+        stop_words = {"the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for", "with", "part", "episode", "movie", "collection"}
+        tokens = [w for w in clean_title.split() if len(w) >= 3 and w not in stop_words]
+        if tokens:
+            best_idx = None
+            best_matches = 0
+            for idx, f in enumerate(files):
+                fname = _get_fname(f)
+                if not any(fname.endswith(ext) for ext in video_exts): continue
+                clean_fname = re.sub(r'[\(\)\[\]{}._\-:,!]', ' ', fname).lower()
+                matches = sum(1 for t in tokens if re.search(rf"\b{re.escape(t)}\b", clean_fname))
+                if matches > best_matches and (matches >= len(tokens) or matches >= 2):
+                    best_matches = matches
+                    best_idx = idx
+            if best_idx is not None:
+                return best_idx
+
+    # 3. If only episode (part) number is provided (e.g. anime or collection part)
+    if episode is not None:
+        try:
+            ep_num = int(episode)
+            ep_patterns = [
+                rf"\bpart[\s._-]*{ep_num}\b",
+                rf"\bep(?:isode)?[\s._-]*{ep_num:02d}\b",
+                rf"\bep(?:isode)?[\s._-]*{ep_num}\b",
+                rf"(?:^|[\s._\-\[/]){ep_num:02d}(?:[\s._\-\]\/]|$)",
+            ]
+            for idx, f in enumerate(files):
+                fname = _get_fname(f)
+                if not any(fname.endswith(ext) for ext in video_exts): continue
+                for p in ep_patterns:
+                    if re.search(p, fname): return idx
+        except (ValueError, TypeError):
+            pass
+
     if strict:
         return None
-        
+
+    # Fallback: largest video file
     video_files = []
     for idx, f in enumerate(files):
-        fname_list = f.get("name")
-        if not fname_list: continue
-        fname = fname_list[0].lower() if isinstance(fname_list, list) else str(fname_list).lower()
-        if any(fname.endswith(ext) for ext in ['.mkv', '.mp4', '.avi', '.m4v']):
+        fname = _get_fname(f)
+        if any(fname.endswith(ext) for ext in video_exts):
             size_list = f.get("size")
             size = size_list[0] if isinstance(size_list, list) else (int(size_list) if size_list is not None else 0)
             video_files.append((idx, size))
     if video_files:
         return max(video_files, key=lambda x: x[1])[0]
-        
+
     return None
+
+def find_episode_file_index(files, season, episode, strict=False):
+    return find_matching_file_index(files, season=season, episode=episode, strict=strict)
 
 def get_stream_cache_key(imdb_id, media_type="movie", season=None, episode=None):
     primary = imdb_id[0] if isinstance(imdb_id, list) else imdb_id
@@ -1687,6 +1740,7 @@ def get_stream_cache_key(imdb_id, media_type="movie", season=None, episode=None)
 
 def _extract_quality(text):
     """Extract video quality label and numeric rank from text. Hoisted to avoid re-creation per stream."""
+    import re
     t = str(text).lower()
     if "2160p" in t or re.search(r'\b4k\b', t): return "4K", 4
     if "1080p" in t or re.search(r'\b1080\b', t): return "1080p", 3
@@ -1701,7 +1755,7 @@ _RE_SIZE = re.compile(
 _RE_BITRATE = re.compile(
     r'~?([\d.]+)\s*([MmKkGg]bps|[MmKkGg]b/s|[MmKkGg]bit/s)\b', re.IGNORECASE
 )
-_RE_SEED = re.compile(r'(?:👤|👥|[Ss]eeders?[:\s]*)\s*(\d+)')
+_RE_SEED = re.compile(r'(?:👤|👥|\b[Ss]eeders?[:\s]*|\b[Ss]eeds?[:\s]*)\s*(\d+)')
 
 MATCH_EXACT = 2
 MATCH_SEASON_PACK = 1
@@ -1978,13 +2032,24 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             bitrate = f"{bitrate_match.group(1)} {bitrate_match.group(2)}"
             
         seeders = 0
-        seed_match = _RE_SEED.search(title_str)
-        if seed_match:
+        if s.get("seeders") is not None:
             try:
-                seeders = int(seed_match.group(1))
-            except ValueError:
-                pass
-            
+                seeders = int(s.get("seeders"))
+            except (ValueError, TypeError):
+                seeders = 0
+        elif s.get("seeds") is not None:
+            try:
+                seeders = int(s.get("seeds"))
+            except (ValueError, TypeError):
+                seeders = 0
+        if seeders == 0:
+            seed_match = _RE_SEED.search(title_str)
+            if seed_match:
+                try:
+                    seeders = int(seed_match.group(1))
+                except ValueError:
+                    pass
+
         behavior_hints = s.get("behaviorHints", {})
         filename = behavior_hints.get("filename") or behavior_hints.get("videoFilename")
         if not filename:
@@ -2037,10 +2102,13 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
         valid_streams.append(stream_entry)
     
     def _rank_key(x):
+        is_http = 1 if x.get("is_http") else 0
+        seeds = int(x.get("seeders") or 0)
+        has_seeds = 1 if (is_http or seeds > 0) else 0
         ep_m = x.get("ep_match", 0)
         q_val = x.get("q_val", 0)
         size_gb = float(x.get("size_gb") or 0.0)
-        seeders = x.get("seeders", 0) if not x.get("is_http") else 100
+        seeders = seeds if not is_http else 100
         # q_val: 4=4K, 3=1080p, 2=720p, 1=480p, 0=360p/Unknown
         is_1080p_optimal = (q_val == 3 and ((0 < size_gb <= 4.5) or size_gb == 0.0))
         is_720p_optimal = (q_val == 2 and ((0 < size_gb <= 2.5) or size_gb == 0.0))
@@ -2054,7 +2122,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             p_tier = 1
         else:
             p_tier = 0
-        return (ep_m, p_tier, seeders, q_val, size_gb)
+        return (has_seeds, ep_m, p_tier, seeders, q_val, size_gb)
 
     valid_streams.sort(key=_rank_key, reverse=True)
     return valid_streams

@@ -2300,28 +2300,35 @@ class MovieDetailsPage(Gtk.Overlay):
             self.quality_button_box.remove(child)
 
         pref_prov = getattr(self, 'preferred_direct_provider', None)
+        rem_st = getattr(self, 'remembered_working_stream', None) or getattr(self, 'selected_torrent', None)
+        if not rem_st and hasattr(self, 'window') and self.window:
+            rem_st = getattr(self.window, 'remembered_working_stream', None) or getattr(self.window, 'selected_torrent', None)
 
         def _stream_sort_key_1080p(t):
             from . import api
-            ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
             is_http = 1 if t.get('is_http') else 0
+            seeds = int(t.get('seeders') or 0)
+            has_seeds = 1 if (is_http or seeds > 0) else 0
+            is_remembered = 1 if (rem_st and _streams_match(t, rem_st)) else 0
+            ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
             is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
             size = float(t.get('size_gb') or 0.0)
             is_under_4gb = (0 < size < 4.0) or (size == 0.0)
             p_size = 1 if is_under_4gb else 0
-            seeds = int(t.get('seeders') or 0)
             ping_ok = 1 if t.get('ping_status') is True else 0
-            return (ep_m, is_pref, p_size, ping_ok, is_http, seeds, size)
+            return (has_seeds, is_remembered, ep_m, is_pref, p_size, ping_ok, is_http, seeds, size)
 
         def _stream_sort_key_general(t):
             from . import api
-            ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
             is_http = 1 if t.get('is_http') else 0
-            is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
             seeds = int(t.get('seeders') or 0)
+            has_seeds = 1 if (is_http or seeds > 0) else 0
+            is_remembered = 1 if (rem_st and _streams_match(t, rem_st)) else 0
+            ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
+            is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
             ping_ok = 1 if t.get('ping_status') is True else 0
             size = float(t.get('size_gb') or 0.0)
-            return (ep_m, is_pref, ping_ok, is_http, seeds, size)
+            return (has_seeds, is_remembered, ep_m, is_pref, ping_ok, is_http, seeds, size)
 
         for q_label in ["4K", "1080p", "720p", "More"]:
             if quality_groups[q_label]:
@@ -2745,8 +2752,12 @@ class MovieDetailsPage(Gtk.Overlay):
                     tier = 3
                 return (tier, -int(t.get("ping_status") is True), -float(t.get("size_gb") or 0.0))
             else:
-                tier = 4 if same_q else 5
-                return (tier, -int(t.get("seeders") or 0), -float(t.get("size_gb") or 0.0))
+                seeds = int(t.get("seeders") or 0)
+                if seeds > 0:
+                    tier = 4 if same_q else 5
+                else:
+                    tier = 8 if same_q else 9
+                return (tier, -seeds, -float(t.get("size_gb") or 0.0))
 
         candidates = []
         from . import api
@@ -8552,11 +8563,68 @@ class CineWindow(Adw.ApplicationWindow):
             try: self.mpv.stop()
             except Exception: pass
         
-        page._auto_play_next = True
-        page.selected_torrent = None
-        page.remembered_working_stream = None
-        self.selected_torrent = None
-        self.remembered_working_stream = None
+        # Check if the current torrent contains the next episode
+        cur_torrent = None
+        if getattr(self, 'stream_queue', None) and self.stream_queue_index < len(self.stream_queue):
+            cur_torrent = self.stream_queue[self.stream_queue_index]
+        if not cur_torrent and hasattr(self, '_current_playing_item') and self._current_playing_item:
+            cur_torrent = self._current_playing_item.get("selected_torrent")
+        if not cur_torrent and page:
+            cur_torrent = getattr(page, 'selected_torrent', None) or getattr(page, 'remembered_working_stream', None)
+        if not cur_torrent:
+            cur_torrent = getattr(self, 'selected_torrent', None)
+
+        reused_stream = None
+        if cur_torrent and isinstance(cur_torrent, dict) and not cur_torrent.get("is_http"):
+            from .libtorrent_stream import info_hash_from_magnet
+            from . import player
+            from . import api
+            cur_hash = cur_torrent.get("hash") or cur_torrent.get("infoHash") or info_hash_from_magnet(cur_torrent.get("url") or cur_torrent.get("magnet"))
+            
+            torrent_files = []
+            if cur_hash:
+                with player._engines_lock:
+                    eng = player._engines.get(cur_hash)
+                    if eng and hasattr(eng, '_files'):
+                        torrent_files = eng._files()
+                if not torrent_files:
+                    from . import database
+                    torrent_files = database.get_torrent_files(cur_hash)
+
+            if torrent_files:
+                files_data = [{"name": f.get("path") or f.get("name") or "", "size": f.get("size", 0)} for f in torrent_files]
+                matched_idx = api.find_matching_file_index(
+                    files_data,
+                    season=target_season if getattr(page, 'media_type', '') in ["series", "anime", "tv"] else None,
+                    episode=target_episode,
+                    title=next_title,
+                    strict=True
+                )
+                if matched_idx is not None:
+                    reused_stream = dict(cur_torrent)
+                    reused_stream["file_index"] = matched_idx
+                    reused_stream["fileIdx"] = matched_idx
+                    if matched_idx < len(torrent_files):
+                        reused_stream["filename"] = torrent_files[matched_idx].get("path") or torrent_files[matched_idx].get("name")
+            else:
+                ep_match = api.match_stream_to_episode(cur_torrent, target_season, target_episode, ep_title=next_title)
+                if ep_match != api.MATCH_MISMATCH:
+                    reused_stream = dict(cur_torrent)
+                    reused_stream["file_index"] = None
+                    reused_stream["fileIdx"] = None
+
+        if reused_stream:
+            page.selected_torrent = reused_stream
+            page.remembered_working_stream = reused_stream
+            self.selected_torrent = reused_stream
+            self.remembered_working_stream = reused_stream
+            page._auto_play_next = False
+        else:
+            page._auto_play_next = True
+            page.selected_torrent = None
+            page.remembered_working_stream = None
+            self.selected_torrent = None
+            self.remembered_working_stream = None
 
         # Carry over preferred direct provider
         prov = getattr(self, 'preferred_direct_provider', None)
@@ -8593,6 +8661,9 @@ class CineWindow(Adw.ApplicationWindow):
             from . import database
             database.set_setting(f"last_s_{primary_id}", target_season)
             database.set_setting(f"last_ep_{primary_id}_{target_season}", target_episode)
+            if reused_stream:
+                database.save_working_stream(primary_id, target_season, target_episode, reused_stream)
+                database.save_series_pack_torrent(primary_id, reused_stream, season=target_season)
 
             # Immediately record next episode in Continue Watching
             cov = (
@@ -8649,6 +8720,18 @@ class CineWindow(Adw.ApplicationWindow):
                 page.episode_dropdown.set_selected(idx)
                 if prev_idx == idx and hasattr(page, '_on_episode_dropdown_changed'):
                     page._on_episode_dropdown_changed(page.episode_dropdown)
+
+        if reused_stream:
+            display_title = next_title or (f"Season {target_season} Episode {target_episode}" if getattr(page, 'media_type', '') in ["series", "anime", "tv"] else f"Part {target_episode}")
+            self.play_stream_with_failover(
+                [reused_stream],
+                initial_index=0,
+                title=display_title,
+                season=target_season,
+                episode=target_episode,
+                imdb_id=primary_id,
+                media_type=getattr(page, 'media_type', 'series')
+            )
                 
         return True
 

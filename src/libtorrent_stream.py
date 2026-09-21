@@ -685,6 +685,12 @@ class TorrentStreamEngine:
                 size = int(self._file_size(storage, info, idx))
                 offset = int(self._file_offset(storage, info, idx))
                 files.append({"index": idx, "path": path.replace("\\", "/"), "size": size, "offset": offset})
+            if files and getattr(self, 'info_hash', None):
+                try:
+                    from . import database
+                    database.save_torrent_files(self.info_hash, files)
+                except Exception:
+                    pass
             return files
         except Exception:
             return []
