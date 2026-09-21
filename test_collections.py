@@ -239,6 +239,8 @@ class TestCollections(unittest.TestCase):
         mock_page.media_type = "collections"
         win.details_box.get_first_child.return_value = mock_page
         win.main_stack = MagicMock()
+        win.nav_stack = []
+        win._restore_nav_entry = lambda entry: CineWindow._restore_nav_entry(win, entry)
         win.mpv = MagicMock()
         win.mpv.time_pos = 10.0
         win.mpv.duration = 100.0

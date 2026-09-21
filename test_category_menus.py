@@ -69,17 +69,23 @@ class DummyWindow:
         self._menus_built = False
         self._menus_building = False
         
+        self.discover_active_btn = MockMenuButton()
         self.movies_active_btn = MockMenuButton()
         self.series_active_btn = MockMenuButton()
         self.anime_active_btn = MockMenuButton()
         self.anime_supported = True
+        self.media_type_keys = ["movie", "series"]
+        self.media_type_labels = ["Movies", "Series"]
 
     from src.window import CineWindow
     _clean_cat_name = CineWindow._clean_cat_name
     _prepare_menu_data = CineWindow._prepare_menu_data
+    _prepare_discover_catalog_data = CineWindow._prepare_discover_catalog_data
+    _build_discover_menu = CineWindow._build_discover_menu
     _build_addon_submenu = CineWindow._build_addon_submenu
     _build_full_menu_model = CineWindow._build_full_menu_model
     _init_default_category_menus = CineWindow._init_default_category_menus
+    _get_discover_catalog_list = CineWindow._get_discover_catalog_list
 
 
 class TestCategoryMenus(unittest.TestCase):
@@ -187,6 +193,91 @@ class TestCategoryMenus(unittest.TestCase):
         win.catalog_dropdown.set_selected.assert_called_with(1)
         win.discover_grid_title.set_text.assert_called_with("TMDB - Popular")
         win._refresh_content.assert_called_once()
+
+    def test_discover_menu_placeholder_structure(self):
+        """Verify Discover menu places 'Catalog' submenu directly below 'All Types'."""
+        win = DummyWindow()
+        menu = win._build_discover_menu()
+        self.assertIsNotNone(menu)
+        # Structure:
+        # 0: "All Types"
+        # 1: "Catalog" (submenu)
+        # 2: "Movies"
+        # 3: "Series"
+        self.assertEqual(menu.get_n_items(), 4)
+        
+        # Item 0: All Types
+        self.assertEqual(menu.get_item_attribute_value(0, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "All Types")
+        self.assertEqual(menu.get_item_attribute_value(0, Gio.MENU_ATTRIBUTE_ACTION).get_string(), "win.select-discover-type")
+        self.assertEqual(menu.get_item_attribute_value(0, Gio.MENU_ATTRIBUTE_TARGET).get_string(), "all")
+
+        # Item 1: Catalog submenu
+        self.assertEqual(menu.get_item_attribute_value(1, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "Catalog")
+        sub = menu.get_item_link(1, Gio.MENU_LINK_SUBMENU)
+        self.assertIsNotNone(sub)
+        self.assertEqual(sub.get_n_items(), 1)
+        self.assertEqual(sub.get_item_attribute_value(0, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "★ All Catalogs")
+
+        # Items 2 and 3: Media types
+        self.assertEqual(menu.get_item_attribute_value(2, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "Movies")
+        self.assertEqual(menu.get_item_attribute_value(3, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "Series")
+
+    def test_discover_menu_with_catalog_addons(self):
+        """Verify Discover menu with catalog addons populates the Catalog submenu with correct action/target."""
+        win = DummyWindow()
+        catalog_addons = [
+            ("Cinemeta", "https://v3-cinemeta.strem.io/manifest.json"),
+            ("Anime Kitsu", "https://anime-kitsu.strem.fun/manifest.json")
+        ]
+        menu = win._build_discover_menu(catalog_addons=catalog_addons)
+        self.assertIsNotNone(menu)
+        self.assertEqual(menu.get_n_items(), 4)
+
+        # Inspect Catalog submenu
+        sub = menu.get_item_link(1, Gio.MENU_LINK_SUBMENU)
+        self.assertIsNotNone(sub)
+        self.assertEqual(sub.get_n_items(), 2)
+
+        # Cinemeta item
+        self.assertEqual(sub.get_item_attribute_value(0, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "Cinemeta")
+        self.assertEqual(sub.get_item_attribute_value(0, Gio.MENU_ATTRIBUTE_ACTION).get_string(), "win.select-addon-discover")
+        self.assertEqual(
+            sub.get_item_attribute_value(0, Gio.MENU_ATTRIBUTE_TARGET).get_string(),
+            "all|https://v3-cinemeta.strem.io/manifest.json|Cinemeta"
+        )
+
+        # Anime Kitsu item
+        self.assertEqual(sub.get_item_attribute_value(1, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "Anime Kitsu")
+        self.assertEqual(sub.get_item_attribute_value(1, Gio.MENU_ATTRIBUTE_ACTION).get_string(), "win.select-addon-discover")
+        self.assertEqual(
+            sub.get_item_attribute_value(1, Gio.MENU_ATTRIBUTE_TARGET).get_string(),
+            "all|https://anime-kitsu.strem.fun/manifest.json|Anime Kitsu"
+        )
+
+    def test_discover_catalog_row_titles_multi_type(self):
+        """Verify row titles for multi-type catalogs include media type when filter_media_type is 'all'."""
+        win = DummyWindow()
+        m_url = "https://mock-addon/manifest.json"
+        mock_addon = {
+            "name": "MockAddon",
+            "manifest_url": m_url,
+            "enabled": True,
+            "catalogs": [
+                {"id": "popular", "name": "Popular", "type": "movie"},
+                {"id": "popular", "name": "Popular", "type": "series"},
+            ]
+        }
+        with patch("src.database.get_addons", return_value=[mock_addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.has_catalog_resource", return_value=True), \
+             patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = win._get_discover_catalog_list(filter_media_type="all", filter_addon_url=m_url)
+
+        self.assertEqual(len(rows), 2)
+        titles = [r["title"] for r in rows]
+        self.assertIn("Popular - Movies", titles)
+        self.assertIn("Popular - Series", titles)
 
 
 if __name__ == "__main__":

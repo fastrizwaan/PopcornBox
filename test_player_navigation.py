@@ -251,6 +251,35 @@ class TestPlayerNavigation(unittest.TestCase):
         self.assertFalse(mock_page._auto_play_on_streams_loaded)
         self.assertFalse(mock_page._auto_play_next)
 
+    def test_active_player_to_downloads_and_back_returns_to_player(self):
+        """When a video is playing and user opens downloads from menu, clicking back returns to player."""
+        # 1. Video is playing
+        movie_data = {"id": "tt12345", "title": "Playing Movie"}
+        mock_page = MagicMock()
+        mock_page.movie_stub = movie_data
+        mock_page._destroyed = False
+        self.win.details_box.append(mock_page)
+        self.win.main_stack.set_visible_child_name("player")
+        self.win._current_playing_item = movie_data
+        self.win.mpv = MagicMock()
+        self.win.mpv.idle_active = False
+        self.win.nav_stack = [{"main_page": "details", "movie_data": movie_data}]
+
+        # 2. User goes to downloads from menu
+        self.win._open_local_page("downloads")
+        self.assertEqual(self.win.main_stack.get_visible_child_name(), "downloads")
+        # Ensure player state was pushed to nav_stack
+        self.assertEqual(self.win.nav_stack[-1], {"main_page": "player"})
+
+        # 3. User clicks back button on downloads page
+        self.win._go_back()
+        # Must return to player!
+        self.assertEqual(self.win.main_stack.get_visible_child_name(), "player")
+
+        # 4. In player, user closes player -> should return to details
+        self.win._close_player(remove_torrent=True)
+        self.assertEqual(self.win.main_stack.get_visible_child_name(), "details")
+
 
 if __name__ == "__main__":
     unittest.main()

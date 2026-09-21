@@ -3813,7 +3813,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.revealer_ui.set_reveal_child(True)
 
     def _hide_ui_timeout(self, *args, s=2):
-        if self.hide_timeout_id:
+        if getattr(self, "hide_timeout_id", 0):
             GLib.source_remove(self.hide_timeout_id)
         self.hide_timeout_id = timeout_add_seconds_once(s, self._hide_ui)
 
@@ -5955,6 +5955,10 @@ class CineWindow(Adw.ApplicationWindow):
                 
                 self.discover_back_box.set_visible(False)
                 self.library_stack.set_visible_child_name("discover")
+                if hasattr(self, "discover_options_revealer"):
+                    self.discover_options_revealer.set_reveal_child(False)
+                if hasattr(self, "discover_filter_toggle_btn"):
+                    self.discover_filter_toggle_btn.set_active(False)
                 self._refresh_discover_page(filter_media_type=m_type, filter_addon_url=m_url, custom_title=addon_name)
         action.connect("activate", on_select_addon_discover)
         self.add_action(action)
@@ -6630,7 +6634,13 @@ class CineWindow(Adw.ApplicationWindow):
                         clean_name = c_id.title() if c_id else 'Catalog'
                         
                     if filter_addon_url:
-                        row_title = f'{clean_name.title()}'
+                        if filter_media_type and filter_media_type != "all":
+                            row_title = f'{clean_name.title()}'
+                        else:
+                            if type_display.lower() in clean_name.lower():
+                                row_title = f'{clean_name.title()}'
+                            else:
+                                row_title = f'{clean_name.title()} - {type_display}'
                     elif 'cinemeta' in addon_name.lower():
                         row_title = f'{clean_name.title()} - {type_display}'
                     elif addon_name.lower() in clean_name.lower():
@@ -6927,8 +6937,8 @@ class CineWindow(Adw.ApplicationWindow):
             self.discover_scrolled.set_child(new_box)
         self.discover_box = new_box
         
-        # Continue Watching Section (only if filter is "all" or None)
-        if not filter_media_type or filter_media_type == "all":
+        # Continue Watching Section (only if filter is "all" or None and not filtering by addon)
+        if (not filter_media_type or filter_media_type == "all") and not filter_addon_url:
             self._update_continue_watching_section()
 
         # Setup Sequential Row Loading List
@@ -7268,30 +7278,82 @@ class CineWindow(Adw.ApplicationWindow):
             
         return addon_menu
 
-    def _build_discover_menu(self):
-        if not hasattr(self, "discover_active_btn"):
-            return
+    def _prepare_discover_catalog_data(self):
+        """Prepare list of (addon_name, manifest_url) for addons with browsable catalogs. Runs in background thread."""
+        from . import database, api
+        addons = database.get_addons()
+
+        def addon_sort_key(addon):
+            name = addon.get('name', '').lower()
+            if 'cinemeta' in name: return 0
+            if 'kitsu' in name or 'animestream' in name or 'onlyanimes' in name or 'anime' in name: return 1
+            if 'tmdb' in name or 'movie database' in name: return 2
+            if 'iptv' in name or 'channel' in name: return 8
+            return 5
+
+        sorted_addons = sorted([a for a in addons if a.get('enabled', True)], key=addon_sort_key)
+        result_addons = []
+        seen_urls = set()
+        for addon in sorted_addons:
+            addon_name = addon.get('name', 'Addon')
+            m_url = addon.get('manifest_url', '')
+            if not m_url or m_url.startswith('builtin:') or m_url in seen_urls:
+                continue
+            if not api.is_addon_online(m_url):
+                continue
+            if not api.has_catalog_resource(addon):
+                continue
+            cats = api.get_addon_catalogs(addon, cache_only=False)
+            if not any(api.is_catalog_browsable(c) for c in (cats or [])):
+                continue
+            seen_urls.add(m_url)
+            result_addons.append((addon_name, m_url))
+        return result_addons
+
+    def _build_discover_menu(self, catalog_addons=None):
+        """Construct the Gio.Menu model for Discover button."""
         if not hasattr(self, "media_type_keys") or not self.media_type_keys:
-            return
-        if self.discover_active_btn.get_menu_model() is not None:
-            return
+            return None
             
         menu = Gio.Menu.new()
+        
+        # 1. All Types (default)
         all_item = Gio.MenuItem.new(_("All Types"), None)
         all_item.set_action_and_target_value("win.select-discover-type", GLib.Variant("s", "all"))
         menu.append_item(all_item)
         
+        # 2. Submenu: Catalog (placed directly below All Types)
+        catalog_menu = Gio.Menu.new()
+        if catalog_addons:
+            for addon_name, m_url in catalog_addons:
+                cat_item = Gio.MenuItem.new(addon_name, None)
+                target_str = f"all|{m_url}|{addon_name}"
+                cat_item.set_action_and_target_value("win.select-addon-discover", GLib.Variant("s", target_str))
+                catalog_menu.append_item(cat_item)
+        else:
+            placeholder_item = Gio.MenuItem.new(_("★ All Catalogs"), None)
+            placeholder_item.set_action_and_target_value("win.select-discover-type", GLib.Variant("s", "all"))
+            catalog_menu.append_item(placeholder_item)
+
+        cat_sub_item = Gio.MenuItem.new_submenu(_("Catalog"), catalog_menu)
+        menu.append_item(cat_sub_item)
+        
+        # 3. Media types (Movies, Series, TV Channels, Anime, ...)
         for key, label in zip(getattr(self, "media_type_keys", []), getattr(self, "media_type_labels", [])):
             item = Gio.MenuItem.new(label, None)
             item.set_action_and_target_value("win.select-discover-type", GLib.Variant("s", key))
             menu.append_item(item)
             
-        self.discover_active_btn.set_menu_model(menu)
+        return menu
 
     def _init_default_category_menus(self):
         """Immediately assign valid initial menu models and defer background full menu construction."""
         debug_log("_init_default_category_menus START")
-        self._build_discover_menu()
+        btn = getattr(self, "discover_active_btn", None)
+        if btn and btn.get_menu_model() is None:
+            initial_menu = self._build_discover_menu()
+            if initial_menu:
+                btn.set_menu_model(initial_menu)
         for m_type, btn_name in [("movie", "movies_active_btn"), ("series", "series_active_btn"), ("anime", "anime_active_btn")]:
             btn = getattr(self, btn_name, None)
             if btn and btn.get_menu_model() is None:
@@ -7332,26 +7394,40 @@ class CineWindow(Adw.ApplicationWindow):
         return menu
 
     def _ensure_all_menus_built(self):
-        self._build_discover_menu()
         if getattr(self, "_menus_building", False) or getattr(self, "_menus_built", False):
             debug_log(f"_ensure_all_menus_built SKIPPED (building={getattr(self, '_menus_building', False)}, built={getattr(self, '_menus_built', False)})")
             return
         self._menus_building = True
 
         btn_map = {
+            "discover": getattr(self, "discover_active_btn", None),
             "movie": getattr(self, "movies_active_btn", None),
             "series": getattr(self, "series_active_btn", None),
         }
         if getattr(self, "anime_supported", False):
             btn_map["anime"] = getattr(self, "anime_active_btn", None)
 
-        media_types = list(btn_map.keys())
+        media_types = [k for k in btn_map.keys() if btn_map.get(k)]
         debug_log(f"_ensure_all_menus_built starting bg_prepare thread for media_types: {media_types}")
 
         def bg_prepare():
             debug_log("bg_prepare menus thread START")
             built_menus = {}
-            for m_type in media_types:
+
+            # 1. Discover menu with Catalog submenu
+            if "discover" in media_types:
+                try:
+                    cat_addons = self._prepare_discover_catalog_data()
+                    built_menus["discover"] = self._build_discover_menu(catalog_addons=cat_addons)
+                    debug_log(f"bg_prepare built Discover menu with {len(cat_addons)} catalog addons")
+                except Exception as e:
+                    logger.error(f"Error preparing discover catalog menu data: {e}")
+                    built_menus["discover"] = None
+
+            # 2. Movie, Series, Anime category menus
+            for m_type in ["movie", "series", "anime"]:
+                if m_type not in media_types:
+                    continue
                 try:
                     data = self._prepare_menu_data(m_type)
                     built_menus[m_type] = self._build_full_menu_model(m_type, data)
@@ -8633,13 +8709,16 @@ class CineWindow(Adw.ApplicationWindow):
 
         restored = False
         if hasattr(self, "nav_stack") and self.nav_stack:
-            prev = self.nav_stack.pop()
-            self._restore_nav_entry(prev)
-            restored = True
+            while self.nav_stack and self.nav_stack[-1].get("main_page") == "player":
+                self.nav_stack.pop()
+            if self.nav_stack:
+                prev = self.nav_stack.pop()
+                self._restore_nav_entry(prev)
+                restored = True
 
         if not restored:
             prev_page = getattr(self, 'previous_page_before_player', None)
-            if prev_page:
+            if prev_page and prev_page != "player":
                 self._restore_nav_entry({"main_page": prev_page})
             else:
                 page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
@@ -8989,6 +9068,22 @@ class CineWindow(Adw.ApplicationWindow):
             self._populate_local_db_page(main_page)
         elif main_page == "addons":
             self.main_stack.set_visible_child_name("addons")
+        elif main_page == "player":
+            is_active_player = bool(
+                getattr(self, "_current_playing_item", None)
+                or getattr(self, "is_loading_stream", False)
+                or (hasattr(self, "mpv") and self.mpv and not getattr(self.mpv, "idle_active", True))
+            )
+            if is_active_player:
+                self.main_stack.set_visible_child_name("player")
+                if hasattr(self, "_hide_ui_timeout"):
+                    self._hide_ui_timeout(s=2)
+            else:
+                if hasattr(self, "nav_stack") and self.nav_stack:
+                    prev = self.nav_stack.pop()
+                    self._restore_nav_entry(prev)
+                else:
+                    self.main_stack.set_visible_child_name("library")
         else:
             self.main_stack.set_visible_child_name("library")
 
@@ -8997,6 +9092,17 @@ class CineWindow(Adw.ApplicationWindow):
             self.nav_stack = []
         main_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else "library"
         if main_page == "player":
+            is_active_player = bool(
+                getattr(self, "_current_playing_item", None)
+                or getattr(self, "is_loading_stream", False)
+                or (hasattr(self, "mpv") and self.mpv and not getattr(self.mpv, "idle_active", True))
+            )
+            if is_active_player:
+                current = {"main_page": "player"}
+                if not self.nav_stack or self.nav_stack[-1] != current:
+                    self.nav_stack.append(current)
+                    if len(self.nav_stack) > 50:
+                        self.nav_stack.pop(0)
             return
         current = {
             "main_page": main_page,
