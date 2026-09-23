@@ -492,12 +492,12 @@ class MovieDetailsPage(Gtk.Overlay):
         left_meta_hbox.append(meta_detail_vbox)
         self.info_vbox.append(left_meta_hbox)
 
-        # Creator and Cast Section Box (Horizontal Scroll)
+        # Cast Section Box (Horizontal Scroll)
         self.cast_section_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.cast_section_box.set_margin_top(16)
         self.cast_section_box.set_visible(False)
 
-        self.cast_title_label = Gtk.Label(label="Creator and Cast")
+        self.cast_title_label = Gtk.Label(label="Cast")
         self.cast_title_label.set_halign(Gtk.Align.START)
         self.cast_title_label.add_css_class("details-section-title")
         self.cast_section_box.append(self.cast_title_label)
@@ -512,6 +512,27 @@ class MovieDetailsPage(Gtk.Overlay):
         self.cast_scrolled.set_child(self.cast_hbox)
         self.cast_section_box.append(self.cast_scrolled)
         self.info_vbox.append(self.cast_section_box)
+
+        # Crew Section Box (Horizontal Scroll)
+        self.crew_section_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.crew_section_box.set_margin_top(14)
+        self.crew_section_box.set_visible(False)
+
+        self.crew_title_label = Gtk.Label(label="Crew")
+        self.crew_title_label.set_halign(Gtk.Align.START)
+        self.crew_title_label.add_css_class("details-section-title")
+        self.crew_section_box.append(self.crew_title_label)
+
+        self.crew_scrolled = Gtk.ScrolledWindow()
+        self.crew_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        self.crew_scrolled.set_vexpand(False)
+        self.crew_scrolled.add_css_class("details-horizontal-scroll")
+
+        self.crew_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        self.crew_hbox.set_margin_bottom(6)
+        self.crew_scrolled.set_child(self.crew_hbox)
+        self.crew_section_box.append(self.crew_scrolled)
+        self.info_vbox.append(self.crew_section_box)
 
         # Production / Network Companies Section Box (Horizontal Scroll)
         self.prod_section_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1858,6 +1879,64 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.row2_box.set_visible(False)
             self.fetch_torrents_async()
 
+    def _build_person_card(self, member, role_text=""):
+        from .movie_widget import load_image_into_picture
+        card_btn = Gtk.Button()
+        card_btn.add_css_class("cast-member-btn")
+        name = member.get("name", "")
+        role_tip = f" ({role_text})" if role_text else ""
+        card_btn.set_tooltip_text(f"{name}{role_tip}")
+
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        btn_box.set_size_request(104, -1)
+
+        circle = Gtk.Box()
+        circle.add_css_class("cast-avatar-circle")
+        circle.set_halign(Gtk.Align.CENTER)
+        circle.set_valign(Gtk.Align.CENTER)
+        circle.set_overflow(Gtk.Overflow.HIDDEN)
+
+        if member.get("photo"):
+            pic = Gtk.Picture()
+            pic.set_size_request(96, 96)
+            pic.set_can_shrink(True)
+            pic.set_content_fit(Gtk.ContentFit.COVER)
+            pic.add_css_class("cast-avatar-pic")
+            circle.append(pic)
+            load_image_into_picture(member["photo"], pic, width=96, height=96)
+        else:
+            initial = (name[:1] if name else "?").upper()
+            init_lbl = Gtk.Label(label=initial)
+            init_lbl.add_css_class("cast-avatar-initials")
+            circle.append(init_lbl)
+
+        btn_box.append(circle)
+
+        name_lbl = Gtk.Label(label=name)
+        name_lbl.set_lines(2)
+        name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        name_lbl.set_wrap(True)
+        name_lbl.set_halign(Gtk.Align.CENTER)
+        name_lbl.set_justify(Gtk.Justification.CENTER)
+        name_lbl.add_css_class("cast-member-name")
+        btn_box.append(name_lbl)
+
+        if role_text:
+            role_lbl = Gtk.Label(label=role_text)
+            role_lbl.set_lines(1)
+            role_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+            role_lbl.set_halign(Gtk.Align.CENTER)
+            role_lbl.set_justify(Gtk.Justification.CENTER)
+            role_lbl.add_css_class("cast-member-role")
+            btn_box.append(role_lbl)
+
+        card_btn.set_child(btn_box)
+        mid = member.get("id")
+        mname = name
+        mph = member.get("photo")
+        card_btn.connect("clicked", lambda b, mid=mid, mname=mname, mph=mph: self._on_cast_member_clicked(mid, mname, mph))
+        return card_btn
+
     def render_cast_and_production(self, credits_data):
         if not credits_data or getattr(self, '_destroyed', False):
             return
@@ -1866,100 +1945,48 @@ class MovieDetailsPage(Gtk.Overlay):
         prod_companies = credits_data.get("production_companies", [])
         networks = credits_data.get("networks", [])
 
-        # Combine crew (directors/creators first) and cast
-        members = []
-        seen_ids = set()
-        for m in crew:
-            mid = m.get("id")
-            if mid and mid not in seen_ids:
-                seen_ids.add(mid)
-                members.append({
-                    "id": mid,
-                    "name": m.get("name", ""),
-                    "role": m.get("job") or "Crew",
-                    "photo": m.get("photo")
-                })
-        for m in cast:
-            mid = m.get("id")
-            if mid and mid not in seen_ids:
-                seen_ids.add(mid)
-                members.append({
-                    "id": mid,
-                    "name": m.get("name", ""),
-                    "role": m.get("character") or "",
-                    "photo": m.get("photo")
-                })
+        is_tv = self.media_type in ["series", "anime", "tv"]
 
-        # Clear previous cast widgets
+        # 1. Render Cast
         while child := self.cast_hbox.get_first_child():
             self.cast_hbox.remove(child)
 
-        from .movie_widget import load_image_into_picture
-
-        if members:
-            # Hide the text-only cast label since rich avatars are present
+        if cast:
             if hasattr(self, 'cast_label'):
                 self.cast_label.set_visible(False)
 
-            for member in members[:30]:
-                card_btn = Gtk.Button()
-                card_btn.add_css_class("cast-member-btn")
-                role_tip = f" ({member['role']})" if member['role'] else ""
-                card_btn.set_tooltip_text(f"{member['name']}{role_tip}")
-
-                btn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-                btn_box.set_size_request(104, -1)
-
-                circle = Gtk.Box()
-                circle.add_css_class("cast-avatar-circle")
-                circle.set_halign(Gtk.Align.CENTER)
-                circle.set_valign(Gtk.Align.CENTER)
-                circle.set_overflow(Gtk.Overflow.HIDDEN)
-
-                if member.get("photo"):
-                    pic = Gtk.Picture()
-                    pic.set_size_request(96, 96)
-                    pic.set_can_shrink(True)
-                    pic.set_content_fit(Gtk.ContentFit.COVER)
-                    pic.add_css_class("cast-avatar-pic")
-                    circle.append(pic)
-                    load_image_into_picture(member["photo"], pic, width=96, height=96)
-                else:
-                    initial = (member["name"][:1] if member["name"] else "?").upper()
-                    init_lbl = Gtk.Label(label=initial)
-                    init_lbl.add_css_class("cast-avatar-initials")
-                    circle.append(init_lbl)
-
-                btn_box.append(circle)
-
-                name_lbl = Gtk.Label(label=member["name"])
-                name_lbl.set_lines(2)
-                name_lbl.set_ellipsize(Pango.EllipsizeMode.END)
-                name_lbl.set_wrap(True)
-                name_lbl.set_halign(Gtk.Align.CENTER)
-                name_lbl.set_justify(Gtk.Justification.CENTER)
-                name_lbl.add_css_class("cast-member-name")
-                btn_box.append(name_lbl)
-
-                if member["role"]:
-                    role_lbl = Gtk.Label(label=member["role"])
-                    role_lbl.set_lines(1)
-                    role_lbl.set_ellipsize(Pango.EllipsizeMode.END)
-                    role_lbl.set_halign(Gtk.Align.CENTER)
-                    role_lbl.set_justify(Gtk.Justification.CENTER)
-                    role_lbl.add_css_class("cast-member-role")
-                    btn_box.append(role_lbl)
-
-                card_btn.set_child(btn_box)
-                mid = member["id"]
-                mname = member["name"]
-                mph = member.get("photo")
-                card_btn.connect("clicked", lambda b, mid=mid, mname=mname, mph=mph: self._on_cast_member_clicked(mid, mname, mph))
+            self.cast_title_label.set_text("Series Cast" if is_tv else "Cast")
+            for member in cast[:35]:
+                char = member.get("character") or member.get("role") or ""
+                card_btn = self._build_person_card(member, role_text=char)
                 self.cast_hbox.append(card_btn)
 
             self.cast_section_box.set_visible(True)
         else:
             self.cast_section_box.set_visible(False)
+
+        # 2. Render Crew
+        if hasattr(self, "crew_hbox") and hasattr(self, "crew_section_box"):
+            while child := self.crew_hbox.get_first_child():
+                self.crew_hbox.remove(child)
+
+            if crew:
+                has_creator = any(m.get("job") == "Creator" for m in crew)
+                if is_tv and has_creator:
+                    self.crew_title_label.set_text("Creators & Crew")
+                elif not is_tv:
+                    self.crew_title_label.set_text("Director & Crew")
+                else:
+                    self.crew_title_label.set_text("Crew")
+
+                for member in crew[:25]:
+                    job = member.get("job") or member.get("role") or "Crew"
+                    card_btn = self._build_person_card(member, role_text=job)
+                    self.crew_hbox.append(card_btn)
+
+                self.crew_section_box.set_visible(True)
+            else:
+                self.crew_section_box.set_visible(False)
 
         # Render Companies / Networks
         companies = networks if (networks and self.media_type in ["series", "anime", "tv"]) else (prod_companies or networks)
@@ -3595,6 +3622,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         self.addons_listbox.set_filter_func(self._addon_filter_func)
         self.addon_url_entry.connect("changed", lambda *a: self.addons_listbox.invalidate_filter())
+        self.addon_url_entry.connect("activate", lambda *a: self._add_addon())
 
         self.library_stack.connect("notify::visible-child-name", self._on_library_stack_changed)
         self._on_library_stack_changed()
@@ -5744,56 +5772,8 @@ class CineWindow(Adw.ApplicationWindow):
                 self._on_search_changed(self.search_entry)
         self.search_catalog_dropdown.connect("notify::selected", on_search_catalog_changed)
         
-        # Load addons ONCE and reuse for all checks below
-        all_addons = api.database.get_addons()
-        
-        def _get_supported_types(addons):
-            types_found = set()
-            for addon in addons:
-                if not addon.get("enabled", True): continue
-                for t in addon.get("types", []):
-                    if t: types_found.add(str(t).lower())
-                for cat in api.get_addon_catalogs(addon, cache_only=True):
-                    if cat.get("type"):
-                        types_found.add(str(cat.get("type")).lower())
-            return types_found
-
-        supported_types = _get_supported_types(all_addons)
-        self.anime_supported = ("anime" in supported_types)
-        self.tv_supported = any(t in supported_types for t in ["tv", "channel", "tvchannel"])
-        for btn_name in ["anime_inactive_btn_movies", "anime_inactive_btn_series", "anime_inactive_btn_discover"]:
-            if hasattr(self, btn_name):
-                getattr(self, btn_name).set_visible(self.anime_supported)
-        
         # Build dynamic media types based on Stremio addons
-        media_type_labels = ["Movies", "Series"]
-        media_type_keys = ["movie", "series"]
-        
-        known_mappings = [
-            (["tv", "channel", "tvchannel"], "tv", "TV Channels"),
-            (["anime"], "anime", "Anime"),
-            (["music", "radio"], "music", "Radio / Music"),
-            (["live"], "live", "Live Streams"),
-        ]
-
-        added_keys = set(media_type_keys)
-        
-        for check_list, key_name, label_name in known_mappings:
-            if any(t in supported_types for t in check_list):
-                if key_name not in added_keys:
-                    media_type_labels.append(label_name)
-                    media_type_keys.append(key_name)
-                    added_keys.add(key_name)
-
-        for t in sorted(supported_types):
-            if t not in added_keys and t not in ["movie", "movies", "series", "tv", "channel", "tvchannel", "anime", "music", "radio", "live"]:
-                media_type_labels.append(t.title())
-                media_type_keys.append(t)
-                added_keys.add(t)
-
-        self.media_type_keys = media_type_keys
-        self.media_type_labels = media_type_labels
-        self.media_type_dropdown.set_model(Gtk.StringList.new(media_type_labels))
+        self._update_supported_media_types()
         
         # Cache catalog lists per media type to avoid recomputing on every dropdown change
         self._catalog_list_cache = {}
@@ -7405,9 +7385,10 @@ class CineWindow(Adw.ApplicationWindow):
         return menu
 
     def _ensure_all_menus_built(self):
-        if getattr(self, "_menus_building", False) or getattr(self, "_menus_built", False):
-            debug_log(f"_ensure_all_menus_built SKIPPED (building={getattr(self, '_menus_building', False)}, built={getattr(self, '_menus_built', False)})")
+        if getattr(self, "_menus_built", False):
             return
+        cur_gen = getattr(self, "_menu_build_generation", 0) + 1
+        self._menu_build_generation = cur_gen
         self._menus_building = True
 
         btn_map = {
@@ -7419,66 +7400,78 @@ class CineWindow(Adw.ApplicationWindow):
             btn_map["anime"] = getattr(self, "anime_active_btn", None)
 
         media_types = [k for k in btn_map.keys() if btn_map.get(k)]
-        debug_log(f"_ensure_all_menus_built starting bg_prepare thread for media_types: {media_types}")
+        debug_log(f"_ensure_all_menus_built (gen={cur_gen}) starting bg_prepare thread for media_types: {media_types}")
 
         def bg_prepare():
-            debug_log("bg_prepare menus thread START")
-            built_menus = {}
+            try:
+                debug_log(f"bg_prepare menus thread START (gen={cur_gen})")
+                built_menus = {}
 
-            # 1. Discover menu with Catalog submenu
-            if "discover" in media_types:
-                try:
-                    cat_addons = self._prepare_discover_catalog_data()
-                    built_menus["discover"] = self._build_discover_menu(catalog_addons=cat_addons)
-                    debug_log(f"bg_prepare built Discover menu with {len(cat_addons)} catalog addons")
-                except Exception as e:
-                    logger.error(f"Error preparing discover catalog menu data: {e}")
-                    built_menus["discover"] = None
+                # 1. Discover menu with Catalog submenu
+                if "discover" in media_types:
+                    try:
+                        cat_addons = self._prepare_discover_catalog_data()
+                        built_menus["discover"] = self._build_discover_menu(catalog_addons=cat_addons)
+                        debug_log(f"bg_prepare built Discover menu with {len(cat_addons)} catalog addons")
+                    except Exception as e:
+                        logger.error(f"Error preparing discover catalog menu data: {e}")
+                        built_menus["discover"] = None
 
-            # 2. Movie, Series, Anime category menus
-            for m_type in ["movie", "series", "anime"]:
-                if m_type not in media_types:
-                    continue
-                try:
-                    data = self._prepare_menu_data(m_type)
-                    built_menus[m_type] = self._build_full_menu_model(m_type, data)
-                    debug_log(f"bg_prepare built full Gio.Menu model for {m_type} ({len(data)} online addons)")
-                except Exception as e:
-                    logger.error(f"Error preparing menu data for {m_type}: {e}")
-                    built_menus[m_type] = None
+                # 2. Movie, Series, Anime category menus
+                for m_type in ["movie", "series", "anime"]:
+                    if m_type not in media_types:
+                        continue
+                    try:
+                        data = self._prepare_menu_data(m_type)
+                        built_menus[m_type] = self._build_full_menu_model(m_type, data)
+                        debug_log(f"bg_prepare built full Gio.Menu model for {m_type} ({len(data)} online addons)")
+                    except Exception as e:
+                        logger.error(f"Error preparing menu data for {m_type}: {e}")
+                        built_menus[m_type] = None
 
-            def apply_all():
-                debug_log("apply_all menus storing built models and smoothly attaching to buttons ahead of time")
-                self._built_menu_models = built_menus
-                self._menus_built = True
-                self._menus_building = False
-
-                # Smoothly attach built models to buttons across idle ticks BEFORE click
-                def attach_step(items):
-                    if not items:
+                def apply_all():
+                    if getattr(self, "_menu_build_generation", 0) != cur_gen:
+                        debug_log(f"apply_all menus discarded stale build (gen {cur_gen} vs {getattr(self, '_menu_build_generation', 0)})")
                         return False
-                    m_type, btn = items.pop(0)
-                    model = built_menus.get(m_type)
-                    if btn and model:
-                        if btn.get_active():
-                            # If menu is currently popped up, update once closed to avoid disrupting user
-                            def on_deactivate(b, pspec):
-                                if not b.get_active():
-                                    b.disconnect_by_func(on_deactivate)
-                                    b.set_menu_model(model)
-                            btn.connect("notify::active", on_deactivate)
-                        else:
-                            btn.set_menu_model(model)
-                    if items:
-                        GLib.idle_add(lambda: attach_step(items))
+                    debug_log("apply_all menus storing built models and smoothly attaching to buttons ahead of time")
+                    self._built_menu_models = built_menus
+                    self._menus_built = True
+                    self._menus_building = False
+
+                    # Smoothly attach built models to buttons across idle ticks BEFORE click
+                    def attach_step(items):
+                        if not items:
+                            return False
+                        m_type, btn = items.pop(0)
+                        model = built_menus.get(m_type)
+                        if btn and model:
+                            if btn.get_active():
+                                # If menu is currently popped up, update once closed to avoid disrupting user
+                                def on_deactivate(b, pspec):
+                                    if not b.get_active():
+                                        b.disconnect_by_func(on_deactivate)
+                                        b.set_menu_model(model)
+                                btn.connect("notify::active", on_deactivate)
+                            else:
+                                btn.set_menu_model(model)
+                        if items:
+                            GLib.idle_add(lambda: attach_step(items))
+                        return False
+
+                    items_to_attach = [(mt, btn_map[mt]) for mt in media_types if btn_map.get(mt)]
+                    GLib.idle_add(lambda: attach_step(items_to_attach))
+                    debug_log("apply_all menus on main thread DONE")
                     return False
 
-                items_to_attach = [(mt, btn_map[mt]) for mt in media_types if btn_map.get(mt)]
-                GLib.idle_add(lambda: attach_step(items_to_attach))
-                debug_log("apply_all menus on main thread DONE")
-                return False
-
-            GLib.idle_add(apply_all)
+                GLib.idle_add(apply_all)
+            except Exception as e:
+                logger.error(f"Unexpected error in bg_prepare menus: {e}")
+            finally:
+                def reset_flag():
+                    if getattr(self, "_menu_build_generation", 0) == cur_gen and not getattr(self, "_menus_built", False):
+                        self._menus_building = False
+                    return False
+                GLib.idle_add(reset_flag)
 
         threading.Thread(target=bg_prepare, daemon=True).start()
 
@@ -8814,6 +8807,135 @@ class CineWindow(Adw.ApplicationWindow):
 
         self.previous_page_before_player = None
 
+    def _normalize_addon_url(self, raw_url):
+        url = (raw_url or "").strip()
+        if not url:
+            return ""
+        if url.startswith("stremio://"):
+            url = "https://" + url[len("stremio://"):]
+        elif not url.startswith("http://") and not url.startswith("https://"):
+            url = "https://" + url
+
+        parsed = urllib.parse.urlparse(url)
+        path = parsed.path or ""
+        if not path.endswith("/manifest.json") and not path.endswith(".json"):
+            new_path = path.rstrip("/") + "/manifest.json"
+            url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, new_path, parsed.params, parsed.query, parsed.fragment))
+        return url
+
+    def _update_supported_media_types(self):
+        from . import api
+        all_addons = api.database.get_addons()
+
+        def _get_supported_types(addons):
+            types_found = set()
+            for addon in addons:
+                if not addon.get("enabled", True): continue
+                for t in addon.get("types", []):
+                    if t: types_found.add(str(t).lower())
+                for cat in api.get_addon_catalogs(addon, cache_only=True):
+                    if cat.get("type"):
+                        types_found.add(str(cat.get("type")).lower())
+            return types_found
+
+        supported_types = _get_supported_types(all_addons)
+        self.anime_supported = ("anime" in supported_types)
+        self.tv_supported = any(t in supported_types for t in ["tv", "channel", "tvchannel"])
+        for btn_name in ["anime_inactive_btn_movies", "anime_inactive_btn_series", "anime_inactive_btn_discover"]:
+            if hasattr(self, btn_name):
+                getattr(self, btn_name).set_visible(self.anime_supported)
+
+        # Build dynamic media types based on Stremio addons
+        media_type_labels = ["Movies", "Series"]
+        media_type_keys = ["movie", "series"]
+
+        known_mappings = [
+            (["tv", "channel", "tvchannel"], "tv", "TV Channels"),
+            (["anime"], "anime", "Anime"),
+            (["music", "radio"], "music", "Radio / Music"),
+            (["live"], "live", "Live Streams"),
+        ]
+
+        added_keys = set(media_type_keys)
+
+        for check_list, key_name, label_name in known_mappings:
+            if any(t in supported_types for t in check_list):
+                if key_name not in added_keys:
+                    media_type_labels.append(label_name)
+                    media_type_keys.append(key_name)
+                    added_keys.add(key_name)
+
+        for t in sorted(supported_types):
+            if t not in added_keys and t not in ["movie", "movies", "series", "tv", "channel", "tvchannel", "anime", "music", "radio", "live"]:
+                media_type_labels.append(t.title())
+                media_type_keys.append(t)
+                added_keys.add(t)
+
+        self.media_type_keys = media_type_keys
+        self.media_type_labels = media_type_labels
+        if hasattr(self, "media_type_dropdown"):
+            cur_sel = self.media_type_dropdown.get_selected()
+            self.media_type_dropdown.set_model(Gtk.StringList.new(media_type_labels))
+            if cur_sel < len(media_type_labels):
+                self.media_type_dropdown.set_selected(cur_sel)
+            else:
+                self.media_type_dropdown.set_selected(0)
+
+    def _update_catalog_dropdown(self):
+        from . import api
+        m_type = getattr(self, "current_media_type", "movie")
+        if hasattr(self, "_catalog_list_cache") and m_type in self._catalog_list_cache:
+            del self._catalog_list_cache[m_type]
+        cats = api.get_available_catalogs(m_type)
+        if hasattr(self, "_catalog_list_cache"):
+            self._catalog_list_cache[m_type] = cats
+        if hasattr(self, "catalog_dropdown"):
+            self.all_catalogs = cats
+            cat_names = [c["display_name"] for c in cats]
+            if not cat_names:
+                cat_names = ["No Catalogs Found"]
+            self.catalog_dropdown.set_model(Gtk.StringList.new(cat_names))
+            if hasattr(self, "current_catalog") and self.current_catalog:
+                idx = next((i for i, c in enumerate(cats) if c.get("catalog_id") == self.current_catalog.get("catalog_id") and c.get("manifest_url") == self.current_catalog.get("manifest_url")), 0)
+                self.catalog_dropdown.set_selected(idx)
+
+    def _refresh_active_library_view(self):
+        from . import api, database
+        lib_page = self.library_stack.get_visible_child_name() if hasattr(self, "library_stack") else "discover"
+        if lib_page == "content":
+            curr_cat = getattr(self, "current_catalog", None)
+            m_type = getattr(self, "current_media_type", "movie")
+            available = api.get_available_catalogs(m_type)
+            still_exists = any(
+                c.get("catalog_id") == curr_cat.get("catalog_id") and c.get("manifest_url") == curr_cat.get("manifest_url")
+                for c in available
+            ) if curr_cat else False
+
+            if not still_exists:
+                self.discover_back_box.set_visible(False)
+                self.library_stack.set_visible_child_name("discover")
+                if hasattr(self, "category_btn_stack"):
+                    self.category_btn_stack.set_visible_child_name("discover")
+                self._refresh_discover_page(filter_media_type="all", force_refresh=True)
+            else:
+                self._refresh_content()
+        elif lib_page == "discover":
+            cur_type = getattr(self, "_current_discover_type", "all")
+            cur_addon = getattr(self, "_current_discover_addon", None)
+            if cur_addon:
+                addon_exists = any(a.get("manifest_url") == cur_addon and a.get("enabled", True) for a in database.get_addons())
+                if not addon_exists:
+                    cur_addon = None
+                    cur_type = "all"
+                    if hasattr(self, "category_btn_stack"):
+                        self.category_btn_stack.set_visible_child_name("discover")
+            self._refresh_discover_page(filter_media_type=cur_type, filter_addon_url=cur_addon, force_refresh=True)
+        elif lib_page == "search_results":
+            query = self.search_entry.get_text().strip() if hasattr(self, "search_entry") else ""
+            if query:
+                self._on_search_changed(self.search_entry)
+        self._addons_dirty = False
+
     def _update_search_catalog_dropdown(self):
         from . import api, database
         movie_cats = api.get_available_catalogs("movie")
@@ -8844,10 +8966,12 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _on_addons_changed(self):
         from .movie_widget import cancel_pending_image_downloads
-        from . import api
+        from . import api, database
         cancel_pending_image_downloads()
         # Reset session-blocked addons so they get a fresh attempt after the list changes
         api.reset_addon_session_status()
+        api.invalidate_catalogs_cache()
+        database.clear_all_cached_streams()
 
         # 1. Invalidate all cached discover views & catalog lists
         if hasattr(self, "_discover_views"):
@@ -8857,53 +8981,30 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "_catalog_list_cache"):
             self._catalog_list_cache.clear()
 
-        # 2. Reset menu build flags and rebuild category & discover menus
+        # 2. Update dynamic media types & button visibility (Anime, TV channels, etc.)
+        self._update_supported_media_types()
+
+        # 3. Update dropdowns
+        self._update_search_catalog_dropdown()
+        self._update_catalog_dropdown()
+
+        # 4. Mark library views dirty for navigation
+        self._addons_dirty = True
+
+        # 5. Rebuild menus
         self._menus_built = False
         self._menus_building = False
-        if hasattr(self, "_attached_menu_types"):
-            self._attached_menu_types.clear()
         if hasattr(self, "_built_menu_models"):
             self._built_menu_models.clear()
-        if hasattr(self, "discover_active_btn"):
-            self.discover_active_btn.set_menu_model(None)
         self._ensure_all_menus_built()
-        self._update_search_catalog_dropdown()
         self._prewarm_discover_views()
 
-        # 3. Update active view state (Discover / Movies / Series / Anime / Content grid)
-        from . import api, database
-        if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() == "content":
-            curr_cat = getattr(self, "current_catalog", None)
-            m_type = getattr(self, "current_media_type", "movie")
-            available = api.get_available_catalogs(m_type)
-            still_exists = any(
-                c.get("catalog_id") == curr_cat.get("catalog_id") and c.get("manifest_url") == curr_cat.get("manifest_url")
-                for c in available
-            ) if curr_cat else False
-            
-            if not still_exists:
-                self.discover_back_box.set_visible(False)
-                self.library_stack.set_visible_child_name("discover")
-                if hasattr(self, "category_btn_stack"):
-                    self.category_btn_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type="all")
-            else:
-                self._refresh_content()
-        elif hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() == "discover":
-            cur_type = getattr(self, "_current_discover_type", "all")
-            cur_addon = getattr(self, "_current_discover_addon", None)
-            if cur_addon:
-                addon_exists = any(a.get("manifest_url") == cur_addon and a.get("enabled", True) for a in database.get_addons())
-                if not addon_exists:
-                    cur_addon = None
-                    cur_type = "all"
-                    if hasattr(self, "category_btn_stack"):
-                        self.category_btn_stack.set_visible_child_name("discover")
-            self._refresh_discover_page(filter_media_type=cur_type, filter_addon_url=cur_addon)
-        else:
-            self._refresh_discover_page(filter_media_type="all")
+        # 6. Update active view state immediately if user is in library
+        cur_main = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else "library"
+        if cur_main == "library":
+            self._refresh_active_library_view()
 
-    def _populate_addons(self):
+    def _populate_addons(self, scroll_to_url=None):
         debug_log("_populate_addons START")
         while self.addons_listbox.get_first_child() is not None:
             self.addons_listbox.remove(self.addons_listbox.get_first_child())
@@ -8912,6 +9013,7 @@ class CineWindow(Adw.ApplicationWindow):
         import urllib.request
         addons = database.get_addons()
         debug_log(f"_populate_addons DB returned {len(addons)} addons")
+        target_row = None
         for addon in addons:
             name_str = GLib.markup_escape_text(addon.get("name", "Unknown") or "Unknown")
             desc_str = GLib.markup_escape_text(addon.get("description", "") or "")
@@ -8929,7 +9031,10 @@ class CineWindow(Adw.ApplicationWindow):
                     is_on = True
                 else:
                     try:
-                        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                        }
+                        req = urllib.request.Request(url, headers=headers)
                         with urllib.request.urlopen(req, timeout=3) as resp:
                             is_on = resp.getcode() == 200
                     except Exception:
@@ -8990,23 +9095,45 @@ class CineWindow(Adw.ApplicationWindow):
             
             row.add_suffix(box)
             self.addons_listbox.append(row)
+            if scroll_to_url and manifest_url == scroll_to_url:
+                target_row = row
+
+        if target_row:
+            GLib.idle_add(target_row.grab_focus)
             
     def _add_addon(self, *args):
-        url = self.addon_url_entry.get_text()
+        raw_url = self.addon_url_entry.get_text()
+        url = self._normalize_addon_url(raw_url)
         if not url: return
-        from . import database
+        from . import database, api
         import urllib.request, json
         
+        self.addon_url_entry.set_text("")
+        self._show_toast(_("Installing addon..."))
+
         def fetch_and_add():
             try:
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=5) as resp:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/json'
+                }
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=8) as resp:
                     manifest = json.loads(resp.read().decode('utf-8'))
                     manifest["manifest_url"] = url
+                    if not manifest.get("id"):
+                        addon_id = urllib.parse.urlparse(url).netloc
+                        manifest["id"] = f"custom.{addon_id}"
+                    addon_name = manifest.get("name") or manifest.get("id")
                     database.add_addon(manifest)
-                    GLib.idle_add(self._populate_addons)
-                    GLib.idle_add(self._on_addons_changed)
-                    GLib.idle_add(self.addon_url_entry.set_text, "")
+                    api.set_addon_online_status(url, True)
+                    api.reset_addon_session_status(url)
+                    
+                    def on_success():
+                        self._populate_addons(scroll_to_url=url)
+                        self._on_addons_changed()
+                        self._show_toast(_(f"Installed addon: {addon_name}"))
+                    GLib.idle_add(on_success)
             except Exception as e:
                 logger.error(f"Failed to add addon: {e}")
                 def show_force_add_dialog():
@@ -9021,7 +9148,8 @@ class CineWindow(Adw.ApplicationWindow):
                     
                     def on_response(dlg, response):
                         if response == "add":
-                            addon_id = url.replace("https://", "").replace("http://", "").split("/")[0]
+                            parsed_netloc = urllib.parse.urlparse(url).netloc or url.replace("https://", "").replace("http://", "").split("/")[0]
+                            addon_id = parsed_netloc
                             manifest = {
                                 "id": f"offline.{addon_id}",
                                 "name": addon_id,
@@ -9032,9 +9160,9 @@ class CineWindow(Adw.ApplicationWindow):
                                 "resources": ["stream", "meta", "catalog"]
                             }
                             database.add_addon(manifest)
-                            self._populate_addons()
+                            self._populate_addons(scroll_to_url=url)
                             self._on_addons_changed()
-                            self.addon_url_entry.set_text("")
+                            self._show_toast(_(f"Added addon: {addon_id}"))
                     dialog.connect("response", on_response)
                     dialog.present()
                 GLib.idle_add(show_force_add_dialog)
@@ -9042,12 +9170,20 @@ class CineWindow(Adw.ApplicationWindow):
         threading.Thread(target=fetch_and_add, daemon=True).start()
         
     def _remove_addon(self, addon):
-        from . import database
+        from . import database, api
         addon_id = addon.get("id")
-        if addon_id:
-            database.remove_addon(addon_id)
+        manifest_url = addon.get("manifest_url")
+        addon_name = addon.get("name") or addon_id or "Addon"
+        if addon_id or manifest_url:
+            database.remove_addon(addon_id=addon_id, manifest_url=manifest_url)
+            if manifest_url:
+                with api._ADDON_ONLINE_LOCK:
+                    api._ADDON_ONLINE_STATUS.pop(manifest_url, None)
+                    api._ADDON_SESSION_FAILURES.pop(manifest_url, None)
+                    api._ADDON_SESSION_BLOCKED.discard(manifest_url)
             self._populate_addons()
             self._on_addons_changed()
+            self._show_toast(_(f"Removed addon: {addon_name}"))
 
     def _addon_filter_func(self, row):
         search_text = self.addon_url_entry.get_text().lower().strip()
@@ -9146,11 +9282,14 @@ class CineWindow(Adw.ApplicationWindow):
                     self.header_stack.set_visible_child_name("search_header")
             if hasattr(self, "category_btn_stack") and entry.get("category_btn"):
                 self.category_btn_stack.set_visible_child_name(entry["category_btn"])
+            if getattr(self, "_addons_dirty", False):
+                self._refresh_active_library_view()
         elif main_page in ["favorites", "history", "watched", "downloads", "continue_watching"]:
             self.main_stack.set_visible_child_name(main_page)
             self._populate_local_db_page(main_page)
         elif main_page == "addons":
             self.main_stack.set_visible_child_name("addons")
+            self._populate_addons()
         elif main_page == "player":
             is_active_player = bool(
                 getattr(self, "_current_playing_item", None)
@@ -9167,8 +9306,12 @@ class CineWindow(Adw.ApplicationWindow):
                     self._restore_nav_entry(prev)
                 else:
                     self.main_stack.set_visible_child_name("library")
+                    if getattr(self, "_addons_dirty", False):
+                        self._refresh_active_library_view()
         else:
             self.main_stack.set_visible_child_name("library")
+            if getattr(self, "_addons_dirty", False):
+                self._refresh_active_library_view()
 
     def _push_current_nav_state(self):
         if not hasattr(self, "nav_stack"):
@@ -9238,9 +9381,12 @@ class CineWindow(Adw.ApplicationWindow):
             self._restore_nav_entry(prev)
         else:
             self.main_stack.set_visible_child_name("library")
+            if getattr(self, "_addons_dirty", False):
+                self._refresh_active_library_view()
 
     def _open_addons(self, *args):
         self._push_current_nav_state()
+        self._populate_addons()
         self.main_stack.set_visible_child_name("addons")
 
     def _back_to_library(self, *args):
@@ -9256,12 +9402,17 @@ class CineWindow(Adw.ApplicationWindow):
                 with open(file.get_path(), "r") as f:
                     addons = json.load(f)
                 from . import database
+                imported_count = 0
                 for a in addons:
-                    database.add_addon(a)
+                    if isinstance(a, dict) and (a.get("manifest_url") or a.get("id")):
+                        database.add_addon(a)
+                        imported_count += 1
                 self._populate_addons()
                 self._on_addons_changed()
+                self._show_toast(_(f"Imported {imported_count} addon(s)"))
             except Exception as e:
                 logger.error(f"Failed to import addons: {e}")
+                self._show_toast(_("Failed to import addons"))
         dialog.open(self, None, on_open_response)
 
     def _export_addons(self, *args):
@@ -9275,8 +9426,10 @@ class CineWindow(Adw.ApplicationWindow):
                 addons = database.get_addons()
                 with open(file.get_path(), "w") as f:
                     json.dump(addons, f, indent=4)
+                self._show_toast(_("Exported addons successfully"))
             except Exception as e:
                 logger.error(f"Failed to export addons: {e}")
+                self._show_toast(_("Failed to export addons"))
         dialog.save(self, None, on_save_response)
 
     def _open_search(self, *args):

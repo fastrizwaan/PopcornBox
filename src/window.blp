@@ -758,35 +758,44 @@ template $CineWindow: Adw.ApplicationWindow {
                 Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
               }
             }
+            Box {
+              orientation: vertical;
+              margin-top: 18;
+              margin-bottom: 6;
+              margin-start: 24;
+              margin-end: 24;
+              Box {
+                spacing: 8;
+                halign: center;
+                Entry addon_url_entry {
+                  placeholder-text: "Search or paste Stremio addon manifest URL...";
+                  width-request: 400;
+                }
+                Button add_addon_btn {
+                  label: _("Install");
+                  styles ["suggested-action"]
+                  action-name: "win.add-addon";
+                }
+                Button import_addon_btn {
+                  label: _("Import");
+                  action-name: "win.import-addons";
+                }
+                Button export_addon_btn {
+                  label: _("Export");
+                  action-name: "win.export-addons";
+                }
+              }
+            }
             ScrolledWindow {
               vexpand: true;
+              hexpand: true;
               child: Box {
                 orientation: vertical;
-                margin-top: 24; margin-start: 24; margin-end: 24;
-                spacing: 12;
-                Box {
-                  spacing: 8;
-                  halign: center;
-                  Entry addon_url_entry {
-                    placeholder-text: "Search or paste Stremio addon manifest URL...";
-                    width-request: 400;
-                  }
-                  Button add_addon_btn {
-                    label: _("Install");
-                    styles ["suggested-action"]
-                    action-name: "win.add-addon";
-                  }
-                  Button import_addon_btn {
-                    label: _("Import");
-                    action-name: "win.import-addons";
-                  }
-                  Button export_addon_btn {
-                    label: _("Export");
-                    action-name: "win.export-addons";
-                  }
-                }
+                margin-top: 12;
+                margin-start: 24;
+                margin-end: 24;
+                margin-bottom: 24;
                 ListBox addons_listbox {
-                  margin-top: 24;
                   selection-mode: none;
                   styles ["boxed-list"]
                 }

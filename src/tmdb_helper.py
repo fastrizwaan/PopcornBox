@@ -373,7 +373,7 @@ def fetch_credits_and_companies(item_id, media_type="movie", title=None):
             if not data:
                 return empty_result
 
-            # 1. Crew (Creators & Directors)
+            # 1. Crew (Creators, Directors, Writers, EPs)
             crew = []
             seen_crew = set()
             # TV creators
@@ -392,20 +392,34 @@ def fetch_credits_and_companies(item_id, media_type="movie", title=None):
 
             # Additional TV crew from aggregate or standard credits
             raw_crew = data.get("aggregate_credits", {}).get("crew", []) or data.get("credits", {}).get("crew", [])
+
+            def get_tv_crew_info(m):
+                jobs = m.get("jobs", [])
+                if jobs and isinstance(jobs, list):
+                    for target_job in ["Director", "Writer", "Executive Producer"]:
+                        for j in jobs:
+                            if j.get("job") == target_job:
+                                return target_job, j.get("episode_count", 0)
+                    return jobs[0].get("job", "Crew"), jobs[0].get("episode_count", 0)
+                return m.get("job", "Crew"), m.get("total_episode_count", 0) or 1
+
+            other_crew = []
             for m in raw_crew:
-                cname = m.get("name", "").strip()
                 cid = m.get("id")
+                cname = m.get("name", "").strip()
                 if not cid or not cname or cid in seen_crew:
                     continue
-                # Check jobs list if aggregate, or single job
-                job_name = None
-                if "jobs" in m and isinstance(m["jobs"], list) and m["jobs"]:
-                    job_name = m["jobs"][0].get("job")
-                elif "job" in m:
-                    job_name = m.get("job")
+                job_name, ep_count = get_tv_crew_info(m)
                 if job_name in ["Director", "Writer", "Executive Producer"]:
+                    other_crew.append((cid, cname, job_name, ep_count, m.get("profile_path")))
+
+            # Sort Directors by episode count descending, then Writers, then Executive Producers
+            rank_map = {"Director": 0, "Writer": 1, "Executive Producer": 2}
+            other_crew.sort(key=lambda x: (rank_map.get(x[2], 99), -x[3]))
+
+            for cid, cname, job_name, ep_count, prof in other_crew[:25]:
+                if cid not in seen_crew:
                     seen_crew.add(cid)
-                    prof = m.get("profile_path")
                     crew.append({
                         "id": cid,
                         "name": cname,
@@ -435,6 +449,8 @@ def fetch_credits_and_companies(item_id, media_type="movie", title=None):
                     "character": char,
                     "photo": f"https://image.tmdb.org/t/p/w185{prof}" if prof else None
                 })
+                if len(cast) >= 50:
+                    break
 
             # 3. Production Companies
             production_companies = []
@@ -476,15 +492,20 @@ def fetch_credits_and_companies(item_id, media_type="movie", title=None):
             if not data:
                 return empty_result
 
-            # 1. Crew (Directors, Writers)
+            # 1. Crew (Directors, Writers, Producers)
             crew = []
             seen_crew = set()
             raw_crew = data.get("credits", {}).get("crew", [])
-            for m in raw_crew:
+
+            movie_rank = {"Director": 0, "Writer": 1, "Screenplay": 2, "Producer": 3, "Executive Producer": 4}
+            sorted_movie_crew = [m for m in raw_crew if m.get("job") in movie_rank]
+            sorted_movie_crew.sort(key=lambda m: (movie_rank.get(m.get("job"), 99), -m.get("popularity", 0)))
+
+            for m in sorted_movie_crew[:25]:
                 cid = m.get("id")
                 cname = m.get("name", "").strip()
                 job = m.get("job") or ""
-                if cid and cname and job in ["Director", "Writer", "Screenplay"] and cid not in seen_crew:
+                if cid and cname and cid not in seen_crew:
                     seen_crew.add(cid)
                     prof = m.get("profile_path")
                     crew.append({
@@ -512,6 +533,8 @@ def fetch_credits_and_companies(item_id, media_type="movie", title=None):
                     "character": char,
                     "photo": f"https://image.tmdb.org/t/p/w185{prof}" if prof else None
                 })
+                if len(cast) >= 40:
+                    break
 
             # 3. Production Companies
             production_companies = []

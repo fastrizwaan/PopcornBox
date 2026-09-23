@@ -434,8 +434,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                         <property name="spacing">12</property>
                                         <property name="margin-top">12</property>
                                         <property name="margin-bottom">24</property>
-                                        <property name="margin-start">12</property>
-                                        <property name="margin-end">12</property>
+                                        <property name="margin-start">16</property>
+                                        <property name="margin-end">16</property>
                                       </object>
                                     </child>
                                   </object>
@@ -454,8 +454,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                       <object class="GtkBox" id="discover_back_box">
                                         <property name="orientation">0</property>
                                         <property name="spacing">8</property>
-                                        <property name="margin-start">12</property>
-                                        <property name="margin-end">12</property>
+                                        <property name="margin-start">16</property>
+                                        <property name="margin-end">16</property>
                                         <property name="margin-top">12</property>
                                         <property name="margin-bottom">4</property>
                                         <property name="visible">false</property>
@@ -528,7 +528,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 </style>
                                                 <property name="halign">1</property>
                                                 <property name="margin-bottom">8</property>
-                                                </object>
+                                                <property name="margin-start">12</property>
+                                              </object>
                                             </child>
                                             <child>
                                               <object class="GtkSeparator">
@@ -561,7 +562,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <property name="halign">1</property>
                                                 <property name="margin-top">16</property>
                                                 <property name="margin-bottom">8</property>
-                                                </object>
+                                                <property name="margin-start">12</property>
+                                              </object>
                                             </child>
                                             <child>
                                               <object class="GtkSeparator">
@@ -594,7 +596,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <property name="halign">1</property>
                                                 <property name="margin-top">16</property>
                                                 <property name="margin-bottom">8</property>
-                                                </object>
+                                                <property name="margin-start">12</property>
+                                              </object>
                                             </child>
                                             <child>
                                               <object class="GtkSeparator">
@@ -627,7 +630,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <property name="halign">1</property>
                                                 <property name="margin-top">16</property>
                                                 <property name="margin-bottom">8</property>
-                                                </object>
+                                                <property name="margin-start">12</property>
+                                              </object>
                                             </child>
                                             <child>
                                               <object class="GtkSeparator">
@@ -1805,51 +1809,60 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                           </object>
                         </child>
                         <child>
-                          <object class="GtkScrolledWindow">
-                            <property name="vexpand">true</property>
-                            <property name="child">
+                          <object class="GtkBox">
+                            <property name="orientation">1</property>
+                            <property name="margin-top">18</property>
+                            <property name="margin-bottom">6</property>
+                            <property name="margin-start">24</property>
+                            <property name="margin-end">24</property>
+                            <child>
                               <object class="GtkBox">
-                                <property name="orientation">1</property>
-                                <property name="margin-top">24</property>
-                                <property name="margin-start">24</property>
-                                <property name="margin-end">24</property>
-                                <property name="spacing">12</property>
+                                <property name="spacing">8</property>
+                                <property name="halign">3</property>
                                 <child>
-                                  <object class="GtkBox">
-                                    <property name="spacing">8</property>
-                                    <property name="halign">3</property>
-                                    <child>
-                                      <object class="GtkEntry" id="addon_url_entry">
-                                        <property name="placeholder-text">Search or paste Stremio addon manifest URL...</property>
-                                        <property name="width-request">400</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkButton" id="add_addon_btn">
-                                        <property name="label" translatable="yes">Install</property>
-                                        <style>
-                                          <class name="suggested-action"/>
-                                        </style>
-                                        <property name="action-name">win.add-addon</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkButton" id="import_addon_btn">
-                                        <property name="label" translatable="yes">Import</property>
-                                        <property name="action-name">win.import-addons</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkButton" id="export_addon_btn">
-                                        <property name="label" translatable="yes">Export</property>
-                                        <property name="action-name">win.export-addons</property>
-                                      </object>
-                                    </child>
+                                  <object class="GtkEntry" id="addon_url_entry">
+                                    <property name="placeholder-text">Search or paste Stremio addon manifest URL...</property>
+                                    <property name="width-request">400</property>
                                   </object>
                                 </child>
                                 <child>
+                                  <object class="GtkButton" id="add_addon_btn">
+                                    <property name="label" translatable="yes">Install</property>
+                                    <style>
+                                      <class name="suggested-action"/>
+                                    </style>
+                                    <property name="action-name">win.add-addon</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton" id="import_addon_btn">
+                                    <property name="label" translatable="yes">Import</property>
+                                    <property name="action-name">win.import-addons</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton" id="export_addon_btn">
+                                    <property name="label" translatable="yes">Export</property>
+                                    <property name="action-name">win.export-addons</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkScrolledWindow">
+                            <property name="vexpand">true</property>
+                            <property name="hexpand">true</property>
+                            <property name="child">
+                              <object class="GtkBox">
+                                <property name="orientation">1</property>
+                                <property name="margin-top">12</property>
+                                <property name="margin-start">24</property>
+                                <property name="margin-end">24</property>
+                                <property name="margin-bottom">24</property>
+                                <child>
                                   <object class="GtkListBox" id="addons_listbox">
-                                    <property name="margin-top">24</property>
                                     <property name="selection-mode">0</property>
                                     <style>
                                       <class name="boxed-list"/>

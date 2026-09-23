@@ -138,9 +138,12 @@ def _read_db():
             if "addons" not in data:
                 data["addons"] = DEFAULT_ADDONS
             else:
-                # Ensure all default/bundled addons are present in the user database
+                # Ensure default/bundled addons are present in the user database unless intentionally removed
                 migrated = False
+                removed_defaults = set(data.get("settings", {}).get("removed_default_addons", []))
                 for default_addon in DEFAULT_ADDONS:
+                    if default_addon.get("id") in removed_defaults:
+                        continue
                     found = False
                     for a in data["addons"]:
                         if a.get("id") == default_addon["id"]:
@@ -922,7 +925,18 @@ def add_addon(addon):
         addons = [a for a in addons if a.get("id") != addon.get("id") and a.get("manifest_url") != addon.get("manifest_url")]
         addons.append(addon)
         db["addons"] = addons
+        # If this default addon was previously removed, unmark it
+        settings = db.setdefault("settings", {})
+        removed_defaults = settings.get("removed_default_addons", [])
+        if addon.get("id") in removed_defaults:
+            settings["removed_default_addons"] = [x for x in removed_defaults if x != addon.get("id")]
         _write_db(db)
+    clear_all_cached_streams()
+    try:
+        from . import api
+        api.invalidate_catalogs_cache()
+    except Exception:
+        pass
 
 def update_addon_catalogs(manifest_url, catalogs):
     """Update an addon's catalogs list if it was empty or missing."""
@@ -942,14 +956,47 @@ def update_addon_catalogs(manifest_url, catalogs):
             return True
     return False
 
-def remove_addon(addon_id):
+def remove_addon(addon_id=None, manifest_url=None):
+    if not addon_id and not manifest_url:
+        return
     with _db_lock:
         db = _read_db()
-        manifest_urls = [a.get("manifest_url") for a in db.get("addons", []) if a.get("id") == addon_id and a.get("manifest_url")]
-        db["addons"] = [a for a in db.get("addons", []) if a.get("id") != addon_id]
+        addons = db.get("addons", [])
+        to_remove = []
+        for a in addons:
+            match_id = addon_id and str(a.get("id")) == str(addon_id)
+            match_url = manifest_url and a.get("manifest_url") == manifest_url
+            if match_id or match_url:
+                to_remove.append(a)
+        
+        removed_ids = {a.get("id") for a in to_remove if a.get("id")}
+        removed_urls = {a.get("manifest_url") for a in to_remove if a.get("manifest_url")}
+        if addon_id:
+            removed_ids.add(addon_id)
+        if manifest_url:
+            removed_urls.add(manifest_url)
+            
+        db["addons"] = [a for a in addons if a.get("id") not in removed_ids and a.get("manifest_url") not in removed_urls]
+        
+        # Track removed default addons so they aren't resurrected on startup
+        settings = db.setdefault("settings", {})
+        removed_defaults = set(settings.get("removed_default_addons", []))
+        for default_addon in DEFAULT_ADDONS:
+            if default_addon.get("id") in removed_ids:
+                removed_defaults.add(default_addon.get("id"))
+        settings["removed_default_addons"] = list(removed_defaults)
+        
         _write_db(db)
-    for m_url in manifest_urls:
+    
+    for m_url in removed_urls:
         clear_cached_catalog_for_url(m_url)
+    clear_all_cached_streams()
+    
+    try:
+        from . import api
+        api.invalidate_catalogs_cache()
+    except Exception:
+        pass
 
 def clear_cached_catalog_for_url(manifest_url):
     if not manifest_url:
@@ -963,6 +1010,16 @@ def clear_cached_catalog_for_url(manifest_url):
     except Exception as e:
         print(f"Error clearing catalog cache for {manifest_url}: {e}")
 
+def clear_all_cached_streams():
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM stream_cache")
+            conn.commit()
+    except Exception as e:
+        print(f"Error clearing all cached streams: {e}")
+
 def set_addon_enabled(addon_id, enabled):
     with _db_lock:
         db = _read_db()
@@ -970,6 +1027,12 @@ def set_addon_enabled(addon_id, enabled):
             if a.get("id") == addon_id:
                 a["enabled"] = enabled
         _write_db(db)
+    clear_all_cached_streams()
+    try:
+        from . import api
+        api.invalidate_catalogs_cache()
+    except Exception:
+        pass
 
 # --- SQLite Metadata & Stream Cache ---
 
