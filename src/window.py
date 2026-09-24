@@ -8110,6 +8110,11 @@ class CineWindow(Adw.ApplicationWindow):
             logger.info(f"[SUBS] play_stream_with_failover: imdb_id={imdb_id}, media_type={media_type}, S{season}E{episode}, title={title}")
             self.fetch_and_add_subtitles(imdb_id, media_type, season, episode, stream_subtitles=all_subs, stream_title=title)
 
+        self.stream_queue_season = season
+        self.stream_queue_episode = episode
+        self.stream_queue_media_type = media_type or (getattr(page, 'media_type', 'movie') if page else 'movie')
+        self.stream_queue_item_id = imdb_id or target_id
+
         self._play_current_stream_from_queue(self.stream_request_id)
 
     def _play_current_stream_from_queue(self, request_id=None):
@@ -8209,7 +8214,42 @@ class CineWindow(Adw.ApplicationWindow):
                 elif isinstance(stats, dict):
                     text = self.format_stream_stats(stats)
                     self.update_player_loading(text)
-            player.play_magnet(magnet, file_index=file_index, progress_callback=progress_callback, item_id=torrent.get("id") if isinstance(torrent, dict) else None, season=getattr(self, "selected_season", None), episode=getattr(self, "selected_episode", None))
+            page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+            q_season = getattr(self, "stream_queue_season", None)
+            if q_season is None and getattr(self, "_current_playing_item", None):
+                q_season = self._current_playing_item.get("season")
+            if q_season is None and page:
+                q_season = getattr(page, "selected_season", None)
+
+            q_episode = getattr(self, "stream_queue_episode", None)
+            if q_episode is None and getattr(self, "_current_playing_item", None):
+                q_episode = self._current_playing_item.get("episode")
+            if q_episode is None and page:
+                q_episode = getattr(page, "selected_episode", None)
+
+            q_media_type = getattr(self, "stream_queue_media_type", None)
+            if q_media_type is None and getattr(self, "_current_playing_item", None):
+                q_media_type = self._current_playing_item.get("type")
+            if q_media_type is None and page:
+                q_media_type = getattr(page, "media_type", None)
+
+            q_item_id = torrent.get("id") if isinstance(torrent, dict) and torrent.get("id") else None
+            if not q_item_id:
+                q_item_id = getattr(self, "stream_queue_item_id", None)
+            if not q_item_id and getattr(self, "_current_playing_item", None):
+                q_item_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
+            if not q_item_id and page:
+                q_item_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0]
+
+            player.play_magnet(
+                magnet,
+                file_index=file_index,
+                progress_callback=progress_callback,
+                item_id=q_item_id,
+                media_type=q_media_type,
+                season=q_season,
+                episode=q_episode
+            )
         else:
             self._try_next_stream_in_queue()
 
@@ -8745,39 +8785,43 @@ class CineWindow(Adw.ApplicationWindow):
             page._auto_play_on_streams_loaded = False
             page._auto_play_next = False
 
-        if getattr(self, "_current_playing_item", None) and hasattr(self, "mpv"):
-            try:
-                curr_pos = float(self.mpv.time_pos or 0.0)
-                curr_dur = float(self.mpv.duration or 0.0)
-                if curr_pos > 0 and getattr(self, "stream_queue", None):
-                    self._mark_current_stream_as_working()
-                if curr_dur > 0:
-                    prog = min(1.0, max(0.0, curr_pos / curr_dur))
-                    self._current_playing_item["position"] = curr_pos
-                    self._current_playing_item["duration"] = curr_dur
-                    self._current_playing_item["progress"] = prog
-                    from . import database
-                    is_series = bool(
-                        self._current_playing_item.get("type") in ["series", "anime", "tv"]
-                        or self._current_playing_item.get("season") is not None
-                        or self._current_playing_item.get("episode") is not None
-                    )
-                    if prog >= 0.92:
-                        if is_series:
-                            self._advance_continue_watching_for_item(self._current_playing_item)
+        is_series = False
+        curr_season = None
+        if getattr(self, "_current_playing_item", None):
+            is_series = bool(
+                self._current_playing_item.get("type") in ["series", "anime", "tv"]
+                or self._current_playing_item.get("season") is not None
+                or self._current_playing_item.get("episode") is not None
+            )
+            curr_season = self._current_playing_item.get("season")
+            if hasattr(self, "mpv"):
+                try:
+                    curr_pos = float(self.mpv.time_pos or 0.0)
+                    curr_dur = float(self.mpv.duration or 0.0)
+                    if curr_pos > 0 and getattr(self, "stream_queue", None):
+                        self._mark_current_stream_as_working()
+                    if curr_dur > 0:
+                        prog = min(1.0, max(0.0, curr_pos / curr_dur))
+                        self._current_playing_item["position"] = curr_pos
+                        self._current_playing_item["duration"] = curr_dur
+                        self._current_playing_item["progress"] = prog
+                        from . import database
+                        if prog >= 0.92:
+                            if is_series:
+                                self._advance_continue_watching_for_item(self._current_playing_item)
+                            else:
+                                item_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
+                                database.remove_continue_watching(item_id, blacklist=False)
                         else:
-                            item_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
-                            database.remove_continue_watching(item_id, blacklist=False)
-                    else:
-                        database.save_continue_watching(self._current_playing_item)
-            except Exception:
-                pass
+                            database.save_continue_watching(self._current_playing_item)
+                except Exception:
+                    pass
         self._current_playing_item = None
         if hasattr(self, 'mpv'):
             try: self.mpv.stop()
             except Exception: pass
         from . import player
-        player.stop_player(remove_torrent=remove_torrent)
+        player.stop_player(remove_torrent=remove_torrent, is_series=is_series, season=curr_season)
         self.stream_queue = []
         self.stream_queue_index = 0
         if hasattr(self, "_update_continue_watching_section"):

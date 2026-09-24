@@ -31,8 +31,8 @@ else:
     DOWNLOAD_BASE = os.path.expanduser("~/.var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box/torrents")
 os.makedirs(DOWNLOAD_BASE, exist_ok=True)
 
-def stop_player(remove_torrent=False, keep_downloading=True):
-    """Stop the currently streaming video, unless it's fully downloaded or keep_downloading is True."""
+def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, season=None):
+    """Stop the currently streaming video, unless it's fully downloaded, keep_downloading is True, or it's part of a season."""
     global _streaming_hash, _trailer_process
     from . import database
     
@@ -43,8 +43,141 @@ def stop_player(remove_torrent=False, keep_downloading=True):
                 stats = engine.stats()
                 prog = stats.get("progress", 0)
                 is_dl_only = getattr(engine, 'is_download_only', False)
-                if remove_torrent and not is_dl_only:
-                    print(f"Stopping and deleting partially downloaded engine: {_streaming_hash}")
+
+                # 1. Determine if the torrent or current target file is completed
+                is_completed = False
+                if isinstance(prog, (int, float)) and prog >= 1.0:
+                    is_completed = True
+
+                if not is_completed and hasattr(engine, 'target') and isinstance(engine.target, dict):
+                    t_size = engine.target.get("size", 0)
+                    if isinstance(t_size, (int, float)) and t_size > 0:
+                        if hasattr(engine, '_target_downloaded'):
+                            try:
+                                t_dl = engine._target_downloaded()
+                                if isinstance(t_dl, (int, float)) and t_dl >= t_size:
+                                    is_completed = True
+                            except Exception:
+                                pass
+
+                if not is_completed and hasattr(engine, '_status'):
+                    try:
+                        st = engine._status()
+                        is_seed = getattr(st, "is_seeding", False)
+                        st_prog = getattr(st, "progress", 0)
+                        if (is_seed is True) or (isinstance(st_prog, (int, float)) and st_prog >= 1.0):
+                            is_completed = True
+                    except Exception:
+                        pass
+
+                dl_record = None
+                try:
+                    for d in database.get_downloads():
+                        if d.get("info_hash") == _streaming_hash:
+                            dl_record = d
+                            if d.get("finished", False):
+                                is_completed = True
+                            break
+                except Exception:
+                    pass
+
+                # Check on disk if target file exists and has full expected length
+                if not is_completed and stats.get("filePath"):
+                    try:
+                        hash_dir = os.path.join(DOWNLOAD_BASE, _streaming_hash)
+                        target_path = os.path.join(hash_dir, stats.get("filePath"))
+                        tot_len = stats.get("totalLength", 0)
+                        if isinstance(tot_len, (int, float)) and tot_len > 0 and os.path.exists(target_path):
+                            if os.path.getsize(target_path) >= tot_len:
+                                is_completed = True
+                    except Exception:
+                        pass
+
+                if is_completed:
+                    database.set_download_finished(_streaming_hash, True)
+
+                # 2. Determine if the torrent is part of a season / series
+                is_part_of_season = bool(is_series)
+                if season is not None:
+                    is_part_of_season = True
+
+                eng_media_type = getattr(engine, 'media_type', None)
+                eng_season = getattr(engine, 'season', None)
+                if eng_season is not None or eng_media_type in ("series", "anime", "tv"):
+                    is_part_of_season = True
+
+                if not is_part_of_season and dl_record:
+                    if dl_record.get("season") is not None or dl_record.get("media_type") in ("series", "anime", "tv"):
+                        is_part_of_season = True
+
+                # Check if torrent has multiple video files (season pack / multi-episode)
+                files = []
+                if hasattr(engine, '_files'):
+                    try:
+                        files = engine._files()
+                    except Exception:
+                        files = []
+                if not files:
+                    try:
+                        files = database.get_torrent_files(_streaming_hash)
+                    except Exception:
+                        files = []
+
+                video_exts = ('.mkv', '.mp4', '.avi', '.webm', '.mov', '.ts', '.m4v')
+                video_files = [f for f in files if any(str(f.get("path", "")).lower().endswith(ext) for ext in video_exts)]
+                if len(video_files) > 1:
+                    is_part_of_season = True
+
+                item_id = getattr(engine, 'item_id', None) or (dl_record.get("item_id") if dl_record else None)
+                if not is_part_of_season and item_id:
+                    try:
+                        if database.get_series_pack_torrent(item_id):
+                            is_part_of_season = True
+                    except Exception:
+                        pass
+
+                # 3. Check if ANY video file in the torrent is already completed
+                has_downloaded_file = False
+                if video_files and hasattr(engine, 'handle') and engine.handle:
+                    try:
+                        fp = engine.handle.file_progress()
+                        if isinstance(fp, (list, tuple)):
+                            for f in video_files:
+                                f_sz = f.get("size", 0)
+                                f_idx = f.get("index")
+                                if isinstance(f_sz, (int, float)) and f_sz > 0 and isinstance(f_idx, int) and 0 <= f_idx < len(fp):
+                                    if isinstance(fp[f_idx], (int, float)) and fp[f_idx] >= f_sz:
+                                        has_downloaded_file = True
+                                        break
+                    except Exception:
+                        pass
+
+                if not has_downloaded_file and video_files:
+                    try:
+                        hash_dir = os.path.join(DOWNLOAD_BASE, _streaming_hash)
+                        if os.path.exists(hash_dir):
+                            for f in video_files:
+                                f_sz = f.get("size", 0)
+                                f_p = os.path.join(hash_dir, str(f.get("path", "")))
+                                if isinstance(f_sz, (int, float)) and f_sz > 0 and os.path.exists(f_p):
+                                    if os.path.getsize(f_p) >= f_sz:
+                                        has_downloaded_file = True
+                                        break
+                    except Exception:
+                        pass
+
+                # Only delete if remove_torrent requested, NOT download-only, NOT completed,
+                # NOT part of a season (only separate incomplete torrents), and no completed files exist
+                should_delete = (
+                    remove_torrent
+                    and not is_dl_only
+                    and not is_completed
+                    and not is_part_of_season
+                    and not has_downloaded_file
+                )
+
+                if should_delete:
+                    print(f"Stopping and deleting incomplete separate torrent: {_streaming_hash}")
                     info_hash_to_delete = _streaming_hash
                     import threading
                     threading.Thread(target=engine.stop, daemon=True).start()
@@ -65,9 +198,11 @@ def stop_player(remove_torrent=False, keep_downloading=True):
                                 print(f"Error deleting partial torrent {info_hash_to_delete}: {e}")
                     threading.Thread(target=_delete_files, daemon=True).start()
                 else:
-                    print(f"Leaving engine running: {_streaming_hash} (progress={prog:.2f}, remove_torrent={remove_torrent}, is_download_only={is_dl_only})")
-                    if prog >= 1.0:
+                    print(f"Leaving engine running / keeping torrent: {_streaming_hash} (progress={prog:.2f}, remove_torrent={remove_torrent}, is_download_only={is_dl_only}, completed={is_completed}, season={is_part_of_season}, has_completed_file={has_downloaded_file})")
+                    if is_completed or prog >= 1.0:
                         database.set_download_finished(_streaming_hash, True)
+                    elif remove_torrent and hasattr(engine, 'set_download_limit'):
+                        engine.set_download_limit(2 * 1024 * 1024)
             if remove_torrent:
                 _streaming_hash = None
 
@@ -361,10 +496,19 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
             print("Reusing existing libtorrent engine")
             if is_download:
                 engine.is_download_only = True
-            engine.item_id = item_id
-            engine.media_type = media_type
+            if item_id:
+                engine.item_id = item_id
+            if media_type:
+                engine.media_type = media_type
+            if season is not None:
+                engine.season = season
+            if episode is not None:
+                engine.episode = episode
             _streaming_hash = info_hash
             database.set_download_paused(info_hash, False)
+            t_name = engine._get_torrent_name() if hasattr(engine, '_get_torrent_name') else "Torrent"
+            active_file_idx = target_file_index if target_file_index is not None else getattr(engine, 'file_index', file_index)
+            database.add_download(info_hash, t_name, magnet_link, active_file_idx, item_id, media_type, season, episode)
             if hasattr(engine, 'resume'):
                 engine.resume()
                 def resume_stream():
