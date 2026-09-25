@@ -760,16 +760,32 @@ template $CineWindow: Adw.ApplicationWindow {
             }
             Box {
               orientation: vertical;
-              margin-top: 18;
+              margin-top: 14;
               margin-bottom: 6;
               margin-start: 24;
               margin-end: 24;
+              spacing: 10;
+              Box {
+                spacing: 10;
+                DropDown addon_catalog_dropdown {
+                  valign: center;
+                }
+                DropDown addon_type_dropdown {
+                  valign: center;
+                }
+                Box {
+                  hexpand: true;
+                }
+                SearchEntry addon_search_entry {
+                  placeholder-text: _("Search addons...");
+                  width-request: 260;
+                }
+              }
               Box {
                 spacing: 8;
-                halign: center;
                 Entry addon_url_entry {
-                  placeholder-text: "Search or paste Stremio addon manifest URL...";
-                  width-request: 400;
+                  placeholder-text: _("Paste Stremio addon manifest URL to install...");
+                  hexpand: true;
                 }
                 Button add_addon_btn {
                   label: _("Install");
@@ -795,6 +811,22 @@ template $CineWindow: Adw.ApplicationWindow {
                 margin-start: 24;
                 margin-end: 24;
                 margin-bottom: 24;
+                Spinner addon_catalog_spinner {
+                  halign: center;
+                  valign: center;
+                  width-request: 32;
+                  height-request: 32;
+                  visible: false;
+                  margin-top: 36;
+                  margin-bottom: 36;
+                }
+                Label addon_catalog_status_label {
+                  visible: false;
+                  halign: center;
+                  margin-top: 36;
+                  margin-bottom: 36;
+                  styles ["dim-label", "title-4"]
+                }
                 ListBox addons_listbox {
                   selection-mode: none;
                   styles ["boxed-list"]

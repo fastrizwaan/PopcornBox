@@ -1811,18 +1811,44 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                         <child>
                           <object class="GtkBox">
                             <property name="orientation">1</property>
-                            <property name="margin-top">18</property>
+                            <property name="margin-top">14</property>
                             <property name="margin-bottom">6</property>
                             <property name="margin-start">24</property>
                             <property name="margin-end">24</property>
+                            <property name="spacing">10</property>
+                            <child>
+                              <object class="GtkBox">
+                                <property name="spacing">10</property>
+                                <child>
+                                  <object class="GtkDropDown" id="addon_catalog_dropdown">
+                                    <property name="valign">3</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkDropDown" id="addon_type_dropdown">
+                                    <property name="valign">3</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkBox">
+                                    <property name="hexpand">true</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkSearchEntry" id="addon_search_entry">
+                                    <property name="placeholder-text" translatable="yes">Search addons...</property>
+                                    <property name="width-request">260</property>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
                             <child>
                               <object class="GtkBox">
                                 <property name="spacing">8</property>
-                                <property name="halign">3</property>
                                 <child>
                                   <object class="GtkEntry" id="addon_url_entry">
-                                    <property name="placeholder-text">Search or paste Stremio addon manifest URL...</property>
-                                    <property name="width-request">400</property>
+                                    <property name="placeholder-text" translatable="yes">Paste Stremio addon manifest URL to install...</property>
+                                    <property name="hexpand">true</property>
                                   </object>
                                 </child>
                                 <child>
@@ -1861,6 +1887,29 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 <property name="margin-start">24</property>
                                 <property name="margin-end">24</property>
                                 <property name="margin-bottom">24</property>
+                                <child>
+                                  <object class="GtkSpinner" id="addon_catalog_spinner">
+                                    <property name="halign">3</property>
+                                    <property name="valign">3</property>
+                                    <property name="width-request">32</property>
+                                    <property name="height-request">32</property>
+                                    <property name="visible">false</property>
+                                    <property name="margin-top">36</property>
+                                    <property name="margin-bottom">36</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkLabel" id="addon_catalog_status_label">
+                                    <property name="visible">false</property>
+                                    <property name="halign">3</property>
+                                    <property name="margin-top">36</property>
+                                    <property name="margin-bottom">36</property>
+                                    <style>
+                                      <class name="dim-label"/>
+                                      <class name="title-4"/>
+                                    </style>
+                                  </object>
+                                </child>
                                 <child>
                                   <object class="GtkListBox" id="addons_listbox">
                                     <property name="selection-mode">0</property>

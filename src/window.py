@@ -3212,6 +3212,11 @@ class CineWindow(Adw.ApplicationWindow):
     down_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
     addon_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
 
+    addon_catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    addon_type_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    addon_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
+    addon_catalog_spinner: Gtk.Spinner = Gtk.Template.Child()
+    addon_catalog_status_label: Gtk.Label = Gtk.Template.Child()
     addon_url_entry: Gtk.Entry = Gtk.Template.Child()
     addons_listbox: Gtk.ListBox = Gtk.Template.Child()
     video_overlay: Gtk.Overlay = Gtk.Template.Child()
@@ -3620,9 +3625,7 @@ class CineWindow(Adw.ApplicationWindow):
         ]:
             widget.set_direction(Gtk.TextDirection.LTR)
 
-        self.addons_listbox.set_filter_func(self._addon_filter_func)
-        self.addon_url_entry.connect("changed", lambda *a: self.addons_listbox.invalidate_filter())
-        self.addon_url_entry.connect("activate", lambda *a: self._add_addon())
+        self._setup_addons_page()
 
         self.library_stack.connect("notify::visible-child-name", self._on_library_stack_changed)
         self._on_library_stack_changed()
@@ -8875,6 +8878,9 @@ class CineWindow(Adw.ApplicationWindow):
             types_found = set()
             for addon in addons:
                 if not addon.get("enabled", True): continue
+                # Skip addons that only provide addon catalogs (e.g. stremio-addons.net)
+                if not api.has_catalog_resource(addon) and not api.has_stream_resource(addon) and not api.has_meta_resource(addon):
+                    continue
                 for t in addon.get("types", []):
                     if t: types_found.add(str(t).lower())
                 for cat in api.get_addon_catalogs(addon, cache_only=True):
@@ -8886,8 +8892,9 @@ class CineWindow(Adw.ApplicationWindow):
         self.anime_supported = ("anime" in supported_types)
         self.tv_supported = any(t in supported_types for t in ["tv", "channel", "tvchannel"])
         for btn_name in ["anime_inactive_btn_movies", "anime_inactive_btn_series", "anime_inactive_btn_discover"]:
-            if hasattr(self, btn_name):
-                getattr(self, btn_name).set_visible(self.anime_supported)
+            btn = getattr(self, btn_name, None)
+            if btn and hasattr(btn, "set_visible"):
+                btn.set_visible(self.anime_supported)
 
         # Build dynamic media types based on Stremio addons
         media_type_labels = ["Movies", "Series"]
@@ -8917,7 +8924,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         self.media_type_keys = media_type_keys
         self.media_type_labels = media_type_labels
-        if hasattr(self, "media_type_dropdown"):
+        if hasattr(self, "media_type_dropdown") and hasattr(self.media_type_dropdown, "get_selected"):
             cur_sel = self.media_type_dropdown.get_selected()
             self.media_type_dropdown.set_model(Gtk.StringList.new(media_type_labels))
             if cur_sel < len(media_type_labels):
@@ -8933,7 +8940,7 @@ class CineWindow(Adw.ApplicationWindow):
         cats = api.get_available_catalogs(m_type)
         if hasattr(self, "_catalog_list_cache"):
             self._catalog_list_cache[m_type] = cats
-        if hasattr(self, "catalog_dropdown"):
+        if hasattr(self, "catalog_dropdown") and hasattr(self.catalog_dropdown, "set_model"):
             self.all_catalogs = cats
             cat_names = [c["display_name"] for c in cats]
             if not cat_names:
@@ -9031,6 +9038,8 @@ class CineWindow(Adw.ApplicationWindow):
         # 3. Update dropdowns
         self._update_search_catalog_dropdown()
         self._update_catalog_dropdown()
+        if hasattr(self, "_update_addon_catalog_dropdown"):
+            self._update_addon_catalog_dropdown()
 
         # 4. Mark library views dirty for navigation
         self._addons_dirty = True
@@ -9048,26 +9057,132 @@ class CineWindow(Adw.ApplicationWindow):
         if cur_main == "library":
             self._refresh_active_library_view()
 
+    def _setup_addons_page(self):
+        if not hasattr(self, "addon_catalog_dropdown") or not self.addon_catalog_dropdown:
+            return
+
+        self._addon_catalog_sources = []
+        self._addon_types_list = [
+            ("all", _("All")),
+            ("movie", _("Movies")),
+            ("series", _("Series")),
+            ("anime", _("Anime")),
+            ("subtitles", _("Subtitles")),
+            ("other", _("Other")),
+        ]
+
+        # Setup type filter dropdown
+        type_labels = [label for _, label in self._addon_types_list]
+        self.addon_type_dropdown.set_model(Gtk.StringList.new(type_labels))
+        self.addon_type_dropdown.set_selected(0)
+        self.addon_type_dropdown.connect("notify::selected", lambda *a: self.addons_listbox.invalidate_filter())
+
+        # Setup search entry and url entry
+        self.addon_search_entry.connect("search-changed", lambda *a: self.addons_listbox.invalidate_filter())
+        self.addon_search_entry.connect("activate", lambda *a: self.addons_listbox.invalidate_filter())
+        self.addon_url_entry.connect("changed", lambda *a: self.addons_listbox.invalidate_filter())
+        self.addon_url_entry.connect("activate", lambda *a: self._add_addon())
+
+        # Setup filter func on listbox
+        self.addons_listbox.set_filter_func(self._addon_filter_func)
+
+        # Setup catalog source dropdown
+        self._update_addon_catalog_dropdown()
+        self.addon_catalog_dropdown.connect("notify::selected", self._on_addon_catalog_selected)
+
+    def _update_addon_catalog_dropdown(self, select_id=None):
+        if not hasattr(self, "addon_catalog_dropdown") or not self.addon_catalog_dropdown:
+            return
+        from . import api
+        prev_selected_id = select_id
+        if not prev_selected_id and hasattr(self, "_addon_catalog_sources") and self._addon_catalog_sources:
+            cur_idx = self.addon_catalog_dropdown.get_selected()
+            if 0 <= cur_idx < len(self._addon_catalog_sources):
+                prev_selected_id = self._addon_catalog_sources[cur_idx].get("id")
+
+        self._addon_catalog_sources = api.get_addon_directory_catalogs()
+        display_names = []
+        target_idx = 0
+
+        for idx, src in enumerate(self._addon_catalog_sources):
+            name = src.get("name", "Unknown")
+            if src.get("installed") and not src.get("is_installed_view"):
+                disp = f"{name} 🟢"
+            else:
+                disp = name
+            display_names.append(disp)
+            if prev_selected_id and src.get("id") == prev_selected_id:
+                target_idx = idx
+
+        self._updating_addon_catalog_dropdown = True
+        self.addon_catalog_dropdown.set_model(Gtk.StringList.new(display_names))
+        if 0 <= target_idx < len(display_names):
+            self.addon_catalog_dropdown.set_selected(target_idx)
+        self._updating_addon_catalog_dropdown = False
+
+    def _on_addon_catalog_selected(self, dropdown, pspec):
+        if getattr(self, "_updating_addon_catalog_dropdown", False):
+            return
+        selected = dropdown.get_selected()
+        if not hasattr(self, "_addon_catalog_sources") or selected >= len(self._addon_catalog_sources):
+            return
+        source = self._addon_catalog_sources[selected]
+        if source.get("is_installed_view"):
+            if hasattr(self, "addon_type_dropdown"):
+                self.addon_type_dropdown.set_sensitive(False)
+            self._populate_installed_addons()
+        else:
+            if hasattr(self, "addon_type_dropdown"):
+                self.addon_type_dropdown.set_sensitive(True)
+            self._load_addon_catalog(source)
+
     def _populate_addons(self, scroll_to_url=None):
         debug_log("_populate_addons START")
+        if not hasattr(self, "addon_catalog_dropdown") or not self.addon_catalog_dropdown:
+            self._populate_installed_addons(scroll_to_url=scroll_to_url)
+            return
+
+        self._update_addon_catalog_dropdown()
+        selected = self.addon_catalog_dropdown.get_selected()
+        if hasattr(self, "_addon_catalog_sources") and 0 <= selected < len(self._addon_catalog_sources):
+            source = self._addon_catalog_sources[selected]
+            if source.get("is_installed_view"):
+                self._populate_installed_addons(scroll_to_url=scroll_to_url)
+            else:
+                self._load_addon_catalog(source)
+        else:
+            self._populate_installed_addons(scroll_to_url=scroll_to_url)
+
+    def _populate_installed_addons(self, scroll_to_url=None):
+        debug_log("_populate_installed_addons START")
+        if hasattr(self, "addon_catalog_spinner"):
+            self.addon_catalog_spinner.stop()
+            self.addon_catalog_spinner.set_visible(False)
+        if hasattr(self, "addon_catalog_status_label"):
+            self.addon_catalog_status_label.set_visible(False)
+
         while self.addons_listbox.get_first_child() is not None:
             self.addons_listbox.remove(self.addons_listbox.get_first_child())
-            
+
         from . import database
         import urllib.request
         addons = database.get_addons()
-        debug_log(f"_populate_addons DB returned {len(addons)} addons")
+        debug_log(f"_populate_installed_addons DB returned {len(addons)} addons")
         target_row = None
         for addon in addons:
             name_str = GLib.markup_escape_text(addon.get("name", "Unknown") or "Unknown")
             desc_str = GLib.markup_escape_text(addon.get("description", "") or "")
             row = Adw.ActionRow(title=name_str, subtitle=desc_str)
-            
+            row._is_catalog_row = False
+            row._addon_title = (addon.get("name") or "Unknown").lower()
+            row._addon_desc = (addon.get("description") or "").lower()
+            row._addon_types = [str(t).lower() for t in addon.get("types", [])]
+
             status_label = Gtk.Label(label="⚪", valign=Gtk.Align.CENTER)
             row.add_prefix(status_label)
-            
+
             manifest_url = addon.get("manifest_url", "")
-            
+
             def check_online(url, lbl, aname=addon.get("name", "Unknown")):
                 from . import api
                 import urllib.request
@@ -9085,31 +9200,30 @@ class CineWindow(Adw.ApplicationWindow):
                         is_on = False
                 api.set_addon_online_status(url, is_on)
                 if is_on:
-                    # Clear session block so this addon is immediately re-queried
                     api.reset_addon_session_status(url)
                 debug_log(f"check_online result for '{aname}' ({url})", "🟢 Online" if is_on else "🔴 Offline")
                 GLib.idle_add(lbl.set_label, "🟢" if is_on else "🔴")
-                
+
             if manifest_url:
                 threading.Thread(target=check_online, args=(manifest_url, status_label), daemon=True).start()
             else:
                 status_label.set_label("🔴")
-            
+
             box = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
-            
+
             enable_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
             enable_switch.set_active(addon.get("enabled", True))
             enable_switch.connect("notify::active", lambda sw, pspec, a=addon: (database.set_addon_enabled(a.get("id"), sw.get_active()), self._on_addons_changed()))
             box.append(enable_switch)
-            
+
             menu_btn = Gtk.MenuButton(icon_name="view-more-symbolic", valign=Gtk.Align.CENTER)
             menu_btn.add_css_class("flat")
-            
+
             popover = Gtk.Popover()
             popover_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             popover.set_child(popover_box)
             menu_btn.set_popover(popover)
-            
+
             if addon.get("behaviorHints", {}).get("configurable", False) or "/configure" in manifest_url:
                 config_btn = Gtk.Button(label=_("Configure"))
                 config_btn.add_css_class("flat")
@@ -9119,7 +9233,7 @@ class CineWindow(Adw.ApplicationWindow):
                     open_uri(c_url, self)
                 config_btn.connect("clicked", on_config)
                 popover_box.append(config_btn)
-            
+
             copy_btn = Gtk.Button(label=_("Copy URL"))
             copy_btn.add_css_class("flat")
             def on_copy(btn, m_url=manifest_url, pop=popover):
@@ -9128,15 +9242,15 @@ class CineWindow(Adw.ApplicationWindow):
                 self._show_toast(_("Copied URL to clipboard"))
             copy_btn.connect("clicked", on_copy)
             popover_box.append(copy_btn)
-            
+
             remove_btn = Gtk.Button(label=_("Delete"))
             remove_btn.add_css_class("flat")
             remove_btn.add_css_class("destructive-action")
             remove_btn.connect("clicked", lambda btn, a=addon, pop=popover: (pop.popdown(), self._remove_addon(a)))
             popover_box.append(remove_btn)
-            
+
             box.append(menu_btn)
-            
+
             row.add_suffix(box)
             self.addons_listbox.append(row)
             if scroll_to_url and manifest_url == scroll_to_url:
@@ -9144,7 +9258,227 @@ class CineWindow(Adw.ApplicationWindow):
 
         if target_row:
             GLib.idle_add(target_row.grab_focus)
-            
+        self.addons_listbox.invalidate_filter()
+
+    def _load_addon_catalog(self, source):
+        while self.addons_listbox.get_first_child() is not None:
+            self.addons_listbox.remove(self.addons_listbox.get_first_child())
+
+        catalog_url = source.get("url")
+        if not catalog_url:
+            return
+
+        if hasattr(self, "addon_catalog_status_label"):
+            self.addon_catalog_status_label.set_visible(False)
+        if hasattr(self, "addon_catalog_spinner"):
+            self.addon_catalog_spinner.set_visible(True)
+            self.addon_catalog_spinner.start()
+
+        req_id = getattr(self, "_addon_catalog_req_id", 0) + 1
+        self._addon_catalog_req_id = req_id
+
+        def fetch():
+            from . import api
+            addons = api.fetch_addon_directory_catalog(catalog_url)
+            def apply():
+                if getattr(self, "_addon_catalog_req_id", 0) != req_id:
+                    return False
+                if hasattr(self, "addon_catalog_spinner"):
+                    self.addon_catalog_spinner.stop()
+                    self.addon_catalog_spinner.set_visible(False)
+                if not addons:
+                    if hasattr(self, "addon_catalog_status_label"):
+                        self.addon_catalog_status_label.set_text(_("No addons found."))
+                        self.addon_catalog_status_label.set_visible(True)
+                    return False
+
+                if hasattr(self, "addon_catalog_status_label"):
+                    self.addon_catalog_status_label.set_visible(False)
+                self._render_catalog_addons(addons)
+                self.addons_listbox.invalidate_filter()
+                return False
+            GLib.idle_add(apply)
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _render_catalog_addons(self, addons):
+        from . import database
+        from .movie_widget import load_image_into_picture, load_remote_image
+        installed_addons = database.get_addons()
+        installed_urls = {a.get("manifest_url") for a in installed_addons if a.get("manifest_url")}
+        installed_ids = {a.get("id") for a in installed_addons if a.get("id")}
+
+        for item in addons:
+            addon_id = item.get("id")
+            transport_url = item.get("transport_url", "")
+            is_installed = (transport_url in installed_urls) or (addon_id in installed_ids)
+
+            row = Gtk.ListBoxRow()
+            row._is_catalog_row = True
+            row._addon_data = item
+            row._addon_name = str(item.get("name", "")).lower()
+            row._addon_desc = str(item.get("description", "")).lower()
+            row._addon_types = [str(t).lower() for t in item.get("types", [])]
+            row._addon_id = str(addon_id or "").lower()
+
+            card_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+            card_box.set_margin_top(10)
+            card_box.set_margin_bottom(10)
+            card_box.set_margin_start(14)
+            card_box.set_margin_end(14)
+
+            # Left: Logo
+            logo_box = Gtk.Box()
+            logo_box.set_size_request(56, 56)
+            logo_box.add_css_class("card")
+            logo_box.set_valign(Gtk.Align.CENTER)
+            logo_box.set_halign(Gtk.Align.CENTER)
+
+            logo_url = item.get("logo")
+            if logo_url:
+                pic = Gtk.Picture()
+                pic.set_size_request(56, 56)
+                pic.set_can_shrink(True)
+                pic.set_content_fit(Gtk.ContentFit.COVER)
+                load_image_into_picture(logo_url, pic, width=56, height=56, crop=True, is_priority=True)
+                logo_box.append(pic)
+            else:
+                icon_img = Gtk.Image(icon_name="application-x-addon-symbolic")
+                icon_img.set_pixel_size(32)
+                icon_img.set_hexpand(True)
+                icon_img.set_vexpand(True)
+                logo_box.append(icon_img)
+            card_box.append(logo_box)
+
+            # Middle: Info
+            mid_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            mid_box.set_hexpand(True)
+            mid_box.set_valign(Gtk.Align.CENTER)
+
+            title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            title_label = Gtk.Label(label=item.get("name", "Unknown"), xalign=0)
+            title_label.add_css_class("title-3")
+            title_label.set_ellipsize(Pango.EllipsizeMode.END)
+            title_box.append(title_label)
+
+            ver = item.get("version")
+            if ver:
+                ver_label = Gtk.Label(label=f"v{ver}", xalign=0)
+                ver_label.add_css_class("dim-label")
+                ver_label.add_css_class("caption")
+                title_box.append(ver_label)
+            mid_box.append(title_box)
+
+            types = item.get("types", [])
+            if types:
+                types_str = " · ".join(str(t).title() for t in types if t)
+                type_label = Gtk.Label(label=types_str, xalign=0)
+                type_label.add_css_class("dim-label")
+                type_label.add_css_class("caption")
+                mid_box.append(type_label)
+
+            desc = item.get("description", "")
+            if desc:
+                desc_label = Gtk.Label(label=desc, xalign=0)
+                desc_label.set_wrap(True)
+                desc_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+                desc_label.set_lines(2)
+                desc_label.set_ellipsize(Pango.EllipsizeMode.END)
+                desc_label.add_css_class("body")
+                mid_box.append(desc_label)
+
+            card_box.append(mid_box)
+
+            # Right: Action Buttons
+            btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            btn_box.set_valign(Gtk.Align.CENTER)
+            self._update_catalog_row_buttons(row, item, btn_box, is_installed)
+            card_box.append(btn_box)
+
+            row.set_child(card_box)
+            self.addons_listbox.append(row)
+
+    def _update_catalog_row_buttons(self, row, addon_data, action_box, is_installed):
+        while action_box.get_first_child() is not None:
+            action_box.remove(action_box.get_first_child())
+
+        transport_url = addon_data.get("transport_url", "")
+        configurable = addon_data.get("configurable", False) or "/configure" in transport_url
+
+        if is_installed:
+            if configurable:
+                cfg_btn = Gtk.Button(label=_("Configure"))
+                cfg_btn.add_css_class("flat")
+                def on_cfg(b, url=transport_url):
+                    c_url = url.replace("/manifest.json", "/configure") if url.endswith("/manifest.json") else url
+                    open_uri(c_url, self)
+                cfg_btn.connect("clicked", on_cfg)
+                action_box.append(cfg_btn)
+
+            uninst_btn = Gtk.Button(label=_("Uninstall"))
+            uninst_btn.add_css_class("destructive-action")
+            uninst_btn.connect("clicked", lambda b: self._uninstall_catalog_addon(addon_data, row, uninst_btn, action_box))
+            action_box.append(uninst_btn)
+        else:
+            inst_btn = Gtk.Button(label=_("Install"))
+            inst_btn.add_css_class("suggested-action")
+            inst_btn.connect("clicked", lambda b: self._install_catalog_addon(addon_data, row, inst_btn, action_box))
+            action_box.append(inst_btn)
+
+            if configurable and addon_data.get("configuration_required", False):
+                cfg_btn = Gtk.Button(label=_("Configure"))
+                cfg_btn.add_css_class("flat")
+                def on_cfg(b, url=transport_url):
+                    c_url = url.replace("/manifest.json", "/configure") if url.endswith("/manifest.json") else url
+                    open_uri(c_url, self)
+                cfg_btn.connect("clicked", on_cfg)
+                action_box.append(cfg_btn)
+
+        share_btn = Gtk.Button(label=_("Share addon"))
+        share_btn.add_css_class("flat")
+        def on_share(b, url=transport_url):
+            self.get_clipboard().set(url)
+            self._show_toast(_("Copied addon URL to clipboard"))
+        share_btn.connect("clicked", on_share)
+        action_box.append(share_btn)
+
+    def _install_catalog_addon(self, addon_data, row, install_btn, action_box):
+        install_btn.set_sensitive(False)
+        manifest = dict(addon_data.get("manifest") or {})
+        transport_url = addon_data.get("transport_url") or manifest.get("manifest_url")
+        manifest["manifest_url"] = transport_url
+        if not manifest.get("id"):
+            manifest["id"] = addon_data.get("id")
+        addon_name = manifest.get("name") or manifest.get("id") or "Addon"
+
+        from . import database, api
+        database.add_addon(manifest)
+        if transport_url:
+            api.set_addon_online_status(transport_url, True)
+            api.reset_addon_session_status(transport_url)
+
+        self._show_toast(_(f"Installed addon: {addon_name}"))
+        self._on_addons_changed()
+        self._update_catalog_row_buttons(row, addon_data, action_box, is_installed=True)
+
+    def _uninstall_catalog_addon(self, addon_data, row, uninstall_btn, action_box):
+        uninstall_btn.set_sensitive(False)
+        addon_id = addon_data.get("id")
+        transport_url = addon_data.get("transport_url")
+        addon_name = addon_data.get("name") or addon_id or "Addon"
+
+        from . import database, api
+        database.remove_addon(addon_id=addon_id, manifest_url=transport_url)
+        if transport_url:
+            with api._ADDON_ONLINE_LOCK:
+                api._ADDON_ONLINE_STATUS.pop(transport_url, None)
+                api._ADDON_SESSION_FAILURES.pop(transport_url, None)
+                api._ADDON_SESSION_BLOCKED.discard(transport_url)
+
+        self._show_toast(_(f"Uninstalled addon: {addon_name}"))
+        self._on_addons_changed()
+        self._update_catalog_row_buttons(row, addon_data, action_box, is_installed=False)
+
     def _add_addon(self, *args):
         raw_url = self.addon_url_entry.get_text()
         url = self._normalize_addon_url(raw_url)
@@ -9174,7 +9508,13 @@ class CineWindow(Adw.ApplicationWindow):
                     api.reset_addon_session_status(url)
                     
                     def on_success():
-                        self._populate_addons(scroll_to_url=url)
+                        is_catalog_addon = bool(manifest.get("addonCatalogs") or "addon_catalog" in manifest.get("resources", []))
+                        if is_catalog_addon:
+                            self._update_addon_catalog_dropdown(select_id=manifest.get("id"))
+                            if hasattr(self, "addon_catalog_dropdown"):
+                                self._on_addon_catalog_selected(self.addon_catalog_dropdown, None)
+                        else:
+                            self._populate_addons(scroll_to_url=url)
                         self._on_addons_changed()
                         self._show_toast(_(f"Installed addon: {addon_name}"))
                     GLib.idle_add(on_success)
@@ -9225,17 +9565,60 @@ class CineWindow(Adw.ApplicationWindow):
                     api._ADDON_ONLINE_STATUS.pop(manifest_url, None)
                     api._ADDON_SESSION_FAILURES.pop(manifest_url, None)
                     api._ADDON_SESSION_BLOCKED.discard(manifest_url)
+            self._update_addon_catalog_dropdown()
             self._populate_addons()
             self._on_addons_changed()
             self._show_toast(_(f"Removed addon: {addon_name}"))
 
     def _addon_filter_func(self, row):
-        search_text = self.addon_url_entry.get_text().lower().strip()
-        if not search_text or search_text.startswith("http"):
+        search_entry = getattr(self, "addon_search_entry", None)
+        if search_entry and hasattr(search_entry, "get_text"):
+            search_text = search_entry.get_text().strip().lower()
+        if not search_text:
+            url_entry = getattr(self, "addon_url_entry", None)
+            if url_entry and hasattr(url_entry, "get_text"):
+                t = url_entry.get_text().strip().lower()
+                if not t.startswith("http"):
+                    search_text = t
+
+        selected_type = "all"
+        if hasattr(self, "addon_type_dropdown") and self.addon_type_dropdown and hasattr(self, "_addon_types_list"):
+            sel_idx = self.addon_type_dropdown.get_selected()
+            if 0 <= sel_idx < len(self._addon_types_list):
+                selected_type = self._addon_types_list[sel_idx][0]
+
+        if getattr(row, "_is_catalog_row", False):
+            if search_text:
+                name = getattr(row, "_addon_name", "")
+                desc = getattr(row, "_addon_desc", "")
+                aid = getattr(row, "_addon_id", "")
+                types = getattr(row, "_addon_types", [])
+                if not (search_text in name or search_text in desc or search_text in aid or any(search_text in t for t in types)):
+                    return False
+
+            if selected_type != "all":
+                types = getattr(row, "_addon_types", [])
+                data = getattr(row, "_addon_data", {})
+                res = [str(r).lower() for r in (data.get("resources") or []) if isinstance(r, str)]
+                if selected_type == "movie":
+                    return any("movie" in t for t in types)
+                elif selected_type == "series":
+                    return any(t in ["series", "tv"] for t in types)
+                elif selected_type == "anime":
+                    return any("anime" in t for t in types) or "anime" in getattr(row, "_addon_name", "") or "anime" in getattr(row, "_addon_desc", "")
+                elif selected_type == "subtitles":
+                    return "subtitles" in res or any("sub" in t for t in types) or "subtitle" in getattr(row, "_addon_name", "")
+                elif selected_type == "other":
+                    is_standard = any("movie" in t or "series" in t or "anime" in t or "tv" in t for t in types) or "subtitles" in res
+                    return not is_standard
             return True
-        title = row.get_title().lower()
-        subtitle = row.get_subtitle().lower() if row.get_subtitle() else ""
-        return search_text in title or search_text in subtitle
+        else:
+            if not search_text:
+                return True
+            title = row.get_title().lower() if hasattr(row, "get_title") and row.get_title() else ""
+            subtitle = row.get_subtitle().lower() if hasattr(row, "get_subtitle") and row.get_subtitle() else ""
+            return search_text in title or search_text in subtitle
+
 
     def _is_same_movie(self, movie_a, movie_b):
         if not movie_a or not movie_b:

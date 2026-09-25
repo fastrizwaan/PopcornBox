@@ -269,6 +269,25 @@ def _apply_pixbuf(picture_widget, pixbuf, requested_url=None):
     return False
 
 
+def load_remote_image(first, second=None, width=None, height=None, on_error=None, is_priority=False, crop=True):
+    """Helper to load a remote image into a Gtk.Picture widget.
+    Supports either (url, picture_widget) or (picture_widget, url) argument order.
+    """
+    if isinstance(first, str):
+        url, picture_widget = first, second
+    else:
+        picture_widget, url = first, second
+    return load_image_into_picture(
+        url=url,
+        picture_widget=picture_widget,
+        width=width,
+        height=height,
+        on_error=on_error,
+        is_priority=is_priority,
+        crop=crop,
+    )
+
+
 def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=130, height=195):
     if not item_id: return
     try:

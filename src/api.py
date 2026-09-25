@@ -402,6 +402,133 @@ def get_addon_catalogs(addon, cache_only=False):
         
     return []
 
+def get_addon_directory_catalogs():
+    """Return list of available addon directory catalog sources."""
+    sources = [
+        {
+            "id": "community",
+            "name": "Community Addons",
+            "url": "https://v3-cinemeta.strem.io/addon_catalog/all/community.json",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"
+        },
+        {
+            "id": "official",
+            "name": "Official Addons",
+            "url": "https://v3-cinemeta.strem.io/addon_catalog/all/official.json",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"
+        },
+        {
+            "id": "stremio-addons.net",
+            "name": "STREMIO-ADDONS.NET",
+            "url": "https://stremio-addons.net/api/addon_catalog/all/stremio-addons.net.json",
+            "manifest_url": "https://stremio-addons.net/api/manifest.json"
+        }
+    ]
+
+    try:
+        from . import database
+        installed_addons = database.get_addons()
+    except Exception:
+        installed_addons = []
+
+    installed_manifest_urls = {a.get("manifest_url") for a in installed_addons if a.get("manifest_url")}
+    installed_ids = {a.get("id") for a in installed_addons if a.get("id")}
+
+    seen_ids = {s["id"] for s in sources}
+    for addon in installed_addons:
+        addon_cats = addon.get("addonCatalogs") or []
+        m_url = addon.get("manifest_url", "")
+        if not addon_cats and "addon_catalog" in addon.get("resources", []):
+            addon_cats = [{"type": "all", "id": addon.get("id"), "name": addon.get("name")}]
+
+        for cat in addon_cats:
+            cat_id = cat.get("id") or addon.get("id")
+            if cat_id in seen_ids:
+                continue
+            seen_ids.add(cat_id)
+            c_type = cat.get("type", "all")
+            c_name = cat.get("name") or addon.get("name") or cat_id
+
+            base = m_url.rsplit("/manifest.json", 1)[0] if "/manifest.json" in m_url else m_url.rstrip("/")
+            cat_url = f"{base}/addon_catalog/{c_type}/{cat_id}.json"
+            sources.append({
+                "id": cat_id,
+                "name": c_name,
+                "url": cat_url,
+                "manifest_url": m_url,
+                "installed": True
+            })
+
+    for s in sources:
+        m_url = s.get("manifest_url")
+        s_id = s.get("id")
+        if m_url in installed_manifest_urls or s_id in installed_ids:
+            s["installed"] = True
+
+    sources.append({
+        "id": "installed",
+        "name": "Installed",
+        "is_installed_view": True
+    })
+    return sources
+
+def fetch_addon_directory_catalog(catalog_url, cache_only=False):
+    """Fetch and parse an addon directory catalog (returns list of normalized addon item dicts)."""
+    if not catalog_url:
+        return []
+    try:
+        data = _get_cached_request(catalog_url, max_age_hours=12, cache_only=cache_only, timeout=8.0)
+        if not data and not cache_only:
+            try:
+                import urllib.request, json
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/json'
+                }
+                req = urllib.request.Request(catalog_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=8.0) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+            except Exception:
+                pass
+        if not data or not isinstance(data, dict):
+            return []
+        addons = data.get("addons", [])
+        results = []
+        for item in addons:
+            if not isinstance(item, dict):
+                continue
+            manifest = item.get("manifest") if isinstance(item.get("manifest"), dict) else item
+            transport_url = item.get("transportUrl") or manifest.get("manifest_url") or item.get("manifest_url")
+            if not transport_url:
+                continue
+            addon_id = manifest.get("id") or item.get("id")
+            name = manifest.get("name") or addon_id or "Addon"
+            version = manifest.get("version", "1.0.0")
+            description = manifest.get("description", "")
+            types = manifest.get("types") or []
+            logo = manifest.get("logo") or manifest.get("icon")
+            bh = manifest.get("behaviorHints") or {}
+            configurable = bh.get("configurable", False) or "/configure" in transport_url
+            configuration_required = bh.get("configurationRequired", False)
+
+            results.append({
+                "id": addon_id,
+                "name": name,
+                "version": version,
+                "description": description,
+                "types": types,
+                "logo": logo,
+                "transport_url": transport_url,
+                "configurable": configurable,
+                "configuration_required": configuration_required,
+                "manifest": manifest
+            })
+        return results
+    except Exception as e:
+        logger.error(f"Error fetching addon directory catalog {catalog_url}: {e}")
+        return []
+
+
 def addon_has_resource(addon, resource_name, media_type=None, item_id=None):
     """
     Check if an addon supports a given resource ('catalog', 'meta', 'stream', 'subtitles'),
@@ -445,7 +572,17 @@ def addon_has_resource(addon, resource_name, media_type=None, item_id=None):
 
     # Check resources field in manifest
     resources = addon.get("resources")
-    
+
+    # Addons that only declare "addon_catalog" are addon-directory providers (e.g. stremio-addons.net).
+    # They must NEVER be treated as having catalog/meta/stream resources.
+    if resources is not None:
+        resource_names = set(
+            (r if isinstance(r, str) else r.get("name", "")).lower()
+            for r in resources
+        )
+        if resource_names and resource_names <= {"addon_catalog"}:
+            return False
+
     # If resources is missing or None, infer based on catalogs or defaults
     if resources is None:
         if resource_name == "catalog" and get_addon_catalogs(addon, cache_only=True):
