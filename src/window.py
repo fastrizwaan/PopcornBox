@@ -6998,7 +6998,7 @@ class CineWindow(Adw.ApplicationWindow):
 
                     cache_key = f"discover:{m_url}:{c_id}:{m_type}"
                     cached = database.get_cached_catalog(cache_key, max_age_hours=48)
-                    if cached is not None:
+                    if cached:
                         if api.hydrate_missing_catalog_items(cached, media_type=m_type):
                             database.save_cached_catalog(cache_key, cached)
                         debug_log(f"discover row CACHE HIT: '{row_title}'", f"{len(cached)} items")
@@ -7013,11 +7013,11 @@ class CineWindow(Adw.ApplicationWindow):
                             limit=15
                         )
                         debug_log(f"discover row FETCHED from API: '{row_title}'", f"Got {len(items) if items else 0} items")
-                        database.save_cached_catalog(cache_key, items if items else [])
+                        if items:
+                            database.save_cached_catalog(cache_key, items)
                     except Exception as e:
                         logger.error(f"Error fetching discover row {row_title}: {e}")
                         items = None
-                        database.save_cached_catalog(cache_key, [])
                     return (row_info, items)
 
                 # Fetch all rows in this batch in parallel
@@ -7025,7 +7025,7 @@ class CineWindow(Adw.ApplicationWindow):
                 with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_items), 6)) as executor:
                     future_to_idx = {executor.submit(_fetch_single_row, ri): idx for idx, ri in enumerate(batch_items)}
                     try:
-                        for future in concurrent.futures.as_completed(future_to_idx, timeout=10):
+                        for future in concurrent.futures.as_completed(future_to_idx, timeout=12):
                             if req_id != getattr(self, "discover_request_id", 0):
                                 break
                             idx = future_to_idx[future]

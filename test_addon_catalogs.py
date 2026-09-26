@@ -285,8 +285,44 @@ class TestAddonCatalogs(unittest.TestCase):
         self.assertEqual(items[0]["year"], "2028")
         self.assertEqual(items[0]["medium_cover_image"], "https://example.com/instant.jpg")
 
+    def test_catalog_cache_never_stores_or_returns_empty(self):
+        """Empty lists must not be persisted to catalog_cache, and existing empty entries return None."""
+        key = "test_empty_catalog_key"
+        database.save_cached_catalog(key, [])
+        self.assertIsNone(database.get_cached_catalog(key))
+
+        # Test valid list is saved and retrieved
+        database.save_cached_catalog(key, [{"id": "tt123", "title": "Test"}])
+        cached = database.get_cached_catalog(key)
+        self.assertIsNotNone(cached)
+        self.assertEqual(len(cached), 1)
+
+    def test_fetch_items_resolves_case_insensitive_catalog_type(self):
+        """fetch_items matches catalog types regardless of casing (e.g. 101genres vs 101Genres)."""
+        mock_addon = {
+            "manifest_url": "https://example.com/101/manifest.json",
+            "catalogs": [
+                {"id": "top_genres", "name": "Top", "type": "101Genres"},
+                {"id": "top_genres", "name": "Top", "type": "movie"}
+            ]
+        }
+        with patch("src.database.get_addons", return_value=[mock_addon]):
+            with patch("src.api._get_cached_request") as mock_req:
+                mock_req.return_value = {"metas": [{"id": "tt999", "name": "Catalog Item"}]}
+                items = api.fetch_items(
+                    media_type="101genres",
+                    catalog_id="top_genres",
+                    catalog_url="https://example.com/101/manifest.json"
+                )
+                self.assertIsNotNone(items)
+                self.assertEqual(len(items), 1)
+                # Verify the URL was constructed with the manifest's casing "101Genres"
+                called_url = mock_req.call_args[0][0]
+                self.assertIn("/catalog/101Genres/top_genres.json", called_url)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

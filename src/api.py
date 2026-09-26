@@ -93,8 +93,10 @@ _MEM_CACHE_LOCK = threading.Lock()
 _MEM_CACHE_MAX_ITEMS = 1000
 
 _OFFLINE_HOSTS = {}
+_OFFLINE_HOST_FAIL_COUNT = {}
 _OFFLINE_HOSTS_LOCK = threading.Lock()
-_OFFLINE_HOST_COOLDOWN = 300 # 5 minutes circuit breaker for offline addons
+_OFFLINE_HOST_COOLDOWN = 60 # 1 minute circuit breaker for offline addons
+_OFFLINE_HOST_MAX_FAILS = 2 # Trip breaker only after consecutive failures
 
 def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0):
     if not url:
@@ -174,6 +176,7 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
         if parsed_host:
             with _OFFLINE_HOSTS_LOCK:
                 _OFFLINE_HOSTS.pop(parsed_host, None)
+                _OFFLINE_HOST_FAIL_COUNT.pop(parsed_host, None)
 
         # Save to memory cache
         with _MEM_CACHE_LOCK:
@@ -195,9 +198,12 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
                 pass
         return data
     except urllib.error.HTTPError as e:
-        if parsed_host:
+        if parsed_host and e.code in [500, 502, 503, 504]:
             with _OFFLINE_HOSTS_LOCK:
-                _OFFLINE_HOSTS[parsed_host] = time.time()
+                cnt = _OFFLINE_HOST_FAIL_COUNT.get(parsed_host, 0) + 1
+                _OFFLINE_HOST_FAIL_COUNT[parsed_host] = cnt
+                if cnt >= _OFFLINE_HOST_MAX_FAILS:
+                    _OFFLINE_HOSTS[parsed_host] = time.time()
         logging.debug(f"HTTP Error {e.code} fetching from {url}")
         try:
             e.close()
@@ -205,15 +211,25 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
             pass
     except urllib.error.URLError as e:
         if parsed_host:
+            is_timeout = isinstance(e.reason, (socket.timeout, TimeoutError)) or "timed out" in str(e.reason).lower()
             with _OFFLINE_HOSTS_LOCK:
-                _OFFLINE_HOSTS[parsed_host] = time.time()
+                if is_timeout:
+                    cnt = _OFFLINE_HOST_FAIL_COUNT.get(parsed_host, 0) + 1
+                    _OFFLINE_HOST_FAIL_COUNT[parsed_host] = cnt
+                    if cnt >= _OFFLINE_HOST_MAX_FAILS:
+                        _OFFLINE_HOSTS[parsed_host] = time.time()
+                else:
+                    _OFFLINE_HOSTS[parsed_host] = time.time()
         logging.debug(f"URL/SSL Error fetching from {url}: {e.reason}")
     except json.JSONDecodeError as e:
         logging.debug(f"JSON decode error from {url}: {e}")
     except Exception as e:
         if parsed_host:
             with _OFFLINE_HOSTS_LOCK:
-                _OFFLINE_HOSTS[parsed_host] = time.time()
+                cnt = _OFFLINE_HOST_FAIL_COUNT.get(parsed_host, 0) + 1
+                _OFFLINE_HOST_FAIL_COUNT[parsed_host] = cnt
+                if cnt >= _OFFLINE_HOST_MAX_FAILS:
+                    _OFFLINE_HOSTS[parsed_host] = time.time()
         logging.debug(f"Error fetching items from {url}: {e}")
         
     # Return stale cache if network fails
@@ -1003,16 +1019,23 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         for a in database.get_addons():
             m_url = a.get("manifest_url", "")
             if m_url and (m_url == catalog_url or catalog_url.startswith(m_url.rsplit("manifest.json", 1)[0])):
-                candidates = [cat for cat in get_addon_catalogs(a, cache_only=True) if str(cat.get("id")) == str(catalog_id)]
+                addon_cats = get_addon_catalogs(a, cache_only=False)
+                candidates = [cat for cat in addon_cats if str(cat.get("id")) == str(catalog_id)]
                 if len(candidates) == 1:
                     actual_cat_type = candidates[0].get("type") or c_type
                 elif len(candidates) > 1:
-                    exact = next((cat.get("type") for cat in candidates if cat.get("type") == c_type), None)
+                    exact = next((cat.get("type") for cat in candidates if cat.get("type", "").lower() == c_type.lower()), None)
                     if exact:
                         actual_cat_type = exact
                     else:
                         compat = next((cat.get("type") for cat in candidates if is_type_match(cat.get("type"), c_type)), None)
                         actual_cat_type = compat or c_type
+                elif not candidates and addon_cats:
+                    for cat in addon_cats:
+                        ct = cat.get("type")
+                        if ct and ct.lower() == c_type.lower():
+                            actual_cat_type = ct
+                            break
                 break
 
         url = f"{base_url}catalog/{actual_cat_type}/{catalog_id}"
@@ -1028,7 +1051,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         else:
             url += ".json"
             
-        data = _get_cached_request(url, max_age_hours=2, cache_only=cache_only, timeout=2.5)
+        data = _get_cached_request(url, max_age_hours=2, cache_only=cache_only, timeout=6.0)
         if data is None:
             return None
             

@@ -1095,6 +1095,10 @@ def _get_cache_db():
         if not cur.fetchone():
             _cache_conn.execute("DELETE FROM catalog_cache WHERE cache_key LIKE '%:series%' OR cache_key LIKE '%:series:%'")
             _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('series_catalog_fix_v1', '1')")
+        cur.execute("SELECT val FROM cache_meta WHERE key = 'clean_empty_catalog_cache_v1'")
+        if not cur.fetchone():
+            _cache_conn.execute("DELETE FROM catalog_cache WHERE data = '[]' OR data = '' OR data IS NULL")
+            _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('clean_empty_catalog_cache_v1', '1')")
     except Exception:
         pass
     _cache_conn.commit()
@@ -1299,6 +1303,8 @@ def get_cached_catalog(cache_key, max_age_hours=24):
                 updated_at = row[1]
                 if (now - updated_at) / 3600 < max_age_hours:
                     data = json.loads(row[0])
+                    if not data:
+                        return None
                     with _MEM_CATALOG_LOCK:
                         if len(_MEM_CATALOG_CACHE) > 500:
                             _MEM_CATALOG_CACHE.clear()
@@ -1309,7 +1315,7 @@ def get_cached_catalog(cache_key, max_age_hours=24):
     return None
 
 def save_cached_catalog(cache_key, items):
-    if not cache_key or items is None:
+    if not cache_key or not items:
         return
     now = time.time()
     with _MEM_CATALOG_LOCK:
