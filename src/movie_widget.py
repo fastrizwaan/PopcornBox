@@ -28,7 +28,7 @@ os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
 _image_pool = ThreadPoolExecutor(max_workers=10)
 _disk_pool = ThreadPoolExecutor(max_workers=6)
-_meta_fallback_pool = ThreadPoolExecutor(max_workers=2)
+_meta_fallback_pool = ThreadPoolExecutor(max_workers=8)
 
 import threading
 _MEMORY_PIXBUF_CACHE = {}
@@ -288,70 +288,105 @@ def load_remote_image(first, second=None, width=None, height=None, on_error=None
     )
 
 
-def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=130, height=195):
-    if not item_id: return
+def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=130, height=195, on_meta_resolved=None, task_gen=None):
+    if not item_id:
+        return
+    if task_gen is not None and not is_image_generation_active(task_gen):
+        return
+
+    found_title = None
+    found_year = None
+    found_poster = None
+
+    # 0. Check local database cache first (instant SQLite read)
     try:
-        import urllib.request
-        from .api import _get_cached_request
-        
-        # FIRST FALLBACK: Use IMDb autocomplete API to get the highest quality poster directly
-        if str(item_id).startswith("tt"):
-            first_char = str(item_id)[0].lower()
-            imdb_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{item_id}.json"
-            req = urllib.request.Request(imdb_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            })
-            with urllib.request.urlopen(req, timeout=2.5) as response:
-                data = json.loads(response.read().decode('utf-8', errors='ignore'))
-                if data and "d" in data and len(data["d"]) > 0:
-                    for item in data["d"]:
-                        if item.get("id") == item_id and "i" in item and "imageUrl" in item["i"]:
-                            poster_url = item["i"]["imageUrl"]
-                            poster_url = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX500_.jpg', poster_url)
-                            try:
-                                existing = database.get_cached_metadata(item_id, item_type) or {}
-                                existing["medium_cover_image"] = poster_url
-                                database.save_cached_metadata(item_id, item_type, existing)
-                            except Exception:
-                                pass
-                            GLib.idle_add(load_image_into_picture, poster_url, poster_widget, width, height)
-                            return
+        existing = database.get_cached_metadata(item_id, item_type)
+        if existing and (existing.get("title") or existing.get("medium_cover_image") or existing.get("poster")):
+            cached_title = existing.get("title") or existing.get("name")
+            cached_poster = existing.get("medium_cover_image") or existing.get("poster")
+            cached_year = str(existing.get("year", "")) if existing.get("year") else ""
+            if cached_title and cached_title != "Unknown":
+                found_title = cached_title
+            if cached_poster:
+                found_poster = cached_poster
+            if cached_year:
+                found_year = cached_year
+
+            if found_poster and poster_widget:
+                GLib.idle_add(load_image_into_picture, found_poster, poster_widget, width, height)
+            if on_meta_resolved and (found_title or found_poster):
+                GLib.idle_add(on_meta_resolved, found_title, found_year, found_poster)
+            if found_title and found_poster:
+                return
     except Exception:
         pass
-        
-    try:
-        if str(item_id).startswith("tt"):
-            url = f"https://v3-cinemeta.strem.io/meta/{item_type}/{item_id}.json"
-            meta_data = _get_cached_request(url, max_age_hours=168, timeout=2.5)
-            if meta_data and "meta" in meta_data and meta_data["meta"].get("poster"):
-                poster_url = meta_data["meta"]["poster"]
-                try:
-                    existing = database.get_cached_metadata(item_id, item_type) or {}
-                    existing["medium_cover_image"] = poster_url
-                    database.save_cached_metadata(item_id, item_type, existing)
-                except Exception:
-                    pass
-                GLib.idle_add(load_image_into_picture, poster_url, poster_widget, width, height)
-                return
-        
-        c_type = "series" if item_type in ["series", "anime", "tv"] else "movie"
-        url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{item_id}.json"
+
+    if task_gen is not None and not is_image_generation_active(task_gen):
+        return
+
+    from .api import _get_cached_request
+
+    # FIRST FALLBACK: Cinemeta direct (fastest stremio meta provider, ~20-50ms)
+    if str(item_id).startswith("tt") and (not found_poster or not found_title):
         try:
-            tmdb_data = _get_cached_request(url, max_age_hours=168, timeout=2.5)
-            if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
-                poster_url = tmdb_data["meta"]["poster"]
-                try:
-                    existing = database.get_cached_metadata(item_id, item_type) or {}
-                    existing["medium_cover_image"] = poster_url
-                    database.save_cached_metadata(item_id, item_type, existing)
-                except Exception:
-                    pass
-                GLib.idle_add(load_image_into_picture, poster_url, poster_widget, width, height)
-                return
+            url = f"https://v3-cinemeta.strem.io/meta/{item_type}/{item_id}.json"
+            meta_data = _get_cached_request(url, max_age_hours=168, timeout=1.5)
+            if not meta_data:
+                alt_url = f"https://cinemeta-live.strem.io/meta/{item_type}/{item_id}.json"
+                meta_data = _get_cached_request(alt_url, max_age_hours=168, timeout=1.5)
+            if meta_data and isinstance(meta_data.get("meta"), dict):
+                cm = meta_data["meta"]
+                if not found_poster and cm.get("poster"):
+                    found_poster = cm.get("poster")
+                if not found_title and cm.get("name"):
+                    found_title = cm.get("name")
+                if not found_year and cm.get("year"):
+                    found_year = str(cm.get("year"))
         except Exception:
             pass
-    except Exception:
-        pass
+
+    if task_gen is not None and not is_image_generation_active(task_gen):
+        return
+
+    # SECOND FALLBACK: Full fetch_movie_details (queries installed meta addons)
+    if not found_poster or not found_title:
+        try:
+            from . import api
+            details = api.fetch_movie_details(item_id, item_type, title=title)
+            if details:
+                if not found_poster:
+                    found_poster = details.get("medium_cover_image") or details.get("poster")
+                if not found_title:
+                    found_title = details.get("title") or details.get("name")
+                if not found_year:
+                    found_year = str(details.get("year", ""))
+        except Exception:
+            pass
+
+    # Save to database cache
+    if found_poster or found_title or found_year:
+        try:
+            cached = database.get_cached_metadata(item_id, item_type) or {}
+            if found_poster:
+                cached["medium_cover_image"] = found_poster
+                cached["poster"] = found_poster
+            if found_title and found_title != "Unknown":
+                cached["title"] = found_title
+            if found_year:
+                cached["year"] = found_year
+            cached["id"] = item_id
+            database.save_cached_metadata(item_id, item_type, cached)
+        except Exception:
+            pass
+
+    if task_gen is not None and not is_image_generation_active(task_gen):
+        return
+
+    if found_poster and poster_widget:
+        GLib.idle_add(load_image_into_picture, found_poster, poster_widget, width, height)
+
+    if on_meta_resolved and (found_title or found_year or found_poster):
+        GLib.idle_add(on_meta_resolved, found_title, found_year, found_poster)
 
 class MovieWidget(Gtk.Box):
     def __init__(self, movie_data, click_callback, on_remove_clicked=None):
@@ -410,37 +445,93 @@ class MovieWidget(Gtk.Box):
         
         item_id = movie_data.get("imdb_id") or movie_data.get("id")
         item_type = movie_data.get("type", "movie")
-        
         poster_url = extract_image_url(movie_data)
-        
+
+        # Check metadata cache immediately on construction (fast SQLite WAL read, ~0.05ms)
+        if item_id:
+            try:
+                cached = database.get_cached_metadata(item_id, item_type)
+                if cached:
+                    c_title = cached.get("title") or cached.get("name")
+                    if c_title and c_title != "Unknown" and (not movie_data.get("title") or movie_data.get("title") == "Unknown"):
+                        movie_data["title"] = c_title
+                    c_poster = cached.get("medium_cover_image") or cached.get("poster")
+                    if c_poster and not poster_url:
+                        poster_url = c_poster
+                        movie_data["medium_cover_image"] = c_poster
+                    c_year = str(cached.get("year", "")) if cached.get("year") else ""
+                    if c_year and not movie_data.get("year"):
+                        movie_data["year"] = c_year
+            except Exception:
+                pass
+
+        with _IMAGE_GEN_LOCK:
+            task_gen = _IMAGE_GENERATION_ID
+
         def trigger_fallback():
             try:
-                _meta_fallback_pool.submit(fetch_fallback_poster, item_id, item_type, self.poster_image, movie_data.get("title") or movie_data.get("name"), 130, 195)
+                _meta_fallback_pool.submit(
+                    fetch_fallback_poster,
+                    item_id,
+                    item_type,
+                    self.poster_image,
+                    movie_data.get("title") or movie_data.get("name"),
+                    130,
+                    195,
+                    self._apply_resolved_meta,
+                    task_gen
+                )
             except RuntimeError:
                 pass
 
+        has_title = bool(movie_data.get("title") and movie_data.get("title") != "Unknown")
+
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195, on_error=trigger_fallback)
+            if not has_title and item_id:
+                trigger_fallback()
         elif item_id:
             trigger_fallback()
             
         title_text = movie_data.get("title") or movie_data.get("name") or "Unknown"
-        title_label = Gtk.Label(label=title_text)
-        title_label.set_lines(1)
-        title_label.set_ellipsize(Pango.EllipsizeMode.END)
-        title_label.set_max_width_chars(1)
-        title_label.set_hexpand(True)
-        title_label.set_halign(Gtk.Align.FILL)
-        title_label.set_xalign(0.0)
-        title_label.add_css_class("pt-card-title")
-        self.append(title_label)
+        self.title_label = Gtk.Label(label=title_text)
+        self.title_label.set_lines(1)
+        self.title_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.title_label.set_max_width_chars(1)
+        self.title_label.set_hexpand(True)
+        self.title_label.set_halign(Gtk.Align.FILL)
+        self.title_label.set_xalign(0.0)
+        self.title_label.add_css_class("pt-card-title")
+        self.append(self.title_label)
         
         year_str = str(movie_data.get("year", "")) or str(movie_data.get("releaseInfo", ""))
+        self.year_label = None
         if year_str:
-            year_label = Gtk.Label(label=year_str)
-            year_label.set_halign(Gtk.Align.START)
-            year_label.add_css_class("pt-card-year")
-            self.append(year_label)
+            self.year_label = Gtk.Label(label=year_str)
+            self.year_label.set_halign(Gtk.Align.START)
+            self.year_label.add_css_class("pt-card-year")
+            self.append(self.year_label)
+
+    def _apply_resolved_meta(self, title, year, poster_url):
+        try:
+            if title and title != "Unknown" and (not self.movie_data.get("title") or self.movie_data.get("title") == "Unknown"):
+                self.movie_data["title"] = title
+                if hasattr(self, "title_label") and self.title_label:
+                    self.title_label.set_label(title)
+            if year and not self.movie_data.get("year"):
+                self.movie_data["year"] = str(year)
+                if hasattr(self, "year_label") and self.year_label:
+                    self.year_label.set_label(str(year))
+                elif hasattr(self, "title_label") and self.title_label:
+                    self.year_label = Gtk.Label(label=str(year))
+                    self.year_label.set_halign(Gtk.Align.START)
+                    self.year_label.add_css_class("pt-card-year")
+                    self.append(self.year_label)
+            if poster_url:
+                self.movie_data["medium_cover_image"] = poster_url
+                self.movie_data["poster"] = poster_url
+        except Exception:
+            pass
 
     def _on_card_released(self, gesture, n_press, x, y):
         if n_press > 1:
@@ -552,29 +643,64 @@ class ContinueWatchingWidget(Gtk.Box):
         item_id = item_data.get("imdb_id") or item_data.get("id")
         item_type = item_data.get("type", "movie")
         poster_url = item_data.get("medium_cover_image") or item_data.get("poster") or extract_image_url(item_data)
-            
+
+        # Check metadata cache immediately on construction (fast SQLite WAL read, ~0.05ms)
+        if item_id:
+            try:
+                cached = database.get_cached_metadata(item_id, item_type)
+                if cached:
+                    c_title = cached.get("title") or cached.get("name")
+                    if c_title and c_title != "Unknown" and (not item_data.get("title") or item_data.get("title") == "Unknown"):
+                        item_data["title"] = c_title
+                    c_poster = cached.get("medium_cover_image") or cached.get("poster")
+                    if c_poster and not poster_url:
+                        poster_url = c_poster
+                        item_data["medium_cover_image"] = c_poster
+                    c_year = str(cached.get("year", "")) if cached.get("year") else ""
+                    if c_year and not item_data.get("year"):
+                        item_data["year"] = c_year
+            except Exception:
+                pass
+
+        with _IMAGE_GEN_LOCK:
+            task_gen = _IMAGE_GENERATION_ID
+
         def trigger_fallback():
             try:
-                _meta_fallback_pool.submit(fetch_fallback_poster, item_id, item_type, self.poster_image, item_data.get("title") or item_data.get("name"), 130, 195)
+                _meta_fallback_pool.submit(
+                    fetch_fallback_poster,
+                    item_id,
+                    item_type,
+                    self.poster_image,
+                    item_data.get("title") or item_data.get("name"),
+                    130,
+                    195,
+                    self._apply_resolved_meta,
+                    task_gen
+                )
             except RuntimeError:
                 pass
 
+        has_title = bool(item_data.get("title") and item_data.get("title") != "Unknown")
+
         if poster_url:
             load_image_into_picture(poster_url, self.poster_image, width=130, height=195, on_error=trigger_fallback)
+            if not has_title and item_id:
+                trigger_fallback()
         elif item_id:
             trigger_fallback()
             
         # Title
         title_text = item_data.get("title") or item_data.get("name") or "Unknown"
-        title_label = Gtk.Label(label=title_text)
-        title_label.set_lines(1)
-        title_label.set_ellipsize(Pango.EllipsizeMode.END)
-        title_label.set_max_width_chars(1)
-        title_label.set_hexpand(True)
-        title_label.set_halign(Gtk.Align.FILL)
-        title_label.set_xalign(0.0)
-        title_label.add_css_class("pt-card-title")
-        self.append(title_label)
+        self.title_label = Gtk.Label(label=title_text)
+        self.title_label.set_lines(1)
+        self.title_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.title_label.set_max_width_chars(1)
+        self.title_label.set_hexpand(True)
+        self.title_label.set_halign(Gtk.Align.FILL)
+        self.title_label.set_xalign(0.0)
+        self.title_label.add_css_class("pt-card-title")
+        self.append(self.title_label)
         
         # Subtitle (Season/Episode or Remaining Time)
         sub_text = ""
@@ -597,6 +723,18 @@ class ContinueWatchingWidget(Gtk.Box):
             sub_label.set_halign(Gtk.Align.START)
             sub_label.add_css_class("pt-card-year")
             self.append(sub_label)
+
+    def _apply_resolved_meta(self, title, year, poster_url):
+        try:
+            if title and title != "Unknown" and (not self.item_data.get("title") or self.item_data.get("title") == "Unknown"):
+                self.item_data["title"] = title
+                if hasattr(self, "title_label") and self.title_label:
+                    self.title_label.set_label(title)
+            if poster_url:
+                self.item_data["medium_cover_image"] = poster_url
+                self.item_data["poster"] = poster_url
+        except Exception:
+            pass
 
     def _on_card_released(self, gesture, n_press, x, y):
         if n_press > 1:

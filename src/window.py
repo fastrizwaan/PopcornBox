@@ -6201,6 +6201,8 @@ class CineWindow(Adw.ApplicationWindow):
                 # Cache-first: show instantly if we have a recent result
                 cached = database.get_cached_catalog(cache_key, max_age_hours=6)
                 if cached:
+                    if api.hydrate_missing_catalog_items(cached, media_type=media_type):
+                        database.save_cached_catalog(cache_key, cached)
                     def apply_cached(cached_items=cached):
                         if current_req_id != getattr(self, "content_request_id", 0):
                             return False
@@ -6997,6 +6999,8 @@ class CineWindow(Adw.ApplicationWindow):
                     cache_key = f"discover:{m_url}:{c_id}:{m_type}"
                     cached = database.get_cached_catalog(cache_key, max_age_hours=48)
                     if cached is not None:
+                        if api.hydrate_missing_catalog_items(cached, media_type=m_type):
+                            database.save_cached_catalog(cache_key, cached)
                         debug_log(f"discover row CACHE HIT: '{row_title}'", f"{len(cached)} items")
                         return (row_info, cached)
                     try:

@@ -1042,9 +1042,18 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 if not imdb_id or str(imdb_id).startswith("hub:upsell") or imdb_id == "upsell" or str(m.get("name", "")).lower() == "unlock every stream":
                     continue
                 poster = extract_image_url(m)
-                title = m.get("name", "")
+                title = m.get("name") or m.get("title", "")
                 year = str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else ""
                 item_type = m.get("type") or media_type
+                if (not title or title == "Unknown" or not poster) and imdb_id:
+                    cached_m = database.get_cached_metadata(imdb_id, item_type)
+                    if cached_m:
+                        if not title or title == "Unknown":
+                            title = cached_m.get("title") or cached_m.get("name", "")
+                        if not poster:
+                            poster = cached_m.get("medium_cover_image") or cached_m.get("poster", "")
+                        if not year:
+                            year = str(cached_m.get("year", ""))
                 if str(imdb_id).startswith("bolly:m:") or str(imdb_id).startswith("hub:m:"):
                     item_type = "movie"
                 elif str(imdb_id).startswith("bolly:s:") or str(imdb_id).startswith("hub:s:"):
@@ -1086,10 +1095,93 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     "poster": poster,
                     "type": item_type
                 })
+            hydrate_missing_catalog_items(movies, media_type=media_type)
             return movies
         return []
 
     return []
+
+def hydrate_missing_catalog_items(items, media_type="movie"):
+    """Batch-hydrates any catalog items missing titles/posters using metadata_cache and fast background fetch."""
+    if not items:
+        return False
+    missing_titles = [m for m in items if (not m.get("title") or m.get("title") == "Unknown") and m.get("id")]
+    if not missing_titles:
+        return False
+
+    updated = False
+    still_missing = []
+
+    # 0. Immediate local DB cache pass (sub-millisecond SQLite WAL lookup)
+    for m in missing_titles:
+        m_id = m.get("id")
+        m_type = m.get("type") or media_type
+        c_meta = database.get_cached_metadata(m_id, m_type)
+        if c_meta and c_meta.get("title") and c_meta.get("title") != "Unknown":
+            m["title"] = c_meta.get("title") or c_meta.get("name", "")
+            if not m.get("medium_cover_image"):
+                m["medium_cover_image"] = c_meta.get("medium_cover_image") or c_meta.get("poster", "")
+                m["poster"] = m["medium_cover_image"]
+            if not m.get("year") and c_meta.get("year"):
+                m["year"] = str(c_meta.get("year", ""))
+            updated = True
+        else:
+            still_missing.append(m)
+
+    if not still_missing:
+        return updated
+
+    import concurrent.futures
+    def _hydrate_single_item(m_item):
+        m_id = m_item.get("id")
+        m_type = m_item.get("type") or media_type
+
+        # 1. Try Cinemeta direct URL (~20-40ms)
+        if str(m_id).startswith("tt"):
+            c_url = f"https://v3-cinemeta.strem.io/meta/{m_type}/{m_id}.json"
+            cm = _get_cached_request(c_url, max_age_hours=168, timeout=1.5)
+            if not cm:
+                alt_url = f"https://cinemeta-live.strem.io/meta/{m_type}/{m_id}.json"
+                cm = _get_cached_request(alt_url, max_age_hours=168, timeout=1.5)
+            if cm and isinstance(cm.get("meta"), dict):
+                meta_dict = cm["meta"]
+                if meta_dict.get("name"):
+                    m_item["title"] = meta_dict["name"]
+                if not m_item.get("medium_cover_image") and meta_dict.get("poster"):
+                    m_item["medium_cover_image"] = meta_dict["poster"]
+                    m_item["poster"] = meta_dict["poster"]
+                if not m_item.get("year") and meta_dict.get("year"):
+                    m_item["year"] = str(meta_dict["year"])
+
+        # 2. If still missing, try fetch_movie_details
+        if not m_item.get("title") or m_item.get("title") == "Unknown":
+            det = fetch_movie_details(m_id, m_type, use_cache=True)
+            if det and det.get("title") and det.get("title") != "Media Item":
+                m_item["title"] = det["title"]
+                if not m_item.get("medium_cover_image") and det.get("medium_cover_image"):
+                    m_item["medium_cover_image"] = det["medium_cover_image"]
+                    m_item["poster"] = det["medium_cover_image"]
+                if not m_item.get("year") and det.get("year"):
+                    m_item["year"] = str(det["year"])
+
+        # Save to metadata_cache so subsequent views are instant
+        if m_item.get("title") and m_item.get("title") != "Unknown":
+            try:
+                cached_rec = database.get_cached_metadata(m_id, m_type) or {}
+                cached_rec["title"] = m_item["title"]
+                if m_item.get("medium_cover_image"):
+                    cached_rec["medium_cover_image"] = m_item["medium_cover_image"]
+                    cached_rec["poster"] = m_item["medium_cover_image"]
+                if m_item.get("year"):
+                    cached_rec["year"] = m_item["year"]
+                cached_rec["id"] = m_id
+                database.save_cached_metadata(m_id, m_type, cached_rec)
+            except Exception:
+                pass
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(still_missing), 12)) as ex:
+        list(ex.map(_hydrate_single_item, still_missing))
+    return True
 
 def is_valid_meta(res):
     if not res or not isinstance(res, dict):

@@ -203,6 +203,89 @@ class TestAddonCatalogs(unittest.TestCase):
             )
 
 
+    def test_catalog_item_with_missing_title_hydrated_from_cache(self):
+        """When an item in a catalog has no name/title, it is hydrated from metadata_cache."""
+        # Pre-seed metadata_cache
+        database.save_cached_metadata("tt27165187", "movie", {
+            "id": "tt27165187",
+            "title": "The End of Oak Street",
+            "year": "2026",
+            "medium_cover_image": "https://example.com/poster.jpg"
+        })
+
+        # Test fetch_items hydration
+        raw_addon_data = {
+            "metas": [
+                {"id": "tt27165187", "type": "movie"}  # No name, title, or poster
+            ]
+        }
+        with patch("src.api._get_cached_request", return_value=raw_addon_data):
+            items = api.fetch_items(catalog_url="https://example.com/manifest.json", catalog_id="top")
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["title"], "The End of Oak Street")
+            self.assertEqual(items[0]["year"], "2026")
+            self.assertEqual(items[0]["medium_cover_image"], "https://example.com/poster.jpg")
+
+    def test_movie_widget_resolves_missing_title_dynamically(self):
+        """MovieWidget initializes with cached title if available, or updates dynamically via _apply_resolved_meta."""
+        from src.movie_widget import MovieWidget
+        database.save_cached_metadata("tt27165187", "movie", {
+            "id": "tt27165187",
+            "title": "The End of Oak Street",
+            "year": "2026",
+            "medium_cover_image": "https://example.com/poster.jpg"
+        })
+
+        # Item initially without title
+        item_data = {"id": "tt27165187", "type": "movie"}
+        widget = MovieWidget(item_data, lambda *a: None)
+        # Should be hydrated immediately on init
+        self.assertEqual(item_data.get("title"), "The End of Oak Street")
+        self.assertEqual(widget.title_label.get_label(), "The End of Oak Street")
+        self.assertIsNotNone(widget.year_label)
+        self.assertEqual(widget.year_label.get_label(), "2026")
+
+        # Test _apply_resolved_meta dynamic update
+        fresh_item = {"id": "tt99999999", "type": "movie"}
+        fresh_widget = MovieWidget(fresh_item, lambda *a: None)
+        self.assertEqual(fresh_widget.title_label.get_label(), "Unknown")
+        fresh_widget._apply_resolved_meta("Dynamic Movie", "2027", "https://example.com/dyn.jpg")
+        self.assertEqual(fresh_widget.title_label.get_label(), "Dynamic Movie")
+        self.assertEqual(fresh_item.get("title"), "Dynamic Movie")
+        self.assertEqual(fresh_item.get("year"), "2027")
+
+    def test_fallback_poster_generation_cancellation(self):
+        """fetch_fallback_poster respects task_gen and aborts immediately if generation is stale."""
+        from src.movie_widget import fetch_fallback_poster, cancel_pending_image_downloads, _IMAGE_GENERATION_ID
+        callback_called = []
+        def on_resolved(title, year, poster):
+            callback_called.append((title, year, poster))
+
+        # Save an inactive gen_id
+        stale_gen = _IMAGE_GENERATION_ID
+        cancel_pending_image_downloads()  # increments _IMAGE_GENERATION_ID
+
+        # Call with stale_gen
+        fetch_fallback_poster("tt88888888", "movie", None, on_meta_resolved=on_resolved, task_gen=stale_gen)
+        # Should not resolve or call callbacks
+        self.assertEqual(len(callback_called), 0)
+
+    def test_hydrate_missing_catalog_items_fast_cache_pass(self):
+        """hydrate_missing_catalog_items updates items in-place instantly from metadata_cache."""
+        database.save_cached_metadata("tt77777777", "movie", {
+            "id": "tt77777777",
+            "title": "Instant Movie",
+            "year": "2028",
+            "medium_cover_image": "https://example.com/instant.jpg"
+        })
+        items = [{"id": "tt77777777", "type": "movie", "title": ""}]
+        updated = api.hydrate_missing_catalog_items(items, media_type="movie")
+        self.assertTrue(updated)
+        self.assertEqual(items[0]["title"], "Instant Movie")
+        self.assertEqual(items[0]["year"], "2028")
+        self.assertEqual(items[0]["medium_cover_image"], "https://example.com/instant.jpg")
+
+
 if __name__ == "__main__":
     unittest.main()
 
