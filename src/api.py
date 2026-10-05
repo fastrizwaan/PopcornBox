@@ -6,6 +6,7 @@ import os
 import time
 import hashlib
 import logging
+import socket
 import ssl
 import gzip
 import zlib
@@ -1024,7 +1025,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 if len(candidates) == 1:
                     actual_cat_type = candidates[0].get("type") or c_type
                 elif len(candidates) > 1:
-                    exact = next((cat.get("type") for cat in candidates if cat.get("type", "").lower() == c_type.lower()), None)
+                    exact = next((cat.get("type") for cat in candidates if str(cat.get("type") or "").lower() == c_type.lower()), None)
                     if exact:
                         actual_cat_type = exact
                     else:

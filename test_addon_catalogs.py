@@ -3,6 +3,7 @@ import sys
 import tempfile
 import os
 import json
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -287,7 +288,9 @@ class TestAddonCatalogs(unittest.TestCase):
 
     def test_catalog_cache_never_stores_or_returns_empty(self):
         """Empty lists must not be persisted to catalog_cache, and existing empty entries return None."""
-        key = "test_empty_catalog_key"
+        # Unique key per run: catalog_cache persists in SQLite, so a fixed key would make
+        # this test fail on every subsequent run once the non-empty entry below is stored.
+        key = f"test_empty_catalog_key_{os.getpid()}_{time.time_ns()}"
         database.save_cached_catalog(key, [])
         self.assertIsNone(database.get_cached_catalog(key))
 
@@ -319,6 +322,73 @@ class TestAddonCatalogs(unittest.TestCase):
                 # Verify the URL was constructed with the manifest's casing "101Genres"
                 called_url = mock_req.call_args[0][0]
                 self.assertIn("/catalog/101Genres/top_genres.json", called_url)
+
+    def test_fetch_items_fetches_manifest_when_stored_catalogs_missing(self):
+        """fetch_items must fetch the manifest to resolve the catalog type when the
+        stored addon has no catalogs (e.g. 101catalogs installed without its catalog list).
+        A cache_only lookup returns nothing here, so this locks in the cache_only=False fix."""
+        mock_addon = {
+            "manifest_url": "https://example.com/101/manifest.json",
+            "catalogs": [],
+        }
+        manifest = {"catalogs": [{"id": "top_genres", "name": "Top", "type": "101Genres"}]}
+        catalog_resp = {"metas": [{"id": "tt999", "name": "Catalog Item"}]}
+
+        def fake_get(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0):
+            if cache_only:
+                return None
+            if url.endswith("manifest.json"):
+                return manifest
+            return catalog_resp
+
+        with patch("src.database.get_addons", return_value=[mock_addon]):
+            with patch("src.database.update_addon_catalogs", return_value=False):
+                with patch("src.api._get_cached_request", side_effect=fake_get) as mock_req:
+                    items = api.fetch_items(
+                        media_type="101genres",
+                        catalog_id="top_genres",
+                        catalog_url="https://example.com/101/manifest.json"
+                    )
+        self.assertIsNotNone(items)
+        self.assertEqual(len(items), 1)
+        called_urls = [call.args[0] for call in mock_req.call_args_list]
+        self.assertIn("https://example.com/101/manifest.json", called_urls)
+        self.assertIn("https://example.com/101/catalog/101Genres/top_genres.json", called_urls)
+
+    def test_get_cached_request_urlerror_marks_host_offline_without_raising(self):
+        """A URLError (DNS/refused/SSL) must be handled gracefully and mark the host
+        offline instead of propagating a NameError from the circuit breaker code."""
+        import urllib.error
+        host = "urlerror-test.invalid"
+        url = f"http://{host}/catalog.json"
+        api._OFFLINE_HOSTS.pop(host, None)
+        api._OFFLINE_HOST_FAIL_COUNT.pop(host, None)
+        try:
+            with patch("src.api.urllib.request.urlopen", side_effect=urllib.error.URLError(ConnectionRefusedError("refused"))):
+                self.assertIsNone(api._get_cached_request(url, timeout=0.2))
+            self.assertIn(host, api._OFFLINE_HOSTS)
+        finally:
+            api._OFFLINE_HOSTS.pop(host, None)
+            api._OFFLINE_HOST_FAIL_COUNT.pop(host, None)
+
+    def test_get_cached_request_timeout_needs_two_consecutive_failures(self):
+        """A single timeout must not trip the host circuit breaker; a second consecutive
+        timeout for the same host must."""
+        import socket
+        import urllib.error
+        host = "timeout-test.invalid"
+        url = f"http://{host}/catalog.json"
+        api._OFFLINE_HOSTS.pop(host, None)
+        api._OFFLINE_HOST_FAIL_COUNT.pop(host, None)
+        try:
+            with patch("src.api.urllib.request.urlopen", side_effect=urllib.error.URLError(socket.timeout("timed out"))):
+                self.assertIsNone(api._get_cached_request(url, timeout=0.2))
+                self.assertNotIn(host, api._OFFLINE_HOSTS)
+                self.assertIsNone(api._get_cached_request(url, timeout=0.2))
+                self.assertIn(host, api._OFFLINE_HOSTS)
+        finally:
+            api._OFFLINE_HOSTS.pop(host, None)
+            api._OFFLINE_HOST_FAIL_COUNT.pop(host, None)
 
 
 if __name__ == "__main__":
