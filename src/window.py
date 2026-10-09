@@ -6809,6 +6809,9 @@ class CineWindow(Adw.ApplicationWindow):
                 target_box.remove(existing_header)
             if existing_scroll and existing_scroll.get_parent() == target_box:
                 target_box.remove(existing_scroll)
+            first_c = target_box.get_first_child()
+            if first_c and first_c.has_css_class("discover-section-header"):
+                first_c.add_css_class("first-section-header")
             debug_log("_update_continue_watching_section DONE (no items to display)")
             return
 
@@ -6821,9 +6824,10 @@ class CineWindow(Adw.ApplicationWindow):
             cw_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
             cw_header.add_css_class("discover-section-header")
             cw_header.add_css_class("continue-watching-header")
+            cw_header.add_css_class("first-section-header")
             cw_header._is_cw_header = True
             
-            lbl = Gtk.Label(label=_("Continue Watching"), halign=Gtk.Align.START)
+            lbl = Gtk.Label(label=_("Continue Watching"), halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
             lbl.add_css_class("discover-section-title")
             cw_header.append(lbl)
             
@@ -6831,15 +6835,19 @@ class CineWindow(Adw.ApplicationWindow):
             see_all_btn.add_css_class("discover-see-all-btn")
             see_all_btn.add_css_class("flat")
             see_all_btn.set_halign(Gtk.Align.END)
+            see_all_btn.set_valign(Gtk.Align.CENTER)
             see_all_btn.set_hexpand(True)
             see_all_btn.connect("clicked", lambda *a: self._open_continue_watching_grid())
             cw_header.append(see_all_btn)
             
+            if target_box.get_first_child() and target_box.get_first_child().has_css_class("first-section-header"):
+                target_box.get_first_child().remove_css_class("first-section-header")
             target_box.prepend(cw_header)
             existing_header = cw_header
         else:
             cw_header = existing_header
             cw_header.add_css_class("continue-watching-header")
+            cw_header.add_css_class("first-section-header")
             cw_header._is_cw_header = True
 
         if not existing_scroll:
@@ -6923,7 +6931,7 @@ class CineWindow(Adw.ApplicationWindow):
         from .movie_widget import cancel_pending_image_downloads
         cancel_pending_image_downloads()
         
-        new_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        new_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         new_box.set_margin_top(12)
         new_box.set_margin_bottom(24)
         new_box.set_margin_start(16)
@@ -7063,8 +7071,10 @@ class CineWindow(Adw.ApplicationWindow):
 
                         sec_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
                         sec_header.add_css_class("discover-section-header")
+                        if target_box and not target_box.get_first_child():
+                            sec_header.add_css_class("first-section-header")
                         
-                        sec_title = Gtk.Label(label=row_title, halign=Gtk.Align.START)
+                        sec_title = Gtk.Label(label=row_title, halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
                         sec_title.add_css_class("discover-section-title")
                         sec_header.append(sec_title)
                         
@@ -7072,6 +7082,7 @@ class CineWindow(Adw.ApplicationWindow):
                         see_all_btn.add_css_class("discover-see-all-btn")
                         see_all_btn.add_css_class("flat")
                         see_all_btn.set_halign(Gtk.Align.END)
+                        see_all_btn.set_valign(Gtk.Align.CENTER)
                         see_all_btn.set_hexpand(True)
                         
                         cat_obj = {

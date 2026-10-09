@@ -1,12 +1,106 @@
 ================================================================================
-POPCORNBOX - AI AGENT ARCHITECTURE & PERFORMANCE GUIDELINES
+POPCORNBOX - AI AGENT ARCHITECTURE, WORKFLOW & PERFORMANCE MANUAL
 ================================================================================
 
-This document provides mandatory architecture, design patterns, and performance
-standards for AI coding assistants working on the PopcornBox codebase.
+This document provides mandatory architecture details, repository layout, build
+workflows, design patterns, and performance standards for AI coding assistants
+working on the PopcornBox codebase. Read this first to avoid token-heavy scans.
 
 --------------------------------------------------------------------------------
-1. CORE PERFORMANCE PHILOSOPHY
+1. PROJECT OVERVIEW & ARCHITECTURE
+--------------------------------------------------------------------------------
+PopcornBox is a modern, responsive streaming client built with GTK4 and Libadwaita
+(Python). It aggregates media (Movies, Series, Anime) via Stremio addons, provides
+bit-torrent streaming via libtorrent, and handles high-performance video playback
+via MPV (python-mpv).
+
+Key Source Files (`src/`):
+- `src/window.py`:
+  Core application window (`CineWindow`). Manages view stacks, navigation routing,
+  Discover catalog rows, Continue Watching carousels, category menus, search,
+  and playback transitions.
+- `src/window.blp` & `src/window.ui`:
+  Main UI layout declared in Blueprint (`.blp`) and compiled to GtkBuilder XML (`.ui`).
+  Contains headerbars, search bars, `library_stack`, details views, and controls.
+- `src/style.css`:
+  Global GTK4 CSS stylesheets (dark theme, cards, headers, buttons, player OSD).
+- `src/api.py`:
+  Stremio protocol client: fetches addon manifests, queries catalog items, resolves
+  media streams, and queries subtitle providers asynchronously.
+- `src/database.py`:
+  SQLite storage for user state: history, watched status, continue watching queue,
+  favorites, downloaded items, cached catalogs, working streams, and addon states.
+- `src/movie_widget.py`:
+  Item cards: `MovieWidget` (standard posters) and `ContinueWatchingWidget` (progress
+  bars, quick play button, remove button). Handles async cover loading and caching.
+- `src/player.py`:
+  MPV player integration (`python-mpv`). Manages playback, subtitle tracks, audio
+  tracks, chapter navigation, buffering states, and fullscreen OSD overlays.
+- `src/libtorrent_stream.py`:
+  BitTorrent sequential streaming engine: peer exchange, piece prioritizing,
+  smart buffer management, and automated disk cleanup.
+- `src/preferences.py` & `src/preferences.blp`:
+  Preferences dialog for addon management, scrapers, players, and download dirs.
+- `src/tmdb_helper.py`:
+  TMDB metadata enrichment (posters, backdrops, episode descriptions, cast/crew).
+
+--------------------------------------------------------------------------------
+2. UI STRUCTURE & VIEW HIERARCHY
+--------------------------------------------------------------------------------
+`library_stack` (AdwViewStack) switches between primary library screens:
+1. `"discover"`:
+   Scrollable feed (`discover_box`) containing horizontal scrolling carousels:
+   - "Continue Watching" row (top-most when active).
+   - Addon catalog rows (Popular, Trending, Top, etc.) loaded lazily in batches.
+2. `"content"`:
+   Grid view (`content_flowbox`) with `discover_back_box` header (`< Section Title`).
+   Activated when the user clicks "See All" on any discover catalog or Continue Watching.
+3. `"search_results"`:
+   Categorized search grids (Movies, Series, Anime).
+
+UI Spacing & Layout Guidelines:
+- Headerbar gap to first section: 12px. The first section header must have
+  `margin-top: 0px` (`.discover-section-header:first-child`, `.first-section-header`).
+- Within a section: ~8px between section label and cards (both Discover carousels and See All grid).
+- Between sections: ~22px vertical distance between cards of Section N and the
+  title of Section N+1 (fairly distanced, not cramped, not overly spacy).
+- Card sizing: Posters have size request 130x240px (`.pt-card`). Row scroll
+  containers have `min-height: 250px`. Padding in `.discover-row-box` (4px top,
+  6px bottom) accommodates the 1.04x card hover scale without clipping.
+
+--------------------------------------------------------------------------------
+3. FLATPAK BUILD & DEVELOPMENT WORKFLOW
+--------------------------------------------------------------------------------
+Our primary build, test, and runtime target is Flatpak:
+App ID: `io.github.fastrizwaan.PopcornBox`
+Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
+
+- Host OS vs Flatpak Runtime:
+  Native dependencies (such as `libmpv`, `libtorrent`, and `blueprint-compiler`)
+  reside inside the Flatpak container. Running code directly on host Python may
+  fail if host packages are absent.
+
+- Building & Installing Flatpak:
+  ```bash
+  ./build_bundle.sh
+  # OR directly via flatpak-builder:
+  flatpak-builder --user --install --force-clean --disable-rofiles-fuse build-dir build-aux/flatpak/io.github.fastrizwaan.PopcornBox.json
+  ```
+
+- Running Flatpak:
+  ```bash
+  flatpak run io.github.fastrizwaan.PopcornBox
+  ```
+
+- Compiling Blueprint Files (`.blp` -> `.ui`):
+  Whenever modifying `src/window.blp` or any `.blp` file, always recompile to
+  the corresponding `.ui` XML file so both stay in sync:
+  ```bash
+  flatpak run --filesystem=$(pwd) --command=blueprint-compiler org.gnome.Sdk//50 compile src/window.blp --output src/window.ui
+  ```
+
+--------------------------------------------------------------------------------
+4. CORE PERFORMANCE PHILOSOPHY
 --------------------------------------------------------------------------------
 - PopcornBox must ALWAYS be buttery smooth, fluid, and instantly responsive.
 - ZERO UI freezes, ZERO hangs, ZERO lag, and ZERO CPU spikes.
@@ -15,7 +109,7 @@ standards for AI coding assistants working on the PopcornBox codebase.
   thousands of potential items. Never assume a small dataset.
 
 --------------------------------------------------------------------------------
-2. UI THREAD HYGIENE & ASYNCHRONOUS WORK
+5. UI THREAD HYGIENE & ASYNCHRONOUS WORK
 --------------------------------------------------------------------------------
 - NEVER perform network requests, database queries, disk I/O, or heavy data
   processing on the GTK main thread.
@@ -25,7 +119,7 @@ standards for AI coding assistants working on the PopcornBox codebase.
   non-blocking chunks. Do not run heavy loops or computations inside idle callbacks.
 
 --------------------------------------------------------------------------------
-3. MENU BUTTONS & GTK MENU MODELS
+6. MENU BUTTONS & GTK MENU MODELS
 --------------------------------------------------------------------------------
 - DO NOT POPULATE MENUS ON CLICK:
   Attaching or rebuilding a `Gio.Menu` or `GtkPopoverMenu` on click (e.g., inside
@@ -54,7 +148,7 @@ standards for AI coding assistants working on the PopcornBox codebase.
   the update until `notify::active` indicates the popover has closed.
 
 --------------------------------------------------------------------------------
-4. FAST STARTUP & INSTANT TAB SWITCHING
+7. FAST STARTUP & INSTANT TAB SWITCHING
 --------------------------------------------------------------------------------
 - FAST LAUNCH:
   Startup must take milliseconds. During window initialization, assign lightweight
@@ -67,7 +161,7 @@ standards for AI coding assistants working on the PopcornBox codebase.
   construct or re-attach menu models.
 
 --------------------------------------------------------------------------------
-5. STREAM & IMAGE HANDLING
+8. STREAM & IMAGE HANDLING
 --------------------------------------------------------------------------------
 - Cancel pending image downloads (`cancel_pending_image_downloads()`) whenever
   switching tabs or navigating views to avoid background network/CPU waste.
@@ -75,11 +169,10 @@ standards for AI coding assistants working on the PopcornBox codebase.
   timeouts and failover mechanisms.
 
 --------------------------------------------------------------------------------
-6. TESTING & VERIFICATION
+9. TESTING & VERIFICATION
 --------------------------------------------------------------------------------
 - When modifying category menus, discover pages, or catalog logic, always run:
-    python3 -m unittest test_category_menus.py
-    python3 -m unittest test_continue_watching.py test_collections.py
+    python3 -m unittest test_category_menus.py test_continue_watching.py test_collections.py
 - Benchmark data preparation and model construction times when touching menu
   logic to guarantee operations complete in <5ms.
 ================================================================================

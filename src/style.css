@@ -397,6 +397,11 @@ button.continue-play-btn:active {
   margin-right: 8px;
 }
 
+.discover-section-header:first-child,
+.discover-section-header.first-section-header {
+  margin-top: 0px;
+}
+
 .discover-section-title {
   font-weight: 700;
   font-size: 18px;
@@ -418,13 +423,13 @@ button.continue-play-btn:active {
 }
 
 .discover-row-scroll {
-  min-height: 260px;
-  margin-bottom: 8px;
+  min-height: 250px;
+  margin-bottom: 0px;
 }
 
 .discover-row-box {
-  padding-top: 8px;
-  padding-bottom: 12px;
+  padding-top: 4px;
+  padding-bottom: 6px;
   padding-left: 8px;
   padding-right: 8px;
 }
