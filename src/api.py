@@ -1238,13 +1238,17 @@ def is_valid_meta(res):
     if desc.startswith("Stream tt") and "live - Indian FM Radio" in desc:
         return False
 
-    # Series without videos and without a real synopsis is invalid
-    if res.get("type") in ["series", "anime", "tv"] and not res.get("videos"):
-        has_real_desc = bool(res.get("description")) and res.get("description") not in (
-            "No synopsis available.", "Synopsis temporarily unavailable.", "HD"
-        )
-        if not has_real_desc:
-            return False
+    # Incomplete stubs lacking substantive details (no real synopsis/overview, no runtime, no genres, no cast, and no videos) are invalid
+    desc_val = str(res.get("description") or res.get("overview") or "").strip()
+    has_real_desc = bool(desc_val) and desc_val not in (
+        "No synopsis available.", "Synopsis temporarily unavailable.", "HD"
+    )
+    has_runtime = bool(res.get("runtime"))
+    has_genres = bool(res.get("genre") or res.get("genres"))
+    has_cast = bool(res.get("cast"))
+    has_videos = bool(res.get("videos"))
+    if not (has_real_desc or has_runtime or has_genres or has_cast or has_videos):
+        return False
 
     return True
 
@@ -1477,15 +1481,14 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
     # Resolve TMDB ids to IMDB format if needed
     imdb_id = resolve_to_imdb_id(imdb_id, media_type, title)
 
-    if use_cache and imdb_id:
-        cached = database.get_cached_metadata(imdb_id)
-        if cached and is_valid_meta(cached):
-            if poster and not cached.get("medium_cover_image"):
-                cached["medium_cover_image"] = poster
-                database.save_cached_metadata(imdb_id, media_type, cached)
-            elif poster and cached.get("medium_cover_image"):
-                cached["medium_cover_image"] = poster
-            return cached
+    cached = database.get_cached_metadata(imdb_id) if imdb_id else None
+    if use_cache and cached and is_valid_meta(cached):
+        if poster and not cached.get("medium_cover_image"):
+            cached["medium_cover_image"] = poster
+            database.save_cached_metadata(imdb_id, media_type, cached)
+        elif poster and cached.get("medium_cover_image"):
+            cached["medium_cover_image"] = poster
+        return cached
 
     if media_type in ["tv", "channel", "tvchannel"]:
         for addon in database.get_addons():
@@ -1760,6 +1763,9 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 return _save_and_return_meta(col_res, imdb_id, "collections", title, poster=poster)
         except Exception as e:
             print(f"[COLLECTIONS] Failed to fetch TMDB collection details for {imdb_id}: {e}")
+
+    if cached:
+        return cached
 
     return {
         "id": imdb_id,

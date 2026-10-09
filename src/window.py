@@ -293,7 +293,7 @@ class MovieDetailsPage(Gtk.Overlay):
         self.reload_btn.add_css_class("flat")
         def on_reload(btn):
             from . import database, api
-            item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
+            item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("imdb_id") or self.movie_stub.get("id")
             primary_id = item_id[0] if isinstance(item_id, list) else item_id
             existing = database.get_cached_metadata(primary_id)
             saved_poster = None
@@ -325,7 +325,7 @@ class MovieDetailsPage(Gtk.Overlay):
         menu_btn.add_css_class("flat")
         if self.window and hasattr(self.window, "primary_menu_btn") and self.window.primary_menu_btn:
             menu_model = self.window.primary_menu_btn.get_menu_model()
-            if menu_model:
+            if isinstance(menu_model, Gio.MenuModel):
                 menu_btn.set_menu_model(menu_model)
         self.header_bar.pack_end(menu_btn)
 
@@ -801,14 +801,49 @@ class MovieDetailsPage(Gtk.Overlay):
 
         # Initial Metadata Loading
         self.update_continue_btn()
-        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
+        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("imdb_id") or self.movie_stub.get("id")
         primary_id = item_id[0] if isinstance(item_id, list) else item_id
         cached_details = database.get_cached_metadata(primary_id)
-        if cached_details:
-            self.build_ui(cached_details)
-            self.load_details_async(force_refresh=False)
-        else:
-            self.load_details_async(force_refresh=True)
+        from . import api
+
+        def is_complete_meta(d):
+            if not d or not isinstance(d, dict):
+                return False
+            if not api.is_valid_meta(d):
+                return False
+            if d.get("videos"):
+                return True
+            has_substantive = bool(d.get("runtime") or d.get("genre") or d.get("genres") or d.get("cast"))
+            return has_substantive
+
+        is_complete = is_complete_meta(cached_details) or bool(self.movie_stub.get("videos"))
+
+        # Merge initial metadata: start with movie_stub (preserves title, overview, rating, thumb from card or collection)
+        # overlay any cached fields that contain real data
+        initial_meta = dict(self.movie_stub or {})
+        if cached_details and isinstance(cached_details, dict):
+            for k, v in cached_details.items():
+                if v and (k != "description" or v not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD")):
+                    initial_meta[k] = v
+
+        self.build_ui(initial_meta)
+        self.load_details_async(force_refresh=not is_complete)
+
+    @property
+    def is_collection(self):
+        mtype = getattr(self, "media_type", "")
+        if mtype == "collections":
+            return True
+        stub = getattr(self, "movie_stub", {}) or {}
+        item_id = str(stub.get("id", ""))
+        if item_id.startswith("ctmdb.") or stub.get("type") == "collections" or stub.get("is_collection"):
+            return True
+        details = getattr(self, "movie_details", {}) or {}
+        if isinstance(details, dict):
+            det_id = str(details.get("id", ""))
+            if det_id.startswith("ctmdb.") or details.get("type") == "collections" or details.get("is_collection"):
+                return True
+        return False
 
     def _change_season_delta(self, delta):
         if not hasattr(self, 'seasons') or not self.seasons: return
@@ -921,6 +956,66 @@ class MovieDetailsPage(Gtk.Overlay):
 
             def make_ep_cb(episode_item, episode_num):
                 def cb(b):
+                    if self.is_collection:
+                        self.selected_video = episode_item
+                        self.selected_episode = episode_num
+                        if self.window and hasattr(self.window, "_on_movie_clicked"):
+                            year_val = ""
+                            rel = episode_item.get("released") or episode_item.get("release_date")
+                            if rel:
+                                year_val = str(rel).split("-")[0].strip()
+
+                            item_m_id = episode_item.get("id") or episode_item.get("imdb_id")
+                            if item_m_id and str(item_m_id).isdigit():
+                                item_m_id = f"tmdb:{item_m_id}"
+                            item_imdb_id = episode_item.get("imdb_id") or (item_m_id if str(item_m_id).startswith("tt") else None)
+                            item_title = episode_item.get("title") or episode_item.get("name") or f"Movie {episode_num}"
+                            item_thumb = episode_item.get("thumbnail") or episode_item.get("poster") or episode_item.get("medium_cover_image") or ""
+                            item_bg = episode_item.get("background") or episode_item.get("backdrop") or item_thumb
+
+                            item_desc = episode_item.get("overview") or episode_item.get("description") or ""
+                            rating_val = None
+                            if item_desc.startswith("[IMDB:") and "] " in item_desc:
+                                try:
+                                    rating_val = item_desc.split("[IMDB: ")[1].split("⭐")[0].strip()
+                                except Exception:
+                                    pass
+                                item_desc = item_desc.split("] ", 1)[1]
+
+                            best_id = item_imdb_id if (item_imdb_id and str(item_imdb_id).startswith("tt")) else item_m_id
+                            alias_ids = list(episode_item.get("alias_ids") or [])
+                            if item_imdb_id and item_imdb_id not in alias_ids:
+                                alias_ids.insert(0, item_imdb_id)
+                            if item_m_id and item_m_id not in alias_ids:
+                                alias_ids.append(item_m_id)
+
+                            movie_data = {
+                                "id": best_id,
+                                "imdb_id": item_imdb_id or best_id,
+                                "title": item_title,
+                                "name": item_title,
+                                "type": "movie",
+                                "year": year_val,
+                                "medium_cover_image": item_thumb,
+                                "poster": item_thumb,
+                                "background": item_bg,
+                                "description": item_desc,
+                                "overview": item_desc,
+                            }
+                            if rating_val:
+                                movie_data["imdbRating"] = rating_val
+                                movie_data["rating"] = rating_val
+                            elif episode_item.get("imdbRating") or episode_item.get("rating") or episode_item.get("vote_average"):
+                                r = str(episode_item.get("imdbRating") or episode_item.get("rating") or episode_item.get("vote_average"))
+                                movie_data["imdbRating"] = r
+                                movie_data["rating"] = r
+
+                            if alias_ids:
+                                movie_data["alias_ids"] = alias_ids
+
+                            self.window._on_movie_clicked(movie_data)
+                        return
+
                     self._user_navigated_to_streams = True
                     self.selected_video = episode_item
                     self.selected_episode = episode_num
@@ -1235,7 +1330,7 @@ class MovieDetailsPage(Gtk.Overlay):
             return False
 
     def load_details_async(self, force_refresh=False):
-        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
+        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("imdb_id") or self.movie_stub.get("id")
         existing_poster = self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster")
         self._details_fetch_id += 1
         fetch_id = self._details_fetch_id
@@ -1253,6 +1348,14 @@ class MovieDetailsPage(Gtk.Overlay):
             from . import api
             details = api.fetch_movie_details(item_id, self.media_type, title=self.movie_stub.get("title"), use_cache=not force_refresh, poster=existing_poster)
             if details:
+                # Retain any rich overview/rating from movie_stub if missing from fetched details
+                if not details.get("description") or details.get("description") in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD"):
+                    stub_desc = self.movie_stub.get("description") or self.movie_stub.get("overview")
+                    if stub_desc and stub_desc not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD"):
+                        details["description"] = stub_desc
+                if not details.get("imdbRating") and (self.movie_stub.get("imdbRating") or self.movie_stub.get("rating")):
+                    details["imdbRating"] = self.movie_stub.get("imdbRating") or self.movie_stub.get("rating")
+
                 poster = details.get("medium_cover_image")
                 print(f"[CARD CLICK Step 7] api.fetch_movie_details completed. Poster URL: {poster}")
                 def apply_details():
@@ -1404,7 +1507,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
         primary_id = ids_to_check[0] if ids_to_check else None
 
-        if (self.media_type == "collections" or str(primary_id).startswith("ctmdb.")) and hasattr(self, "videos") and self.videos:
+        if (self.is_collection or str(primary_id).startswith("ctmdb.")) and hasattr(self, "videos") and self.videos:
             for v in self.videos:
                 v_id = v.get("id")
                 if v_id and str(v_id) not in ids_to_check:
@@ -1471,7 +1574,7 @@ class MovieDetailsPage(Gtk.Overlay):
         has_stream_provider = api.has_stream_addons(self.media_type, primary_id)
         has_direct_playable = bool(
             working_stream
-            or (cw_item and (cw_item.get("stream_url") or cw_item.get("magnet") or cw_item.get("stream_queue")))
+            or has_progress
             or (self.movie_stub.get("stream_url") or self.movie_stub.get("magnet"))
             or (details and (details.get("stream_url") or details.get("magnet")))
             or getattr(self, "torrents", None)
@@ -1517,7 +1620,12 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.on_watch_clicked(btn)
 
             self._continue_btn_hid = self.continue_btn.connect("clicked", on_continue_clicked)
-        elif self.media_type == "collections" or str(self.movie_stub.get("id", "")).startswith("ctmdb."):
+        elif self.is_collection:
+            if cw_item and hasattr(self, 'videos') and self.videos:
+                cw_id = str(cw_item.get("id") or cw_item.get("imdb_id") or "")
+                matching_v = next((v for v in self.videos if str(v.get("id") or v.get("imdb_id") or "") == cw_id), None)
+                if matching_v:
+                    self.selected_video = matching_v
             sel_v = getattr(self, 'selected_video', None)
             v_title = sel_v.get("title") if isinstance(sel_v, dict) else None
             pos = float((cw_item or {}).get("position") or 0.0)
@@ -1657,14 +1765,27 @@ class MovieDetailsPage(Gtk.Overlay):
             meta_parts.append(f"[{details.get('certification')}]")
         if details.get("runtime"):
             meta_parts.append(str(details.get("runtime")))
-        if details.get("genre"):
-            meta_parts.append(str(details.get("genre")))
+        g_val = details.get("genre")
+        if not g_val and details.get("genres"):
+            genres_list = details.get("genres")
+            if isinstance(genres_list, list):
+                g_val = ", ".join(str(g) for g in genres_list if g)
+            else:
+                g_val = str(genres_list)
+        if g_val:
+            meta_parts.append(str(g_val))
             
         meta_str = " • ".join(meta_parts) if meta_parts else f"{details.get('year', '')} • {details.get('runtime', '')} • {details.get('genre', '')}"
         self.meta_label.set_text(meta_str)
         
         imdb_id = details.get("imdb_id") or details.get("id")
-        imdb_rating = details.get("imdbRating", "")
+        imdb_rating = details.get("imdbRating") or details.get("rating") or details.get("vote_average") or ""
+        if imdb_rating:
+            try:
+                if isinstance(imdb_rating, float) or (isinstance(imdb_rating, str) and "." in imdb_rating):
+                    imdb_rating = f"{float(imdb_rating):.1f}"
+            except Exception:
+                pass
         if imdb_id and imdb_rating:
             self.imdb_btn.set_label(f"IMDb {imdb_rating}")
             self.imdb_btn.set_visible(True)
@@ -1683,7 +1804,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self.imdb_btn.set_visible(False)
             self.meta_dot.set_visible(False)
             
-        self.desc_label.set_text(details.get("description", ""))
+        self.desc_label.set_text(details.get("description") or details.get("overview") or "")
         
         cast_str = ", ".join(details.get("cast", []))
         if cast_str and not self.cast_section_box.get_visible():
@@ -1733,7 +1854,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if details.get("videos") and len(details.get("videos", [])) > 0:
             videos = details.get("videos")
             self.videos = videos
-            has_multiple = len(videos) > 1 or self.media_type in ["series", "anime"] or str(self.movie_stub.get("id", "")).startswith("ctmdb.") or self.movie_stub.get("type") == "collections"
+            has_multiple = len(videos) > 1 or self.media_type in ["series", "anime"] or self.is_collection
 
             self.stream_back_btn.set_visible(has_multiple)
             self.stream_back_btn.set_tooltip_text("Back to Episodes" if self.media_type in ["series", "anime"] else "Back to Movies")
@@ -2812,7 +2933,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 or self.movie_stub.get("id")
             )
             req_media_type = self.media_type
-            if self.media_type == "collections" or str(imdb_id).startswith("ctmdb."):
+            if self.is_collection or str(imdb_id).startswith("ctmdb."):
                 sel_v = getattr(self, 'selected_video', None)
                 if sel_v and isinstance(sel_v, dict) and sel_v.get("id"):
                     imdb_id = sel_v.get("id")
@@ -9780,7 +9901,14 @@ class CineWindow(Adw.ApplicationWindow):
         if main_page == "details":
             page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
             if page and hasattr(page, "movie_stub") and page.movie_stub:
-                current["movie_data"] = page.movie_stub
+                merged_stub = dict(page.movie_stub)
+                if hasattr(page, "movie_details") and isinstance(page.movie_details, dict):
+                    for k, v in page.movie_details.items():
+                        if k not in merged_stub and v:
+                            merged_stub[k] = v
+                if hasattr(page, "media_type") and page.media_type:
+                    merged_stub["type"] = page.media_type
+                current["movie_data"] = merged_stub
         elif main_page == "person":
             page = self.person_box.get_first_child() if hasattr(self, "person_box") else None
             if page and hasattr(page, "person_data") and page.person_data:
