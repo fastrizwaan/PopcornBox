@@ -3141,6 +3141,217 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     return final_streams
 
+SUBTITLE_LANGUAGE_MAP = {
+    "en": ["en", "eng", "english"], "eng": ["en", "eng", "english"], "english": ["en", "eng", "english"],
+    "es": ["es", "spa", "esp", "spanish"], "spa": ["es", "spa", "esp", "spanish"], "spanish": ["es", "spa", "esp", "spanish"],
+    "hi": ["hi", "hin", "hindi"], "hin": ["hi", "hin", "hindi"], "hindi": ["hi", "hin", "hindi"],
+    "pt": ["pt", "por", "pob", "portuguese"], "por": ["pt", "por", "pob", "portuguese"], "portuguese": ["pt", "por", "pob", "portuguese"],
+    "fr": ["fr", "fre", "fra", "french"], "fre": ["fr", "fre", "fra", "french"], "french": ["fr", "fre", "fra", "french"],
+    "de": ["de", "ger", "deu", "german"], "ger": ["de", "ger", "deu", "german"], "german": ["de", "ger", "deu", "german"],
+    "it": ["it", "ita", "italian"], "ita": ["it", "ita", "italian"], "italian": ["it", "ita", "italian"],
+    "ru": ["ru", "rus", "russian"], "rus": ["ru", "rus", "russian"], "russian": ["ru", "rus", "russian"],
+    "ar": ["ar", "ara", "arabic"], "ara": ["ar", "ara", "arabic"], "arabic": ["ar", "ara", "arabic"],
+    "tr": ["tr", "tur", "turkish"], "tur": ["tr", "tur", "turkish"], "turkish": ["tr", "tur", "turkish"],
+    "zh": ["zh", "chi", "zho", "chinese"], "chi": ["zh", "chi", "zho", "chinese"], "chinese": ["zh", "chi", "zho", "chinese"],
+    "ja": ["ja", "jpn", "japanese"], "jpn": ["ja", "jpn", "japanese"], "japanese": ["ja", "jpn", "japanese"],
+    "ko": ["ko", "kor", "korean"], "kor": ["ko", "kor", "korean"], "korean": ["ko", "kor", "korean"],
+    "id": ["id", "ind", "indonesian"], "ind": ["id", "ind", "indonesian"], "indonesian": ["id", "ind", "indonesian"],
+    "ml": ["ml", "mal", "malayalam"], "mal": ["ml", "mal", "malayalam"], "malayalam": ["ml", "mal", "malayalam"],
+    "ta": ["ta", "tam", "tamil"], "tam": ["ta", "tam", "tamil"], "tamil": ["ta", "tam", "tamil"],
+    "te": ["te", "tel", "telugu"], "tel": ["te", "tel", "telugu"], "telugu": ["te", "tel", "telugu"],
+    "kn": ["kn", "kan", "kannada"], "kan": ["kn", "kan", "kannada"], "kannada": ["kn", "kan", "kannada"],
+    "bn": ["bn", "ben", "bengali"], "ben": ["bn", "ben", "bengali"], "bengali": ["bn", "ben", "bengali"],
+    "pa": ["pa", "pan", "punjabi"], "pan": ["pa", "pan", "punjabi"], "punjabi": ["pa", "pan", "punjabi"],
+    "ur": ["ur", "urd", "urdu"], "urd": ["ur", "urd", "urdu"], "urdu": ["ur", "urd", "urdu"],
+    "fa": ["fa", "per", "fas", "persian"], "per": ["fa", "per", "fas", "persian"], "persian": ["fa", "per", "fas", "persian"],
+    "pl": ["pl", "pol", "polish"], "pol": ["pl", "pol", "polish"], "polish": ["pl", "pol", "polish"],
+    "nl": ["nl", "dut", "nld", "dutch"], "dut": ["nl", "dut", "nld", "dutch"], "dutch": ["nl", "dut", "nld", "dutch"]
+}
+
+SUBTITLE_LANGUAGE_NAMES = {
+    "eng": "English", "en": "English", "english": "English",
+    "spa": "Spanish", "es": "Spanish", "esp": "Spanish", "spanish": "Spanish",
+    "fre": "French", "fra": "French", "fr": "French", "french": "French",
+    "ger": "German", "deu": "German", "de": "German", "german": "German",
+    "ita": "Italian", "it": "Italian", "italian": "Italian",
+    "por": "Portuguese", "pt": "Portuguese", "portuguese": "Portuguese",
+    "pob": "Portuguese (BR)", "pt-br": "Portuguese (BR)",
+    "rus": "Russian", "ru": "Russian", "russian": "Russian",
+    "ara": "Arabic", "ar": "Arabic", "arabic": "Arabic",
+    "hin": "Hindi", "hi": "Hindi", "hindi": "Hindi",
+    "chi": "Chinese", "zho": "Chinese", "zh": "Chinese", "chinese": "Chinese",
+    "jpn": "Japanese", "ja": "Japanese", "japanese": "Japanese",
+    "ko": "Korean", "ko": "Korean", "korean": "Korean",
+    "tur": "Turkish", "tr": "Turkish", "turkish": "Turkish",
+    "pol": "Polish", "pl": "Polish", "polish": "Polish",
+    "dut": "Dutch", "nld": "Dutch", "nl": "Dutch", "dutch": "Dutch",
+    "cze": "Czech", "ces": "Czech", "cs": "Czech", "czech": "Czech",
+    "ell": "Greek", "gre": "Greek", "el": "Greek", "greek": "Greek",
+    "swe": "Swedish", "sv": "Swedish", "swedish": "Swedish",
+    "ind": "Indonesian", "id": "Indonesian", "indonesian": "Indonesian",
+    "mal": "Malayalam", "ml": "Malayalam", "malayalam": "Malayalam",
+    "tam": "Tamil", "ta": "Tamil", "tamil": "Tamil",
+    "tel": "Telugu", "te": "Telugu", "telugu": "Telugu",
+    "kan": "Kannada", "kn": "Kannada", "kannada": "Kannada",
+    "ben": "Bengali", "bn": "Bengali", "bengali": "Bengali",
+    "pan": "Punjabi", "pa": "Punjabi", "punjabi": "Punjabi",
+    "urd": "Urdu", "ur": "Urdu", "urdu": "Urdu",
+    "per": "Persian", "fas": "Persian", "fa": "Persian", "persian": "Persian",
+    "rum": "Romanian", "ron": "Romanian", "ro": "Romanian", "romanian": "Romanian",
+    "hun": "Hungarian", "hu": "Hungarian", "hungarian": "Hungarian",
+    "ukr": "Ukrainian", "uk": "Ukrainian", "ukrainian": "Ukrainian",
+    "heb": "Hebrew", "he": "Hebrew", "hebrew": "Hebrew",
+    "tha": "Thai", "th": "Thai", "thai": "Thai",
+    "vie": "Vietnamese", "vi": "Vietnamese", "vietnamese": "Vietnamese",
+    "dan": "Danish", "da": "Danish", "danish": "Danish",
+    "fin": "Finnish", "fi": "Finnish", "finnish": "Finnish",
+    "nor": "Norwegian", "no": "Norwegian", "norwegian": "Norwegian",
+    "nob": "Norwegian Bokmål",
+    "hrv": "Croatian", "hr": "Croatian", "croatian": "Croatian",
+    "srp": "Serbian", "sr": "Serbian", "serbian": "Serbian",
+    "bul": "Bulgarian", "bg": "Bulgarian", "bulgarian": "Bulgarian",
+    "slv": "Slovenian", "sl": "Slovenian", "slovenian": "Slovenian",
+    "slk": "Slovak", "sk": "Slovak", "slovak": "Slovak",
+    "est": "Estonian", "et": "Estonian", "estonian": "Estonian",
+    "lav": "Latvian", "lv": "Latvian", "latvian": "Latvian",
+    "lit": "Lithuanian", "lt": "Lithuanian", "lithuanian": "Lithuanian",
+}
+
+def get_user_preferred_languages():
+    """Retrieve user preferred subtitle languages string from GSettings or database."""
+    pref_langs_str = ""
+    try:
+        import gi
+        gi.require_version('Gio', '2.0')
+        from gi.repository import Gio
+        schema_source = Gio.SettingsSchemaSource.get_default()
+        if schema_source and schema_source.lookup("io.github.fastrizwaan.PopcornBox", True):
+            settings = Gio.Settings.new("io.github.fastrizwaan.PopcornBox")
+            pref_langs_str = settings.get_string("subtitle-languages")
+    except Exception:
+        pass
+        
+    if not pref_langs_str:
+        pref_langs_str = database.get_setting("subtitle-languages", "") or database.get_setting("subtitle_languages", "")
+
+    return pref_langs_str or ""
+
+def is_sdh_track(track):
+    """Determine if a subtitle track or subtitle item is SDH / CC / Hearing Impaired."""
+    if not isinstance(track, dict):
+        return False
+    if track.get("hearing-impaired") or track.get("hearing_impaired") or track.get("hearingImpaired") or track.get("hi") is True or track.get("sdh") is True:
+        return True
+    title = str(track.get("title") or "")
+    lang = str(track.get("lang") or "")
+    filename = str(track.get("subtitleFileName") or track.get("file_name") or track.get("release_name") or track.get("movieReleaseName") or track.get("filename") or "")
+    combined = f"{title} {filename}".lower()
+    
+    if re.search(r"\b(sdh|cc|hoh)\b", combined):
+        return True
+    if re.search(r"\[\s*(sdh|cc|hi|hoh)\s*\]", combined):
+        return True
+    if re.search(r"\(\s*(sdh|cc|hi|hoh)\s*\)", combined):
+        return True
+    if any(k in combined for k in ["hearing impaired", "hearing-impaired", "hard of hearing", "closed caption", "closed captions"]):
+        return True
+    if "sdh" in lang.lower() or "cc" in lang.lower():
+        return True
+    return False
+
+def has_embedded_subtitles(tracks):
+    """Check if any embedded (non-external) subtitle track exists in the given tracks list."""
+    if not tracks:
+        return False
+    return any(
+        isinstance(t, dict) and t.get("type") == "sub" and not t.get("external")
+        for t in tracks
+    )
+
+def find_best_subtitle_track(tracks, preferred_langs=None, only_embedded=False):
+    """
+    Find the best subtitle track from tracks according to:
+    1. Language preference order (from user settings or argument)
+    2. SDH priority (SDH preferred over non-SDH in the same language)
+    3. Full dialogue over forced subtitles
+    4. Default track flag
+    5. Track ID order
+    Returns the best track dict, or None if no acceptable track is found.
+    """
+    if not tracks:
+        return None
+
+    if preferred_langs is None:
+        user_pref = get_user_preferred_languages()
+        raw_langs = [l.strip().lower() for l in user_pref.replace(";", ",").split(",") if l.strip()]
+        if not raw_langs:
+            raw_langs = ["en", "eng", "english"]
+    elif isinstance(preferred_langs, str):
+        raw_langs = [l.strip().lower() for l in preferred_langs.replace(";", ",").split(",") if l.strip()]
+        if not raw_langs:
+            raw_langs = ["en", "eng", "english"]
+    else:
+        raw_langs = [str(l).strip().lower() for l in preferred_langs if str(l).strip()]
+        if not raw_langs:
+            raw_langs = ["en", "eng", "english"]
+
+    rank_sets = []
+    for pl in raw_langs:
+        clean_pl = pl.split("-")[0].split("_")[0]
+        codes = list(SUBTITLE_LANGUAGE_MAP.get(clean_pl, SUBTITLE_LANGUAGE_MAP.get(pl, [clean_pl, pl])))
+        names = [SUBTITLE_LANGUAGE_NAMES.get(c, "").lower() for c in codes]
+        s = set(codes) | set(n for n in names if n)
+        rank_sets.append(s)
+
+    candidates = []
+    for track in tracks:
+        if not isinstance(track, dict) or track.get("type") != "sub":
+            continue
+        if only_embedded and track.get("external"):
+            continue
+
+        raw_sub_lang = str(track.get("lang") or "").lower().strip()
+        sub_lang_clean = raw_sub_lang.split("-")[0].split("_")[0]
+        track_title = str(track.get("title") or "").lower()
+        sdh = is_sdh_track(track)
+        is_forced = bool(track.get("forced"))
+        is_default = bool(track.get("default"))
+        track_id = int(track.get("id", 0))
+
+        matched_rank = 999
+        for idx, rset in enumerate(rank_sets):
+            if raw_sub_lang in rset or sub_lang_clean in rset:
+                matched_rank = idx
+                break
+            for item in rset:
+                if len(item) >= 3 and re.search(r"\b" + re.escape(item) + r"\b", track_title):
+                    matched_rank = idx
+                    break
+                elif len(item) == 2 and re.search(r"[\(\[\{\s]" + re.escape(item) + r"[\)\]\}\s]", f" {track_title} "):
+                    matched_rank = idx
+                    break
+            if matched_rank < 999:
+                break
+
+        # Fallback for undetermined / missing language tags
+        if matched_rank == 999 and (not raw_sub_lang or raw_sub_lang in ["und", "unk", "unknown"]):
+            if sdh:
+                matched_rank = 500
+            elif is_default:
+                matched_rank = 501
+            else:
+                matched_rank = 502
+
+        if matched_rank < 999:
+            score = (matched_rank, 0 if sdh else 1, 1 if is_forced else 0, 0 if is_default else 1, track_id)
+            candidates.append((score, track))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]
+
 def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream_subtitles=None, title=None):
     all_subs = []
     if stream_subtitles and isinstance(stream_subtitles, list):
@@ -3234,56 +3445,15 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
             unique_subs.append(s)
     all_subs = unique_subs
 
-    pref_langs_str = ""
-    try:
-        import gi
-        gi.require_version('Gio', '2.0')
-        from gi.repository import Gio
-        schema_source = Gio.SettingsSchemaSource.get_default()
-        if schema_source and schema_source.lookup("io.github.fastrizwaan.PopcornBox", True):
-            settings = Gio.Settings.new("io.github.fastrizwaan.PopcornBox")
-            pref_langs_str = settings.get_string("subtitle-languages")
-    except Exception:
-        pass
-        
-    if not pref_langs_str:
-        pref_langs_str = database.get_setting("subtitle-languages", "") or database.get_setting("subtitle_languages", "")
-        
+    pref_langs_str = get_user_preferred_languages()
     raw_langs = [l.strip().lower() for l in pref_langs_str.replace(";", ",").split(',') if l.strip()]
     if not raw_langs:
         raw_langs = ["en", "eng", "english"]
-        
-    language_map = {
-        "en": ["en", "eng", "english"], "eng": ["en", "eng", "english"], "english": ["en", "eng", "english"],
-        "es": ["es", "spa", "esp", "spanish"], "spa": ["es", "spa", "esp", "spanish"], "spanish": ["es", "spa", "esp", "spanish"],
-        "hi": ["hi", "hin", "hindi"], "hin": ["hi", "hin", "hindi"], "hindi": ["hi", "hin", "hindi"],
-        "pt": ["pt", "por", "pob", "portuguese"], "por": ["pt", "por", "pob", "portuguese"], "portuguese": ["pt", "por", "pob", "portuguese"],
-        "fr": ["fr", "fre", "fra", "french"], "fre": ["fr", "fre", "fra", "french"], "french": ["fr", "fre", "fra", "french"],
-        "de": ["de", "ger", "deu", "german"], "ger": ["de", "ger", "deu", "german"], "german": ["de", "ger", "deu", "german"],
-        "it": ["it", "ita", "italian"], "ita": ["it", "ita", "italian"], "italian": ["it", "ita", "italian"],
-        "ru": ["ru", "rus", "russian"], "rus": ["ru", "rus", "russian"], "russian": ["ru", "rus", "russian"],
-        "ar": ["ar", "ara", "arabic"], "ara": ["ar", "ara", "arabic"], "arabic": ["ar", "ara", "arabic"],
-        "tr": ["tr", "tur", "turkish"], "tur": ["tr", "tur", "turkish"], "turkish": ["tr", "tur", "turkish"],
-        "zh": ["zh", "chi", "zho", "chinese"], "chi": ["zh", "chi", "zho", "chinese"], "chinese": ["zh", "chi", "zho", "chinese"],
-        "ja": ["ja", "jpn", "japanese"], "jpn": ["ja", "jpn", "japanese"], "japanese": ["ja", "jpn", "japanese"],
-        "ko": ["ko", "kor", "korean"], "kor": ["ko", "kor", "korean"], "korean": ["ko", "kor", "korean"],
-        "id": ["id", "ind", "indonesian"], "ind": ["id", "ind", "indonesian"], "indonesian": ["id", "ind", "indonesian"],
-        "ml": ["ml", "mal", "malayalam"], "mal": ["ml", "mal", "malayalam"], "malayalam": ["ml", "mal", "malayalam"],
-        "ta": ["ta", "tam", "tamil"], "tam": ["ta", "tam", "tamil"], "tamil": ["ta", "tam", "tamil"],
-        "te": ["te", "tel", "telugu"], "tel": ["te", "tel", "telugu"], "telugu": ["te", "tel", "telugu"],
-        "kn": ["kn", "kan", "kannada"], "kan": ["kn", "kan", "kannada"], "kannada": ["kn", "kan", "kannada"],
-        "bn": ["bn", "ben", "bengali"], "ben": ["bn", "ben", "bengali"], "bengali": ["bn", "ben", "bengali"],
-        "pa": ["pa", "pan", "punjabi"], "pan": ["pa", "pan", "punjabi"], "punjabi": ["pa", "pan", "punjabi"],
-        "ur": ["ur", "urd", "urdu"], "urd": ["ur", "urd", "urdu"], "urdu": ["ur", "urd", "urdu"],
-        "fa": ["fa", "per", "fas", "persian"], "per": ["fa", "per", "fas", "persian"], "persian": ["fa", "per", "fas", "persian"],
-        "pl": ["pl", "pol", "polish"], "pol": ["pl", "pol", "polish"], "polish": ["pl", "pol", "polish"],
-        "nl": ["nl", "dut", "nld", "dutch"], "dut": ["nl", "dut", "nld", "dutch"], "dutch": ["nl", "dut", "nld", "dutch"]
-    }
 
     rank_sets = []
     for pl in raw_langs:
         clean_pl = pl.split("-")[0].split("_")[0]
-        codes = language_map.get(clean_pl, language_map.get(pl, [clean_pl, pl]))
+        codes = SUBTITLE_LANGUAGE_MAP.get(clean_pl, SUBTITLE_LANGUAGE_MAP.get(pl, [clean_pl, pl]))
         rank_sets.append(set(codes))
 
     matched_subs = []
@@ -3296,67 +3466,20 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
                 matched_rank = idx
                 break
         if matched_rank < 999:
-            matched_subs.append((matched_rank, s))
+            sdh_score = 0 if is_sdh_track(s) else 1
+            matched_subs.append((matched_rank, sdh_score, s))
             
     if not matched_subs and all_subs:
         if all_subs:
             database.save_cached_subtitles(cache_key, all_subs)
         return all_subs
 
-    matched_subs.sort(key=lambda x: x[0])
-    res_list = [item[1] for item in matched_subs]
+    matched_subs.sort(key=lambda x: (x[0], x[1]))
+    res_list = [item[2] for item in matched_subs]
     if res_list:
         database.save_cached_subtitles(cache_key, res_list)
     return res_list
 
-SUBTITLE_LANGUAGE_NAMES = {
-    "eng": "English", "en": "English", "english": "English",
-    "spa": "Spanish", "es": "Spanish", "esp": "Spanish", "spanish": "Spanish",
-    "fre": "French", "fra": "French", "fr": "French", "french": "French",
-    "ger": "German", "deu": "German", "de": "German", "german": "German",
-    "ita": "Italian", "it": "Italian", "italian": "Italian",
-    "por": "Portuguese", "pt": "Portuguese", "portuguese": "Portuguese",
-    "pob": "Portuguese (BR)", "pt-br": "Portuguese (BR)",
-    "rus": "Russian", "ru": "Russian", "russian": "Russian",
-    "ara": "Arabic", "ar": "Arabic", "arabic": "Arabic",
-    "hin": "Hindi", "hi": "Hindi", "hindi": "Hindi",
-    "chi": "Chinese", "zho": "Chinese", "zh": "Chinese", "chinese": "Chinese",
-    "jpn": "Japanese", "ja": "Japanese", "japanese": "Japanese",
-    "kor": "Korean", "ko": "Korean", "korean": "Korean",
-    "tur": "Turkish", "tr": "Turkish", "turkish": "Turkish",
-    "pol": "Polish", "pl": "Polish", "polish": "Polish",
-    "dut": "Dutch", "nld": "Dutch", "nl": "Dutch", "dutch": "Dutch",
-    "cze": "Czech", "ces": "Czech", "cs": "Czech", "czech": "Czech",
-    "ell": "Greek", "gre": "Greek", "el": "Greek", "greek": "Greek",
-    "swe": "Swedish", "sv": "Swedish", "swedish": "Swedish",
-    "ind": "Indonesian", "id": "Indonesian", "indonesian": "Indonesian",
-    "mal": "Malayalam", "ml": "Malayalam", "malayalam": "Malayalam",
-    "tam": "Tamil", "ta": "Tamil", "tamil": "Tamil",
-    "tel": "Telugu", "te": "Telugu", "telugu": "Telugu",
-    "kan": "Kannada", "kn": "Kannada", "kannada": "Kannada",
-    "ben": "Bengali", "bn": "Bengali", "bengali": "Bengali",
-    "pan": "Punjabi", "pa": "Punjabi", "punjabi": "Punjabi",
-    "urd": "Urdu", "ur": "Urdu", "urdu": "Urdu",
-    "per": "Persian", "fas": "Persian", "fa": "Persian", "persian": "Persian",
-    "rum": "Romanian", "ron": "Romanian", "ro": "Romanian", "romanian": "Romanian",
-    "hun": "Hungarian", "hu": "Hungarian", "hungarian": "Hungarian",
-    "ukr": "Ukrainian", "uk": "Ukrainian", "ukrainian": "Ukrainian",
-    "heb": "Hebrew", "he": "Hebrew", "hebrew": "Hebrew",
-    "tha": "Thai", "th": "Thai", "thai": "Thai",
-    "vie": "Vietnamese", "vi": "Vietnamese", "vietnamese": "Vietnamese",
-    "dan": "Danish", "da": "Danish", "danish": "Danish",
-    "fin": "Finnish", "fi": "Finnish", "finnish": "Finnish",
-    "nor": "Norwegian", "no": "Norwegian", "norwegian": "Norwegian",
-    "nob": "Norwegian Bokmål",
-    "hrv": "Croatian", "hr": "Croatian", "croatian": "Croatian",
-    "srp": "Serbian", "sr": "Serbian", "serbian": "Serbian",
-    "bul": "Bulgarian", "bg": "Bulgarian", "bulgarian": "Bulgarian",
-    "slv": "Slovenian", "sl": "Slovenian", "slovenian": "Slovenian",
-    "slk": "Slovak", "sk": "Slovak", "slovak": "Slovak",
-    "est": "Estonian", "et": "Estonian", "estonian": "Estonian",
-    "lav": "Latvian", "lv": "Latvian", "latvian": "Latvian",
-    "lit": "Lithuanian", "lt": "Lithuanian", "lithuanian": "Lithuanian",
-}
 
 def get_language_name(code):
     if not code:

@@ -1,5 +1,33 @@
 import unittest
+import sys
+import tempfile
+import os
+import subprocess
+from pathlib import Path
 from unittest.mock import patch, MagicMock
+sys.modules["mpv"] = MagicMock()
+
+schema_temp_dir = tempfile.TemporaryDirectory()
+schema_path = Path("data/io.github.fastrizwaan.PopcornBox.gschema.xml")
+if schema_path.exists():
+    dest = Path(schema_temp_dir.name) / "io.github.fastrizwaan.PopcornBox.gschema.xml"
+    dest.write_text(schema_path.read_text())
+    subprocess.run(["glib-compile-schemas", schema_temp_dir.name], check=True)
+    os.environ["GSETTINGS_SCHEMA_DIR"] = schema_temp_dir.name
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Gio, GLib
+
+res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+if res_file.exists():
+    try:
+        res = Gio.Resource.load(str(res_file))
+        Gio.resources_register(res)
+    except Exception:
+        pass
+
 import json
 import io
 
@@ -196,6 +224,221 @@ class TestSubtitleSearch(unittest.TestCase):
         self.assertEqual(item1_label, "Search Subtitle")
         self.assertEqual(item1_action, "win.search-subtitles")
 
+    def test_is_sdh_track(self):
+        # Explicit SDH / CC / Hearing Impaired titles & flags
+        self.assertTrue(api.is_sdh_track({"title": "English [SDH]"}))
+        self.assertTrue(api.is_sdh_track({"title": "English (SDH)"}))
+        self.assertTrue(api.is_sdh_track({"title": "SDH"}))
+        self.assertTrue(api.is_sdh_track({"title": "English [CC]"}))
+        self.assertTrue(api.is_sdh_track({"title": "English (CC)"}))
+        self.assertTrue(api.is_sdh_track({"title": "English [HI]"}))
+        self.assertTrue(api.is_sdh_track({"title": "English (Hearing Impaired)"}))
+        self.assertTrue(api.is_sdh_track({"title": "Closed Captions"}))
+        self.assertTrue(api.is_sdh_track({"hearing-impaired": True}))
+        self.assertTrue(api.is_sdh_track({"hearing_impaired": True}))
+        self.assertTrue(api.is_sdh_track({"subtitleFileName": "Movie.2024.SDH.srt"}))
+        self.assertTrue(api.is_sdh_track({"lang": "en-sdh"}))
+
+        # Non-SDH titles
+        self.assertFalse(api.is_sdh_track({"title": "English"}))
+        self.assertFalse(api.is_sdh_track({"title": "Spanish"}))
+        self.assertFalse(api.is_sdh_track({"title": "Director Commentary"}))
+        self.assertFalse(api.is_sdh_track({"title": "Signs & Songs"}))
+
+    def test_find_best_subtitle_track_prefers_sdh(self):
+        tracks = [
+            {"type": "sub", "id": 1, "lang": "eng", "title": "English (Standard)", "external": False},
+            {"type": "sub", "id": 2, "lang": "eng", "title": "English [SDH]", "external": False},
+        ]
+        best = api.find_best_subtitle_track(tracks, preferred_langs=["en"], only_embedded=True)
+        self.assertIsNotNone(best)
+        self.assertEqual(best["id"], 2)
+
+    def test_find_best_subtitle_track_language_order(self):
+        tracks = [
+            {"type": "sub", "id": 1, "lang": "eng", "title": "English [SDH]", "external": False},
+            {"type": "sub", "id": 2, "lang": "spa", "title": "Spanish [SDH]", "external": False},
+        ]
+        # Spanish is 1st preference -> should pick Spanish SDH
+        best_spa = api.find_best_subtitle_track(tracks, preferred_langs=["es", "en"], only_embedded=True)
+        self.assertEqual(best_spa["id"], 2)
+
+        # English is 1st preference -> should pick English SDH
+        best_eng = api.find_best_subtitle_track(tracks, preferred_langs=["en", "es"], only_embedded=True)
+        self.assertEqual(best_eng["id"], 1)
+
+    def test_find_best_subtitle_track_only_embedded(self):
+        tracks = [
+            {"type": "sub", "id": 1, "lang": "eng", "title": "External English [SDH]", "external": True},
+        ]
+        best = api.find_best_subtitle_track(tracks, preferred_langs=["en"], only_embedded=True)
+        self.assertIsNone(best)
+
+        # When only_embedded is False, external is allowed
+        best_ext = api.find_best_subtitle_track(tracks, preferred_langs=["en"], only_embedded=False)
+        self.assertIsNotNone(best_ext)
+        self.assertEqual(best_ext["id"], 1)
+
+    def test_has_embedded_subtitles(self):
+        self.assertFalse(api.has_embedded_subtitles([]))
+        self.assertFalse(api.has_embedded_subtitles([
+            {"type": "audio", "id": 1, "external": False},
+            {"type": "sub", "id": 2, "external": True},
+        ]))
+        self.assertTrue(api.has_embedded_subtitles([
+            {"type": "audio", "id": 1, "external": False},
+            {"type": "sub", "id": 2, "external": False},
+        ]))
+
+    def test_smart_subtitles_skips_download_when_embedded_present(self):
+        from src.window import CineWindow
+        mock_win = MagicMock(spec=CineWindow)
+        mock_win._is_playing_trailer.return_value = False
+        mock_win._subtitles_configured_for_file = False
+        mock_win._pending_subtitle_request = {
+            "imdb_id": "tt1234567",
+            "media_type": "movie",
+            "season": None,
+            "episode": None,
+            "stream_subtitles": None,
+            "stream_title": "Test Movie"
+        }
+        mock_win.mpv = MagicMock()
+        mock_win.mpv.idle_active = False
+        mock_win.mpv.track_list = [
+            {"type": "video", "id": 1, "external": False},
+            {"type": "audio", "id": 2, "external": False},
+            {"type": "sub", "id": 3, "lang": "eng", "title": "English", "external": False},
+            {"type": "sub", "id": 4, "lang": "eng", "title": "English [SDH]", "external": False},
+        ]
+
+        # Call _check_and_configure_subtitles unbound
+        CineWindow._check_and_configure_subtitles(mock_win)
+
+        # Verify that track 4 (SDH) was selected
+        self.assertEqual(mock_win.mpv.sid, 4)
+        self.assertTrue(mock_win._subtitles_configured_for_file)
+        self.assertIsNone(mock_win._pending_subtitle_request)
+        # Verify fetch_and_add_subtitles was NOT called!
+        mock_win.fetch_and_add_subtitles.assert_not_called()
+
+    def test_smart_subtitles_downloads_when_no_embedded_present(self):
+        from src.window import CineWindow
+        mock_win = MagicMock(spec=CineWindow)
+        mock_win._is_playing_trailer.return_value = False
+        mock_win._subtitles_configured_for_file = False
+        mock_win._pending_subtitle_request = {
+            "imdb_id": "tt1234567",
+            "media_type": "movie",
+            "season": None,
+            "episode": None,
+            "stream_subtitles": None,
+            "stream_title": "Test Movie"
+        }
+        mock_win.mpv = MagicMock()
+        mock_win.mpv.idle_active = False
+        # Media has NO embedded subtitle tracks
+        mock_win.mpv.track_list = [
+            {"type": "video", "id": 1, "external": False},
+            {"type": "audio", "id": 2, "external": False},
+        ]
+
+        # Call _check_and_configure_subtitles unbound
+        CineWindow._check_and_configure_subtitles(mock_win)
+
+        # Verify fetch_and_add_subtitles WAS called with pending request!
+        mock_win.fetch_and_add_subtitles.assert_called_once_with(
+            imdb_id="tt1234567",
+            media_type="movie",
+            season=None,
+            episode=None,
+            stream_subtitles=None,
+            stream_title="Test Movie"
+        )
+        self.assertTrue(mock_win._subtitles_configured_for_file)
+        self.assertIsNone(mock_win._pending_subtitle_request)
+
+    def test_track_list_observer_auto_selects_sdh_and_clears_pending_download(self):
+        from src.window import CineWindow
+        mock_win = MagicMock(spec=CineWindow)
+        mock_win._is_playing_trailer.return_value = False
+        mock_win._subtitles_configured_for_file = False
+        mock_win._pending_subtitle_request = {
+            "imdb_id": "tt1234567",
+            "media_type": "movie"
+        }
+        mock_win.mpv = MagicMock()
+        mock_win.mpv.idle_active = False
+
+        track_list = [
+            {"type": "sub", "id": 1, "lang": "eng", "title": "English", "external": False},
+            {"type": "sub", "id": 2, "lang": "eng", "title": "English [SDH]", "external": False},
+        ]
+
+        CineWindow._on_track_list_for_subtitles(mock_win, track_list)
+
+        self.assertEqual(mock_win.mpv.sid, 2)
+        self.assertTrue(mock_win._subtitles_configured_for_file)
+        self.assertIsNone(mock_win._pending_subtitle_request)
+
+    def test_smart_subtitles_falls_back_to_regular_when_no_sdh(self):
+        from src.window import CineWindow
+        mock_win = MagicMock(spec=CineWindow)
+        mock_win._is_playing_trailer.return_value = False
+        mock_win._subtitles_configured_for_file = False
+        mock_win._pending_subtitle_request = {
+            "imdb_id": "tt1234567",
+            "media_type": "movie"
+        }
+        mock_win.mpv = MagicMock()
+        mock_win.mpv.idle_active = False
+        # Media has regular English embedded subtitles, no SDH
+        mock_win.mpv.track_list = [
+            {"type": "sub", "id": 1, "lang": "eng", "title": "English", "external": False},
+        ]
+
+        CineWindow._check_and_configure_subtitles(mock_win)
+
+        self.assertEqual(mock_win.mpv.sid, 1)
+        self.assertTrue(mock_win._subtitles_configured_for_file)
+        self.assertIsNone(mock_win._pending_subtitle_request)
+        mock_win.fetch_and_add_subtitles.assert_not_called()
+
+    @patch("src.database.get_cached_subtitles")
+    @patch("src.database.save_cached_subtitles")
+    @patch("urllib.request.urlopen")
+    def test_get_subtitles_ranks_sdh_first(self, mock_urlopen, mock_save_cache, mock_get_cache):
+        mock_get_cache.return_value = None
+        sample_api_response = {
+            "subtitles": [
+                {
+                    "id": "1",
+                    "url": "http://sub-regular.srt",
+                    "lang": "en",
+                    "subtitleFileName": "Movie.2024.1080p.srt",
+                },
+                {
+                    "id": "2",
+                    "url": "http://sub-sdh.srt",
+                    "lang": "en",
+                    "subtitleFileName": "Movie.2024.1080p.SDH.srt",
+                },
+            ]
+        }
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(sample_api_response).encode("utf-8")
+        mock_resp.headers = {}
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        subs = api.get_subtitles(imdb_id="tt9999999")
+        self.assertGreaterEqual(len(subs), 2)
+        # First returned subtitle should be the SDH subtitle!
+        self.assertEqual(subs[0]["id"], "2")
+        self.assertIn("SDH", subs[0]["subtitleFileName"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

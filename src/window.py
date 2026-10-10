@@ -3200,8 +3200,16 @@ class MovieDetailsPage(Gtk.Overlay):
                 season = getattr(self, "selected_season", None)
                 episode = getattr(self, "selected_episode", None)
                 stream_subs = self.selected_torrent.get("subtitles") if hasattr(self, "selected_torrent") and isinstance(self.selected_torrent, dict) else None
-                if hasattr(self.window, "fetch_and_add_subtitles"):
-                    self.window.fetch_and_add_subtitles(imdb_id, self.media_type, season, episode, stream_subtitles=stream_subs, stream_title=media_title)
+                if hasattr(self.window, "_pending_subtitle_request") or hasattr(self.window, "fetch_and_add_subtitles"):
+                    self.window._pending_subtitle_request = {
+                        "imdb_id": imdb_id,
+                        "media_type": self.media_type,
+                        "season": season,
+                        "episode": episode,
+                        "stream_subtitles": stream_subs,
+                        "stream_title": media_title,
+                    }
+                    self.window._subtitles_configured_for_file = False
                 from . import api
                 headers = api.extract_stream_headers(self.selected_torrent, url=magnet)
                 self.window._play_stream(magnet, media_title, headers=headers)
@@ -3209,6 +3217,16 @@ class MovieDetailsPage(Gtk.Overlay):
             from . import player
             if self.window:
                 self.window.show_player_loading("Fetching metadata...", media_title)
+                stream_subs = self.selected_torrent.get("subtitles") if hasattr(self, "selected_torrent") and isinstance(self.selected_torrent, dict) else None
+                self.window._pending_subtitle_request = {
+                    "imdb_id": self.movie_stub.get("id"),
+                    "media_type": self.media_type,
+                    "season": getattr(self, "selected_season", None),
+                    "episode": getattr(self, "selected_episode", None),
+                    "stream_subtitles": stream_subs,
+                    "stream_title": media_title,
+                }
+                self.window._subtitles_configured_for_file = False
                 
             def progress_callback(stats):
                 url = stats.get("url") if isinstance(stats, dict) else None
@@ -3565,6 +3583,8 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue = []
         self.stream_queue_index = 0
         self.stream_request_id = 0
+        self._pending_subtitle_request = None
+        self._subtitles_configured_for_file = False
         self.mpv_ctx: mpv.MpvRenderContext
 
         self.mpv = mpv.MPV(
@@ -5463,6 +5483,7 @@ class CineWindow(Adw.ApplicationWindow):
         def on_start_file(_event):
             idle_add_once(self.spinner.set_visible, True)
             self.loaded_path = str(self.mpv.path)
+            self._subtitles_configured_for_file = False
 
         @self.mpv.event_callback("playback-restart")
         def on_playback_restart(_event):
@@ -5489,6 +5510,9 @@ class CineWindow(Adw.ApplicationWindow):
                     self.start_page.set_sensitive(True)
                     self._hide_ui_timeout()
                     
+                    if hasattr(self, "_check_and_configure_subtitles"):
+                        self._check_and_configure_subtitles()
+
                     if hasattr(self, "_try_add_pending_subtitles"):
                         self._try_add_pending_subtitles()
 
@@ -5722,6 +5746,7 @@ class CineWindow(Adw.ApplicationWindow):
         @self.mpv.property_observer("track-list")
         def on_track_list_change(_name, track_list):
             idle_add_once(self._update_track_menus, track_list)
+            idle_add_once(self._on_track_list_for_subtitles, track_list)
 
         @self.mpv.property_observer("playlist-pos")
         def on_pl_pos_change(_name, _value):
@@ -7886,6 +7911,21 @@ class CineWindow(Adw.ApplicationWindow):
                 if not is_download and page and hasattr(page, "update_continue_btn"):
                     page.update_continue_btn()
 
+            if not getattr(self, "_pending_subtitle_request", None) and not is_youtube:
+                p_imdb = (p_id if not is_download else item_id) or getattr(self, "current_imdb_id", None)
+                if not p_imdb and getattr(self, "_current_playing_item", None):
+                    p_imdb = self._current_playing_item.get("imdb_id") or self._current_playing_item.get("id")
+                if p_imdb:
+                    self._pending_subtitle_request = {
+                        "imdb_id": p_imdb,
+                        "media_type": m_type or "movie",
+                        "season": s_num,
+                        "episode": e_num,
+                        "stream_subtitles": None,
+                        "stream_title": title,
+                    }
+                self._subtitles_configured_for_file = False
+
         self.main_stack.set_visible_child_name("player")
         
         if title:
@@ -8003,6 +8043,80 @@ class CineWindow(Adw.ApplicationWindow):
         self.is_inactive = False
         if hasattr(self, "gl_area"):
             self.gl_area.queue_render()
+
+    def _on_track_list_for_subtitles(self, track_list):
+        """Called when track-list updates in MPV. If a preferred embedded subtitle is found, select it immediately and prevent downloading."""
+        if getattr(self, "_subtitles_configured_for_file", False):
+            return
+        if self._is_playing_trailer() or getattr(self.mpv, "idle_active", False):
+            return
+
+        from . import api
+        best_embedded = api.find_best_subtitle_track(track_list, only_embedded=True)
+        if best_embedded:
+            self._subtitles_configured_for_file = True
+            self._pending_subtitle_request = None  # Do NOT download!
+            track_id = int(best_embedded.get("id", 0))
+            is_sdh = api.is_sdh_track(best_embedded)
+            logger.info(f"[SUBS] Preferred inbuilt subtitle track found via track-list: id={track_id}, title={best_embedded.get('title')}, lang={best_embedded.get('lang')}, sdh={is_sdh}. Skipping external download.")
+            try:
+                self.mpv.sid = track_id
+                self.mpv["sub-visibility"] = "yes"
+            except Exception as e:
+                logger.error(f"[SUBS] Failed to set MPV sid to {track_id}: {e}")
+
+    def _check_and_configure_subtitles(self):
+        """Called on file-loaded event. Checks embedded subtitles; selects preferred (SDH > regular); only downloads if no embedded subtitles exist."""
+        if getattr(self, "_subtitles_configured_for_file", False):
+            return
+        if self._is_playing_trailer() or getattr(self.mpv, "idle_active", False):
+            return
+
+        from . import api
+        tracks = getattr(self.mpv, "track_list", []) or []
+        best_embedded = api.find_best_subtitle_track(tracks, only_embedded=True)
+
+        if best_embedded:
+            self._subtitles_configured_for_file = True
+            self._pending_subtitle_request = None  # Do NOT download!
+            track_id = int(best_embedded.get("id", 0))
+            is_sdh = api.is_sdh_track(best_embedded)
+            logger.info(f"[SUBS] Preferred inbuilt subtitle track found on file-loaded: id={track_id}, title={best_embedded.get('title')}, lang={best_embedded.get('lang')}, sdh={is_sdh}. Skipping external download.")
+            try:
+                self.mpv.sid = track_id
+                self.mpv["sub-visibility"] = "yes"
+            except Exception as e:
+                logger.error(f"[SUBS] Failed to set MPV sid to {track_id}: {e}")
+            return
+
+        has_embedded = api.has_embedded_subtitles(tracks)
+        if has_embedded:
+            logger.info("[SUBS] Embedded subtitles exist in container but none matched language preferences.")
+        else:
+            logger.info("[SUBS] No embedded subtitles found in media.")
+
+        # Download external subtitles ONLY when there are no suitable embedded subtitles
+        if getattr(self, "_pending_subtitle_request", None):
+            req = self._pending_subtitle_request
+            self._pending_subtitle_request = None
+            self._subtitles_configured_for_file = True
+            logger.info(f"[SUBS] Downloading external subtitles (has_embedded={has_embedded})...")
+            self.fetch_and_add_subtitles(**req)
+        elif getattr(self, "_current_playing_item", None):
+            item = self._current_playing_item
+            imdb_id = item.get("imdb_id") or item.get("id")
+            if imdb_id and not item.get("is_trailer"):
+                self._subtitles_configured_for_file = True
+                logger.info(f"[SUBS] Downloading external subtitles for item={imdb_id} (has_embedded={has_embedded})...")
+                stream_subs = item.get("selected_torrent", {}).get("subtitles") if isinstance(item.get("selected_torrent"), dict) else None
+                self.fetch_and_add_subtitles(
+                    imdb_id,
+                    item.get("type", "movie"),
+                    item.get("season"),
+                    item.get("episode"),
+                    stream_subtitles=stream_subs,
+                    stream_title=item.get("stream_title") or item.get("title")
+                )
 
     def fetch_and_add_subtitles(self, imdb_id, media_type, season, episode, stream_subtitles=None, stream_title=None):
         """Fetch subtitles in a background thread and inject them into MPV when ready."""
@@ -8246,8 +8360,16 @@ class CineWindow(Adw.ApplicationWindow):
                     if curr_stack != "player":
                         self._update_continue_watching_section()
 
-            logger.info(f"[SUBS] play_stream_with_failover: imdb_id={imdb_id}, media_type={media_type}, S{season}E{episode}, title={title}")
-            self.fetch_and_add_subtitles(imdb_id, media_type, season, episode, stream_subtitles=all_subs, stream_title=title)
+            logger.info(f"[SUBS] Queued subtitle request for stream: imdb_id={imdb_id}, media_type={media_type}, S{season}E{episode}, title={title}")
+            self._pending_subtitle_request = {
+                "imdb_id": imdb_id,
+                "media_type": media_type,
+                "season": season,
+                "episode": episode,
+                "stream_subtitles": all_subs,
+                "stream_title": title,
+            }
+            self._subtitles_configured_for_file = False
 
         self.stream_queue_season = season
         self.stream_queue_episode = episode
