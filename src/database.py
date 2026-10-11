@@ -4,6 +4,7 @@ import sys
 import threading
 import sqlite3
 import time
+import re
 from pathlib import Path
 
 _db_lock = threading.RLock()
@@ -1087,6 +1088,68 @@ def _get_cache_db():
             updated_at REAL
         )
     """)
+    _cache_conn.execute("""
+        CREATE TABLE IF NOT EXISTS item_genres (
+            item_id TEXT,
+            media_type TEXT,
+            genre TEXT,
+            year TEXT,
+            PRIMARY KEY (item_id, genre)
+        )
+    """)
+    try:
+        _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_type ON item_genres(media_type, genre)")
+        _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_genre ON item_genres(genre)")
+    except Exception:
+        pass
+
+    # Migration: Backfill item_genres from metadata_cache if empty
+    try:
+        cur = _cache_conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM item_genres")
+        row = cur.fetchone()
+        if row and row[0] == 0:
+            _cache_conn.execute("""
+                INSERT OR IGNORE INTO item_genres (item_id, media_type, genre, year)
+                SELECT m.id, m.media_type, trim(j.value), json_extract(m.data, '$.year')
+                FROM metadata_cache m, json_each(m.data, '$.genres') j
+                WHERE j.value IS NOT NULL AND trim(j.value) != ''
+            """)
+            _cache_conn.commit()
+    except Exception:
+        pass
+
+    # Migration: Clean adult items and non-clean genres from item_genres
+    try:
+        _cache_conn.execute("CREATE TABLE IF NOT EXISTS cache_meta (key TEXT PRIMARY KEY, val TEXT)")
+        cur = _cache_conn.cursor()
+        cur.execute("SELECT val FROM cache_meta WHERE key = 'clean_item_genres_v3'")
+        if not cur.fetchone():
+            from .api import is_adult_item
+            cur.execute("SELECT id, data FROM metadata_cache")
+            adult_ids = []
+            for r in cur.fetchall():
+                try:
+                    d = json.loads(r[1])
+                    if is_adult_item(d):
+                        adult_ids.append(r[0])
+                except Exception:
+                    pass
+            for aid in adult_ids:
+                cur.execute("DELETE FROM item_genres WHERE item_id = ?", (str(aid),))
+
+            cur.execute("SELECT DISTINCT genre FROM item_genres WHERE genre != ''")
+            to_delete = []
+            for r in cur.fetchall():
+                if not is_clean_genre(r[0]):
+                    to_delete.append(r[0])
+            for g in to_delete:
+                cur.execute("DELETE FROM item_genres WHERE genre = ?", (g,))
+            _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('clean_item_genres_v3', '1')")
+            _cache_conn.commit()
+    except Exception:
+        pass
+
     # Migration: Invalidate catalog_cache entries where series catalogs were corrupted with movies
     try:
         _cache_conn.execute("CREATE TABLE IF NOT EXISTS cache_meta (key TEXT PRIMARY KEY, val TEXT)")
@@ -1099,11 +1162,51 @@ def _get_cache_db():
         if not cur.fetchone():
             _cache_conn.execute("DELETE FROM catalog_cache WHERE data = '[]' OR data = '' OR data IS NULL")
             _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('clean_empty_catalog_cache_v1', '1')")
+        cur.execute("SELECT val FROM cache_meta WHERE key = 'strict_imdb_genres_v2'")
+        if not cur.fetchone():
+            cur.execute("SELECT DISTINCT genre FROM item_genres WHERE genre != ''")
+            to_delete = []
+            to_update = []
+            for r in cur.fetchall():
+                orig = r[0]
+                norm = normalize_imdb_genre(orig)
+                if not norm:
+                    to_delete.append(orig)
+                elif norm != orig:
+                    to_update.append((norm, orig))
+            for g in to_delete:
+                cur.execute("DELETE FROM item_genres WHERE genre = ?", (g,))
+            for norm, orig in to_update:
+                cur.execute("UPDATE OR IGNORE item_genres SET genre = ? WHERE genre = ?", (norm, orig))
+                cur.execute("DELETE FROM item_genres WHERE genre = ?", (orig,))
+            # Evict catalog cache to clear poisoned rows
+            _cache_conn.execute("DELETE FROM catalog_cache")
+            _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('strict_imdb_genres_v2', '1')")
+            _cache_conn.commit()
     except Exception:
         pass
     _cache_conn.commit()
     _cache_db_initialized = True
     return _cache_conn
+
+_genre_listeners = []
+
+def register_genre_listener(callback):
+    """Register a callback to be notified when new genres are added to the database."""
+    if callback not in _genre_listeners:
+        _genre_listeners.append(callback)
+
+def unregister_genre_listener(callback):
+    """Unregister a genre update callback."""
+    if callback in _genre_listeners:
+        _genre_listeners.remove(callback)
+
+def _notify_genre_listeners():
+    for cb in list(_genre_listeners):
+        try:
+            cb()
+        except Exception as e:
+            print(f"Error in genre listener callback: {e}")
 
 def get_cached_metadata(item_id, media_type=None):
     if not item_id:
@@ -1135,9 +1238,319 @@ def save_cached_metadata(item_id, media_type, details):
                 "INSERT OR REPLACE INTO metadata_cache (id, media_type, data, updated_at) VALUES (?, ?, ?, ?)",
                 (str(item_id), str(media_type or "movie"), json.dumps(details), time.time())
             )
+
+            # Extract and store genres and year into item_genres table
+            from .api import is_adult_item
+            is_adult = is_adult_item(details) if details else False
+
+            genres = details.get("genres") or []
+            if isinstance(genres, str):
+                genres = [g.strip() for g in genres.split(",") if g.strip()]
+            elif not isinstance(genres, list):
+                genres = []
+
+            year_val = str(details.get("year") or "").strip()
+            if len(year_val) > 4:
+                year_val = year_val[:4]
+
+            has_new = False
+            if not is_adult:
+                for g in genres:
+                    g_str = str(g).strip()
+                    norm_g = normalize_imdb_genre(g_str, media_type=media_type)
+                    if norm_g:
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO item_genres (item_id, media_type, genre, year) VALUES (?, ?, ?, ?)",
+                            (str(item_id), str(media_type or "movie"), norm_g, year_val)
+                        )
+                        if cursor.rowcount > 0:
+                            has_new = True
+                item_lang = details.get("language")
+                if item_lang and str(item_lang).strip().lower() != "english":
+                    norm_lang = normalize_imdb_genre(str(item_lang).strip(), media_type=media_type)
+                    if norm_lang:
+                        cursor.execute(
+                            "INSERT OR IGNORE INTO item_genres (item_id, media_type, genre, year) VALUES (?, ?, ?, ?)",
+                            (str(item_id), str(media_type or "movie"), norm_lang, year_val)
+                        )
+                        if cursor.rowcount > 0:
+                            has_new = True
+                if not genres and year_val:
+                    cursor.execute(
+                        "INSERT OR IGNORE INTO item_genres (item_id, media_type, genre, year) VALUES (?, ?, ?, ?)",
+                        (str(item_id), str(media_type or "movie"), "", year_val)
+                    )
+
             conn.commit()
+            if has_new:
+                _notify_genre_listeners()
     except Exception as e:
         print(f"Error saving metadata cache: {e}")
+
+IMDB_MOVIE_GENRES = [
+    "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime",
+    "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "History",
+    "Horror", "Music", "Musical", "Mystery", "Romance", "Sci-Fi",
+    "Short", "Sport", "Thriller", "War", "Western"
+]
+
+IMDB_SERIES_GENRES = [
+    "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime",
+    "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "Game-Show",
+    "History", "Horror", "Music", "Musical", "Mystery", "News",
+    "Reality-TV", "Romance", "Sci-Fi", "Short", "Sport", "Talk-Show",
+    "Thriller", "War", "Western"
+]
+
+DEFAULT_ANIME_GENRES = [
+    "Action", "Adventure", "Cars", "Comedy", "Dementia", "Demons", "Drama",
+    "Fantasy", "Game", "Harem", "Historical", "Horror", "Josei", "Kids",
+    "Magic", "Martial Arts", "Mecha", "Military", "Music", "Mystery",
+    "Parody", "Police", "Psychological", "Romance", "Samurai", "School",
+    "Sci-Fi", "Seinen", "Shoujo", "Shounen", "Slice of Life", "Space",
+    "Sports", "Super Power", "Supernatural", "Thriller", "Vampire"
+]
+
+IMDB_ALL_GENRES = sorted(
+    list(set(IMDB_MOVIE_GENRES) | set(IMDB_SERIES_GENRES)),
+    key=lambda s: s.lower()
+)
+
+DEFAULT_MOVIE_GENRES = IMDB_MOVIE_GENRES
+DEFAULT_SERIES_GENRES = IMDB_SERIES_GENRES
+
+GENRE_ALIASES = {
+    "science fiction": "Sci-Fi",
+    "sci fi": "Sci-Fi",
+    "sci-fi": "Sci-Fi",
+    "scifi": "Sci-Fi",
+    "talk show": "Talk-Show",
+    "talk-show": "Talk-Show",
+    "talk": "Talk-Show",
+    "game show": "Game-Show",
+    "game-show": "Game-Show",
+    "reality tv": "Reality-TV",
+    "reality-tv": "Reality-TV",
+    "reality": "Reality-TV",
+    "film noir": "Film-Noir",
+    "film-noir": "Film-Noir",
+}
+
+POPULAR_LANGUAGE_GENRES = [
+    "Hindi", "Tamil", "Telugu", "Malayalam", "Kannada", "Bengali", "Punjabi",
+    "Marathi", "Gujarati", "Urdu",
+    "Korean", "Japanese", "Chinese",
+    "Spanish", "French", "German", "Italian", "Portuguese", "Russian",
+    "Arabic", "Turkish", "Persian"
+]
+
+ALL_LANGUAGE_GENRES = [
+    "Arabic", "Bengali", "Chinese", "Czech", "Danish", "Dutch", "English",
+    "Finnish", "French", "German", "Greek", "Gujarati", "Hebrew", "Hindi",
+    "Hungarian", "Indonesian", "Italian", "Japanese", "Kannada", "Korean",
+    "Malayalam", "Marathi", "Norwegian", "Persian", "Polish", "Portuguese",
+    "Punjabi", "Romanian", "Russian", "Spanish", "Swedish", "Tamil",
+    "Telugu", "Thai", "Turkish", "Ukrainian", "Urdu", "Vietnamese"
+]
+
+LANGUAGE_CODE_MAP = {
+    "hi": "Hindi", "hin": "Hindi",
+    "ta": "Tamil", "tam": "Tamil",
+    "te": "Telugu", "tel": "Telugu",
+    "ml": "Malayalam", "mal": "Malayalam",
+    "kn": "Kannada", "kan": "Kannada",
+    "bn": "Bengali", "ben": "Bengali",
+    "pa": "Punjabi", "pan": "Punjabi",
+    "mr": "Marathi", "mar": "Marathi",
+    "gu": "Gujarati", "guj": "Gujarati",
+    "ur": "Urdu", "urd": "Urdu",
+    "ko": "Korean", "kor": "Korean",
+    "ja": "Japanese", "jpn": "Japanese",
+    "zh": "Chinese", "zho": "Chinese", "chi": "Chinese",
+    "es": "Spanish", "spa": "Spanish",
+    "fr": "French", "fra": "French", "fre": "French",
+    "de": "German", "deu": "German", "ger": "German",
+    "it": "Italian", "ita": "Italian",
+    "pt": "Portuguese", "por": "Portuguese",
+    "ru": "Russian", "rus": "Russian",
+    "ar": "Arabic", "ara": "Arabic",
+    "tr": "Turkish", "tur": "Turkish",
+    "fa": "Persian", "fas": "Persian", "per": "Persian",
+    "th": "Thai", "tha": "Thai",
+    "id": "Indonesian", "ind": "Indonesian",
+    "vi": "Vietnamese", "vie": "Vietnamese",
+    "pl": "Polish", "pol": "Polish",
+    "nl": "Dutch", "nld": "Dutch", "dut": "Dutch",
+    "sv": "Swedish", "swe": "Swedish",
+    "da": "Danish", "dan": "Danish",
+    "no": "Norwegian", "nor": "Norwegian",
+    "fi": "Finnish", "fin": "Finnish",
+    "el": "Greek", "ell": "Greek", "gre": "Greek",
+    "he": "Hebrew", "heb": "Hebrew",
+    "cs": "Czech", "ces": "Czech", "cze": "Czech",
+    "hu": "Hungarian", "hun": "Hungarian",
+    "ro": "Romanian", "ron": "Romanian", "rum": "Romanian",
+    "uk": "Ukrainian", "ukr": "Ukrainian",
+    "en": "English", "eng": "English"
+}
+
+LANGUAGE_NAME_TO_CODE = {
+    v.lower(): k for k, v in LANGUAGE_CODE_MAP.items() if len(k) == 2
+}
+
+def is_language_genre(g):
+    if not g or not isinstance(g, str):
+        return False
+    gl = g.strip().lower()
+    if gl in LANGUAGE_CODE_MAP:
+        return True
+    return any(lg.lower() == gl for lg in ALL_LANGUAGE_GENRES)
+
+def get_language_code(g):
+    if not g or not isinstance(g, str):
+        return None
+    gl = g.strip().lower()
+    if len(gl) == 2 and gl in LANGUAGE_CODE_MAP:
+        return gl
+    return LANGUAGE_NAME_TO_CODE.get(gl)
+
+def normalize_imdb_genre(g, media_type=None):
+    """
+    Validate and normalize genre against canonical IMDb genres and canonical language genres.
+    Returns canonical genre or language genre string, or None if invalid/non-canonical.
+    """
+    if not g or not isinstance(g, str):
+        return None
+    g = g.strip()
+    if not g or len(g) > 30:
+        return None
+    gl = g.lower()
+
+    from .api import ADULT_GENRES_TAGS, ADULT_KEYWORD_REGEX
+    if gl in ADULT_GENRES_TAGS or ADULT_KEYWORD_REGEX.search(gl):
+        return None
+
+    if gl in GENRE_ALIASES:
+        return GENRE_ALIASES[gl]
+
+    # Check language codes / names (e.g. 'hi' -> 'Hindi', 'hindi' -> 'Hindi')
+    if gl in LANGUAGE_CODE_MAP:
+        return LANGUAGE_CODE_MAP[gl]
+    for lg in ALL_LANGUAGE_GENRES:
+        if lg.lower() == gl:
+            return lg
+
+    mt = (media_type or "").lower()
+    if mt == "anime":
+        for ag in DEFAULT_ANIME_GENRES:
+            if ag.lower() == gl:
+                return ag
+        for ig in IMDB_ALL_GENRES:
+            if ig.lower() == gl:
+                return ig
+        return None
+
+    target_list = IMDB_MOVIE_GENRES if mt == "movie" else (IMDB_SERIES_GENRES if mt in ("series", "tvshow") else IMDB_ALL_GENRES)
+    for ig in target_list:
+        if ig.lower() == gl:
+            return ig
+
+    for ig in IMDB_ALL_GENRES:
+        if ig.lower() == gl:
+            return ig
+
+    return None
+
+def is_clean_genre(g, media_type=None):
+    """Validate that genre is a strict standard IMDb genre."""
+    return normalize_imdb_genre(g, media_type=media_type) is not None
+
+def get_stored_genres(media_type=None):
+    """Return distinct clean IMDb genres stored in item_genres."""
+    genres = set()
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            if media_type and media_type not in ("all", "discover"):
+                cursor.execute(
+                    "SELECT DISTINCT genre FROM item_genres WHERE media_type = ? AND genre != ''",
+                    (str(media_type),)
+                )
+            else:
+                cursor.execute("SELECT DISTINCT genre FROM item_genres WHERE genre != ''")
+            for row in cursor.fetchall():
+                if row and row[0]:
+                    norm = normalize_imdb_genre(row[0].strip(), media_type=media_type)
+                    if norm:
+                        genres.add(norm)
+    except Exception as e:
+        print(f"Error reading stored genres: {e}")
+    return sorted(list(genres), key=lambda s: s.lower())
+
+def get_stored_years(media_type=None):
+    """Return distinct 4-digit release years stored in item_genres."""
+    years = set()
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            query = "SELECT DISTINCT year FROM item_genres WHERE year IS NOT NULL AND length(year) = 4 AND year GLOB '[1-2][0-9][0-9][0-9]'"
+            params = ()
+            if media_type and media_type not in ("all", "discover"):
+                query += " AND media_type = ?"
+                params = (str(media_type),)
+            cursor.execute(query, params)
+            for row in cursor.fetchall():
+                if row and row[0]:
+                    y = row[0].strip()
+                    if y.isdigit() and len(y) == 4:
+                        years.add(y)
+    except Exception as e:
+        print(f"Error reading stored years: {e}")
+    return sorted(list(years), reverse=True)
+
+def get_available_years(media_type=None):
+    """Return distinct release years (stored + recent years) in descending order."""
+    mt = (media_type or "all").lower()
+    stored_years = set(get_stored_years(media_type=None if mt in ("all", "discover") else mt))
+    import datetime
+    current_year = datetime.datetime.now().year
+    for y in range(current_year, 2014, -1):
+        stored_years.add(str(y))
+    return sorted(list(stored_years), reverse=True)
+
+def get_available_sort_options(media_type=None):
+    """Return options for the Sort/Year dropdown: Popular, Featured, Recent, followed by years."""
+    return ["Popular", "Featured", "Recent"] + get_available_years(media_type)
+
+def get_available_genres(media_type=None, include_years=False):
+    """
+    Get strict canonical IMDb genres and language genres for media_type ('movie', 'series', 'anime', or 'all').
+    Standard IMDb narrative genres and language genres matching IMDb details are returned.
+    """
+    mt = (media_type or "all").lower()
+    if mt == "anime":
+        genres = list(DEFAULT_ANIME_GENRES)
+    elif mt in ("series", "tvshow"):
+        genres = list(IMDB_SERIES_GENRES)
+    elif mt == "movie":
+        genres = list(IMDB_MOVIE_GENRES)
+    else:  # all / discover
+        genres = list(IMDB_ALL_GENRES)
+
+    # Include popular language genres
+    genres.extend(POPULAR_LANGUAGE_GENRES)
+
+    # Also include any valid genres stored in the database
+    stored = get_stored_genres(media_type=mt)
+    genres.extend(stored)
+
+    sorted_genres = sorted(list(set(genres)), key=lambda s: s.lower())
+
+    if include_years:
+        return sorted_genres, get_available_years(media_type)
+    return sorted_genres
 
 def get_cached_streams(cache_key, max_age_hours=24):
     if not cache_key:

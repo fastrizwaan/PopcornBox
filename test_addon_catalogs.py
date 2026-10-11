@@ -247,6 +247,7 @@ class TestAddonCatalogs(unittest.TestCase):
         self.assertEqual(widget.year_label.get_label(), "2026")
 
         # Test _apply_resolved_meta dynamic update
+        database.delete_cached_metadata("tt99999999")
         fresh_item = {"id": "tt99999999", "type": "movie"}
         fresh_widget = MovieWidget(fresh_item, lambda *a: None)
         self.assertEqual(fresh_widget.title_label.get_label(), "Unknown")

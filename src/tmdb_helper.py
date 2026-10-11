@@ -790,7 +790,9 @@ TMDB_GENRES = {
     28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
     99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
     27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Science Fiction",
-    10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western"
+    10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
+    10759: "Action", 10762: "Family", 10763: "News", 10764: "Reality-TV",
+    10765: "Sci-Fi", 10766: "Soap", 10767: "Talk-Show", 10768: "War"
 }
 
 def fetch_collection_details(cid, title=None, poster=None):
@@ -876,6 +878,96 @@ def fetch_collection_details(cid, title=None, poster=None):
         "genres": sorted(list(genre_names)),
         "type": "collections",
         "is_collection": True
+    }
+
+
+def fetch_title_language_and_genres(item_id, media_type="movie", title=None):
+    """
+    Fetch title language (e.g. 'Hindi') and canonical genres (e.g. ['Thriller', 'Crime', 'Drama'])
+    from TMDB.
+    Returns:
+      {
+        "language_code": str,
+        "language_name": str,
+        "genres": [str, ...]
+      } or None
+    """
+    if not item_id and not title:
+        return None
+
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return None
+
+    str_id = str(item_id or "").strip()
+    c_type = "tv" if media_type in ["series", "anime", "tv", "tvshow"] else "movie"
+
+    clean_tt = None
+    if str_id.startswith("tt"):
+        clean_tt = str_id.split(":")[0]
+    else:
+        tt_match = re.search(r'\b(tt\d{7,8})\b', str_id)
+        if tt_match:
+            clean_tt = tt_match.group(1)
+
+    result_item = None
+    if clean_tt:
+        try:
+            find_url = f"https://api.themoviedb.org/3/find/{clean_tt}?api_key={api_key}&external_source=imdb_id"
+            data = _get_cached_request(find_url, max_age_hours=168)
+            if data:
+                if c_type == "tv" and data.get("tv_results"):
+                    result_item = data["tv_results"][0]
+                elif data.get("movie_results"):
+                    result_item = data["movie_results"][0]
+                elif data.get("tv_results"):
+                    result_item = data["tv_results"][0]
+        except Exception:
+            pass
+
+    if not result_item:
+        tmdb_id = resolve_to_tmdb_id(item_id, media_type, title)
+        if tmdb_id:
+            try:
+                tm_type = "tv" if c_type == "tv" else "movie"
+                url = f"https://api.themoviedb.org/3/{tm_type}/{tmdb_id}?api_key={api_key}"
+                data = _get_cached_request(url, max_age_hours=168)
+                if data:
+                    result_item = data
+            except Exception:
+                pass
+
+    if not result_item:
+        return None
+
+    orig_lang = result_item.get("original_language")
+    lang_name = None
+    if orig_lang:
+        lang_name = database.LANGUAGE_CODE_MAP.get(orig_lang.lower())
+        if not lang_name:
+            for sl in result_item.get("spoken_languages", []):
+                if sl.get("iso_639_1") == orig_lang:
+                    lang_name = sl.get("english_name")
+                    break
+
+    tmdb_genres = []
+    for gid in result_item.get("genre_ids", []):
+        gname = TMDB_GENRES.get(gid)
+        if gname:
+            norm = database.normalize_imdb_genre(gname, media_type=media_type)
+            if norm and norm not in tmdb_genres:
+                tmdb_genres.append(norm)
+
+    for gdict in result_item.get("genres", []):
+        if isinstance(gdict, dict) and gdict.get("name"):
+            norm = database.normalize_imdb_genre(gdict["name"], media_type=media_type)
+            if norm and norm not in tmdb_genres:
+                tmdb_genres.append(norm)
+
+    return {
+        "language_code": orig_lang,
+        "language_name": lang_name,
+        "genres": tmdb_genres
     }
 
 

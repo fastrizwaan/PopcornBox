@@ -255,10 +255,13 @@ def is_type_match(type1, type2):
     t2 = str(type2).lower().strip()
     if t1 == t2:
         return True
-    series_group = {"series", "tvshow", "tv_series"}
+    movie_group = {"movie", "movies", "film", "films"}
+    if t1 in movie_group and t2 in movie_group:
+        return True
+    series_group = {"series", "tvshow", "tv_series", "tvshows"}
     if t1 in series_group and t2 in series_group:
         return True
-    tv_group = {"tv", "channel", "tvchannel"}
+    tv_group = {"tv", "channel", "tvchannel", "channels"}
     if t1 in tv_group and t2 in tv_group:
         return True
     music_group = {"music", "radio"}
@@ -266,10 +269,66 @@ def is_type_match(type1, type2):
         return True
     return False
 
+def is_item_type_compatible(item, expected_type, cached_meta=None):
+    """
+    Check if an item matches the expected media type ('movie', 'series', 'anime', etc.).
+    Strictly ensures TV series do not leak into movies, and movies do not leak into series.
+    """
+    if not item or not expected_type or expected_type in ("all", "all_types"):
+        return True
+
+    expected = str(expected_type).strip().lower()
+
+    itype = item.get("type") or item.get("media_type")
+    if not itype and cached_meta:
+        itype = cached_meta.get("type") or cached_meta.get("media_type")
+
+    if not itype:
+        from . import database
+        item_id = item.get("id") or item.get("imdb_id")
+        if item_id:
+            cm = cached_meta or database.get_cached_metadata(item_id)
+            if cm:
+                itype = cm.get("type") or cm.get("media_type")
+                if not itype:
+                    if cm.get("seriesInfo") or cm.get("seasons"):
+                        itype = "series"
+                    elif cm.get("videos"):
+                        vids = cm.get("videos")
+                        if isinstance(vids, list) and any(isinstance(v, dict) and (v.get("season") or v.get("episode")) for v in vids):
+                            itype = "series"
+
+    if not itype:
+        if item.get("seriesInfo") or item.get("seasons") or item.get("episode"):
+            itype = "series"
+
+    if not itype:
+        return True
+
+    itype = str(itype).strip().lower()
+
+    if expected == "movie":
+        if itype in ("series", "tvshow", "tv_series", "tvshows"):
+            return False
+        return True
+    elif expected == "series":
+        if itype in ("movie", "movies", "film", "films"):
+            return False
+        return True
+    elif expected == "anime":
+        return True
+
+    return is_type_match(itype, expected)
+
 ADULT_GENRES_TAGS = {
     "adult", "erotica", "ecchi", "hentai", "softcore", "pinku eiga",
     "pink film", "sex", "sexuality", "porn", "pornography", "nudity",
-    "explicit nudity", "nsfw", "sploitation", "bdsm", "sm", "r18", "r-18"
+    "explicit nudity", "nsfw", "sploitation", "bdsm", "sm", "r18", "r-18",
+    "blowjob", "brazzers", "creampie", "cum in mouth", "deep throat",
+    "doggystyle", "face sitting", "facial", "gangbang", "handjob",
+    "masturbation", "milf", "pov", "squirt", "threesome", "big dick",
+    "bubble butt", "cowgirl", "mofos", "missionary", "piss", "pussy licking",
+    "pussy fingering"
 }
 
 ADULT_RATINGS = {
@@ -278,7 +337,7 @@ ADULT_RATINGS = {
 }
 
 ADULT_KEYWORD_REGEX = re.compile(
-    r'\b(18\+|xxx|hentai|ecchi|erotica|softcore|pinku eiga|pink film|sex video|jav|adult movie|nude|nudity|hatsuj[ôo]|dirty couple exchange|horny couple|groper train|futariecci|futari ecchi|incha couple)\b',
+    r'\b(18\+|xxx|hentai|ecchi|erotica|softcore|pinku eiga|pink film|sex video|jav|adult movie|nude|nudity|hatsuj[ôo]|dirty couple exchange|horny couple|groper train|futariecci|futari ecchi|incha couple|blowjob|brazzers|creampie|cum|doggystyle|masturbation|milf|pov|squirt|threesome|pussy)\b',
     re.IGNORECASE
 )
 
@@ -720,6 +779,152 @@ def is_catalog_browsable(cat):
                     return False
     return True
 
+def catalog_supports_genre(cat, genre):
+    """
+    Check if a Stremio catalog supports filtering by the specified genre.
+    Returns True if:
+    - genre is empty/None/All (no genre filtering requested)
+    - The catalog defines genre filtering and the genre matches supported options (case-insensitive)
+    """
+    if not genre or genre in ("All", "All Genres", "all"):
+        return True
+    if not cat:
+        return False
+    g_norm = str(genre).strip().lower()
+
+    # 1. Check legacy/direct "genres" field on catalog object
+    cat_genres = cat.get("genres")
+    if cat_genres and isinstance(cat_genres, list) and len(cat_genres) > 0:
+        for cg in cat_genres:
+            if str(cg).strip().lower() == g_norm:
+                return True
+        return False
+
+    # 2. Check "extra" declarations
+    extra = cat.get("extra") or []
+    genre_extra = None
+    for ex in extra:
+        if isinstance(ex, dict) and ex.get("name") == "genre":
+            genre_extra = ex
+            break
+        elif ex == "genre":
+            genre_extra = {"name": "genre"}
+            break
+
+    if genre_extra is not None:
+        opts = genre_extra.get("options")
+        if opts and isinstance(opts, list) and len(opts) > 0:
+            for opt in opts:
+                if str(opt).strip().lower() == g_norm:
+                    return True
+            return False
+        # If genre is supported in extra without restricted options, it accepts arbitrary genres
+        return True
+
+    # 3. Check "extraSupported"
+    extra_sup = cat.get("extraSupported") or []
+    if "genre" in extra_sup:
+        return True
+
+    # 4. Check if catalog ID or Name is dedicated to this language genre
+    # e.g., catalog id='hi', name='Hindi - IndianRegional' matching genre='Hindi'
+    from . import database
+    if database.is_language_genre(g_norm):
+        lang_code = database.get_language_code(g_norm)
+        cat_id = str(cat.get("id") or cat.get("catalog_id") or "").strip().lower()
+        cat_name = str(cat.get("name") or cat.get("catalog_name") or cat.get("display_name") or "").strip().lower()
+        if cat_id == g_norm or (lang_code and cat_id == lang_code):
+            return True
+        if re.search(r'\b' + re.escape(g_norm) + r'\b', cat_name):
+            return True
+
+    return False
+
+def filter_items_by_genre(items, genre, media_type=None):
+    """
+    Strictly filter items by the specified IMDb genre or language genre and media type.
+    Items with known genres or language (from response or cache) that do NOT match are excluded.
+    Items incompatible with media_type are excluded.
+    """
+    if not items:
+        return []
+
+    from . import database
+
+    # If no genre filtering requested, still enforce media_type compatibility if provided
+    if not genre or genre in ("All", "All Genres", "all"):
+        if media_type and media_type != "all":
+            return [it for it in items if is_item_type_compatible(it, media_type)]
+        return items or []
+
+    g_norm = str(genre).strip().lower()
+    filtered = []
+
+    for item in items:
+        # Check local DB metadata cache if present
+        cached_meta = None
+        item_id = item.get("id") or item.get("imdb_id")
+        if item_id:
+            cached_meta = database.get_cached_metadata(item_id, media_type or item.get("type"))
+
+        # Strictly verify media type compatibility first
+        if media_type and media_type != "all":
+            if not is_item_type_compatible(item, media_type, cached_meta=cached_meta):
+                continue
+
+        # Check genres on item dictionary
+        raw_genres = item.get("genres") or item.get("genre")
+        item_genres = []
+        if isinstance(raw_genres, list):
+            item_genres = [str(x).strip().lower() for x in raw_genres if x]
+        elif isinstance(raw_genres, str) and raw_genres:
+            item_genres = [x.strip().lower() for x in raw_genres.split(",") if x.strip()]
+
+        if cached_meta and not item_genres:
+            c_genres = cached_meta.get("genres") or cached_meta.get("genre")
+            if isinstance(c_genres, list):
+                item_genres = [str(x).strip().lower() for x in c_genres if x]
+            elif isinstance(c_genres, str) and c_genres:
+                item_genres = [x.strip().lower() for x in c_genres.split(",") if x.strip()]
+
+        # Also include item's primary language if available
+        item_lang = item.get("language") or (cached_meta.get("language") if cached_meta else None)
+        if item_lang and str(item_lang).strip().lower() not in item_genres:
+            item_genres.append(str(item_lang).strip().lower())
+
+        if item_genres:
+            match = False
+            for ig in item_genres:
+                if ig == g_norm:
+                    match = True
+                    break
+                if g_norm == "sci-fi" and ("sci-fi" in ig or "science fiction" in ig):
+                    match = True
+                    break
+                elif g_norm == "science fiction" and ("sci-fi" in ig or "science fiction" in ig):
+                    match = True
+                    break
+                elif g_norm == "talk-show" and ("talk" in ig or "talk-show" in ig):
+                    match = True
+                    break
+                elif g_norm == "reality-tv" and ("reality" in ig or "reality-tv" in ig):
+                    match = True
+                    break
+                elif g_norm == "game-show" and ("game-show" in ig or "game show" in ig):
+                    match = True
+                    break
+                elif g_norm == "film-noir" and ("film-noir" in ig or "film noir" in ig):
+                    match = True
+                    break
+            if match:
+                filtered.append(item)
+            # If item has known genres and did NOT match, discard it!
+        else:
+            # If genres are not yet known, keep the item (its media type is already verified)
+            filtered.append(item)
+
+    return filtered
+
 _AVAILABLE_CATALOGS_CACHE = {}
 _AVAILABLE_CATALOGS_LOCK = threading.Lock()
 
@@ -759,18 +964,21 @@ def get_available_catalogs(c_type="movie"):
                 if "anime" in str(cat_type).lower() or "anime" in cat_name.lower() or "anime" in cat_id.lower() or "anime" in addon_name.lower():
                     matched = True
             elif not matched and c_type == "movie":
-                if "movie" in str(cat_type).lower() or "movie" in cat_name.lower() or "movie" in str(cat_id).lower() or "film" in cat_name.lower():
+                if not is_type_match(cat_type, "series") and not is_type_match(cat_type, "tv") and ("movie" in str(cat_type).lower() or "movie" in cat_name.lower() or "movie" in str(cat_id).lower() or "film" in cat_name.lower()):
                     matched = True
             elif not matched and c_type == "series":
-                if "series" in str(cat_type).lower() or "series" in cat_name.lower() or "series" in str(cat_id).lower() or "tv" in str(cat_id).lower():
+                if not is_type_match(cat_type, "movie") and ("series" in str(cat_type).lower() or "series" in cat_name.lower() or "series" in str(cat_id).lower() or cat_id == "tv" or cat_type == "tv"):
                     matched = True
 
             if matched:
-                genres = []
+                genres = list(cat.get("genres") or [])
                 extra = cat.get("extra") or []
                 for ex in extra:
                     if isinstance(ex, dict) and ex.get("name") == "genre":
-                        genres = ex.get("options", [])
+                        opts = ex.get("options", [])
+                        if opts:
+                            genres = list(opts)
+                        break
                         
                 if not cat_name or cat_name.lower() == "catalog":
                     if str(cat_id).lower() in ["tpbctlg-movies", "tpbctlg-series"]:
@@ -788,6 +996,8 @@ def get_available_catalogs(c_type="movie"):
                     "catalog_name": cat_name,
                     "display_name": display_name,
                     "genres": genres,
+                    "extra": extra,
+                    "extraSupported": cat.get("extraSupported", []),
                     "type": cat_type or c_type
                 })
     if c_type == "anime":
@@ -1039,6 +1249,17 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                             break
                 break
 
+        if genre and genre != "All":
+            cat_obj = None
+            for a in database.get_addons():
+                m_url = a.get("manifest_url", "")
+                if m_url and (m_url == catalog_url or catalog_url.startswith(m_url.rsplit("manifest.json", 1)[0])):
+                    addon_cats = get_addon_catalogs(a, cache_only=False)
+                    cat_obj = next((cat for cat in addon_cats if str(cat.get("id")) == str(catalog_id)), None)
+                    break
+            if cat_obj and not catalog_supports_genre(cat_obj, genre):
+                return []
+
         url = f"{base_url}catalog/{actual_cat_type}/{catalog_id}"
         
         extras = []
@@ -1110,6 +1331,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     if tt_m and tt_m.group(1) not in alias_ids:
                         alias_ids.append(tt_m.group(1))
 
+                item_genres = m.get("genres") or (m.get("genre") if isinstance(m.get("genre"), list) else ([m.get("genre")] if m.get("genre") else []))
+
                 movies.append({
                     "id": imdb_id,
                     "alias_ids": alias_ids,
@@ -1117,8 +1340,11 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     "year": year,
                     "medium_cover_image": poster,
                     "poster": poster,
-                    "type": item_type
+                    "type": item_type,
+                    "genres": item_genres
                 })
+            if genre and genre != "All":
+                movies = filter_items_by_genre(movies, genre, media_type=media_type)
             hydrate_missing_catalog_items(movies, media_type=media_type)
             return movies
         return []
@@ -1292,8 +1518,65 @@ def merge_metadata(base, extra):
         merged["trailer"] = extra["trailer"]
     if not merged.get("director") and extra.get("director"):
         merged["director"] = extra["director"]
+    if not merged.get("language") and extra.get("language"):
+        merged["language"] = extra["language"]
+    if not merged.get("language_code") and extra.get("language_code"):
+        merged["language_code"] = extra["language_code"]
 
     return merged
+
+def enrich_metadata_with_language_and_genres(res, imdb_id, media_type="movie", title=None):
+    """
+    Enriches metadata dictionary with title language and canonical genres from TMDB.
+    For non-English titles, the canonical language name (e.g. 'Hindi') is prepended to genres
+    matching IMDb title page badge conventions.
+    """
+    if not res or not isinstance(res, dict):
+        return res
+
+    item_id = res.get("id") or imdb_id
+    item_title = res.get("title") or title
+    try:
+        from . import tmdb_helper
+        lang_info = tmdb_helper.fetch_title_language_and_genres(item_id, media_type, item_title)
+        if lang_info:
+            lang_name = lang_info.get("language_name")
+            lang_code = lang_info.get("language_code")
+            if lang_name:
+                res["language"] = lang_name
+            if lang_code:
+                res["language_code"] = lang_code
+
+            # Combine existing genres with TMDB genres
+            existing_genres = res.get("genres") or []
+            if isinstance(existing_genres, str):
+                existing_genres = [g.strip() for g in existing_genres.split(",") if g.strip()]
+            elif not isinstance(existing_genres, list):
+                existing_genres = []
+
+            seen_lower = set(g.lower() for g in existing_genres)
+            for tg in lang_info.get("genres", []):
+                if tg and tg.lower() not in seen_lower:
+                    existing_genres.append(tg)
+                    seen_lower.add(tg.lower())
+
+            # For non-English titles, prepend canonical language genre matching IMDb chips
+            if lang_name and str(lang_name).strip().lower() != "english":
+                clean_lang = str(lang_name).strip()
+                if clean_lang.lower() not in seen_lower:
+                    existing_genres.insert(0, clean_lang)
+                    seen_lower.add(clean_lang.lower())
+                elif existing_genres and existing_genres[0].lower() != clean_lang.lower():
+                    existing_genres = [g for g in existing_genres if g.lower() != clean_lang.lower()]
+                    existing_genres.insert(0, clean_lang)
+
+            if existing_genres:
+                res["genres"] = existing_genres
+                res["genre"] = ", ".join(existing_genres)
+    except Exception as e:
+        print(f"[METADATA] Failed to enrich language and genres for {item_id}: {e}")
+
+    return res
 
 def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=None):
     if not res or not isinstance(res, dict):
@@ -1399,6 +1682,9 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
             "thumbnail": res.get("medium_cover_image") or ""
         }]
 
+    if not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
+        res = enrich_metadata_with_language_and_genres(res, imdb_id, media_type, title)
+
     if is_valid_meta(res):
         database.save_cached_metadata(imdb_id, media_type, res)
         if res.get("id") and res.get("id") != imdb_id:
@@ -1483,6 +1769,9 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
     cached = database.get_cached_metadata(imdb_id) if imdb_id else None
     if use_cache and cached and is_valid_meta(cached):
+        if not cached.get("language") and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
+            cached = enrich_metadata_with_language_and_genres(cached, imdb_id, media_type, title)
+            database.save_cached_metadata(imdb_id, media_type, cached)
         if poster and not cached.get("medium_cover_image"):
             cached["medium_cover_image"] = poster
             database.save_cached_metadata(imdb_id, media_type, cached)
