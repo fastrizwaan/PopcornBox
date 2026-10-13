@@ -214,6 +214,80 @@ class TestUniqueCombinedView(unittest.TestCase):
         CineWindow._on_unique_scroll(win, adj)
         win._load_next_unique_batch.assert_called_once()
 
+    def test_on_unique_scroll_fetches_more_when_catalogs_exhausted(self):
+        win = MagicMock()
+        win.library_stack.get_visible_child_name.return_value = "unique"
+        win.has_more_unique = False
+        win.is_fetching_unique = False
+
+        cat1 = {"manifest_url": "https://addon1/manifest.json", "catalog_id": "top", "media_type": "movie"}
+        cat2 = {"manifest_url": "https://addon2/manifest.json", "catalog_id": "popular", "media_type": "movie"}
+        win.unique_catalogs = [cat1, cat2]
+        cat1_key = ("https://addon1/manifest.json", "top", "movie")
+        cat2_key = ("https://addon2/manifest.json", "popular", "movie")
+
+        win.unique_exhausted_catalogs = {cat1_key, cat2_key}
+        win.unique_truly_empty_catalogs = {cat2_key}  # cat2 confirmed 0 items at API end
+        win.unique_page_per_catalog = {cat1_key: 3, cat2_key: 1}
+
+        adj = MagicMock()
+        adj.get_page_size.return_value = 1000
+        adj.get_upper.return_value = 4000
+        adj.get_value.return_value = 3500  # near bottom
+
+        CineWindow._on_unique_scroll(win, adj)
+
+        # cat1 was soft-exhausted, so it should be discarded from exhausted set and allow fetching more pages
+        self.assertNotIn(cat1_key, win.unique_exhausted_catalogs)
+        # cat2 was truly empty, so it remains exhausted
+        self.assertIn(cat2_key, win.unique_exhausted_catalogs)
+        self.assertTrue(win.has_more_unique)
+        win._load_next_unique_batch.assert_called_once()
+
+    def test_deliver_unique_slices_empty_batch_schedules_retry_if_has_more(self):
+        win = MagicMock()
+        win.unique_request_id = 1
+        win.is_fetching_unique = True
+
+        timeout_callbacks = []
+        with patch("gi.repository.GLib.timeout_add", side_effect=lambda ms, fn, *args: timeout_callbacks.append((ms, fn, args))) as mock_timeout:
+            CineWindow._deliver_unique_slices_to_ui(win, [], req_id=1, has_more=True)
+            self.assertFalse(win.is_fetching_unique)
+            self.assertEqual(len(timeout_callbacks), 1)
+            self.assertEqual(timeout_callbacks[0][0], 100)
+            self.assertEqual(timeout_callbacks[0][1], win._load_next_unique_batch)
+
+    def test_filter_items_by_genre_numeric_tmdb_and_aliases(self):
+        from src import api
+        items = [
+            {"id": "tt1", "title": "Action Hero", "genres": [28]},                 # TMDB Action numeric
+            {"id": "tt2", "title": "Anime Adventure", "genres": ["16"], "type": "anime"},  # TMDB Animation string
+            {"id": "tt3", "title": "SciFi World", "genre_ids": [878]},             # TMDB Sci-Fi numeric in genre_ids
+            {"id": "tt4", "title": "Action Adventurer", "genres": ["Action & Adventure"]}, # Compound string
+            {"id": "tt5", "title": "Only Drama", "genres": ["Drama", 18]},         # Non-matching
+        ]
+
+        # Action: should match tt1 (numeric 28) and tt4 ("Action & Adventure")
+        res_action = api.filter_items_by_genre(items, "Action")
+        action_ids = [m["id"] for m in res_action]
+        self.assertIn("tt1", action_ids)
+        self.assertIn("tt4", action_ids)
+        self.assertNotIn("tt2", action_ids)
+        self.assertNotIn("tt5", action_ids)
+
+        # Animation: should match tt2 (string "16" and anime type)
+        res_anim = api.filter_items_by_genre(items, "Animation")
+        anim_ids = [m["id"] for m in res_anim]
+        self.assertIn("tt2", anim_ids)
+        self.assertNotIn("tt1", anim_ids)
+        self.assertNotIn("tt5", anim_ids)
+
+        # Sci-Fi: should match tt3 (878)
+        res_scifi = api.filter_items_by_genre(items, "Sci-Fi")
+        scifi_ids = [m["id"] for m in res_scifi]
+        self.assertIn("tt3", scifi_ids)
+        self.assertNotIn("tt1", scifi_ids)
+
 
 if __name__ == "__main__":
     unittest.main()

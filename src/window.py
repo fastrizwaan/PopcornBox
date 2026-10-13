@@ -6417,6 +6417,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.unique_catalog_idx = 0
         self.unique_page_per_catalog = {}
         self.unique_exhausted_catalogs = set()
+        self.unique_truly_empty_catalogs = set()
         self.is_fetching_unique = False
         self.has_more_unique = True
         self.unique_request_id = 0
@@ -6833,12 +6834,27 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_unique_scroll(self, adj):
         if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "unique":
             return
-        if not getattr(self, "has_more_unique", True) or getattr(self, "is_fetching_unique", False):
+        if getattr(self, "is_fetching_unique", False):
             return
         val = adj.get_value()
         page_size = adj.get_page_size()
         upper = adj.get_upper()
         if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
+            if not getattr(self, "has_more_unique", True):
+                # When user reaches the end and catalogs were exhausted, try fetching further pages!
+                can_fetch_more = False
+                for cat in getattr(self, "unique_catalogs", []):
+                    cat_key = (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("media_type"))
+                    cur_p = self.unique_page_per_catalog.get(cat_key, 1)
+                    if cur_p < 15 and cat_key not in getattr(self, "unique_truly_empty_catalogs", set()):
+                        if cat_key in self.unique_exhausted_catalogs:
+                            self.unique_exhausted_catalogs.discard(cat_key)
+                            can_fetch_more = True
+                if can_fetch_more:
+                    self.has_more_unique = True
+                    self._load_next_unique_batch()
+                return
+
             self._load_next_unique_batch()
 
     def _is_unique_item(self, item):
@@ -6892,6 +6908,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.unique_seen_keys.clear()
         self.unique_page_per_catalog.clear()
         self.unique_exhausted_catalogs.clear()
+        self.unique_truly_empty_catalogs.clear()
         self.unique_catalog_idx = 0
 
         # Clear flowbox on GTK main thread instantly
@@ -6943,6 +6960,8 @@ class CineWindow(Adw.ApplicationWindow):
             self.is_fetching_unique = False
             if not has_more:
                 self.has_more_unique = False
+            else:
+                GLib.timeout_add(100, self._load_next_unique_batch)
             return
 
         from .movie_widget import MovieWidget
@@ -7017,7 +7036,7 @@ class CineWindow(Adw.ApplicationWindow):
             collected = []
             num_catalogs = len(self.unique_catalogs)
             consecutive_empty_passes = 0
-            max_passes = 6
+            max_passes = 8
 
             while len(collected) < target_batch_count and len(self.unique_exhausted_catalogs) < num_catalogs and max_passes > 0:
                 max_passes -= 1
@@ -7049,7 +7068,7 @@ class CineWindow(Adw.ApplicationWindow):
                     a_name = cat_info.get("addon_name") or ""
 
                     if m_url and not api.is_addon_online(m_url):
-                        return (key, page, None)
+                        return (key, page, None, -1)
 
                     fetch_genre = cur_genre
                     if not cur_genre and cur_year and c_id == "year":
@@ -7073,16 +7092,17 @@ class CineWindow(Adw.ApplicationWindow):
                             if not it.get("manifest_url"): it["manifest_url"] = m_url
                         if api.hydrate_missing_catalog_items(cached, media_type=m_type):
                             database.save_cached_catalog(cache_key, cached)
+                        filtered = cached
                         if cur_genre:
-                            cached = api.filter_items_by_genre(cached, cur_genre, media_type=m_type)
-                        elif cached and m_type:
-                            cached = [it for it in cached if api.is_item_type_compatible(it, m_type)]
-                        if cur_genre and cur_year:
-                            cached = [it for it in cached if str(it.get("year", "")).startswith(cur_year)]
-                        return (key, page, cached)
+                            filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
+                        elif filtered and m_type:
+                            filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
+                        if filtered and cur_genre and cur_year:
+                            filtered = [it for it in filtered if str(it.get("year", "")).startswith(cur_year)]
+                        return (key, page, filtered, len(cached))
 
                     try:
-                        items = api.fetch_items(
+                        raw_items = api.fetch_items(
                             media_type=m_type,
                             catalog_id=c_id,
                             catalog_url=m_url,
@@ -7090,6 +7110,7 @@ class CineWindow(Adw.ApplicationWindow):
                             page=page,
                             limit=20
                         )
+                        items = list(raw_items) if raw_items is not None else None
                         if items:
                             if database.is_adult_content_hidden():
                                 items = [it for it in items if not api.is_adult_item(it)]
@@ -7098,18 +7119,20 @@ class CineWindow(Adw.ApplicationWindow):
                                 if not it.get("catalog_name"): it["catalog_name"] = c_name
                                 if not it.get("catalog_id"): it["catalog_id"] = c_id
                                 if not it.get("manifest_url"): it["manifest_url"] = m_url
-                        if items and cur_genre:
-                            items = api.filter_items_by_genre(items, cur_genre, media_type=m_type)
-                        elif items and m_type:
-                            items = [it for it in items if api.is_item_type_compatible(it, m_type)]
-                        if items and cur_genre and cur_year:
-                            items = [it for it in items if str(it.get("year", "")).startswith(cur_year)]
+                        filtered = items or []
+                        if filtered and cur_genre:
+                            filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
+                        elif filtered and m_type:
+                            filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
+                        if filtered and cur_genre and cur_year:
+                            filtered = [it for it in filtered if str(it.get("year", "")).startswith(cur_year)]
                         if items:
                             database.save_cached_catalog(cache_key, items)
-                        return (key, page, items)
+                        raw_count = len(raw_items) if raw_items is not None else -1
+                        return (key, page, filtered, raw_count)
                     except Exception as e:
                         logger.debug(f"Unique worker catalog fetch error: {e}")
-                        return (key, page, None)
+                        return (key, page, None, -1)
 
                 cat_results = []
                 with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_cats), 6)) as pool:
@@ -7126,12 +7149,21 @@ class CineWindow(Adw.ApplicationWindow):
                         pass
 
                 pass_added = 0
-                for cat_key, page, items in cat_results:
-                    if not items:
+                for cat_key, page, items, raw_count in cat_results:
+                    if raw_count == -1:
+                        # Network timeout or failure; do not exhaust
+                        continue
+                    elif raw_count == 0:
+                        # Catalog truly at end
                         self.unique_exhausted_catalogs.add(cat_key)
+                        self.unique_truly_empty_catalogs.add(cat_key)
                     else:
-                        self.unique_page_per_catalog[cat_key] = page + 1
-                        for item in items:
+                        next_page = page + 1
+                        self.unique_page_per_catalog[cat_key] = next_page
+                        if next_page > 8 and not items:
+                            self.unique_exhausted_catalogs.add(cat_key)
+
+                        for item in (items or []):
                             if database.is_adult_content_hidden() and api.is_adult_item(item):
                                 continue
                             if self._is_unique_item(item):

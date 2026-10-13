@@ -12,7 +12,7 @@ import gzip
 import zlib
 import base64
 from . import database
-from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids
+from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids, TMDB_GENRES
 import concurrent.futures
 import threading
 import re
@@ -995,6 +995,87 @@ def is_catalog_browsable(cat):
                     return False
     return True
 
+def does_genre_match_filter(candidate_genre, target_genre):
+    """
+    Checks if a candidate genre (e.g. from catalog options or item genres)
+    matches the target filter genre, supporting aliases, numeric IDs, and compound genres like 'Action & Adventure'.
+    """
+    if not candidate_genre or not target_genre:
+        return False
+
+    cand_str = str(candidate_genre).strip().lower()
+    tgt = str(target_genre).strip().lower()
+
+    # Translate numeric TMDB genre IDs if candidate is numeric
+    if cand_str.isdigit():
+        gid = int(cand_str)
+        if gid in TMDB_GENRES:
+            cand_str = TMDB_GENRES[gid].lower()
+            if gid == 10759 and tgt in ("action", "adventure"):
+                return True
+            elif gid == 10765 and tgt in ("sci-fi", "science fiction", "fantasy"):
+                return True
+            elif gid == 10762 and tgt in ("kids", "family"):
+                return True
+            elif gid == 10768 and tgt in ("war", "politics"):
+                return True
+
+    if cand_str == tgt:
+        return True
+
+    # Compound and alias mappings
+    if tgt == "action":
+        return "action" in cand_str
+    if tgt == "adventure":
+        return "adventure" in cand_str
+    if tgt in ("animation", "anime"):
+        return "animation" in cand_str or "anime" in cand_str or "animated" in cand_str
+    if tgt in ("sci-fi", "science fiction"):
+        return "sci-fi" in cand_str or "science fiction" in cand_str
+    if tgt in ("reality", "reality-tv"):
+        return "reality" in cand_str
+    if tgt in ("talk", "talk-show"):
+        return "talk" in cand_str
+    if tgt in ("game-show", "game show"):
+        return "game-show" in cand_str or "game show" in cand_str
+    if tgt in ("film-noir", "film noir", "noir"):
+        return "film-noir" in cand_str or "film noir" in cand_str or "noir" in cand_str
+    if tgt in ("family", "kids", "children"):
+        return "family" in cand_str or "kids" in cand_str or "children" in cand_str
+    if tgt in ("romance", "romantic"):
+        return "romance" in cand_str or "romantic" in cand_str
+    if tgt in ("music", "musical"):
+        return "music" in cand_str or "musical" in cand_str
+    if tgt in ("history", "historical"):
+        return "history" in cand_str or "historical" in cand_str
+    if tgt in ("biography", "biographical"):
+        return "biography" in cand_str or "biographical" in cand_str
+    if tgt == "comedy":
+        return "comedy" in cand_str
+    if tgt == "drama":
+        return "drama" in cand_str
+    if tgt == "horror":
+        return "horror" in cand_str
+    if tgt == "thriller":
+        return "thriller" in cand_str or "suspense" in cand_str
+    if tgt == "mystery":
+        return "mystery" in cand_str
+    if tgt == "crime":
+        return "crime" in cand_str
+    if tgt == "documentary":
+        return "documentary" in cand_str or "docuseries" in cand_str
+    if tgt == "fantasy":
+        return "fantasy" in cand_str
+    if tgt == "war":
+        return "war" in cand_str
+    if tgt == "western":
+        return "western" in cand_str
+
+    # Word boundary match as fallback
+    if re.search(r'\b' + re.escape(tgt) + r'\b', cand_str):
+        return True
+    return False
+
 def catalog_supports_genre(cat, genre):
     """
     Check if a Stremio catalog supports filtering by the specified genre.
@@ -1012,7 +1093,7 @@ def catalog_supports_genre(cat, genre):
     cat_genres = cat.get("genres")
     if cat_genres and isinstance(cat_genres, list) and len(cat_genres) > 0:
         for cg in cat_genres:
-            if str(cg).strip().lower() == g_norm:
+            if does_genre_match_filter(cg, g_norm):
                 return True
         return False
 
@@ -1031,7 +1112,7 @@ def catalog_supports_genre(cat, genre):
         opts = genre_extra.get("options")
         if opts and isinstance(opts, list) and len(opts) > 0:
             for opt in opts:
-                if str(opt).strip().lower() == g_norm:
+                if does_genre_match_filter(opt, g_norm):
                     return True
             return False
         # If genre is supported in extra without restricted options, it accepts arbitrary genres
@@ -1088,51 +1169,82 @@ def filter_items_by_genre(items, genre, media_type=None):
             if not is_item_type_compatible(item, media_type, cached_meta=cached_meta):
                 continue
 
-        # Check genres on item dictionary
-        raw_genres = item.get("genres") or item.get("genre")
-        item_genres = []
-        if isinstance(raw_genres, list):
-            item_genres = [str(x).strip().lower() for x in raw_genres if x]
-        elif isinstance(raw_genres, str) and raw_genres:
-            item_genres = [x.strip().lower() for x in raw_genres.split(",") if x.strip()]
+        # Extract and normalize all genre signals
+        item_genres = set()
 
-        if cached_meta and not item_genres:
-            c_genres = cached_meta.get("genres") or cached_meta.get("genre")
-            if isinstance(c_genres, list):
-                item_genres = [str(x).strip().lower() for x in c_genres if x]
-            elif isinstance(c_genres, str) and c_genres:
-                item_genres = [x.strip().lower() for x in c_genres.split(",") if x.strip()]
+        def _add_genre_entry(v):
+            if not v:
+                return
+            if isinstance(v, (int, float)):
+                gid = int(v)
+                if gid in TMDB_GENRES:
+                    item_genres.add(TMDB_GENRES[gid].lower())
+                    if gid == 10759:
+                        item_genres.add("action")
+                        item_genres.add("adventure")
+                    elif gid == 10765:
+                        item_genres.add("sci-fi")
+                        item_genres.add("fantasy")
+                    elif gid == 10762:
+                        item_genres.add("kids")
+                        item_genres.add("family")
+                    elif gid == 10768:
+                        item_genres.add("war")
+                        item_genres.add("politics")
+                return
+            if isinstance(v, dict):
+                if v.get("name"):
+                    _add_genre_entry(v["name"])
+                if v.get("id"):
+                    _add_genre_entry(v["id"])
+                return
+            s = str(v).strip().lower()
+            if not s:
+                return
+            if s.isdigit():
+                gid = int(s)
+                if gid in TMDB_GENRES:
+                    item_genres.add(TMDB_GENRES[gid].lower())
+                    if gid == 10759:
+                        item_genres.add("action")
+                        item_genres.add("adventure")
+                    elif gid == 10765:
+                        item_genres.add("sci-fi")
+                        item_genres.add("fantasy")
+                    elif gid == 10762:
+                        item_genres.add("kids")
+                        item_genres.add("family")
+                    elif gid == 10768:
+                        item_genres.add("war")
+                        item_genres.add("politics")
+                return
+            for sub in re.split(r'[,/|]+', s):
+                sub_clean = sub.strip()
+                if sub_clean:
+                    item_genres.add(sub_clean)
 
-        # Also include item's primary language if available
-        item_lang = item.get("language") or (cached_meta.get("language") if cached_meta else None)
-        if item_lang and str(item_lang).strip().lower() not in item_genres:
-            item_genres.append(str(item_lang).strip().lower())
+        for src in (item, cached_meta):
+            if not src or not isinstance(src, dict):
+                continue
+            for k in ("genres", "genre", "genre_ids"):
+                raw = src.get(k)
+                if isinstance(raw, list):
+                    for elem in raw:
+                        _add_genre_entry(elem)
+                elif raw is not None:
+                    _add_genre_entry(raw)
+            lang = src.get("language")
+            if lang:
+                _add_genre_entry(lang)
+
+        # Check if type is anime
+        itype = str(item.get("type") or (cached_meta.get("type") if cached_meta else "")).strip().lower()
+        if itype == "anime":
+            item_genres.add("anime")
+            item_genres.add("animation")
 
         if item_genres:
-            match = False
-            for ig in item_genres:
-                if ig == g_norm:
-                    match = True
-                    break
-                if g_norm == "sci-fi" and ("sci-fi" in ig or "science fiction" in ig):
-                    match = True
-                    break
-                elif g_norm == "science fiction" and ("sci-fi" in ig or "science fiction" in ig):
-                    match = True
-                    break
-                elif g_norm == "talk-show" and ("talk" in ig or "talk-show" in ig):
-                    match = True
-                    break
-                elif g_norm == "reality-tv" and ("reality" in ig or "reality-tv" in ig):
-                    match = True
-                    break
-                elif g_norm == "game-show" and ("game-show" in ig or "game show" in ig):
-                    match = True
-                    break
-                elif g_norm == "film-noir" and ("film-noir" in ig or "film noir" in ig):
-                    match = True
-                    break
-            if match:
+            if any(does_genre_match_filter(ig, g_norm) for ig in item_genres):
                 filtered.append(item)
             # If item has known genres and did NOT match, discard it!
         else:
@@ -1605,7 +1717,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     if tt_m and tt_m.group(1) not in alias_ids:
                         alias_ids.append(tt_m.group(1))
 
-                item_genres = m.get("genres") or (m.get("genre") if isinstance(m.get("genre"), list) else ([m.get("genre")] if m.get("genre") else []))
+                item_genres = m.get("genres") or m.get("genre_ids") or (m.get("genre") if isinstance(m.get("genre"), list) else ([m.get("genre")] if m.get("genre") else []))
                 item_cat_name = m.get("catalog_name") or found_catalog_name
                 item_addon_name = m.get("addon_name") or found_addon_name
 
