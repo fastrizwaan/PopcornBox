@@ -195,12 +195,13 @@ class TestUniqueCombinedView(unittest.TestCase):
         win.is_fetching_unique = False
 
         adj = MagicMock()
-        # Case 1: content fits inside viewport (upper <= page_size) -> should NOT trigger
+        # Case 1: content under-filled (upper <= page_size) -> SHOULD trigger to fill viewport
         adj.get_value.return_value = 0
         adj.get_page_size.return_value = 800
         adj.get_upper.return_value = 600
         CineWindow._on_unique_scroll(win, adj)
-        win._load_next_unique_batch.assert_not_called()
+        win._load_next_unique_batch.assert_called_once()
+        win._load_next_unique_batch.reset_mock()
 
         # Case 2: scrolled near top (far from bottom) -> should NOT trigger
         adj.get_upper.return_value = 4000
@@ -208,7 +209,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         CineWindow._on_unique_scroll(win, adj)
         win._load_next_unique_batch.assert_not_called()
 
-        # Case 3: scrolled near bottom (val + page_size >= upper - 600) -> SHOULD trigger
+        # Case 3: scrolled near bottom (val + page_size >= upper - 800) -> SHOULD trigger
         adj.get_value.return_value = 3500
         CineWindow._on_unique_scroll(win, adj)
         win._load_next_unique_batch.assert_called_once()

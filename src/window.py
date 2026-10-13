@@ -6838,7 +6838,7 @@ class CineWindow(Adw.ApplicationWindow):
         val = adj.get_value()
         page_size = adj.get_page_size()
         upper = adj.get_upper()
-        if page_size > 0 and upper > page_size and (val + page_size >= upper - 600):
+        if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
             self._load_next_unique_batch()
 
     def _is_unique_item(self, item):
@@ -6934,7 +6934,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._load_next_unique_batch()
 
     def _deliver_unique_slices_to_ui(self, items, req_id, has_more=True):
-        """Deliver prepared items to GTK main thread in small non-blocking slices of 5 widgets."""
+        """Deliver prepared items to GTK main thread in small non-blocking slices of 6 widgets."""
         if req_id != getattr(self, "unique_request_id", 0):
             self.is_fetching_unique = False
             return
@@ -6946,7 +6946,7 @@ class CineWindow(Adw.ApplicationWindow):
             return
 
         from .movie_widget import MovieWidget
-        SLICE_SIZE = 5
+        SLICE_SIZE = 6
         slices = [items[i:i + SLICE_SIZE] for i in range(0, len(items), SLICE_SIZE)]
 
         def _deliver_next_slice(slice_idx):
@@ -6967,23 +6967,33 @@ class CineWindow(Adw.ApplicationWindow):
             if not has_more and not items:
                 self.has_more_unique = False
 
-            # Check if initial viewport needs more items (only if fewer than 15 cards present)
-            def _check_initial_fill():
+            # Check if viewport still has room on large/wide screens and fetch next batch until filled
+            def _check_viewport_fill():
                 if req_id != getattr(self, "unique_request_id", 0):
                     return False
                 if not getattr(self, "has_more_unique", True) or getattr(self, "is_fetching_unique", False):
                     return False
+                if hasattr(self, "unique_scrolled") and self.unique_scrolled:
+                    adj = self.unique_scrolled.get_vadjustment()
+                    if adj:
+                        val = adj.get_value()
+                        page_size = adj.get_page_size()
+                        upper = adj.get_upper()
+                        if page_size > 0 and (upper <= page_size + 300 or val + page_size >= upper - 600):
+                            self._load_next_unique_batch()
+                            return False
+
                 if hasattr(self, "unique_flowbox"):
                     child_count = 0
                     c = self.unique_flowbox.get_first_child()
-                    while c and child_count < 16:
+                    while c and child_count < 30:
                         child_count += 1
                         c = c.get_next_sibling()
-                    if child_count < 15:
+                    if child_count < 24:
                         self._load_next_unique_batch()
                 return False
 
-            GLib.timeout_add(300, _check_initial_fill)
+            GLib.timeout_add(150, _check_viewport_fill)
             return False
 
         GLib.idle_add(_deliver_next_slice, 0)
@@ -7003,11 +7013,11 @@ class CineWindow(Adw.ApplicationWindow):
             from . import api, database
             import concurrent.futures
 
-            target_batch_count = 20
+            target_batch_count = 24
             collected = []
             num_catalogs = len(self.unique_catalogs)
             consecutive_empty_passes = 0
-            max_passes = 3
+            max_passes = 6
 
             while len(collected) < target_batch_count and len(self.unique_exhausted_catalogs) < num_catalogs and max_passes > 0:
                 max_passes -= 1
@@ -7134,7 +7144,7 @@ class CineWindow(Adw.ApplicationWindow):
 
                 if pass_added == 0:
                     consecutive_empty_passes += 1
-                    if consecutive_empty_passes >= 2:
+                    if consecutive_empty_passes >= 4:
                         break
                 else:
                     consecutive_empty_passes = 0
