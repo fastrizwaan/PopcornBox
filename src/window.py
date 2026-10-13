@@ -5479,6 +5479,39 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "_search_pool"):
             self._search_pool.shutdown(wait=False, cancel_futures=True)
 
+        # 1. Persist in-progress video position to database before closing
+        try:
+            if getattr(self, "_current_playing_item", None) and hasattr(self, "mpv"):
+                curr_pos = float(self.mpv.time_pos or 0.0)
+                curr_dur = float(self.mpv.duration or 0.0)
+                if curr_pos <= 0:
+                    curr_pos = float(self._current_playing_item.get("position") or 0.0)
+                if curr_dur <= 0:
+                    curr_dur = float(self._current_playing_item.get("duration") or 0.0)
+                if curr_pos > 0:
+                    prog = min(1.0, max(0.0, curr_pos / curr_dur)) if curr_dur > 0 else float(self._current_playing_item.get("progress") or 0.01)
+                    self._current_playing_item["position"] = curr_pos
+                    self._current_playing_item["duration"] = curr_dur
+                    self._current_playing_item["progress"] = prog
+                    import time
+                    self._current_playing_item["last_watched"] = int(time.time())
+                    from . import database
+                    if prog < 0.92:
+                        database.save_continue_watching(self._current_playing_item)
+        except Exception as e:
+            logger.debug(f"Error persisting playing item on close: {e}")
+
+        # 2. Sync to Stremio on app closing (with short timeout so closing is fast)
+        try:
+            from . import stremio_sync
+            if stremio_sync.is_sync_enabled() or stremio_sync.is_addon_sync_enabled():
+                import threading
+                sync_thread = threading.Thread(target=lambda: stremio_sync.sync_library(force=True), daemon=True)
+                sync_thread.start()
+                sync_thread.join(timeout=2.5)
+        except Exception as e:
+            logger.debug(f"Stremio sync on close error: {e}")
+
         try:
             if self.preview_player:
                 self.preview_player.terminate()
@@ -5562,6 +5595,16 @@ class CineWindow(Adw.ApplicationWindow):
                     self.is_local_path = is_local_path(self.mpv.path)
                     self.start_page.set_sensitive(True)
                     self._hide_ui_timeout()
+
+                    if getattr(self, "_seek_after_loaded", None):
+                        try:
+                            target_seek = float(self._seek_after_loaded)
+                            cur_pos = float(self.mpv.time_pos or 0.0)
+                            if abs(cur_pos - target_seek) > 3.0:
+                                self.mpv.seek(target_seek, reference="absolute")
+                        except Exception as e:
+                            logger.debug(f"Seek on file-loaded failed: {e}")
+                        self._seek_after_loaded = None
                     
                     if hasattr(self, "_check_and_configure_subtitles"):
                         self._check_and_configure_subtitles()
@@ -8908,11 +8951,16 @@ class CineWindow(Adw.ApplicationWindow):
                 seek_target = pos
 
         if seek_target and float(seek_target) > 5.0 and not is_youtube:
+            self._seek_after_loaded = float(seek_target)
             try:
-                self.mpv.command("loadfile", url, "replace", f"start={float(seek_target):.2f}")
+                self.mpv.command("loadfile", url, "replace", -1, f"start={float(seek_target):.2f}")
             except Exception:
-                self.mpv.loadfile(url, "replace")
+                try:
+                    self.mpv.loadfile(url, "replace", start=f"{float(seek_target):.2f}")
+                except Exception:
+                    self.mpv.loadfile(url, "replace")
         else:
+            self._seek_after_loaded = None
             self.mpv.loadfile(url, "replace")
 
         if audio_url:
@@ -9184,6 +9232,11 @@ class CineWindow(Adw.ApplicationWindow):
         saved_pos = float(existing_cw.get("position") or 0.0) if existing_cw else 0.0
         saved_prog = float(existing_cw.get("progress") or 0.01) if existing_cw else 0.01
         saved_dur = float(existing_cw.get("duration") or 0.0) if existing_cw else 0.0
+
+        if getattr(self, "_pending_seek_position", None) and saved_pos <= 0:
+            saved_pos = float(self._pending_seek_position)
+        elif saved_pos > 5.0 and not getattr(self, "_pending_seek_position", None):
+            self._pending_seek_position = saved_pos
 
         import time
         self._last_marked_stream_idx = None
@@ -9941,13 +9994,21 @@ class CineWindow(Adw.ApplicationWindow):
                 try:
                     curr_pos = float(self.mpv.time_pos or 0.0)
                     curr_dur = float(self.mpv.duration or 0.0)
+                    if curr_pos <= 0:
+                        curr_pos = float(self._current_playing_item.get("position") or 0.0)
+                    if curr_dur <= 0:
+                        curr_dur = float(self._current_playing_item.get("duration") or 0.0)
+
                     if curr_pos > 0 and getattr(self, "stream_queue", None):
                         self._mark_current_stream_as_working()
-                    if curr_dur > 0:
-                        prog = min(1.0, max(0.0, curr_pos / curr_dur))
+
+                    if curr_pos > 0:
+                        prog = min(1.0, max(0.0, curr_pos / curr_dur)) if curr_dur > 0 else float(self._current_playing_item.get("progress") or 0.01)
                         self._current_playing_item["position"] = curr_pos
                         self._current_playing_item["duration"] = curr_dur
                         self._current_playing_item["progress"] = prog
+                        import time
+                        self._current_playing_item["last_watched"] = int(time.time())
                         from . import database
                         if prog >= 0.92:
                             if is_series:
@@ -9957,18 +10018,29 @@ class CineWindow(Adw.ApplicationWindow):
                                 database.remove_continue_watching(item_id, blacklist=False)
                         else:
                             database.save_continue_watching(self._current_playing_item)
-                except Exception:
-                    pass
-        self._current_playing_item = None
+                except Exception as e:
+                    logger.debug(f"Error saving progress on close player: {e}")
+
+        # Ensure MPV watch later config is written before stopping playback
         if hasattr(self, 'mpv'):
+            try:
+                if is_same_playlist(self.mpv.playlist) or settings.get_boolean("save-video-position"):
+                    self.mpv.write_watch_later_config()
+            except Exception:
+                pass
             try: self.mpv.stop()
             except Exception: pass
+
+        self._current_playing_item = None
         from . import player
         player.stop_player(remove_torrent=remove_torrent, is_series=is_series, season=curr_season)
         self.stream_queue = []
         self.stream_queue_index = 0
         if hasattr(self, "_update_continue_watching_section"):
             self._update_continue_watching_section()
+        if hasattr(self, "main_stack") and self.main_stack.get_visible_child_name() == "continue_watching":
+            if hasattr(self, "_populate_local_db_page"):
+                self._populate_local_db_page("continue_watching")
 
         restored = False
         if hasattr(self, "nav_stack") and self.nav_stack:
@@ -10996,13 +11068,13 @@ class CineWindow(Adw.ApplicationWindow):
                 self.nav_stack.pop(0)
 
     def _go_back(self, *args):
-        if hasattr(self, "_update_continue_watching_section"):
-            self._update_continue_watching_section()
-
         current_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
         if current_page == "player":
             self._close_player(remove_torrent=True)
             return
+
+        if hasattr(self, "_update_continue_watching_section"):
+            self._update_continue_watching_section()
 
         if current_page == "person" and hasattr(self, "person_box"):
             while child := self.person_box.get_first_child():
