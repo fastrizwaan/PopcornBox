@@ -99,6 +99,14 @@ from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject, Pango
 def _streams_match(s1, s2):
     return api.streams_match(s1, s2)
 
+def _is_event_set(event):
+    if event is None:
+        return False
+    fn = getattr(event, "is_set", None)
+    if callable(fn):
+        return fn() is True
+    return False
+
 def _find_stream_index(stream, stream_list):
     if not stream or not stream_list: return 0
     for idx, item in enumerate(stream_list):
@@ -229,6 +237,7 @@ class MovieDetailsPage(Gtk.Overlay):
         self._trailer_signal_gen = 0       # Bumped on each safe trailer btn reconnect
         self._resolved_trailer_url = None  # Pre-resolved direct stream URL for instant playback
         self._trailer_fast_abort = None    # threading.Event to cancel fast-fetch on navigation
+        self.page_abort_event = threading.Event()
         
 
         self.remembered_working_stream = None
@@ -1099,7 +1108,7 @@ class MovieDetailsPage(Gtk.Overlay):
             import concurrent.futures
 
             def check_stream(t):
-                if abort_event.is_set(): return
+                if _is_event_set(abort_event): return
                 res = api._ping_stream_url(dict(t))
                 t['ping_status'] = res.get('is_working', False)
 
@@ -1107,7 +1116,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 futures = [executor.submit(check_stream, t) for t in http_streams]
                 concurrent.futures.wait(futures)
 
-            if abort_event.is_set() or not self._is_current_details_page():
+            if _is_event_set(abort_event) or not self._is_current_details_page():
                 return
 
             def on_complete():
@@ -1353,8 +1362,12 @@ class MovieDetailsPage(Gtk.Overlay):
 
         # Step 1: Fetch Image & Metadata FIRST
         def fetch():
+            if self._destroyed or _is_event_set(getattr(self, 'page_abort_event', None)):
+                return
             from . import api
             details = api.fetch_movie_details(item_id, self.media_type, title=self.movie_stub.get("title"), use_cache=not force_refresh, poster=existing_poster)
+            if self._destroyed or _is_event_set(getattr(self, 'page_abort_event', None)):
+                return
             if details:
                 # Retain any rich overview/rating from movie_stub if missing from fetched details
                 if not details.get("description") or details.get("description") in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD"):
@@ -1367,7 +1380,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 poster = details.get("medium_cover_image")
                 print(f"[CARD CLICK Step 7] api.fetch_movie_details completed. Poster URL: {poster}")
                 def apply_details():
-                    if fetch_id == self._details_fetch_id and self._is_current_details_page():
+                    if fetch_id == self._details_fetch_id and self._is_current_details_page() and not _is_event_set(getattr(self, 'page_abort_event', None)):
                         # Step 1 UI build (Metadata and Images displayed)
                         self.build_ui(details)
                         # Step 2: Now resolve trailer YouTube URL & direct stream
@@ -1381,15 +1394,19 @@ class MovieDetailsPage(Gtk.Overlay):
 
                 # Fetch TMDB credits (Cast & Crew) and Production / Networks
                 def fetch_credits():
+                    if self._destroyed or _is_event_set(getattr(self, 'page_abort_event', None)):
+                        return
                     try:
                         from .tmdb_helper import fetch_credits_and_companies
                         c_id = details.get("id") or item_id
                         c_title = details.get("title") or self.movie_stub.get("title")
                         cc = fetch_credits_and_companies(c_id, self.media_type, title=c_title)
+                        if self._destroyed or _is_event_set(getattr(self, 'page_abort_event', None)):
+                            return
                         if cc and (cc.get("cast") or cc.get("crew") or cc.get("production_companies") or cc.get("networks")):
                             details["credits_data"] = cc
                             def apply_credits():
-                                if fetch_id == self._details_fetch_id and self._is_current_details_page():
+                                if fetch_id == self._details_fetch_id and self._is_current_details_page() and not _is_event_set(getattr(self, 'page_abort_event', None)):
                                     self.render_cast_and_production(cc)
                                 return False
                             GLib.idle_add(apply_credits)
@@ -1423,7 +1440,7 @@ class MovieDetailsPage(Gtk.Overlay):
         def _fast_fetch():
             from . import api
             yt_id = api.fetch_trailer_link_fast(item_id, self.media_type, abort_event=abort_event)
-            if yt_id and not abort_event.is_set():
+            if yt_id and not _is_event_set(abort_event):
                 GLib.idle_add(self._apply_trailer_url, yt_id, fetch_id)
 
         threading.Thread(target=_fast_fetch, daemon=True).start()
@@ -2247,10 +2264,14 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def destroy_page(self):
         self._destroyed = True
+        if hasattr(self, 'page_abort_event') and self.page_abort_event:
+            self.page_abort_event.set()
         if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
             self.stream_abort_event.set()
         if hasattr(self, '_trailer_fast_abort') and self._trailer_fast_abort:
             self._trailer_fast_abort.set()
+        if hasattr(self, '_live_check_abort_event') and self._live_check_abort_event:
+            self._live_check_abort_event.set()
 
     def fetch_torrents_async(self, force=False):
         selected_video = getattr(self, 'selected_video', None)
@@ -6152,9 +6173,7 @@ class CineWindow(Adw.ApplicationWindow):
         # Action: Switch to Discover
         action = Gio.SimpleAction.new("switch-to-discover", None)
         def on_switch_discover(action, parameter):
-            from .movie_widget import cancel_pending_image_downloads
-            cancel_pending_image_downloads()
-            self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
+            self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("discover")
             self.discover_back_box.set_visible(False)
             self._current_discover_type = "all"
@@ -6173,9 +6192,7 @@ class CineWindow(Adw.ApplicationWindow):
         # Action: Select Discover Filter Type
         action = Gio.SimpleAction.new("select-discover-type", GLib.VariantType.new("s"))
         def on_select_discover_type(action, parameter):
-            from .movie_widget import cancel_pending_image_downloads
-            cancel_pending_image_downloads()
-            self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
+            self._cancel_all_background_fetching()
             m_type = parameter.get_string()
             self.category_btn_stack.set_visible_child_name("discover")
             self.discover_back_box.set_visible(False)
@@ -6196,9 +6213,7 @@ class CineWindow(Adw.ApplicationWindow):
             val = parameter.get_string()
             parts = val.split("|", 2)
             if len(parts) == 3:
-                from .movie_widget import cancel_pending_image_downloads
-                cancel_pending_image_downloads()
-                self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
+                self._cancel_all_background_fetching()
                 m_type, m_url, addon_name = parts
                 self._current_discover_type = m_type
                 self._current_discover_addon = m_url
@@ -6234,8 +6249,7 @@ class CineWindow(Adw.ApplicationWindow):
             val = parameter.get_string()
             parts = val.split("|", 3)
             if len(parts) == 4:
-                from .movie_widget import cancel_pending_image_downloads
-                cancel_pending_image_downloads()
+                self._cancel_all_background_fetching()
                 m_type, m_url, c_id, genre = parts
                 self.current_media_type = m_type
                 self.current_catalog = {"manifest_url": m_url, "catalog_id": c_id, "media_type": m_type}
@@ -6302,10 +6316,8 @@ class CineWindow(Adw.ApplicationWindow):
         # Action: Switch to Movies (multi-row view of all movie catalogs)
         action = Gio.SimpleAction.new("switch-to-movies", None)
         def on_switch_movies(action, parameter):
-            from .movie_widget import cancel_pending_image_downloads
             from . import api
-            cancel_pending_image_downloads()
-            # Don't pre-increment: _refresh_discover_page will increment if a rebuild is needed
+            self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("movies")
             self.discover_back_box.set_visible(False)
             self._current_discover_type = "movie"
@@ -6335,10 +6347,8 @@ class CineWindow(Adw.ApplicationWindow):
         # Action: Switch to Series (multi-row view of all series catalogs)
         action = Gio.SimpleAction.new("switch-to-series", None)
         def on_switch_series(action, parameter):
-            from .movie_widget import cancel_pending_image_downloads
             from . import api
-            cancel_pending_image_downloads()
-            # Don't pre-increment: _refresh_discover_page will increment if a rebuild is needed
+            self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("series")
             self.discover_back_box.set_visible(False)
             self._current_discover_type = "series"
@@ -6368,10 +6378,8 @@ class CineWindow(Adw.ApplicationWindow):
         # Action: Switch to Anime (multi-row view of all anime catalogs)
         action = Gio.SimpleAction.new("switch-to-anime", None)
         def on_switch_anime(action, parameter):
-            from .movie_widget import cancel_pending_image_downloads
             from . import api
-            cancel_pending_image_downloads()
-            # Don't pre-increment: _refresh_discover_page will increment if a rebuild is needed
+            self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("anime")
             self.discover_back_box.set_visible(False)
             self._current_discover_type = "anime"
@@ -6424,6 +6432,19 @@ class CineWindow(Adw.ApplicationWindow):
         self.is_fetching_unique = False
         self.has_more_unique = True
         self.unique_request_id = 0
+        self._unique_abort_event = threading.Event()
+        self._unique_active_pool = None
+
+        self.discover_request_id = 0
+        self._discover_abort_event = threading.Event()
+        self._discover_active_pool = None
+
+        self.content_request_id = 0
+        self._content_abort_event = threading.Event()
+
+        self.search_request_id = 0
+        self._search_abort_event = threading.Event()
+        self._search_pool = None
             
         self._discover_views = {}
         self._discover_catalog_list_cache = {}
@@ -6521,6 +6542,64 @@ class CineWindow(Adw.ApplicationWindow):
             stremio_sync.sync_in_background(callback=on_sync_finished, force=force)
         except Exception as e:
             logger.debug(f"Stremio sync trigger error: {e}")
+
+    def _cancel_all_background_fetching(self):
+        """Instantly terminate and cancel all in-flight background catalog/search fetching threads and pools.
+        
+        Called on navigation, tab switches, dropdown changes, card clicks, and view changes
+        to free the GTK main thread and database locks immediately.
+        """
+        # 1. Image downloads
+        try:
+            from .movie_widget import cancel_pending_image_downloads
+            cancel_pending_image_downloads()
+        except Exception:
+            pass
+
+        # 2. Unique combined view
+        self.unique_request_id = getattr(self, "unique_request_id", 0) + 1
+        self.is_fetching_unique = False
+        if hasattr(self, "_unique_abort_event") and self._unique_abort_event:
+            self._unique_abort_event.set()
+        self._unique_abort_event = threading.Event()
+        if hasattr(self, "_unique_active_pool") and self._unique_active_pool:
+            try:
+                self._unique_active_pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            self._unique_active_pool = None
+
+        # 3. Discover multi-row view
+        self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
+        self._discover_is_loading_rows = False
+        if hasattr(self, "_discover_abort_event") and self._discover_abort_event:
+            self._discover_abort_event.set()
+        self._discover_abort_event = threading.Event()
+        if hasattr(self, "_discover_active_pool") and self._discover_active_pool:
+            try:
+                self._discover_active_pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            self._discover_active_pool = None
+
+        # 4. Content catalog view (single catalog grid)
+        self.content_request_id = getattr(self, "content_request_id", 0) + 1
+        self.is_fetching_content = False
+        if hasattr(self, "_content_abort_event") and self._content_abort_event:
+            self._content_abort_event.set()
+        self._content_abort_event = threading.Event()
+
+        # 5. Search view
+        self.search_request_id = getattr(self, "search_request_id", 0) + 1
+        if hasattr(self, "_search_abort_event") and self._search_abort_event:
+            self._search_abort_event.set()
+        self._search_abort_event = threading.Event()
+        if hasattr(self, "_search_pool") and self._search_pool:
+            try:
+                self._search_pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            self._search_pool = None
 
     def update_category_buttons_visibility(self):
         show_movies = settings.get_boolean("show-movies-button")
@@ -6658,6 +6737,7 @@ class CineWindow(Adw.ApplicationWindow):
         selected_item = dropdown.get_selected_item()
         if not selected_item:
             return
+        self._cancel_all_background_fetching()
         sort_str = selected_item.get_string()
         self.current_sort = sort_str
         if len(sort_str) == 4 and sort_str.isdigit():
@@ -6728,6 +6808,7 @@ class CineWindow(Adw.ApplicationWindow):
         selected_item = dropdown.get_selected_item()
         if not selected_item:
             return
+        self._cancel_all_background_fetching()
         genre_str = selected_item.get_string()
         if genre_str in ("All Genres", _("All Genres"), "All", _("All")):
             self.current_genre = None
@@ -6803,6 +6884,7 @@ class CineWindow(Adw.ApplicationWindow):
         return False
 
     def _on_unique_toggled(self, button):
+        self._cancel_all_background_fetching()
         is_active = button.get_active()
         debug_log(f"_on_unique_toggled: active={is_active}")
         if is_active:
@@ -6909,6 +6991,16 @@ class CineWindow(Adw.ApplicationWindow):
 
         self.unique_request_id = getattr(self, "unique_request_id", 0) + 1
         self.is_fetching_unique = False
+        if hasattr(self, "_unique_abort_event") and self._unique_abort_event:
+            self._unique_abort_event.set()
+        self._unique_abort_event = threading.Event()
+        if hasattr(self, "_unique_active_pool") and self._unique_active_pool:
+            try:
+                self._unique_active_pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            self._unique_active_pool = None
+
         self.has_more_unique = True
         self.unique_seen_ids.clear()
         self.unique_seen_keys.clear()
@@ -6964,7 +7056,8 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _deliver_unique_slices_to_ui(self, items, req_id, has_more=True):
         """Deliver prepared items to GTK main thread in small non-blocking slices of 6 widgets."""
-        if req_id != getattr(self, "unique_request_id", 0):
+        abort_ev = getattr(self, "_unique_abort_event", None)
+        if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
             self.is_fetching_unique = False
             return
 
@@ -6991,7 +7084,7 @@ class CineWindow(Adw.ApplicationWindow):
         slices = [items[i:i + SLICE_SIZE] for i in range(0, len(items), SLICE_SIZE)]
 
         def _deliver_next_slice(slice_idx):
-            if req_id != getattr(self, "unique_request_id", 0):
+            if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
                 self.is_fetching_unique = False
                 return False
 
@@ -7014,7 +7107,7 @@ class CineWindow(Adw.ApplicationWindow):
 
             # Check if viewport still has room on large/wide screens and fetch next batch until filled
             def _check_viewport_fill():
-                if req_id != getattr(self, "unique_request_id", 0):
+                if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
                     return False
                 if not getattr(self, "has_more_unique", True) or getattr(self, "is_fetching_unique", False):
                     return False
@@ -7051,6 +7144,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         self.is_fetching_unique = True
         req_id = self.unique_request_id
+        abort_ev = getattr(self, "_unique_abort_event", None)
         cur_genre = getattr(self, "current_genre", None)
         cur_year = getattr(self, "current_year", None)
 
@@ -7066,7 +7160,7 @@ class CineWindow(Adw.ApplicationWindow):
 
             while len(collected) < target_batch_count and len(self.unique_exhausted_catalogs) < num_catalogs and max_passes > 0:
                 max_passes -= 1
-                if req_id != getattr(self, "unique_request_id", 0):
+                if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
                     self.is_fetching_unique = False
                     return
 
@@ -7108,7 +7202,7 @@ class CineWindow(Adw.ApplicationWindow):
                     break
 
                 def _fetch_cat(cat_info, key, page):
-                    if req_id != getattr(self, "unique_request_id", 0):
+                    if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
                         return None
                     m_type = cat_info.get("media_type", "movie")
                     c_id = cat_info.get("catalog_id")
@@ -7131,6 +7225,9 @@ class CineWindow(Adw.ApplicationWindow):
                     if not cached and page == 1:
                         cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}", max_age_hours=24)
 
+                    if _is_event_set(abort_ev):
+                        return None
+
                     if cached:
                         if database.is_adult_content_hidden():
                             cached = [it for it in cached if not api.is_adult_item(it)]
@@ -7140,7 +7237,8 @@ class CineWindow(Adw.ApplicationWindow):
                             if not it.get("catalog_id"): it["catalog_id"] = c_id
                             if not it.get("manifest_url"): it["manifest_url"] = m_url
                         if api.hydrate_missing_catalog_items(cached, media_type=m_type):
-                            database.save_cached_catalog(cache_key, cached)
+                            if not _is_event_set(abort_ev):
+                                database.save_cached_catalog(cache_key, cached)
                         filtered = cached
                         if cur_genre:
                             filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
@@ -7150,6 +7248,9 @@ class CineWindow(Adw.ApplicationWindow):
                             filtered = [it for it in filtered if str(it.get("year", "")).startswith(cur_year)]
                         return (key, page, filtered, len(cached))
 
+                    if _is_event_set(abort_ev):
+                        return None
+
                     try:
                         raw_items = api.fetch_items(
                             media_type=m_type,
@@ -7158,8 +7259,11 @@ class CineWindow(Adw.ApplicationWindow):
                             genre=fetch_genre or "",
                             page=page,
                             limit=20,
-                            timeout=2.5
+                            timeout=2.5,
+                            is_cancelled=(lambda: _is_event_set(abort_ev))
                         )
+                        if _is_event_set(abort_ev):
+                            return None
                         items = list(raw_items) if raw_items is not None else None
                         if items:
                             if database.is_adult_content_hidden():
@@ -7176,7 +7280,7 @@ class CineWindow(Adw.ApplicationWindow):
                             filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
                         if filtered and cur_genre and cur_year:
                             filtered = [it for it in filtered if str(it.get("year", "")).startswith(cur_year)]
-                        if items:
+                        if items and not _is_event_set(abort_ev):
                             database.save_cached_catalog(cache_key, items)
                         raw_count = len(raw_items) if raw_items is not None else -1
                         return (key, page, filtered, raw_count)
@@ -7185,18 +7289,25 @@ class CineWindow(Adw.ApplicationWindow):
                         return (key, page, None, -1)
 
                 cat_results = []
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_cats), 6)) as pool:
+                pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_cats), 6))
+                self._unique_active_pool = pool
+                try:
                     futures = [pool.submit(_fetch_cat, c, k, p) for c, k, p in batch_cats]
                     try:
                         for f in concurrent.futures.as_completed(futures, timeout=3.0):
-                            if req_id != getattr(self, "unique_request_id", 0):
+                            if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
                                 self.is_fetching_unique = False
+                                pool.shutdown(wait=False, cancel_futures=True)
                                 return
                             res = f.result()
                             if res:
                                 cat_results.append(res)
                     except concurrent.futures.TimeoutError:
                         pass
+                finally:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    if getattr(self, "_unique_active_pool", None) is pool:
+                        self._unique_active_pool = None
 
                 pass_added = 0
                 for cat_key, page, items, raw_count in cat_results:
@@ -7255,6 +7366,10 @@ class CineWindow(Adw.ApplicationWindow):
                     if len(collected) >= target_batch_count:
                         break
 
+            if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
+                self.is_fetching_unique = False
+                return
+
             has_more = len(self.unique_exhausted_catalogs) < num_catalogs
             self._deliver_unique_slices_to_ui(collected, req_id, has_more=has_more)
 
@@ -7265,6 +7380,9 @@ class CineWindow(Adw.ApplicationWindow):
         cancel_pending_image_downloads()
         self.content_request_id = getattr(self, "content_request_id", 0) + 1
         self.is_fetching_content = False
+        if hasattr(self, "_content_abort_event") and self._content_abort_event:
+            self._content_abort_event.set()
+        self._content_abort_event = threading.Event()
         self.content_page = 1
         self.content_error_count = 0
         self.content_seen_ids.clear()
@@ -7287,6 +7405,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.is_fetching_content = True
 
         current_req_id = getattr(self, "content_request_id", 0)
+        abort_ev = getattr(self, "_content_abort_event", None)
         page_to_fetch = getattr(self, "content_page", 1)
         media_type = self.current_media_type
         catalog = dict(self.current_catalog)
@@ -7294,6 +7413,9 @@ class CineWindow(Adw.ApplicationWindow):
         year = getattr(self, "current_year", None)
 
         def fetch():
+            if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
+                self.is_fetching_content = False
+                return
             from . import api, database
             items = []
             try:
@@ -7310,9 +7432,13 @@ class CineWindow(Adw.ApplicationWindow):
 
                 # Cache-first: show instantly if we have a recent result
                 cached = database.get_cached_catalog(cache_key, max_age_hours=6)
+                if _is_event_set(abort_ev):
+                    self.is_fetching_content = False
+                    return
                 if cached:
                     if api.hydrate_missing_catalog_items(cached, media_type=media_type):
-                        database.save_cached_catalog(cache_key, cached)
+                        if not _is_event_set(abort_ev):
+                            database.save_cached_catalog(cache_key, cached)
                     if genre:
                         cached = api.filter_items_by_genre(cached, genre, media_type=media_type)
                     elif cached and media_type:
@@ -7320,7 +7446,7 @@ class CineWindow(Adw.ApplicationWindow):
                     if genre and year:
                         cached = [it for it in cached if str(it.get("year", "")).startswith(year)]
                     def apply_cached(cached_items=cached):
-                        if current_req_id != getattr(self, "content_request_id", 0):
+                        if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
                             return False
                         self.is_fetching_content = False
                         if cached_items:
@@ -7342,35 +7468,45 @@ class CineWindow(Adw.ApplicationWindow):
                             catalog_id=cat_id,
                             catalog_url=cat_url,
                             genre=fetch_genre or "",
-                            page=page_to_fetch
+                            page=page_to_fetch,
+                            is_cancelled=(lambda: _is_event_set(abort_ev))
                         )
+                        if _is_event_set(abort_ev):
+                            return
                         if fresh and genre:
                             fresh = api.filter_items_by_genre(fresh, genre, media_type=media_type)
                         elif fresh and media_type:
                             fresh = [it for it in fresh if api.is_item_type_compatible(it, media_type)]
                         if fresh and genre and year:
                             fresh = [it for it in fresh if str(it.get("year", "")).startswith(year)]
-                        if fresh:
+                        if fresh and not _is_event_set(abort_ev):
                             database.save_cached_catalog(cache_key, fresh)
                     except Exception:
                         pass
                     return
 
                 # No cache — fetch from network and save
+                if _is_event_set(abort_ev):
+                    self.is_fetching_content = False
+                    return
                 items = api.fetch_items(
                     media_type=media_type,
                     catalog_id=cat_id,
                     catalog_url=cat_url,
                     genre=fetch_genre or "",
-                    page=page_to_fetch
+                    page=page_to_fetch,
+                    is_cancelled=(lambda: _is_event_set(abort_ev))
                 )
+                if _is_event_set(abort_ev):
+                    self.is_fetching_content = False
+                    return
                 if items and genre:
                     items = api.filter_items_by_genre(items, genre, media_type=media_type)
                 elif items and media_type:
                     items = [it for it in items if api.is_item_type_compatible(it, media_type)]
                 if items and genre and year:
                     items = [it for it in items if str(it.get("year", "")).startswith(year)]
-                if items:
+                if items and not _is_event_set(abort_ev):
                     database.save_cached_catalog(cache_key, items)
             except Exception as e:
                 logger.error(f"Error fetching content: {e}")
@@ -7378,7 +7514,7 @@ class CineWindow(Adw.ApplicationWindow):
 
             def apply_results():
                 # Race condition guard: ignore if user selected another tab or catalog
-                if current_req_id != getattr(self, "content_request_id", 0):
+                if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
                     return False
 
                 self.is_fetching_content = False
@@ -8077,6 +8213,15 @@ class CineWindow(Adw.ApplicationWindow):
         self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
         req_id = self.discover_request_id
         self._discover_is_loading_rows = False
+        if hasattr(self, "_discover_abort_event") and self._discover_abort_event:
+            self._discover_abort_event.set()
+        self._discover_abort_event = threading.Event()
+        if hasattr(self, "_discover_active_pool") and self._discover_active_pool:
+            try:
+                self._discover_active_pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            self._discover_active_pool = None
         
         self._current_discover_type = filter_media_type or "all"
         self._current_discover_addon = filter_addon_url
@@ -8147,10 +8292,11 @@ class CineWindow(Adw.ApplicationWindow):
         debug_log(f"_refresh_discover_page DONE")
 
     def _load_next_discover_batch(self, req_id, batch_size=4):
+        abort_ev = getattr(self, "_discover_abort_event", None)
         if getattr(self, "_discover_is_loading_rows", False):
             debug_log(f"_load_next_discover_batch SKIPPED: already loading rows (req_id={req_id})")
             return
-        if req_id != getattr(self, "discover_request_id", 0):
+        if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
             debug_log(f"_load_next_discover_batch SKIPPED: outdated req_id {req_id} vs current {getattr(self, 'discover_request_id', 0)}")
             return
         if not hasattr(self, "_discover_catalog_list") or self._discover_next_row_index >= len(self._discover_catalog_list):
@@ -8174,11 +8320,14 @@ class CineWindow(Adw.ApplicationWindow):
         def worker():
             from . import api, database
             import concurrent.futures
+            if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
+                self._discover_is_loading_rows = False
+                return
             debug_log(f"discover worker START (req_id={req_id}, batch {start_idx}..{end_idx})")
             try:
                 def _fetch_single_row(row_info):
                     """Fetch a single catalog row's items. Runs in parallel."""
-                    if req_id != getattr(self, "discover_request_id", 0):
+                    if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
                         return None
                     m_type = row_info.get("media_type", "movie")
                     c_id = row_info.get("catalog_id")
@@ -8200,9 +8349,12 @@ class CineWindow(Adw.ApplicationWindow):
                     year_suffix = f":y{current_y}" if current_y else ""
                     cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}"
                     cached = database.get_cached_catalog(cache_key, max_age_hours=48)
+                    if _is_event_set(abort_ev):
+                        return None
                     if cached:
                         if api.hydrate_missing_catalog_items(cached, media_type=m_type):
-                            database.save_cached_catalog(cache_key, cached)
+                            if not _is_event_set(abort_ev):
+                                database.save_cached_catalog(cache_key, cached)
                         if current_g:
                             cached = api.filter_items_by_genre(cached, current_g, media_type=m_type)
                         elif cached and m_type:
@@ -8214,6 +8366,8 @@ class CineWindow(Adw.ApplicationWindow):
                         if cached:
                             debug_log(f"discover row CACHE HIT: '{row_title}'", f"{len(cached)} items")
                             return (row_info, cached)
+                    if _is_event_set(abort_ev):
+                        return None
                     try:
                         debug_log(f"discover row FETCHING from API: '{row_title}' (type={m_type}, id={c_id}, genre={fetch_genre})")
                         items = api.fetch_items(
@@ -8223,8 +8377,11 @@ class CineWindow(Adw.ApplicationWindow):
                             genre=fetch_genre or "",
                             page=1,
                             limit=20,
-                            timeout=2.5
+                            timeout=2.5,
+                            is_cancelled=(lambda: _is_event_set(abort_ev))
                         )
+                        if _is_event_set(abort_ev):
+                            return None
                         if items and current_g:
                             items = api.filter_items_by_genre(items, current_g, media_type=m_type)
                         elif items and m_type:
@@ -8232,7 +8389,7 @@ class CineWindow(Adw.ApplicationWindow):
                         if items and current_g and current_y:
                             items = [it for it in items if str(it.get("year", "")).startswith(current_y)]
                         debug_log(f"discover row FETCHED from API: '{row_title}'", f"Got {len(items) if items else 0} items")
-                        if items:
+                        if items and not _is_event_set(abort_ev):
                             database.save_cached_catalog(cache_key, items)
                     except Exception as e:
                         logger.error(f"Error fetching discover row {row_title}: {e}")
@@ -8241,11 +8398,14 @@ class CineWindow(Adw.ApplicationWindow):
 
                 # Fetch all rows in this batch in parallel
                 results = [None] * len(batch_items)
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_items), 6)) as executor:
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_items), 6))
+                self._discover_active_pool = executor
+                try:
                     future_to_idx = {executor.submit(_fetch_single_row, ri): idx for idx, ri in enumerate(batch_items)}
                     try:
                         for future in concurrent.futures.as_completed(future_to_idx, timeout=3.5):
-                            if req_id != getattr(self, "discover_request_id", 0):
+                            if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
+                                executor.shutdown(wait=False, cancel_futures=True)
                                 break
                             idx = future_to_idx[future]
                             try:
@@ -8254,12 +8414,16 @@ class CineWindow(Adw.ApplicationWindow):
                                 pass
                     except concurrent.futures.TimeoutError:
                         pass
+                finally:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    if getattr(self, "_discover_active_pool", None) is executor:
+                        self._discover_active_pool = None
 
                 debug_log(f"discover worker fetched all {len(results)} rows for batch {start_idx}..{end_idx}, queueing _apply_batch_results on GLib idle")
 
                 # Render batch results on the main thread
                 def _apply_batch_results():
-                    if req_id != getattr(self, "discover_request_id", 0):
+                    if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
                         self._discover_is_loading_rows = False
                         debug_log(f"_apply_batch_results CANCELLED (req_id {req_id} != {getattr(self, 'discover_request_id', 0)})")
                         return False
@@ -8347,7 +8511,7 @@ class CineWindow(Adw.ApplicationWindow):
                     debug_log(f"_apply_batch_results FINISHED for req_id={req_id}")
 
                     # Check if viewport still has unfilled room on extra-large displays
-                    if req_id == getattr(self, "discover_request_id", 0) and self._discover_next_row_index < len(self._discover_catalog_list):
+                    if req_id == getattr(self, "discover_request_id", 0) and not _is_event_set(abort_ev) and self._discover_next_row_index < len(self._discover_catalog_list):
                         if hasattr(self, "discover_scrolled"):
                             adj = self.discover_scrolled.get_vadjustment()
                             val = adj.get_value()
@@ -8358,7 +8522,7 @@ class CineWindow(Adw.ApplicationWindow):
                                 debug_log(f"check_fill_viewport TRIGGERING NEXT BATCH (upper <= page_size or near bottom)")
                                 next_bs = 6 if (upper <= page_size or not target_box or not target_box.get_first_child()) else 4
                                 self._load_next_discover_batch(req_id, batch_size=next_bs)
-                    elif req_id == getattr(self, "discover_request_id", 0) and self._discover_next_row_index >= len(self._discover_catalog_list):
+                    elif req_id == getattr(self, "discover_request_id", 0) and not _is_event_set(abort_ev) and self._discover_next_row_index >= len(self._discover_catalog_list):
                         if target_box and not target_box.get_first_child() and getattr(self, "current_genre", None):
                             empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
                             empty_box.set_valign(Gtk.Align.CENTER)
@@ -8779,10 +8943,8 @@ class CineWindow(Adw.ApplicationWindow):
         title = movie_data.get("title") or movie_data.get("name")
         print(f"[CARD CLICK Step 1] Clicked movie card: '{title}' (id: {item_id})")
         from . import database
-        from .movie_widget import cancel_pending_image_downloads
-        cancel_pending_image_downloads()
-        self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
-        print(f"[CARD CLICK Step 2] Canceled pending image downloads for clean navigation.")
+        self._cancel_all_background_fetching()
+        print(f"[CARD CLICK Step 2] Canceled all background fetching and image downloads for clean navigation.")
         database.add_history(movie_data)
         
         while child := self.details_box.get_first_child():
@@ -8815,8 +8977,7 @@ class CineWindow(Adw.ApplicationWindow):
             if hasattr(self, "main_stack") and self.main_stack:
                 self.main_stack.add_named(self.person_box, "person")
 
-        from .movie_widget import cancel_pending_image_downloads
-        cancel_pending_image_downloads()
+        self._cancel_all_background_fetching()
 
         while child := self.person_box.get_first_child():
             if hasattr(child, "destroy_page"):
@@ -8836,6 +8997,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.main_stack.set_visible_child_name("person")
 
     def show_player_loading(self, text="Fetching metadata...", title=None):
+        self._cancel_all_background_fetching()
         curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
         if curr_page and curr_page != "player":
             self.previous_page_before_player = curr_page
@@ -11251,6 +11413,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.nav_stack.pop(0)
 
     def _go_back(self, *args):
+        self._cancel_all_background_fetching()
         current_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
         if current_page == "player":
             self._close_player(remove_torrent=True)
@@ -11286,6 +11449,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._refresh_active_library_view()
 
     def _open_addons(self, *args):
+        self._cancel_all_background_fetching()
         self._push_current_nav_state()
         self._populate_addons()
         self.main_stack.set_visible_child_name("addons")
@@ -11388,12 +11552,12 @@ class CineWindow(Adw.ApplicationWindow):
                     return
                 try:
                     def is_cancelled_fn():
-                        return self._current_search_id != current_search_id
+                        return (self._current_search_id != current_search_id) or _is_event_set(getattr(self, "_search_abort_event", None))
 
                     def on_batch(batch):
-                        if self._current_search_id == current_search_id and batch:
+                        if self._current_search_id == current_search_id and batch and not _is_event_set(getattr(self, "_search_abort_event", None)):
                             def update_ui():
-                                if self._current_search_id != current_search_id:
+                                if self._current_search_id != current_search_id or _is_event_set(getattr(self, "_search_abort_event", None)):
                                     return False
                                 section = getattr(self, section_attr, None)
                                 flowbox = getattr(self, flowbox_attr, None)
@@ -11413,7 +11577,7 @@ class CineWindow(Adw.ApplicationWindow):
                 except Exception as e:
                     logger.error(f"Search error ({media_type}): {e}")
 
-            if not hasattr(self, "_search_pool"):
+            if not getattr(self, "_search_pool", None):
                 self._search_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
                 
             self._search_pool.submit(do_search_category, "movie", "search_movies_section", "search_movies_flowbox")
@@ -11431,6 +11595,7 @@ class CineWindow(Adw.ApplicationWindow):
         pass
 
     def _open_local_page(self, page_name):
+        self._cancel_all_background_fetching()
         self._push_current_nav_state()
         self.main_stack.set_visible_child_name(page_name)
         self._populate_local_db_page(page_name)

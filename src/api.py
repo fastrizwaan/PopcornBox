@@ -1634,6 +1634,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             if cat_obj and not catalog_supports_genre(cat_obj, genre):
                 return []
 
+        if is_cancelled and is_cancelled():
+            return []
+
         url = f"{base_url}catalog/{actual_cat_type}/{catalog_id}"
         
         extras = []
@@ -1646,10 +1649,13 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             url += "/" + "&".join(extras) + ".json"
         else:
             url += ".json"
+
+        if is_cancelled and is_cancelled():
+            return []
             
         data = _get_cached_request(url, max_age_hours=2, cache_only=cache_only, timeout=timeout)
-        if data is None:
-            return None
+        if data is None or (is_cancelled and is_cancelled()):
+            return None if data is None else []
             
         found_addon_name = ""
         found_catalog_name = str(catalog_id).title()
