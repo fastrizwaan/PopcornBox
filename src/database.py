@@ -286,7 +286,8 @@ def _write_db(data):
         return False
     with _db_lock:
         _ensure_db()
-        temp_file = DB_FILE.with_suffix(".tmp")
+        unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
+        temp_file = DB_FILE.with_name(f"data{unique_suffix}")
         try:
             with open(temp_file, "w") as f:
                 json.dump(data, f, indent=4)
@@ -315,6 +316,12 @@ def add_favorite(item, sync_to_remote=True):
         db = _read_db()
         if not any(f.get("id") == item.get("id") for f in db.get("favorites", [])):
             db.setdefault("favorites", []).insert(0, item)
+            settings = db.setdefault("settings", {})
+            removed_favs = set(settings.get("removed_favorite_ids", []))
+            item_id = str(item.get("id") or item.get("imdb_id") or "")
+            if item_id:
+                removed_favs.discard(item_id)
+            settings["removed_favorite_ids"] = list(removed_favs)
             _write_db(db)
     if sync_to_remote and not _is_testing():
         try:
@@ -324,11 +331,22 @@ def add_favorite(item, sync_to_remote=True):
         except Exception:
             pass
 
-def remove_favorite(item_id):
+def remove_favorite(item_id, sync_to_remote=True):
     with _db_lock:
         db = _read_db()
         db["favorites"] = [f for f in db.get("favorites", []) if f.get("id") != item_id and f.get("imdb_id") != item_id]
+        settings = db.setdefault("settings", {})
+        removed_favs = set(settings.get("removed_favorite_ids", []))
+        removed_favs.add(str(item_id))
+        settings["removed_favorite_ids"] = list(removed_favs)[-200:]
         _write_db(db)
+    if sync_to_remote and not _is_testing():
+        try:
+            from . import stremio_sync
+            if stremio_sync.is_sync_enabled():
+                stremio_sync.sync_in_background()
+        except Exception:
+            pass
 
 def is_favorite(item_id):
     return any(f.get("id") == item_id or f.get("imdb_id") == item_id for f in _read_db().get("favorites", []))
@@ -362,18 +380,33 @@ def is_watched(item_id):
 def get_history():
     return _read_db().get("history", [])
 
-def add_history(item):
+def add_history(item, sync_to_remote=True):
     """Add item to top of history, moving it if already present. Capped at HISTORY_LIMIT."""
     with _db_lock:
         db = _read_db()
         history = db.setdefault("history", [])
         item_id = item.get("id") or item.get("imdb_id")
+        if "last_watched" not in item:
+            import time as _t
+            item["last_watched"] = int(_t.time())
         # Remove existing entry if present (so it moves to the top)
         history = [h for h in history if h.get("id") != item_id and h.get("imdb_id") != item_id]
         history.insert(0, item)
+        settings = db.setdefault("settings", {})
+        removed_hist = set(settings.get("removed_history_ids", []))
+        if item_id:
+            removed_hist.discard(str(item_id))
+        settings["removed_history_ids"] = list(removed_hist)
         # Enforce cap
         db["history"] = history[:HISTORY_LIMIT]
         _write_db(db)
+    if sync_to_remote and not _is_testing():
+        try:
+            from . import stremio_sync
+            if stremio_sync.is_sync_enabled():
+                stremio_sync.scrobble_playback(item)
+        except Exception:
+            pass
 
 def clear_history():
     with _db_lock:
@@ -381,10 +414,30 @@ def clear_history():
         db["history"] = []
         _write_db(db)
 
-def remove_history(item_id):
+def add_history_batch(items, sync_to_remote=True):
+    """Add multiple items to history efficiently in a single database transaction."""
+    if not items:
+        return
+    with _db_lock:
+        db = _read_db()
+        history = list(db.get("history", []))
+        item_ids_to_add = {str(it.get("id") or it.get("imdb_id") or "") for it in items}
+        # Filter out existing occurrences
+        history = [h for h in history if str(h.get("id") or h.get("imdb_id") or "") not in item_ids_to_add]
+        # Insert new items at top, sorted by last_watched descending
+        sorted_new = sorted(items, key=lambda x: int(x.get("last_watched", 0)), reverse=True)
+        combined = sorted_new + history
+        db["history"] = combined[:HISTORY_LIMIT]
+        _write_db(db)
+
+def remove_history(item_id, sync_to_remote=True):
     with _db_lock:
         db = _read_db()
         db["history"] = [h for h in db.get("history", []) if h.get("id") != item_id and h.get("imdb_id") != item_id]
+        settings = db.setdefault("settings", {})
+        removed_hist = set(settings.get("removed_history_ids", []))
+        removed_hist.add(str(item_id))
+        settings["removed_history_ids"] = list(removed_hist)[-200:]
         _write_db(db)
 
 # --- Continue Watching ---
@@ -589,7 +642,7 @@ def save_continue_watching(item, sync_to_remote=True):
         except Exception:
             pass
 
-def remove_continue_watching(item_id, blacklist=True, user_action=False):
+def remove_continue_watching(item_id, blacklist=True, user_action=False, sync_to_remote=True):
     """Remove an item from continue_watching."""
     if not item_id:
         return
@@ -609,6 +662,13 @@ def remove_continue_watching(item_id, blacklist=True, user_action=False):
             user_dismissed.add(str(item_id))
             db["user_dismissed_continue_watching"] = list(user_dismissed)[-200:]
         _write_db(db)
+    if sync_to_remote and not _is_testing():
+        try:
+            from . import stremio_sync
+            if stremio_sync.is_sync_enabled():
+                stremio_sync.sync_in_background()
+        except Exception:
+            pass
 
 # --- Downloads ---
 

@@ -153,8 +153,8 @@ class TestStremioSync(unittest.TestCase):
         remote_movie = stremio_sync.local_to_stremio_library_item(local_cw, is_favorite=True, in_continue_watching=True)
         self.assertEqual(remote_movie["_id"], "tt1375666")
         self.assertEqual(remote_movie["name"], "Inception")
-        self.assertEqual(remote_movie["state"]["timeOffset"], 5000)
-        self.assertEqual(remote_movie["state"]["duration"], 8880)
+        self.assertEqual(remote_movie["state"]["timeOffset"], 5000000)
+        self.assertEqual(remote_movie["state"]["duration"], 8880000)
         self.assertEqual(remote_movie["state"]["flaggedWatching"], 1)
         self.assertFalse(remote_movie["temp"])  # Favorite, so temp is False
 
@@ -276,7 +276,7 @@ class TestStremioSync(unittest.TestCase):
         payload = call_args[1]
         self.assertEqual(payload["authKey"], "scrobble_token")
         self.assertEqual(payload["changes"][0]["_id"], "tt1375666")
-        self.assertEqual(payload["changes"][0]["state"]["timeOffset"], 3200)
+        self.assertEqual(payload["changes"][0]["state"]["timeOffset"], 3200000)
 
     @patch("src.stremio_sync._post_json")
     def test_sync_addons(self, mock_post):
@@ -497,6 +497,57 @@ class TestStremioSync(unittest.TestCase):
         self.assertTrue(len(pushed_payloads) > 0)
         pushed_urls = [a.get("transportUrl") for a in pushed_payloads[0]["addons"]]
         self.assertNotIn("https://annoying.com/manifest.json", pushed_urls)
+
+    @patch("src.stremio_sync._post_json")
+    def test_sync_library_otis_temp_removed_and_history(self, mock_post):
+        from src import stremio_sync, database
+
+        database.set_setting("stremio_auth_key", "otis_token")
+        database.set_setting("stremio_sync_enabled", True)
+
+        # Stremio remote item for 'Get Rolling with Otis':
+        # temp=True, removed=True (watched on Stremio, not in user library)
+        # timeOffset and duration in milliseconds
+        otis_remote = {
+            "_id": "tt15389898",
+            "name": "Get Rolling with Otis",
+            "type": "series",
+            "poster": "https://example.com/otis.jpg",
+            "temp": True,
+            "removed": True,
+            "_mtime": "2026-10-13T02:39:28.893Z",
+            "state": {
+                "timeOffset": 79021,       # ~79 seconds in ms
+                "duration": 1416400,      # ~1416.4 seconds in ms
+                "video_id": "tt15389898:1:1",
+                "lastWatched": "2026-10-13T02:39:28.656Z",
+                "flaggedWatching": 0
+            }
+        }
+
+        mock_post.return_value = {"result": [otis_remote]}
+
+        summary = stremio_sync.sync_library()
+        self.assertEqual(summary["status"], "success")
+        self.assertGreaterEqual(summary["pulled_cw"], 1)
+        self.assertGreaterEqual(summary["pulled_history"], 1)
+
+        # Verify Otis was pulled into Continue Watching with proper second units
+        cw = database.get_continue_watching()
+        cw_ids = [c.get("id") for c in cw]
+        self.assertIn("tt15389898", cw_ids)
+
+        otis_cw = next(c for c in cw if c.get("id") == "tt15389898")
+        self.assertAlmostEqual(otis_cw["position"], 79.021, places=2)
+        self.assertAlmostEqual(otis_cw["duration"], 1416.4, places=1)
+        self.assertEqual(otis_cw["season"], 1)
+        self.assertEqual(otis_cw["episode"], 1)
+        self.assertAlmostEqual(otis_cw["progress"], 79.021 / 1416.4, places=3)
+
+        # Verify Otis was also recorded in playback history
+        history = database.get_history()
+        hist_ids = [h.get("id") for h in history]
+        self.assertIn("tt15389898", hist_ids)
 
 if __name__ == "__main__":
     unittest.main()

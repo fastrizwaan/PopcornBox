@@ -291,8 +291,16 @@ def remote_to_continue_watching_item(remote_item, existing_local=None):
     if last_w <= 0.0:
         last_w = time.time()
 
-    pos = float(state.get("timeOffset") or 0.0)
-    dur = float(state.get("duration") or 0.0)
+    # Stremio stores timeOffset and duration in milliseconds, PopcornBox uses seconds
+    raw_pos = float(state.get("timeOffset") or 0.0)
+    raw_dur = float(state.get("duration") or 0.0)
+    if raw_dur > 10000 or raw_pos > 10000:
+        pos = raw_pos / 1000.0
+        dur = raw_dur / 1000.0
+    else:
+        pos = raw_pos
+        dur = raw_dur
+
     progress = (pos / dur) if dur > 0 else 0.0
     progress = min(1.0, max(0.0, progress))
 
@@ -373,8 +381,11 @@ def local_to_stremio_library_item(item, is_favorite=False, in_continue_watching=
     last_w = item.get("last_watched") or time.time()
     iso_time = epoch_to_iso(last_w)
 
-    pos = int(round(float(item.get("position") or 0.0)))
-    dur = int(round(float(item.get("duration") or 0.0)))
+    # Convert PopcornBox seconds to Stremio milliseconds
+    pos_sec = float(item.get("position") or 0.0)
+    dur_sec = float(item.get("duration") or 0.0)
+    pos_ms = int(round(pos_sec * 1000.0))
+    dur_ms = int(round(dur_sec * 1000.0))
 
     season = item.get("season")
     episode = item.get("episode")
@@ -387,13 +398,14 @@ def local_to_stremio_library_item(item, is_favorite=False, in_continue_watching=
     clean_name = re.sub(r"\s*\(S\d+E\d+\)", "", name).strip()
 
     state = {
-        "timeOffset": pos,
-        "duration": dur,
+        "timeOffset": pos_ms,
+        "duration": dur_ms,
         "video_id": vid,
         "lastWatched": iso_time,
-        "timesWatched": 1 if pos > 0 else 0,
+        "timesWatched": 1 if pos_ms > 0 else 0,
         "flaggedWatching": 1 if in_continue_watching else 0,
-        "overallTimeOffset": pos,
+        "overallTimeOffset": pos_ms,
+        "timeWatched": pos_ms,
     }
     if season is not None:
         state["season"] = season
@@ -410,7 +422,7 @@ def local_to_stremio_library_item(item, is_favorite=False, in_continue_watching=
         "state": state,
         "_mtime": iso_time,
         "temp": not is_favorite,
-        "removed": False,
+        "removed": not is_favorite,
     }
 
 
@@ -471,17 +483,40 @@ def sync_library(force=False):
         local_favs = database.get_favorites()
         local_fav_ids = {str(f.get("id") or f.get("imdb_id") or "") for f in local_favs if (f.get("id") or f.get("imdb_id"))}
 
+        local_history_list = database.get_history()
+        local_history_by_id = {str(h.get("id") or h.get("imdb_id") or ""): h for h in local_history_list if (h.get("id") or h.get("imdb_id"))}
+
+        user_dismissed_cw = set(database.get_setting("user_dismissed_continue_watching", [])) | set(database.get_setting("removed_continue_watching", []))
+        user_removed_favs = set(database.get_setting("removed_favorite_ids", []))
+        user_removed_history = set(database.get_setting("removed_history_ids", []))
+
+        pulled_history = 0
+        history_items_to_add = []
+
         # Check remote items
         for rid, r_item in remote_by_id.items():
-            if r_item.get("removed") is True or r_item.get("_deleted") is True:
+            if r_item.get("_deleted") is True:
                 continue
 
             r_state = r_item.get("state") or {}
             r_ts = iso_to_epoch(r_state.get("lastWatched") or r_item.get("_mtime"))
-            is_cw = bool(r_state.get("flaggedWatching") == 1 or (r_state.get("timeOffset", 0) > 0))
 
-            # Merge Continue Watching
-            if is_cw:
+            # Stremio stores timeOffset and duration in milliseconds
+            raw_pos = float(r_state.get("timeOffset") or 0.0)
+            raw_dur = float(r_state.get("duration") or 0.0)
+            if raw_dur > 10000 or raw_pos > 10000:
+                pos = raw_pos / 1000.0
+                dur = raw_dur / 1000.0
+            else:
+                pos = raw_pos
+                dur = raw_dur
+            progress = (pos / dur) if dur > 0 else 0.0
+
+            # Continue watching: has watch offset or marked watching, and not completed (>95%)
+            is_cw = bool((r_state.get("flaggedWatching") == 1 or pos > 0) and progress < 0.95)
+
+            # 1. Merge Continue Watching
+            if is_cw and rid not in user_dismissed_cw:
                 local_existing = local_cw_by_id.get(rid)
                 local_ts = float(local_existing.get("last_watched", 0.0)) if local_existing else 0.0
 
@@ -491,13 +526,42 @@ def sync_library(force=False):
                     local_cw_by_id[rid] = cw_item
                     pulled_cw += 1
 
-            # Merge Favorites
-            is_library = (r_item.get("temp") is False)
-            if is_library and rid not in local_fav_ids:
-                fav_item = remote_to_favorite_item(r_item)
-                database.add_favorite(fav_item, sync_to_remote=False)
-                local_fav_ids.add(rid)
-                pulled_fav += 1
+            # 2. Merge Favorites (Library)
+            # In Stremio, an item is in Library if temp is False and removed is not True
+            is_library = (r_item.get("temp") is False and r_item.get("removed") is not True)
+            if is_library:
+                if rid not in user_removed_favs and rid not in local_fav_ids:
+                    fav_item = remote_to_favorite_item(r_item)
+                    database.add_favorite(fav_item, sync_to_remote=False)
+                    local_fav_ids.add(rid)
+                    pulled_fav += 1
+            elif r_item.get("removed") is True or r_item.get("temp") is True:
+                # If remote removed it from library and it's locally in favorites
+                if rid in local_fav_ids and r_item.get("removed") is True:
+                    database.remove_favorite(rid, sync_to_remote=False)
+                    local_fav_ids.discard(rid)
+
+            # 3. Merge Playback History
+            if r_ts > 0 and rid not in user_removed_history:
+                local_h = local_history_by_id.get(rid)
+                local_h_ts = float(local_h.get("last_watched", 0.0)) if local_h else 0.0
+                if not local_h or r_ts > local_h_ts:
+                    h_item = {
+                        "id": rid,
+                        "imdb_id": rid if rid.startswith("tt") else rid,
+                        "title": r_item.get("name") or "Unknown",
+                        "name": r_item.get("name") or "Unknown",
+                        "type": r_item.get("type", "movie"),
+                        "poster": r_item.get("poster", "") or "",
+                        "year": str(r_item.get("year", "")) if r_item.get("year") else "",
+                        "last_watched": int(r_ts),
+                    }
+                    history_items_to_add.append(h_item)
+                    local_history_by_id[rid] = h_item
+                    pulled_history += 1
+
+        if history_items_to_add:
+            database.add_history_batch(history_items_to_add, sync_to_remote=False)
 
         # Step 3: Local -> Remote (Push changes)
         changes_to_push = []
@@ -545,8 +609,44 @@ def sync_library(force=False):
                 if stremio_item:
                     changes_to_push.append(stremio_item)
 
+        # Push user removed favorites so remote un-favorites them
+        for rem_fid in user_removed_favs:
+            r_match = remote_by_id.get(rem_fid)
+            if r_match and (r_match.get("temp") is False or r_match.get("removed") is not True):
+                cw_match = local_cw_by_id.get(rem_fid)
+                item_data = cw_match or r_match
+                stremio_item = local_to_stremio_library_item(
+                    item_data,
+                    is_favorite=False,
+                    in_continue_watching=bool(cw_match),
+                )
+                if stremio_item:
+                    changes_to_push.append(stremio_item)
+
+        # Push user dismissed continue watching so remote removes from continue watching
+        for dis_cid in user_dismissed_cw:
+            r_match = remote_by_id.get(dis_cid)
+            if r_match:
+                st = r_match.get("state") or {}
+                if st.get("timeOffset", 0) > 0 or st.get("flaggedWatching", 0) == 1:
+                    dismissed_item = dict(r_match)
+                    dismissed_item_state = dict(st)
+                    dismissed_item_state["timeOffset"] = 0
+                    dismissed_item_state["flaggedWatching"] = 0
+                    dismissed_item["state"] = dismissed_item_state
+                    dismissed_item["_mtime"] = epoch_to_iso(time.time())
+                    changes_to_push.append(dismissed_item)
+
         # Step 4: Dispatch push if changes exist
         if changes_to_push:
+            # Deduplicate changes by _id
+            dedup_changes = {}
+            for ch in changes_to_push:
+                cid = ch.get("_id")
+                if cid:
+                    dedup_changes[cid] = ch
+            changes_to_push = list(dedup_changes.values())
+
             put_payload = {
                 "authKey": auth_key,
                 "collection": COLLECTION_NAME,
@@ -561,6 +661,7 @@ def sync_library(force=False):
             "status": "success",
             "pulled_cw": pulled_cw,
             "pulled_fav": pulled_fav,
+            "pulled_history": pulled_history,
             "pushed": pushed_count,
             "timestamp": now_synced,
         }

@@ -6414,34 +6414,64 @@ class CineWindow(Adw.ApplicationWindow):
         debug_log("CineWindow.__init__ updating category buttons visibility")
         self.update_category_buttons_visibility()
 
-        # Schedule deferred background Stremio sync if enabled
-        def run_stremio_startup_sync():
-            try:
-                from . import stremio_sync
-                if stremio_sync.is_sync_enabled() or stremio_sync.is_addon_sync_enabled():
-                    def on_sync_finished(res, err):
-                        if res:
-                            lib_info = res.get("library") or {}
-                            if lib_info.get("pulled_cw", 0) > 0:
-                                if hasattr(self, "_update_continue_watching_section"):
-                                    self._update_continue_watching_section()
-                            addon_info = res.get("addons") or {}
-                            if addon_info.get("pulled_addons", 0) > 0:
-                                if hasattr(self, "_populate_addons"):
-                                    self._populate_addons()
-                                if hasattr(self, "_ensure_all_menus_built"):
-                                    self._ensure_all_menus_built()
-                    stremio_sync.sync_in_background(callback=on_sync_finished)
-            except Exception as e:
-                logger.debug(f"Stremio startup sync error: {e}")
-            return False
+        # Initial Stremio sync after 3s, then recurring periodic sync every 60s
+        def run_periodic_stremio_sync():
+            self._trigger_background_stremio_sync()
+            return True
 
-        GLib.timeout_add(3000, run_stremio_startup_sync)
+        GLib.timeout_add(3000, lambda: (self._trigger_background_stremio_sync(), False)[1])
+        GLib.timeout_add_seconds(60, run_periodic_stremio_sync)
+
+        # Trigger sync when window regains active focus (e.g. user returns from Stremio)
+        self._last_focus_sync_time = 0
+        def on_window_active_changed(win, pspec):
+            if win.is_active():
+                now = time.time()
+                if now - getattr(self, "_last_focus_sync_time", 0) > 15:
+                    self._last_focus_sync_time = now
+                    self._trigger_background_stremio_sync()
+        self.connect("notify::is-active", on_window_active_changed)
 
         debug_log("CineWindow.__init__ ALL DONE")
         settings.connect("changed::show-movies-button", lambda *a: self.update_category_buttons_visibility())
         settings.connect("changed::show-series-button", lambda *a: self.update_category_buttons_visibility())
         settings.connect("changed::show-anime-button", lambda *a: self.update_category_buttons_visibility())
+
+    def _trigger_background_stremio_sync(self, force=False):
+        try:
+            from . import stremio_sync
+            if not stremio_sync.is_sync_enabled() and not stremio_sync.is_addon_sync_enabled():
+                return
+            def on_sync_finished(res, err):
+                if res:
+                    lib_info = res.get("library") or {}
+                    pulled_cw = lib_info.get("pulled_cw", 0)
+                    pulled_fav = lib_info.get("pulled_fav", 0)
+                    pulled_hist = lib_info.get("pulled_history", 0)
+
+                    if pulled_cw > 0:
+                        if hasattr(self, "_update_continue_watching_section"):
+                            self._update_continue_watching_section()
+                        if hasattr(self, "main_stack") and self.main_stack.get_visible_child_name() == "continue_watching":
+                            self._populate_local_db_page("continue_watching")
+
+                    if pulled_fav > 0:
+                        if hasattr(self, "main_stack") and self.main_stack.get_visible_child_name() == "favorites":
+                            self._populate_local_db_page("favorites")
+
+                    if pulled_hist > 0:
+                        if hasattr(self, "main_stack") and self.main_stack.get_visible_child_name() == "history":
+                            self._populate_local_db_page("history")
+
+                    addon_info = res.get("addons") or {}
+                    if addon_info.get("pulled_addons", 0) > 0:
+                        if hasattr(self, "_populate_addons"):
+                            self._populate_addons()
+                        if hasattr(self, "_ensure_all_menus_built"):
+                            self._ensure_all_menus_built()
+            stremio_sync.sync_in_background(callback=on_sync_finished)
+        except Exception as e:
+            logger.debug(f"Stremio sync trigger error: {e}")
 
     def update_category_buttons_visibility(self):
         show_movies = settings.get_boolean("show-movies-button")
@@ -11164,6 +11194,8 @@ class CineWindow(Adw.ApplicationWindow):
         self._push_current_nav_state()
         self.main_stack.set_visible_child_name(page_name)
         self._populate_local_db_page(page_name)
+        if page_name in ["continue_watching", "favorites", "history"]:
+            self._trigger_background_stremio_sync()
         
     def _populate_local_db_page(self, page_name):
         from . import database
