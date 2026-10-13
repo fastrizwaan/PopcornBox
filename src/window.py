@@ -6414,6 +6414,9 @@ class CineWindow(Adw.ApplicationWindow):
         self.unique_seen_ids = set()
         self.unique_seen_keys = set()
         self.unique_catalogs = []
+        self.unique_catalogs_by_key = {}
+        self.unique_productive_catalogs = []
+        self.unique_empty_streak = {}
         self.unique_catalog_idx = 0
         self.unique_page_per_catalog = {}
         self.unique_exhausted_catalogs = set()
@@ -6845,11 +6848,14 @@ class CineWindow(Adw.ApplicationWindow):
                 can_fetch_more = False
                 for cat in getattr(self, "unique_catalogs", []):
                     cat_key = (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("media_type"))
+                    if cat_key in getattr(self, "unique_truly_empty_catalogs", set()):
+                        continue
                     cur_p = self.unique_page_per_catalog.get(cat_key, 1)
-                    if cur_p < 15 and cat_key not in getattr(self, "unique_truly_empty_catalogs", set()):
-                        if cat_key in self.unique_exhausted_catalogs:
-                            self.unique_exhausted_catalogs.discard(cat_key)
-                            can_fetch_more = True
+                    if cur_p < 25:
+                        self.unique_exhausted_catalogs.discard(cat_key)
+                        if hasattr(self, "unique_empty_streak"):
+                            self.unique_empty_streak.pop(cat_key, None)
+                        can_fetch_more = True
                 if can_fetch_more:
                     self.has_more_unique = True
                     self._load_next_unique_batch()
@@ -6909,6 +6915,8 @@ class CineWindow(Adw.ApplicationWindow):
         self.unique_page_per_catalog.clear()
         self.unique_exhausted_catalogs.clear()
         self.unique_truly_empty_catalogs.clear()
+        self.unique_productive_catalogs = []
+        self.unique_empty_streak = {}
         self.unique_catalog_idx = 0
 
         # Clear flowbox on GTK main thread instantly
@@ -6944,6 +6952,10 @@ class CineWindow(Adw.ApplicationWindow):
                 catalogs.insert(0, cat_item)
 
         self.unique_catalogs = catalogs
+        self.unique_catalogs_by_key = {
+            (c.get("manifest_url"), c.get("catalog_id"), c.get("media_type")): c
+            for c in catalogs
+        }
         if not self.unique_catalogs:
             self.has_more_unique = False
             return
@@ -6960,6 +6972,16 @@ class CineWindow(Adw.ApplicationWindow):
             self.is_fetching_unique = False
             if not has_more:
                 self.has_more_unique = False
+                if hasattr(self, "unique_flowbox") and not self.unique_flowbox.get_first_child():
+                    empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                    empty_box.set_valign(Gtk.Align.CENTER)
+                    empty_box.set_halign(Gtk.Align.CENTER)
+                    empty_box.set_margin_top(60)
+                    empty_box.add_css_class("dim-label")
+                    empty_lbl = Gtk.Label(label=_("No items found for this filter."))
+                    empty_lbl.add_css_class("title-3")
+                    empty_box.append(empty_lbl)
+                    self.unique_flowbox.append(empty_box)
             else:
                 GLib.timeout_add(100, self._load_next_unique_batch)
             return
@@ -6978,6 +7000,10 @@ class CineWindow(Adw.ApplicationWindow):
                 if hasattr(self, "unique_flowbox"):
                     for it in chunk:
                         self.unique_flowbox.append(MovieWidget(it, self._on_movie_clicked))
+                    # Remove empty label if cards are added
+                    c = self.unique_flowbox.get_first_child()
+                    if c and isinstance(c, Gtk.Box) and c.has_css_class("dim-label"):
+                        self.unique_flowbox.remove(c)
                 GLib.idle_add(_deliver_next_slice, slice_idx + 1)
                 return False
 
@@ -6998,17 +7024,17 @@ class CineWindow(Adw.ApplicationWindow):
                         val = adj.get_value()
                         page_size = adj.get_page_size()
                         upper = adj.get_upper()
-                        if page_size > 0 and (upper <= page_size + 300 or val + page_size >= upper - 600):
+                        if page_size > 0 and (upper <= page_size + 400 or val + page_size >= upper - 800):
                             self._load_next_unique_batch()
                             return False
 
                 if hasattr(self, "unique_flowbox"):
                     child_count = 0
                     c = self.unique_flowbox.get_first_child()
-                    while c and child_count < 30:
+                    while c and child_count < 50:
                         child_count += 1
                         c = c.get_next_sibling()
-                    if child_count < 24:
+                    if child_count < 48:
                         self._load_next_unique_batch()
                 return False
 
@@ -7032,11 +7058,11 @@ class CineWindow(Adw.ApplicationWindow):
             from . import api, database
             import concurrent.futures
 
-            target_batch_count = 24
+            target_batch_count = 48
             collected = []
             num_catalogs = len(self.unique_catalogs)
             consecutive_empty_passes = 0
-            max_passes = 8
+            max_passes = 12
 
             while len(collected) < target_batch_count and len(self.unique_exhausted_catalogs) < num_catalogs and max_passes > 0:
                 max_passes -= 1
@@ -7045,15 +7071,38 @@ class CineWindow(Adw.ApplicationWindow):
                     return
 
                 batch_cats = []
+                # 1. Productive catalogs first (catalogs that previously yielded matching items)
+                prod_to_remove = []
+                for cat_key in list(getattr(self, "unique_productive_catalogs", [])):
+                    if cat_key in self.unique_exhausted_catalogs:
+                        prod_to_remove.append(cat_key)
+                        continue
+                    cat = getattr(self, "unique_catalogs_by_key", {}).get(cat_key)
+                    if not cat:
+                        prod_to_remove.append(cat_key)
+                        continue
+                    page = self.unique_page_per_catalog.get(cat_key, 1)
+                    if page >= 25:
+                        self.unique_exhausted_catalogs.add(cat_key)
+                        prod_to_remove.append(cat_key)
+                        continue
+                    batch_cats.append((cat, cat_key, page))
+                    if len(batch_cats) >= 4:
+                        break
+                for pk in prod_to_remove:
+                    if pk in getattr(self, "unique_productive_catalogs", []):
+                        self.unique_productive_catalogs.remove(pk)
+
+                # 2. Fill remaining batch slots (up to 6) from unexhausted catalogs
                 for _ in range(num_catalogs):
+                    if len(batch_cats) >= 6:
+                        break
                     cat = self.unique_catalogs[self.unique_catalog_idx]
                     cat_key = (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("media_type"))
                     self.unique_catalog_idx = (self.unique_catalog_idx + 1) % num_catalogs
-                    if cat_key not in self.unique_exhausted_catalogs:
+                    if cat_key not in self.unique_exhausted_catalogs and cat_key not in [k for _, k, _ in batch_cats]:
                         page = self.unique_page_per_catalog.get(cat_key, 1)
                         batch_cats.append((cat, cat_key, page))
-                        if len(batch_cats) >= 6:
-                            break
 
                 if not batch_cats:
                     break
@@ -7108,7 +7157,8 @@ class CineWindow(Adw.ApplicationWindow):
                             catalog_url=m_url,
                             genre=fetch_genre or "",
                             page=page,
-                            limit=20
+                            limit=20,
+                            timeout=2.5
                         )
                         items = list(raw_items) if raw_items is not None else None
                         if items:
@@ -7138,7 +7188,7 @@ class CineWindow(Adw.ApplicationWindow):
                 with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_cats), 6)) as pool:
                     futures = [pool.submit(_fetch_cat, c, k, p) for c, k, p in batch_cats]
                     try:
-                        for f in concurrent.futures.as_completed(futures, timeout=5.0):
+                        for f in concurrent.futures.as_completed(futures, timeout=3.0):
                             if req_id != getattr(self, "unique_request_id", 0):
                                 self.is_fetching_unique = False
                                 return
@@ -7157,20 +7207,42 @@ class CineWindow(Adw.ApplicationWindow):
                         # Catalog truly at end
                         self.unique_exhausted_catalogs.add(cat_key)
                         self.unique_truly_empty_catalogs.add(cat_key)
+                        if cat_key in getattr(self, "unique_productive_catalogs", []):
+                            self.unique_productive_catalogs.remove(cat_key)
                     else:
-                        next_page = page + 1
-                        self.unique_page_per_catalog[cat_key] = next_page
-                        if next_page > 8 and not items:
-                            self.unique_exhausted_catalogs.add(cat_key)
+                        if not items:
+                            # Returned raw items, but none matched the current genre/type filter
+                            streak = getattr(self, "unique_empty_streak", {}).get(cat_key, 0) + 1
+                            self.unique_empty_streak[cat_key] = streak
+                            if streak >= 2 or page >= 3:
+                                self.unique_exhausted_catalogs.add(cat_key)
+                                if cat_key in getattr(self, "unique_productive_catalogs", []):
+                                    self.unique_productive_catalogs.remove(cat_key)
+                            else:
+                                self.unique_page_per_catalog[cat_key] = page + 1
+                        else:
+                            # Yielded matching items!
+                            if hasattr(self, "unique_empty_streak"):
+                                self.unique_empty_streak[cat_key] = 0
+                            if not hasattr(self, "unique_productive_catalogs"):
+                                self.unique_productive_catalogs = []
+                            if cat_key not in self.unique_productive_catalogs:
+                                self.unique_productive_catalogs.append(cat_key)
+                            next_page = page + 1
+                            self.unique_page_per_catalog[cat_key] = next_page
+                            if next_page > 25:
+                                self.unique_exhausted_catalogs.add(cat_key)
+                                if cat_key in self.unique_productive_catalogs:
+                                    self.unique_productive_catalogs.remove(cat_key)
 
-                        for item in (items or []):
-                            if database.is_adult_content_hidden() and api.is_adult_item(item):
-                                continue
-                            if self._is_unique_item(item):
-                                collected.append(item)
-                                pass_added += 1
-                                if len(collected) >= target_batch_count:
-                                    break
+                            for item in items:
+                                if database.is_adult_content_hidden() and api.is_adult_item(item):
+                                    continue
+                                if self._is_unique_item(item):
+                                    collected.append(item)
+                                    pass_added += 1
+                                    if len(collected) >= target_batch_count:
+                                        break
                     if len(collected) >= target_batch_count:
                         break
 
@@ -8150,7 +8222,8 @@ class CineWindow(Adw.ApplicationWindow):
                             catalog_url=m_url,
                             genre=fetch_genre or "",
                             page=1,
-                            limit=15
+                            limit=20,
+                            timeout=2.5
                         )
                         if items and current_g:
                             items = api.filter_items_by_genre(items, current_g, media_type=m_type)
@@ -8171,7 +8244,7 @@ class CineWindow(Adw.ApplicationWindow):
                 with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_items), 6)) as executor:
                     future_to_idx = {executor.submit(_fetch_single_row, ri): idx for idx, ri in enumerate(batch_items)}
                     try:
-                        for future in concurrent.futures.as_completed(future_to_idx, timeout=12):
+                        for future in concurrent.futures.as_completed(future_to_idx, timeout=3.5):
                             if req_id != getattr(self, "discover_request_id", 0):
                                 break
                             idx = future_to_idx[future]
@@ -8283,7 +8356,8 @@ class CineWindow(Adw.ApplicationWindow):
                             debug_log(f"check_fill_viewport: val={val:.1f}, page_size={page_size:.1f}, upper={upper:.1f}")
                             if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
                                 debug_log(f"check_fill_viewport TRIGGERING NEXT BATCH (upper <= page_size or near bottom)")
-                                self._load_next_discover_batch(req_id, batch_size=4)
+                                next_bs = 6 if (upper <= page_size or not target_box or not target_box.get_first_child()) else 4
+                                self._load_next_discover_batch(req_id, batch_size=next_bs)
                     elif req_id == getattr(self, "discover_request_id", 0) and self._discover_next_row_index >= len(self._discover_catalog_list):
                         if target_box and not target_box.get_first_child() and getattr(self, "current_genre", None):
                             empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)

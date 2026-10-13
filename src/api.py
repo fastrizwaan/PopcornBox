@@ -1422,9 +1422,10 @@ def get_available_search_catalogs(c_type="movie", only_working=True):
     return catalogs
 
 
-def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None, target_manifest_url=None, target_catalog_id=None, is_cancelled=None):
+def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None, target_manifest_url=None, target_catalog_id=None, is_cancelled=None, timeout=3.5):
     c_type = "series" if media_type == "series" else media_type
-    skip = (page - 1) * 50
+    page_limit = limit if (limit and limit > 0) else 50
+    skip = (page - 1) * page_limit
 
     if query:
         import concurrent.futures
@@ -1646,7 +1647,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         else:
             url += ".json"
             
-        data = _get_cached_request(url, max_age_hours=2, cache_only=cache_only, timeout=6.0)
+        data = _get_cached_request(url, max_age_hours=2, cache_only=cache_only, timeout=timeout)
         if data is None:
             return None
             

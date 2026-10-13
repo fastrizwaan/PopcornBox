@@ -288,6 +288,33 @@ class TestUniqueCombinedView(unittest.TestCase):
         self.assertIn("tt3", scifi_ids)
         self.assertNotIn("tt1", scifi_ids)
 
+    def test_check_viewport_fill_triggers_when_underfilled(self):
+        win = MagicMock()
+        win.unique_request_id = 5
+        win.has_more_unique = True
+        win.is_fetching_unique = False
+        win.unique_scrolled = MagicMock()
+        adj = MagicMock()
+        adj.get_value.return_value = 0
+        adj.get_page_size.return_value = 1440
+        adj.get_upper.return_value = 1600  # upper <= page_size + 400
+        win.unique_scrolled.get_vadjustment.return_value = adj
+
+        # Mock FlowBox with 20 items (less than 48 target)
+        flowbox = Gtk.FlowBox()
+        for i in range(20):
+            flowbox.append(Gtk.Label(label=f"Item {i}"))
+        win.unique_flowbox = flowbox
+
+        timeout_callbacks = []
+        with patch("gi.repository.GLib.timeout_add", side_effect=lambda ms, fn, *args: timeout_callbacks.append((ms, fn, args))):
+            CineWindow._deliver_unique_slices_to_ui(win, [], req_id=5, has_more=True)
+
+        # Execute timeout callback
+        self.assertEqual(len(timeout_callbacks), 1)
+        timeout_callbacks[0][1]()
+        win._load_next_unique_batch.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
