@@ -164,6 +164,56 @@ class TestUniqueCombinedView(unittest.TestCase):
         self.assertEqual(win.current_year, "2024")
         self.assertEqual(win._refresh_unique_combined_view.call_count, 2)
 
+    def test_deliver_unique_slices_to_ui(self):
+        win = MagicMock()
+        win.unique_request_id = 1
+        win.is_fetching_unique = True
+        win.unique_flowbox = MagicMock()
+
+        # Call with 12 items -> should split into slices of 5 items
+        items = [{"id": f"tt{i}", "title": f"Movie {i}"} for i in range(12)]
+        
+        idle_callbacks = []
+        with patch("gi.repository.GLib.idle_add", side_effect=lambda fn, *args: idle_callbacks.append((fn, args))) as mock_idle, \
+             patch("src.movie_widget.MovieWidget", side_effect=lambda it, cb: MagicMock()) as mock_mw:
+            CineWindow._deliver_unique_slices_to_ui(win, items, req_id=1, has_more=True)
+            self.assertTrue(len(idle_callbacks) >= 1)
+
+            # Execute slices sequentially
+            while idle_callbacks:
+                fn, args = idle_callbacks.pop(0)
+                fn(*args)
+
+            # Verify all 12 widgets were appended to unique_flowbox
+            self.assertEqual(win.unique_flowbox.append.call_count, 12)
+            self.assertFalse(win.is_fetching_unique)
+
+    def test_on_unique_scroll_threshold(self):
+        win = MagicMock()
+        win.library_stack.get_visible_child_name.return_value = "unique"
+        win.has_more_unique = True
+        win.is_fetching_unique = False
+
+        adj = MagicMock()
+        # Case 1: content fits inside viewport (upper <= page_size) -> should NOT trigger
+        adj.get_value.return_value = 0
+        adj.get_page_size.return_value = 800
+        adj.get_upper.return_value = 600
+        CineWindow._on_unique_scroll(win, adj)
+        win._load_next_unique_batch.assert_not_called()
+
+        # Case 2: scrolled near top (far from bottom) -> should NOT trigger
+        adj.get_upper.return_value = 4000
+        adj.get_value.return_value = 500
+        CineWindow._on_unique_scroll(win, adj)
+        win._load_next_unique_batch.assert_not_called()
+
+        # Case 3: scrolled near bottom (val + page_size >= upper - 600) -> SHOULD trigger
+        adj.get_value.return_value = 3500
+        CineWindow._on_unique_scroll(win, adj)
+        win._load_next_unique_batch.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
+

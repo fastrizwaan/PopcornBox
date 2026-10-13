@@ -6410,7 +6410,6 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "unique_scrolled") and self.unique_scrolled is not None:
             unique_adj = self.unique_scrolled.get_vadjustment()
             unique_adj.connect("value-changed", self._on_unique_scroll)
-            unique_adj.connect("changed", self._on_unique_scroll)
 
         self.unique_seen_ids = set()
         self.unique_seen_keys = set()
@@ -6839,7 +6838,7 @@ class CineWindow(Adw.ApplicationWindow):
         val = adj.get_value()
         page_size = adj.get_page_size()
         upper = adj.get_upper()
-        if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
+        if page_size > 0 and upper > page_size and (val + page_size >= upper - 600):
             self._load_next_unique_batch()
 
     def _is_unique_item(self, item):
@@ -6934,22 +6933,60 @@ class CineWindow(Adw.ApplicationWindow):
 
         self._load_next_unique_batch()
 
-    def _deliver_unique_slices_to_ui(self, items, req_id):
-        """Deliver prepared items to GTK main thread in small non-blocking slices of 6 widgets."""
-        if not items or req_id != getattr(self, "unique_request_id", 0):
+    def _deliver_unique_slices_to_ui(self, items, req_id, has_more=True):
+        """Deliver prepared items to GTK main thread in small non-blocking slices of 5 widgets."""
+        if req_id != getattr(self, "unique_request_id", 0):
+            self.is_fetching_unique = False
             return
+
+        if not items:
+            self.is_fetching_unique = False
+            if not has_more:
+                self.has_more_unique = False
+            return
+
         from .movie_widget import MovieWidget
-        SLICE_SIZE = 6
-        for i in range(0, len(items), SLICE_SIZE):
-            chunk = items[i:i + SLICE_SIZE]
-            def _add_slice(cards):
+        SLICE_SIZE = 5
+        slices = [items[i:i + SLICE_SIZE] for i in range(0, len(items), SLICE_SIZE)]
+
+        def _deliver_next_slice(slice_idx):
+            if req_id != getattr(self, "unique_request_id", 0):
+                self.is_fetching_unique = False
+                return False
+
+            if slice_idx < len(slices):
+                chunk = slices[slice_idx]
+                if hasattr(self, "unique_flowbox"):
+                    for it in chunk:
+                        self.unique_flowbox.append(MovieWidget(it, self._on_movie_clicked))
+                GLib.idle_add(_deliver_next_slice, slice_idx + 1)
+                return False
+
+            # All slices in this batch have been delivered to GTK
+            self.is_fetching_unique = False
+            if not has_more and not items:
+                self.has_more_unique = False
+
+            # Check if initial viewport needs more items (only if fewer than 15 cards present)
+            def _check_initial_fill():
                 if req_id != getattr(self, "unique_request_id", 0):
                     return False
+                if not getattr(self, "has_more_unique", True) or getattr(self, "is_fetching_unique", False):
+                    return False
                 if hasattr(self, "unique_flowbox"):
-                    for it in cards:
-                        self.unique_flowbox.append(MovieWidget(it, self._on_movie_clicked))
+                    child_count = 0
+                    c = self.unique_flowbox.get_first_child()
+                    while c and child_count < 16:
+                        child_count += 1
+                        c = c.get_next_sibling()
+                    if child_count < 15:
+                        self._load_next_unique_batch()
                 return False
-            GLib.idle_add(_add_slice, chunk)
+
+            GLib.timeout_add(300, _check_initial_fill)
+            return False
+
+        GLib.idle_add(_deliver_next_slice, 0)
 
     def _load_next_unique_batch(self):
         if getattr(self, "is_fetching_unique", False) or not getattr(self, "has_more_unique", True):
@@ -6966,53 +7003,16 @@ class CineWindow(Adw.ApplicationWindow):
             from . import api, database
             import concurrent.futures
 
-            # Fast path: on initial load (idx 0 and no pages fetched yet), harvest local cache for instant <50ms render
-            if self.unique_catalog_idx == 0 and not self.unique_page_per_catalog:
-                cached_initial = []
-                for cat_info in self.unique_catalogs:
-                    if req_id != getattr(self, "unique_request_id", 0):
-                        return
-                    m_type = cat_info.get("media_type", "movie")
-                    c_id = cat_info.get("catalog_id")
-                    m_url = cat_info.get("manifest_url")
-                    cat_key = (m_url, c_id, m_type)
-
-                    fetch_genre = cur_genre
-                    if not cur_genre and cur_year and c_id == "year":
-                        fetch_genre = cur_year
-
-                    genre_suffix = f":{fetch_genre}" if fetch_genre else ""
-                    year_suffix = f":y{cur_year}" if cur_year else ""
-                    cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}:p1"
-                    cached = database.get_cached_catalog(cache_key, max_age_hours=24)
-                    if cached:
-                        c_name = cat_info.get("catalog_name") or cat_info.get("name") or c_id
-                        a_name = cat_info.get("addon_name") or ""
-                        for it in cached:
-                            if database.is_adult_content_hidden() and api.is_adult_item(it):
-                                continue
-                            if not it.get("addon_name"): it["addon_name"] = a_name
-                            if not it.get("catalog_name"): it["catalog_name"] = c_name
-                            if not it.get("catalog_id"): it["catalog_id"] = c_id
-                            if not it.get("manifest_url"): it["manifest_url"] = m_url
-                            if cur_genre and not api.filter_items_by_genre([it], cur_genre, media_type=m_type):
-                                continue
-                            if cur_genre and cur_year and not str(it.get("year", "")).startswith(cur_year):
-                                continue
-                            if self._is_unique_item(it):
-                                cached_initial.append(it)
-                        self.unique_page_per_catalog[cat_key] = 2
-
-                if cached_initial:
-                    self._deliver_unique_slices_to_ui(cached_initial, req_id)
-
-            target_batch_count = 24
+            target_batch_count = 20
             collected = []
             num_catalogs = len(self.unique_catalogs)
             consecutive_empty_passes = 0
+            max_passes = 3
 
-            while len(collected) < target_batch_count and len(self.unique_exhausted_catalogs) < num_catalogs:
+            while len(collected) < target_batch_count and len(self.unique_exhausted_catalogs) < num_catalogs and max_passes > 0:
+                max_passes -= 1
                 if req_id != getattr(self, "unique_request_id", 0):
+                    self.is_fetching_unique = False
                     return
 
                 batch_cats = []
@@ -7023,7 +7023,7 @@ class CineWindow(Adw.ApplicationWindow):
                     if cat_key not in self.unique_exhausted_catalogs:
                         page = self.unique_page_per_catalog.get(cat_key, 1)
                         batch_cats.append((cat, cat_key, page))
-                        if len(batch_cats) >= 12:
+                        if len(batch_cats) >= 6:
                             break
 
                 if not batch_cats:
@@ -7050,6 +7050,9 @@ class CineWindow(Adw.ApplicationWindow):
                     cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}:p{page}"
 
                     cached = database.get_cached_catalog(cache_key, max_age_hours=24)
+                    if not cached and page == 1:
+                        cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}", max_age_hours=24)
+
                     if cached:
                         if database.is_adult_content_hidden():
                             cached = [it for it in cached if not api.is_adult_item(it)]
@@ -7098,12 +7101,13 @@ class CineWindow(Adw.ApplicationWindow):
                         logger.debug(f"Unique worker catalog fetch error: {e}")
                         return (key, page, None)
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_cats), 12)) as pool:
+                cat_results = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_cats), 6)) as pool:
                     futures = [pool.submit(_fetch_cat, c, k, p) for c, k, p in batch_cats]
-                    cat_results = []
                     try:
-                        for f in concurrent.futures.as_completed(futures, timeout=3.5):
+                        for f in concurrent.futures.as_completed(futures, timeout=5.0):
                             if req_id != getattr(self, "unique_request_id", 0):
+                                self.is_fetching_unique = False
                                 return
                             res = f.result()
                             if res:
@@ -7111,7 +7115,7 @@ class CineWindow(Adw.ApplicationWindow):
                     except concurrent.futures.TimeoutError:
                         pass
 
-                pass_added = []
+                pass_added = 0
                 for cat_key, page, items in cat_results:
                     if not items:
                         self.unique_exhausted_catalogs.add(cat_key)
@@ -7122,38 +7126,23 @@ class CineWindow(Adw.ApplicationWindow):
                                 continue
                             if self._is_unique_item(item):
                                 collected.append(item)
-                                pass_added.append(item)
+                                pass_added += 1
                                 if len(collected) >= target_batch_count:
                                     break
                     if len(collected) >= target_batch_count:
                         break
 
-                if pass_added:
-                    self._deliver_unique_slices_to_ui(pass_added, req_id)
-
-                if not pass_added:
+                if pass_added == 0:
                     consecutive_empty_passes += 1
-                    if consecutive_empty_passes >= 3:
+                    if consecutive_empty_passes >= 2:
                         break
                 else:
                     consecutive_empty_passes = 0
+                    if len(collected) >= target_batch_count:
+                        break
 
-            def finalize_results():
-                if req_id != getattr(self, "unique_request_id", 0):
-                    return False
-                self.is_fetching_unique = False
-
-                if len(self.unique_exhausted_catalogs) >= len(self.unique_catalogs) and not collected:
-                    self.has_more_unique = False
-
-                if self.has_more_unique and hasattr(self, "unique_scrolled") and self.unique_scrolled:
-                    adj = self.unique_scrolled.get_vadjustment()
-                    if adj and (adj.get_upper() <= adj.get_page_size() or (adj.get_value() + adj.get_page_size() >= adj.get_upper() - 400)):
-                        GLib.idle_add(self._load_next_unique_batch)
-
-                return False
-
-            GLib.idle_add(finalize_results)
+            has_more = len(self.unique_exhausted_catalogs) < num_catalogs
+            self._deliver_unique_slices_to_ui(collected, req_id, has_more=has_more)
 
         threading.Thread(target=worker, daemon=True).start()
 
