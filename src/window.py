@@ -6457,6 +6457,9 @@ class CineWindow(Adw.ApplicationWindow):
         debug_log("CineWindow.__init__ updating category buttons visibility")
         self.update_category_buttons_visibility()
 
+        # Trigger background addon health check on startup (deferred 1s to keep startup instantaneous)
+        GLib.timeout_add(1000, lambda: (self._trigger_background_addon_health_check(), False)[1])
+
         # Trigger background Stremio sync once on startup (deferred 3s to keep startup instantaneous)
         GLib.timeout_add(3000, lambda: (self._trigger_background_stremio_sync(), False)[1])
 
@@ -6464,6 +6467,19 @@ class CineWindow(Adw.ApplicationWindow):
         settings.connect("changed::show-movies-button", lambda *a: self.update_category_buttons_visibility())
         settings.connect("changed::show-series-button", lambda *a: self.update_category_buttons_visibility())
         settings.connect("changed::show-anime-button", lambda *a: self.update_category_buttons_visibility())
+
+    def _trigger_background_addon_health_check(self):
+        try:
+            from . import api
+            def on_health_checked(results):
+                debug_log(f"Addon health check finished: {len(results)} addons verified")
+                if hasattr(self, "_discover_catalog_list_cache"):
+                    self._discover_catalog_list_cache.clear()
+                if hasattr(self, "_update_search_catalog_dropdown"):
+                    self._update_search_catalog_dropdown()
+            api.check_addons_health_background(callback=on_health_checked)
+        except Exception as e:
+            logger.debug(f"Failed to start background addon health check: {e}")
 
     def _trigger_background_stremio_sync(self, force=False):
         try:
@@ -6895,7 +6911,11 @@ class CineWindow(Adw.ApplicationWindow):
         self._current_unique_media_type = filter_type
 
         filter_addon = getattr(self, "_current_discover_addon", None)
-        catalogs = list(self._get_discover_catalog_list(filter_media_type=filter_type, filter_addon_url=filter_addon))
+        from . import api
+        catalogs = [
+            c for c in self._get_discover_catalog_list(filter_media_type=filter_type, filter_addon_url=filter_addon)
+            if api.is_addon_online(c.get("manifest_url", ""))
+        ]
 
         # Prioritize current_catalog if available in compatible catalogs
         if getattr(self, "current_catalog", None):
@@ -6930,11 +6950,58 @@ class CineWindow(Adw.ApplicationWindow):
             from .movie_widget import MovieWidget
             import concurrent.futures
 
-            target_batch_count = 30
+            # Fast path: on initial load (idx 0 and no pages fetched yet), harvest local cache for instant <50ms render
+            if self.unique_catalog_idx == 0 and not self.unique_page_per_catalog:
+                cached_initial = []
+                for cat_info in self.unique_catalogs:
+                    if req_id != getattr(self, "unique_request_id", 0):
+                        return
+                    m_type = cat_info.get("media_type", "movie")
+                    c_id = cat_info.get("catalog_id")
+                    m_url = cat_info.get("manifest_url")
+                    cat_key = (m_url, c_id, m_type)
+
+                    fetch_genre = cur_genre
+                    if not cur_genre and cur_year and c_id == "year":
+                        fetch_genre = cur_year
+
+                    genre_suffix = f":{fetch_genre}" if fetch_genre else ""
+                    year_suffix = f":y{cur_year}" if cur_year else ""
+                    cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}:p1"
+                    cached = database.get_cached_catalog(cache_key, max_age_hours=24)
+                    if cached:
+                        c_name = cat_info.get("catalog_name") or cat_info.get("name") or c_id
+                        a_name = cat_info.get("addon_name") or ""
+                        for it in cached:
+                            if database.is_adult_content_hidden() and api.is_adult_item(it):
+                                continue
+                            if not it.get("addon_name"): it["addon_name"] = a_name
+                            if not it.get("catalog_name"): it["catalog_name"] = c_name
+                            if not it.get("catalog_id"): it["catalog_id"] = c_id
+                            if not it.get("manifest_url"): it["manifest_url"] = m_url
+                            if cur_genre and not api.filter_items_by_genre([it], cur_genre, media_type=m_type):
+                                continue
+                            if cur_genre and cur_year and not str(it.get("year", "")).startswith(cur_year):
+                                continue
+                            if self._is_unique_item(it):
+                                cached_initial.append(it)
+                        self.unique_page_per_catalog[cat_key] = 2
+
+                if cached_initial:
+                    def render_initial(chunk):
+                        if req_id != getattr(self, "unique_request_id", 0):
+                            return False
+                        if hasattr(self, "unique_flowbox"):
+                            for item in chunk:
+                                self.unique_flowbox.append(MovieWidget(item, self._on_movie_clicked))
+                        return False
+                    GLib.idle_add(render_initial, cached_initial)
+
+            target_batch_count = 24
             collected = []
             num_catalogs = len(self.unique_catalogs)
-
             consecutive_empty_passes = 0
+
             while len(collected) < target_batch_count and len(self.unique_exhausted_catalogs) < num_catalogs:
                 if req_id != getattr(self, "unique_request_id", 0):
                     return
@@ -6947,7 +7014,7 @@ class CineWindow(Adw.ApplicationWindow):
                     if cat_key not in self.unique_exhausted_catalogs:
                         page = self.unique_page_per_catalog.get(cat_key, 1)
                         batch_cats.append((cat, cat_key, page))
-                        if len(batch_cats) >= 4:
+                        if len(batch_cats) >= 12:
                             break
 
                 if not batch_cats:
@@ -7030,11 +7097,11 @@ class CineWindow(Adw.ApplicationWindow):
                         logger.debug(f"Unique worker catalog fetch error: {e}")
                         return (key, page, None)
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=len(batch_cats)) as pool:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_cats), 12)) as pool:
                     futures = [pool.submit(_fetch_cat, c, k, p) for c, k, p in batch_cats]
                     cat_results = []
                     try:
-                        for f in concurrent.futures.as_completed(futures, timeout=8):
+                        for f in concurrent.futures.as_completed(futures, timeout=3.5):
                             if req_id != getattr(self, "unique_request_id", 0):
                                 return
                             res = f.result()
@@ -7043,7 +7110,7 @@ class CineWindow(Adw.ApplicationWindow):
                     except concurrent.futures.TimeoutError:
                         pass
 
-                added_in_pass = 0
+                pass_added = []
                 for cat_key, page, items in cat_results:
                     if not items:
                         self.unique_exhausted_catalogs.add(cat_key)
@@ -7054,28 +7121,33 @@ class CineWindow(Adw.ApplicationWindow):
                                 continue
                             if self._is_unique_item(item):
                                 collected.append(item)
-                                added_in_pass += 1
+                                pass_added.append(item)
                                 if len(collected) >= target_batch_count:
                                     break
                     if len(collected) >= target_batch_count:
                         break
 
-                if added_in_pass == 0:
+                if pass_added:
+                    def render_pass_chunk(chunk):
+                        if req_id != getattr(self, "unique_request_id", 0):
+                            return False
+                        if hasattr(self, "unique_flowbox"):
+                            for item in chunk:
+                                self.unique_flowbox.append(MovieWidget(item, self._on_movie_clicked))
+                        return False
+                    GLib.idle_add(render_pass_chunk, list(pass_added))
+
+                if not pass_added:
                     consecutive_empty_passes += 1
                     if consecutive_empty_passes >= 3:
                         break
                 else:
                     consecutive_empty_passes = 0
 
-            def apply_results():
+            def finalize_results():
                 if req_id != getattr(self, "unique_request_id", 0):
                     return False
                 self.is_fetching_unique = False
-
-                if collected and hasattr(self, "unique_flowbox"):
-                    from .movie_widget import MovieWidget
-                    for item in collected:
-                        self.unique_flowbox.append(MovieWidget(item, self._on_movie_clicked))
 
                 if len(self.unique_exhausted_catalogs) >= len(self.unique_catalogs) and not collected:
                     self.has_more_unique = False
@@ -7087,7 +7159,7 @@ class CineWindow(Adw.ApplicationWindow):
 
                 return False
 
-            GLib.idle_add(apply_results)
+            GLib.idle_add(finalize_results)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -7545,7 +7617,7 @@ class CineWindow(Adw.ApplicationWindow):
                 continue
             if not api.is_addon_online(m_url):
                 continue
-            if not api.has_catalog_resource(addon):
+            if not api.is_catalog_provider(addon, media_type=filter_media_type if filter_media_type != "all" else None):
                 continue
             if filter_addon_url and m_url != filter_addon_url:
                 continue
@@ -10206,9 +10278,12 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _update_search_catalog_dropdown(self):
         from . import api, database
-        movie_cats = api.get_available_catalogs("movie")
-        series_cats = api.get_available_catalogs("series")
-        anime_cats = api.get_available_catalogs("anime") if getattr(self, "anime_supported", False) else []
+        movie_cats = api.get_available_search_catalogs("movie", only_working=True)
+        series_cats = api.get_available_search_catalogs("series", only_working=True)
+        anime_cats = api.get_available_search_catalogs("anime", only_working=True) if getattr(self, "anime_supported", False) else []
+        if not movie_cats and not series_cats:
+            movie_cats = api.get_available_search_catalogs("movie", only_working=False)
+            series_cats = api.get_available_search_catalogs("series", only_working=False)
         
         seen_cat_keys = set()
         self.search_catalogs_list = [{"display_name": "All Catalogs", "manifest_url": None, "catalog_id": None}]

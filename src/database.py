@@ -776,6 +776,37 @@ def set_adult_content_hidden(enabled):
     except Exception:
         pass
 
+def get_addon_health():
+    """Return dictionary of {manifest_url: {'online': bool, 'last_checked': float, 'latency_ms': int, 'error': str}}"""
+    return get_setting("addon_health", {}) or {}
+
+def update_addon_health(url, online=True, latency_ms=0, error=None):
+    """Update health status for a single addon."""
+    if not url:
+        return
+    with _db_lock:
+        db = _read_db()
+        settings = db.setdefault("settings", {})
+        health = settings.setdefault("addon_health", {})
+        health[str(url)] = {
+            "online": bool(online),
+            "last_checked": time.time(),
+            "latency_ms": int(latency_ms),
+            "error": str(error) if error else None
+        }
+        _write_db(db)
+
+def set_all_addons_health(health_dict):
+    """Batch persist health status for multiple addons."""
+    if not isinstance(health_dict, dict) or not health_dict:
+        return
+    with _db_lock:
+        db = _read_db()
+        settings = db.setdefault("settings", {})
+        health = settings.setdefault("addon_health", {})
+        health.update(health_dict)
+        _write_db(db)
+
 def _normalize_stream_for_storage(stream):
     if not stream or not isinstance(stream, dict):
         return None

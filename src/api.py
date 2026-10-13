@@ -467,7 +467,102 @@ def is_addon_online(manifest_url):
         # Check session circuit breaker
         if manifest_url in _ADDON_SESSION_BLOCKED:
             return False
+    # Check persisted health cache (TTL: 2 hours)
+    try:
+        from . import database
+        health = database.get_addon_health()
+        entry = health.get(manifest_url)
+        if entry and not entry.get("online", True):
+            last_checked = float(entry.get("last_checked", 0))
+            if time.time() - last_checked < 7200:
+                return False
+    except Exception:
+        pass
     return True
+
+def check_addons_health_background(callback=None):
+    """
+    Check connectivity of all enabled remote addons in a background daemon thread.
+    Updates addon health cache and session blocked sets.
+    Calls callback(results) upon completion on GLib main thread.
+    """
+    def _worker():
+        from . import database
+        addons = [a for a in database.get_addons() if a.get("enabled", True)]
+        remote_addons = [a for a in addons if a.get("manifest_url") and not a.get("manifest_url", "").startswith("builtin:")]
+        if not remote_addons:
+            if callback:
+                try:
+                    import gi
+                    gi.require_version("GLib", "2.0")
+                    from gi.repository import GLib
+                    GLib.idle_add(callback, {})
+                except Exception:
+                    callback({})
+            return
+
+        import concurrent.futures
+        results = {}
+
+        def _ping_addon(addon):
+            url = addon.get("manifest_url", "")
+            t_start = time.time()
+            try:
+                manifest_data = _get_cached_request(url, max_age_hours=24, timeout=2.5)
+                elapsed_ms = int((time.time() - t_start) * 1000)
+                if manifest_data and isinstance(manifest_data, dict) and manifest_data.get("id"):
+                    # Success: verify if manifest has catalogs or resources to sync
+                    if manifest_data.get("catalogs") and not addon.get("catalogs"):
+                        addon["catalogs"] = manifest_data["catalogs"]
+                        try: database.update_addon_catalogs(url, manifest_data["catalogs"])
+                        except Exception: pass
+                    if manifest_data.get("resources") and not addon.get("resources"):
+                        addon["resources"] = manifest_data["resources"]
+                        try: database.update_addon(addon)
+                        except Exception: pass
+                    return (url, True, elapsed_ms, None)
+                else:
+                    return (url, False, elapsed_ms, "Invalid manifest JSON")
+            except Exception as e:
+                elapsed_ms = int((time.time() - t_start) * 1000)
+                return (url, False, elapsed_ms, str(e))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(20, len(remote_addons))) as pool:
+            futures = [pool.submit(_ping_addon, a) for a in remote_addons]
+            for f in concurrent.futures.as_completed(futures):
+                try:
+                    url, ok, latency, err = f.result()
+                    results[url] = {
+                        "online": ok,
+                        "last_checked": time.time(),
+                        "latency_ms": latency,
+                        "error": err
+                    }
+                    if not ok:
+                        _record_addon_failure(url)
+                    else:
+                        _record_addon_success(url)
+                except Exception:
+                    pass
+
+        # Persist health results in database
+        try:
+            database.set_all_addons_health(results)
+        except Exception as e:
+            logging.debug(f"Failed to persist addon health: {e}")
+
+        if callback:
+            try:
+                import gi
+                gi.require_version("GLib", "2.0")
+                from gi.repository import GLib
+                GLib.idle_add(callback, results)
+            except Exception:
+                callback(results)
+
+    thread = threading.Thread(target=_worker, daemon=True, name="AddonHealthChecker")
+    thread.start()
+    return thread
 
 def get_session_blocked_addons():
     """Return set of manifest URLs blocked for this session (for UI display)."""
@@ -755,28 +850,88 @@ def has_stream_resource(addon, media_type=None, item_id=None):
         return False
     return addon_has_resource(addon, "stream", media_type=media_type, item_id=item_id)
 
-def get_stream_addons(media_type=None, item_id=None):
-    """Return all enabled addons that provide streams/torrents for this media type and item."""
+def is_stream_provider(addon, media_type=None, item_id=None):
+    """
+    Return True if the addon provides media playback streams (direct http or torrent).
+    Excludes catalog-only addons (Cinemeta, TMDB Catalogs, CyberFlix, etc.) and non-stream addons.
+    """
+    if not isinstance(addon, dict) or not addon.get("enabled", True) or not addon.get("streams_enabled", True):
+        return False
+    manifest_url = addon.get("manifest_url", "")
+    if manifest_url.startswith("builtin:"):
+        return False
+    addon_id = str(addon.get("id", "")).lower()
+    # Explicit exclusions for known catalog-only addons
+    if addon_id in ["cinemeta", "anime-kitsu", "tmdb-addon", "com.linvo.cinemeta"] or "cinemeta" in manifest_url.lower():
+        return False
+    if "tmdb" in addon_id and "catalog" in addon_id:
+        return False
+    return has_stream_resource(addon, media_type=media_type, item_id=item_id)
+
+def is_catalog_provider(addon, media_type=None):
+    """
+    Return True if the addon provides catalogs for browsing.
+    Must have 'catalog' resource and at least one browsable catalog.
+    Media providers (stream-only addons without catalogs) return False.
+    """
+    if not isinstance(addon, dict) or not addon.get("enabled", True) or not addon.get("catalogs_enabled", True):
+        return False
+    if not has_catalog_resource(addon, media_type=media_type):
+        return False
+    catalogs = get_addon_catalogs(addon, cache_only=True)
+    if not catalogs:
+        return False
+    if media_type:
+        return any(is_type_match(c.get("type"), media_type) for c in catalogs)
+    return True
+
+def is_search_provider(addon, media_type=None):
+    """
+    Return True if the addon provides catalogs that support keyword search.
+    Pure media providers (torrent/direct stream without search catalog) return False.
+    """
+    if not isinstance(addon, dict) or not addon.get("enabled", True) or not addon.get("catalogs_enabled", True):
+        return False
+    if not has_catalog_resource(addon, media_type=media_type):
+        return False
+    c_type = "series" if media_type == "series" else (media_type or "movie")
+    search_cats = _get_search_catalogs_for_addon(addon, c_type, cache_only=True)
+    return len(search_cats) > 0
+
+def get_catalog_addons(media_type=None, only_working=True):
+    """Return enabled addons that provide browsable catalogs."""
+    from . import database
+    addons = [a for a in database.get_addons() if a.get("enabled", True)]
+    return [
+        a for a in addons 
+        if is_catalog_provider(a, media_type=media_type)
+        and (not only_working or is_addon_online(a.get("manifest_url", "")))
+    ]
+
+def get_search_addons(media_type=None, only_working=True):
+    """Return enabled addons that provide search catalogs."""
+    from . import database
+    addons = [a for a in database.get_addons() if a.get("enabled", True)]
+    return [
+        a for a in addons 
+        if is_search_provider(a, media_type=media_type)
+        and (not only_working or is_addon_online(a.get("manifest_url", "")))
+    ]
+
+def get_stream_addons(media_type=None, item_id=None, only_working=True):
+    """Return enabled media providers that provide streams/torrents for this item."""
     from . import database
     addons = [a for a in database.get_addons() if a.get("enabled", True) and a.get("streams_enabled", True)]
     return [
         a for a in addons 
         if not a.get("manifest_url", "").startswith("builtin://") 
-        and has_stream_resource(a, media_type=media_type, item_id=item_id)
+        and is_stream_provider(a, media_type=media_type, item_id=item_id)
+        and (not only_working or is_addon_online(a.get("manifest_url", "")))
     ]
 
-def has_stream_addons(media_type=None, item_id=None):
+def has_stream_addons(media_type=None, item_id=None, only_working=True):
     """Return True if there is at least one enabled stream/torrent addon for this media type and item."""
-    from . import database
-    addons = [a for a in database.get_addons() if a.get("enabled", True) and a.get("streams_enabled", True)]
-    for a in addons:
-        if not a.get("manifest_url", "").startswith("builtin://"):
-            if item_id and str(item_id).startswith("tt"):
-                if has_stream_resource(a, media_type=media_type, item_id=item_id):
-                    return True
-            elif has_stream_resource(a, media_type=media_type):
-                return True
-    return False
+    return len(get_stream_addons(media_type=media_type, item_id=item_id, only_working=only_working)) > 0
 
 def has_catalog_resource(addon, media_type=None):
     """Return True if the addon supports catalog ('catalog') resource for this media type."""
@@ -1095,6 +1250,36 @@ def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
     return search_cats
 
 
+def get_available_search_catalogs(c_type="movie", only_working=True):
+    """Return list of catalogs that actually support keyword search."""
+    from . import database
+    catalogs = []
+    addons = get_search_addons(media_type=c_type, only_working=only_working)
+    if not addons and only_working:
+        addons = get_search_addons(media_type=c_type, only_working=False)
+
+    for addon in addons:
+        addon_name = addon.get("name", "Unknown Addon")
+        manifest_url = addon.get("manifest_url", "")
+        if not manifest_url or manifest_url.startswith("builtin:"):
+            continue
+        search_cat_ids = set(_get_search_catalogs_for_addon(addon, c_type, cache_only=True))
+        addon_catalogs = get_addon_catalogs(addon, cache_only=True)
+        for cat in addon_catalogs:
+            cat_id = cat.get("id", "")
+            if cat_id in search_cat_ids:
+                cat_name = cat.get("name") or cat_id
+                catalogs.append({
+                    "addon_name": addon_name,
+                    "manifest_url": manifest_url,
+                    "catalog_id": cat_id,
+                    "catalog_name": cat_name,
+                    "display_name": f"{addon_name} - {cat_name}",
+                    "media_type": c_type
+                })
+    return catalogs
+
+
 def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None, target_manifest_url=None, target_catalog_id=None, is_cancelled=None):
     c_type = "series" if media_type == "series" else media_type
     skip = (page - 1) * 50
@@ -1115,7 +1300,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             if target_manifest_url and m_url != target_manifest_url:
                 return []
                 
-            if not has_catalog_resource(addon, media_type=c_type):
+            if not is_search_provider(addon, media_type=c_type):
+                return []
+            if not is_addon_online(m_url):
                 return []
             
             base_url = m_url.rsplit("manifest.json", 1)[0]
@@ -1141,15 +1328,21 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                         break # Break early if we found results for this addon
             return addon_items
 
-        addons_to_search = [
-            a for a in database.get_addons() 
-            if (not target_manifest_url or a.get("manifest_url") == target_manifest_url) 
-            and has_catalog_resource(a, media_type=c_type)
-        ]
+        if target_manifest_url:
+            addons_to_search = [
+                a for a in database.get_addons() 
+                if a.get("manifest_url") == target_manifest_url 
+                and is_search_provider(a, media_type=c_type)
+                and is_addon_online(a.get("manifest_url", ""))
+            ]
+        else:
+            addons_to_search = get_search_addons(media_type=c_type, only_working=True)
+            if not addons_to_search:
+                addons_to_search = get_search_addons(media_type=c_type, only_working=False)
         if not addons_to_search:
             return []
 
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(addons_to_search), 6))
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(addons_to_search), 8))
         future_to_addon = {executor.submit(fetch_addon_search, addon): addon for addon in addons_to_search}
         try:
             for future in concurrent.futures.as_completed(future_to_addon, timeout=7):
@@ -3062,11 +3255,11 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
 
     actual_media = media_type
     
-    addons = [a for a in database.get_addons() if a.get("enabled", True)]
-    if not addons:
+    stremio_addons = get_stream_addons(media_type=actual_media, item_id=imdb_id, only_working=True)
+    if not stremio_addons:
+        stremio_addons = get_stream_addons(media_type=actual_media, item_id=imdb_id, only_working=False)
+    if not stremio_addons:
         return []
-        
-    stremio_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://") and has_stream_resource(a, media_type=actual_media, item_id=imdb_id)]
     if provider:
         p_lower = str(provider).strip().lower()
         stremio_addons.sort(key=lambda a: 0 if (p_lower in a.get("name", "").lower() or a.get("name", "").lower() in p_lower) else 1)
@@ -3118,7 +3311,9 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
             if not any(str(imdb_id).startswith(p) for p in addon_prefixes):
                 return addon.get("name", "Unknown"), []
                 
-        if not has_stream_resource(addon, media_type=actual_media, item_id=imdb_id):
+        if not is_stream_provider(addon, media_type=actual_media, item_id=imdb_id):
+            return addon.get("name", "Unknown"), []
+        if not is_addon_online(manifest_url):
             return addon.get("name", "Unknown"), []
                 
         if "manifest.json" in manifest_url:
