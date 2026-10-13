@@ -59,6 +59,7 @@ cine_sources = [
   'preferences.py',
   'save_session.py',
   'shortcuts.py',
+  'stremio_sync.py',
   'subtitle_search_dialog.py',
   'tmdb_helper.py',
   'utils.py',

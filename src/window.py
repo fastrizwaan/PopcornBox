@@ -6413,6 +6413,31 @@ class CineWindow(Adw.ApplicationWindow):
 
         debug_log("CineWindow.__init__ updating category buttons visibility")
         self.update_category_buttons_visibility()
+
+        # Schedule deferred background Stremio sync if enabled
+        def run_stremio_startup_sync():
+            try:
+                from . import stremio_sync
+                if stremio_sync.is_sync_enabled() or stremio_sync.is_addon_sync_enabled():
+                    def on_sync_finished(res, err):
+                        if res:
+                            lib_info = res.get("library") or {}
+                            if lib_info.get("pulled_cw", 0) > 0:
+                                if hasattr(self, "_update_continue_watching_section"):
+                                    self._update_continue_watching_section()
+                            addon_info = res.get("addons") or {}
+                            if addon_info.get("pulled_addons", 0) > 0:
+                                if hasattr(self, "_populate_addons"):
+                                    self._populate_addons()
+                                if hasattr(self, "_ensure_all_menus_built"):
+                                    self._ensure_all_menus_built()
+                    stremio_sync.sync_in_background(callback=on_sync_finished)
+            except Exception as e:
+                logger.debug(f"Stremio startup sync error: {e}")
+            return False
+
+        GLib.timeout_add(3000, run_stremio_startup_sync)
+
         debug_log("CineWindow.__init__ ALL DONE")
         settings.connect("changed::show-movies-button", lambda *a: self.update_category_buttons_visibility())
         settings.connect("changed::show-series-button", lambda *a: self.update_category_buttons_visibility())

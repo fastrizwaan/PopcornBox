@@ -19,6 +19,9 @@
 
 import os
 import shutil
+import time
+import threading
+from datetime import datetime
 import gi
 from gettext import gettext as _
 
@@ -27,7 +30,7 @@ gi.require_version("Gdk", "4.0")
 gi.require_version("GLib", "2.0")
 gi.require_version("Gio", "2.0")
 gi.require_version("Gtk", "4.0")
-from gi.repository import Adw, Gdk, Gio, Gtk
+from gi.repository import Adw, Gdk, Gio, Gtk, GLib
 from .utils import logger, CONFIG_DIR, display, has_host_permission, is_flatpak, LAST_PLAYLIST_FILE
 from . import database
 
@@ -66,6 +69,138 @@ def sync_mpv_with_settings(window):
         mpv.command("af", "add", "@cine_loudnorm:lavfi=[loudnorm=I=-20]")
 
 
+class StremioLoginDialog(Adw.Dialog):
+    """Dialog for authenticating with Stremio via Email/Password or AuthKey."""
+
+    def __init__(self, window, on_success=None, **kwargs):
+        super().__init__(**kwargs)
+        self.window = window
+        self.on_success = on_success
+
+        self.set_title(_("Log In to Stremio"))
+        self.set_content_width(440)
+        self.set_content_height(480)
+
+        toolbar_view = Adw.ToolbarView()
+        self.set_child(toolbar_view)
+
+        header_bar = Adw.HeaderBar()
+        cancel_btn = Gtk.Button(label=_("Cancel"))
+        cancel_btn.connect("clicked", lambda *a: self.close())
+        header_bar.pack_start(cancel_btn)
+
+        self.login_btn = Gtk.Button(label=_("Log In"))
+        self.login_btn.add_css_class("suggested-action")
+        self.login_btn.connect("clicked", self._on_login_clicked)
+        header_bar.pack_end(self.login_btn)
+
+        toolbar_view.add_top_bar(header_bar)
+
+        page = Adw.PreferencesPage()
+
+        # Credentials Group
+        group = Adw.PreferencesGroup()
+        group.set_title(_("Stremio Account"))
+        group.set_description(
+            _("Log in to sync your library, watchlist, and continue watching with Stremio and Nuvio.")
+        )
+
+        self.email_row = Adw.EntryRow()
+        self.email_row.set_title(_("Email"))
+        self.email_row.connect("entry-activated", lambda *a: self.password_row.grab_focus())
+        group.add(self.email_row)
+
+        self.password_row = Adw.PasswordEntryRow()
+        self.password_row.set_title(_("Password"))
+        self.password_row.connect("entry-activated", lambda *a: self._on_login_clicked(None))
+        group.add(self.password_row)
+
+        # Advanced AuthKey Expander Group
+        adv_group = Adw.PreferencesGroup()
+        self.auth_expander = Adw.ExpanderRow()
+        self.auth_expander.set_title(_("Or Log In with AuthKey"))
+        self.auth_expander.set_subtitle(_("Useful for Google, Facebook or web logins"))
+
+        self.auth_key_row = Adw.EntryRow()
+        self.auth_key_row.set_title(_("Stremio AuthKey"))
+        self.auth_key_row.connect("entry-activated", lambda *a: self._on_login_clicked(None))
+        self.auth_expander.add_row(self.auth_key_row)
+        adv_group.add(self.auth_expander)
+
+        # Status & Error Box
+        status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        status_box.set_margin_top(12)
+        status_box.set_margin_bottom(12)
+        status_box.set_margin_start(16)
+        status_box.set_margin_end(16)
+
+        self.spinner = Gtk.Spinner()
+        self.spinner.set_size_request(24, 24)
+        self.spinner.set_visible(False)
+        status_box.append(self.spinner)
+
+        self.error_label = Gtk.Label()
+        self.error_label.set_wrap(True)
+        self.error_label.set_justify(Gtk.Justification.CENTER)
+        self.error_label.add_css_class("error")
+        self.error_label.set_visible(False)
+        status_box.append(self.error_label)
+
+        status_group = Adw.PreferencesGroup()
+        status_group.add(status_box)
+
+        page.add(group)
+        page.add(adv_group)
+        page.add(status_group)
+
+        toolbar_view.set_content(page)
+
+    def _on_login_clicked(self, _btn):
+        from . import stremio_sync
+
+        email = self.email_row.get_text().strip()
+        password = self.password_row.get_text()
+        auth_key = self.auth_key_row.get_text().strip()
+
+        use_auth_key = bool(auth_key and (self.auth_expander.get_expanded() or not email))
+
+        if not use_auth_key and (not email or not password):
+            self.error_label.set_text(_("Please enter your email and password, or provide an AuthKey."))
+            self.error_label.set_visible(True)
+            return
+
+        self.login_btn.set_sensitive(False)
+        self.error_label.set_visible(False)
+        self.spinner.set_visible(True)
+        self.spinner.start()
+
+        def _auth_worker():
+            try:
+                if use_auth_key:
+                    info = stremio_sync.login_with_auth_key(auth_key)
+                else:
+                    info = stremio_sync.login(email, password)
+                GLib.idle_add(self._on_auth_success, info)
+            except Exception as e:
+                GLib.idle_add(self._on_auth_failed, str(e))
+
+        threading.Thread(target=_auth_worker, daemon=True, name="StremioLoginWorker").start()
+
+    def _on_auth_success(self, info):
+        self.spinner.stop()
+        self.spinner.set_visible(False)
+        if self.on_success:
+            self.on_success(info)
+        self.close()
+
+    def _on_auth_failed(self, error_message):
+        self.spinner.stop()
+        self.spinner.set_visible(False)
+        self.login_btn.set_sensitive(True)
+        self.error_label.set_text(error_message or _("Login failed"))
+        self.error_label.set_visible(True)
+
+
 @Gtk.Template(resource_path="/io/github/fastrizwaan/PopcornBox/preferences.ui")
 class Preferences(Adw.Dialog):
     __gtype_name__ = "Preferences"
@@ -99,6 +234,13 @@ class Preferences(Adw.Dialog):
     show_movies_button_row: Adw.SwitchRow = Gtk.Template.Child()
     show_series_button_row: Adw.SwitchRow = Gtk.Template.Child()
     show_anime_button_row: Adw.SwitchRow = Gtk.Template.Child()
+    stremio_account_row: Adw.ActionRow = Gtk.Template.Child()
+    stremio_login_btn: Gtk.Button = Gtk.Template.Child()
+    stremio_logout_btn: Gtk.Button = Gtk.Template.Child()
+    stremio_sync_switch_row: Adw.SwitchRow = Gtk.Template.Child()
+    stremio_sync_addons_switch_row: Adw.SwitchRow = Gtk.Template.Child()
+    stremio_sync_now_row: Adw.ActionRow = Gtk.Template.Child()
+    stremio_sync_now_btn: Gtk.Button = Gtk.Template.Child()
 
     def __init__(self, window, **kwargs):
         super().__init__(**kwargs)
@@ -149,6 +291,15 @@ class Preferences(Adw.Dialog):
             Gtk.ColorDialog(title=_("Subtitle Background"), modal=True, with_alpha=True)
         )
         self.sub_bg_color_btn.set_rgba(self.sub_bg_color)
+
+        self.stremio_login_btn.connect("clicked", self._on_stremio_login_clicked)
+        self.stremio_logout_btn.connect("clicked", self._on_stremio_logout_clicked)
+        self.stremio_sync_switch_row.connect("notify::active", self._on_stremio_sync_toggled)
+        self.stremio_sync_addons_switch_row.connect("notify::active", self._on_stremio_sync_addons_toggled)
+        self.stremio_sync_now_btn.connect("clicked", self._on_stremio_sync_now_clicked)
+        self.stremio_sync_now_row.connect("activated", self._on_stremio_sync_now_clicked)
+        self._syncing_stremio_switch = False
+        self._update_stremio_ui()
 
         self.connect("closed", self._disconnect_settings)
 
@@ -421,3 +572,117 @@ class Preferences(Adw.Dialog):
     def _on_warning_popover_closed(self, _popover):
         self.copy_cmd_button.add_css_class("suggested-action")
         self.copy_cmd_button.set_label(_("Copy"))
+
+    def _update_stremio_ui(self):
+        auth_key = database.get_setting("stremio_auth_key")
+        user_email = database.get_setting("stremio_user_email")
+        sync_enabled = database.get_setting("stremio_sync_enabled", True)
+        sync_addons_enabled = database.get_setting("stremio_sync_addons_enabled", True)
+        last_synced = database.get_setting("stremio_last_synced")
+
+        if auth_key:
+            display_email = user_email or _("Connected")
+            self.stremio_account_row.set_subtitle(_("Logged in as {email}").format(email=display_email))
+            self.stremio_login_btn.set_visible(False)
+            self.stremio_logout_btn.set_visible(True)
+            self.stremio_sync_switch_row.set_sensitive(True)
+            self.stremio_sync_addons_switch_row.set_sensitive(True)
+            self._syncing_stremio_switch = True
+            try:
+                self.stremio_sync_switch_row.set_active(bool(sync_enabled))
+                self.stremio_sync_addons_switch_row.set_active(bool(sync_addons_enabled))
+            finally:
+                self._syncing_stremio_switch = False
+            self.stremio_sync_now_row.set_sensitive(bool(sync_enabled or sync_addons_enabled))
+
+            if last_synced:
+                diff = time.time() - float(last_synced)
+                if diff < 60:
+                    time_str = _("Just now")
+                elif diff < 3600:
+                    mins = max(1, int(diff / 60))
+                    time_str = _("{mins}m ago").format(mins=mins)
+                elif diff < 86400:
+                    hours = int(diff / 3600)
+                    time_str = _("{hours}h ago").format(hours=hours)
+                else:
+                    time_str = datetime.fromtimestamp(float(last_synced)).strftime("%b %d, %H:%M")
+                self.stremio_sync_now_row.set_subtitle(f"{_('Last synced')}: {time_str}")
+            else:
+                self.stremio_sync_now_row.set_subtitle(_("Last synced: Never"))
+        else:
+            self.stremio_account_row.set_subtitle(_("Not connected"))
+            self.stremio_login_btn.set_visible(True)
+            self.stremio_logout_btn.set_visible(False)
+            self.stremio_sync_switch_row.set_sensitive(False)
+            self.stremio_sync_addons_switch_row.set_sensitive(False)
+            self._syncing_stremio_switch = True
+            try:
+                self.stremio_sync_switch_row.set_active(False)
+                self.stremio_sync_addons_switch_row.set_active(False)
+            finally:
+                self._syncing_stremio_switch = False
+            self.stremio_sync_now_row.set_sensitive(False)
+            self.stremio_sync_now_row.set_subtitle(_("Last synced: Never"))
+
+    def _on_stremio_login_clicked(self, _button):
+        dialog = StremioLoginDialog(self.win, on_success=self._on_stremio_login_success)
+        dialog.present(self)
+
+    def _on_stremio_login_success(self, user_info):
+        self._update_stremio_ui()
+        from . import stremio_sync
+        self.stremio_sync_now_row.set_subtitle(_("Syncing with Stremio..."))
+        self.stremio_sync_now_btn.set_sensitive(False)
+        stremio_sync.sync_in_background(callback=self._on_sync_finished)
+
+    def _on_stremio_logout_clicked(self, _button):
+        from . import stremio_sync
+        stremio_sync.logout()
+        self._update_stremio_ui()
+
+    def _on_stremio_sync_toggled(self, row, _pspec):
+        if getattr(self, "_syncing_stremio_switch", False):
+            return
+        active = row.get_active()
+        database.set_setting("stremio_sync_enabled", active)
+        addons_enabled = database.get_setting("stremio_sync_addons_enabled", True)
+        self.stremio_sync_now_row.set_sensitive(bool(active or addons_enabled))
+        if active:
+            from . import stremio_sync
+            self.stremio_sync_now_row.set_subtitle(_("Syncing with Stremio..."))
+            self.stremio_sync_now_btn.set_sensitive(False)
+            stremio_sync.sync_in_background(callback=self._on_sync_finished)
+
+    def _on_stremio_sync_addons_toggled(self, row, _pspec):
+        if getattr(self, "_syncing_stremio_switch", False):
+            return
+        active = row.get_active()
+        database.set_setting("stremio_sync_addons_enabled", active)
+        lib_enabled = database.get_setting("stremio_sync_enabled", True)
+        self.stremio_sync_now_row.set_sensitive(bool(active or lib_enabled))
+        if active:
+            from . import stremio_sync
+            self.stremio_sync_now_row.set_subtitle(_("Syncing with Stremio..."))
+            self.stremio_sync_now_btn.set_sensitive(False)
+            stremio_sync.sync_in_background(callback=self._on_sync_finished)
+
+    def _on_stremio_sync_now_clicked(self, *args):
+        from . import stremio_sync
+        self.stremio_sync_now_btn.set_sensitive(False)
+        self.stremio_sync_now_row.set_subtitle(_("Syncing with Stremio..."))
+        stremio_sync.sync_in_background(callback=self._on_sync_finished)
+
+    def _on_sync_finished(self, result, error):
+        self.stremio_sync_now_btn.set_sensitive(True)
+        self._update_stremio_ui()
+        if hasattr(self.win, "_update_continue_watching_section"):
+            self.win._update_continue_watching_section()
+        if hasattr(self.win, "main_stack"):
+            curr_page = self.win.main_stack.get_visible_child_name()
+            if curr_page in ("continue_watching", "favorites") and hasattr(self.win, "_populate_local_db_page"):
+                self.win._populate_local_db_page(curr_page)
+        if hasattr(self.win, "_populate_addons"):
+            self.win._populate_addons()
+        if hasattr(self.win, "_ensure_all_menus_built"):
+            self.win._ensure_all_menus_built()

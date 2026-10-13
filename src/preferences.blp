@@ -204,6 +204,68 @@ template $Preferences: Adw.Dialog {
 				}
 			}
 
+			Adw.PreferencesGroup stremio_group {
+				title: _("Stremio Account");
+				description: _("Sync library, watchlist, and continue watching with Stremio and Nuvio");
+
+				Adw.ActionRow stremio_account_row {
+					title: _("Account");
+					subtitle: _("Not connected");
+
+					[suffix]
+					Button stremio_login_btn {
+						label: _("Log In");
+						valign: center;
+
+						styles [
+							"suggested-action",
+						]
+					}
+
+					[suffix]
+					Button stremio_logout_btn {
+						label: _("Log Out");
+						valign: center;
+						visible: false;
+
+						styles [
+							"destructive-action",
+						]
+					}
+				}
+
+				Adw.SwitchRow stremio_sync_switch_row {
+					title: _("Sync Library & Continue Watching");
+					subtitle: _("Automatically keep playback progress and favorites in sync");
+					sensitive: false;
+				}
+
+				Adw.SwitchRow stremio_sync_addons_switch_row {
+					title: _("Sync Installed Addons");
+					subtitle: _("Synchronize installed addons with Stremio and Nuvio");
+					sensitive: false;
+				}
+
+				Adw.ActionRow stremio_sync_now_row {
+					title: _("Sync Now");
+					subtitle: _("Last synced: Never");
+					activatable-widget: stremio_sync_now_btn;
+					sensitive: false;
+
+					[suffix]
+					Button stremio_sync_now_btn {
+						icon-name: "view-refresh-symbolic";
+						valign: center;
+						tooltip-text: _("Sync Now");
+
+						styles [
+							"flat",
+							"circular",
+						]
+					}
+				}
+			}
+
 			Adw.PreferencesGroup {
 				Adw.ActionRow sub_color_row {
 					title: _("Subtitle Color");

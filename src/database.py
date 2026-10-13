@@ -239,9 +239,27 @@ def _read_db():
                     if aname:
                         seen_addon_names.add(aname)
                     unique_addons.append(a)
-                if len(unique_addons) != len(data["addons"]):
-                    data["addons"] = unique_addons
-                    migrated = True
+                # Ensure all addons have valid types, resources, catalogs conforming to Stremio spec
+                for a in data.get("addons", []):
+                    if not isinstance(a.get("catalogs"), list):
+                        a["catalogs"] = []
+                        migrated = True
+                    if not isinstance(a.get("resources"), list) or not a["resources"]:
+                        a["resources"] = ["catalog", "meta"] if a["catalogs"] else ["stream"]
+                        migrated = True
+                    raw_types = a.get("types")
+                    if not isinstance(raw_types, list) or not raw_types:
+                        found_types = set()
+                        for cat in a.get("catalogs", []):
+                            if isinstance(cat, dict) and cat.get("type"):
+                                found_types.add(str(cat["type"]))
+                        if found_types:
+                            a["types"] = sorted(list(found_types))
+                        elif any((isinstance(r, str) and r == "stream") or (isinstance(r, dict) and r.get("name") == "stream") for r in a.get("resources", [])):
+                            a["types"] = ["movie", "series", "anime", "other"]
+                        else:
+                            a["types"] = ["movie", "series"]
+                        migrated = True
 
                 if migrated:
                     _write_db(data)
@@ -292,12 +310,19 @@ def _write_db(data):
 def get_favorites():
     return _read_db().get("favorites", [])
 
-def add_favorite(item):
+def add_favorite(item, sync_to_remote=True):
     with _db_lock:
         db = _read_db()
         if not any(f.get("id") == item.get("id") for f in db.get("favorites", [])):
             db.setdefault("favorites", []).insert(0, item)
             _write_db(db)
+    if sync_to_remote and not _is_testing():
+        try:
+            from . import stremio_sync
+            if stremio_sync.is_sync_enabled():
+                stremio_sync.sync_in_background()
+        except Exception:
+            pass
 
 def remove_favorite(item_id):
     with _db_lock:
@@ -465,7 +490,7 @@ def get_continue_watching_item(item_id):
 
     return None
 
-def save_continue_watching(item):
+def save_continue_watching(item, sync_to_remote=True):
     """Save or update an in-progress item in continue_watching."""
     if not item or not isinstance(item, dict):
         return
@@ -556,6 +581,13 @@ def save_continue_watching(item):
         new_cw.insert(0, updated_item)
         db["continue_watching"] = new_cw[:100]
         _write_db(db)
+
+    if sync_to_remote and not _is_testing():
+        try:
+            from . import stremio_sync
+            stremio_sync.scrobble_playback(updated_item)
+        except Exception:
+            pass
 
 def remove_continue_watching(item_id, blacklist=True, user_action=False):
     """Remove an item from continue_watching."""
@@ -924,7 +956,25 @@ def get_progress(key):
 def get_addons():
     return _read_db().get("addons", [])
 
-def add_addon(addon):
+def add_addon(addon, sync_to_remote=True):
+    # Ensure mandatory fields are initialized conforming to Stremio spec
+    if not isinstance(addon.get("catalogs"), list):
+        addon["catalogs"] = []
+    if not isinstance(addon.get("resources"), list) or not addon["resources"]:
+        addon["resources"] = ["catalog", "meta"] if addon["catalogs"] else ["stream"]
+    raw_types = addon.get("types")
+    if not isinstance(raw_types, list) or not raw_types:
+        found_types = set()
+        for cat in addon.get("catalogs", []):
+            if isinstance(cat, dict) and cat.get("type"):
+                found_types.add(str(cat["type"]))
+        if found_types:
+            addon["types"] = sorted(list(found_types))
+        elif any((isinstance(r, str) and r == "stream") or (isinstance(r, dict) and r.get("name") == "stream") for r in addon.get("resources", [])):
+            addon["types"] = ["movie", "series", "anime", "other"]
+        else:
+            addon["types"] = ["movie", "series"]
+
     with _db_lock:
         db = _read_db()
         addons = db.setdefault("addons", [])
@@ -937,6 +987,15 @@ def add_addon(addon):
         removed_defaults = settings.get("removed_default_addons", [])
         if addon.get("id") in removed_defaults:
             settings["removed_default_addons"] = [x for x in removed_defaults if x != addon.get("id")]
+        # Also remove from user removed tracking
+        user_removed_ids = set(settings.get("removed_addon_ids", []))
+        user_removed_urls = set(settings.get("removed_addon_urls", []))
+        if addon.get("id"):
+            user_removed_ids.discard(addon.get("id"))
+        if addon.get("manifest_url"):
+            user_removed_urls.discard(addon.get("manifest_url"))
+        settings["removed_addon_ids"] = list(user_removed_ids)
+        settings["removed_addon_urls"] = list(user_removed_urls)
         _write_db(db)
     clear_all_cached_streams()
     try:
@@ -944,6 +1003,13 @@ def add_addon(addon):
         api.invalidate_catalogs_cache()
     except Exception:
         pass
+    if sync_to_remote and not _is_testing():
+        try:
+            from . import stremio_sync
+            if stremio_sync.is_addon_sync_enabled():
+                stremio_sync.sync_addons_in_background()
+        except Exception:
+            pass
 
 def update_addon_catalogs(manifest_url, catalogs):
     """Update an addon's catalogs list if it was empty or missing."""
@@ -963,7 +1029,7 @@ def update_addon_catalogs(manifest_url, catalogs):
             return True
     return False
 
-def remove_addon(addon_id=None, manifest_url=None):
+def remove_addon(addon_id=None, manifest_url=None, sync_to_remote=True):
     if not addon_id and not manifest_url:
         return
     with _db_lock:
@@ -992,6 +1058,14 @@ def remove_addon(addon_id=None, manifest_url=None):
             if default_addon.get("id") in removed_ids:
                 removed_defaults.add(default_addon.get("id"))
         settings["removed_default_addons"] = list(removed_defaults)
+
+        # Track user removed addons so remote sync doesn't resurrect them
+        user_removed_ids = set(settings.get("removed_addon_ids", []))
+        user_removed_urls = set(settings.get("removed_addon_urls", []))
+        user_removed_ids.update(removed_ids)
+        user_removed_urls.update(removed_urls)
+        settings["removed_addon_ids"] = list(user_removed_ids)[-200:]
+        settings["removed_addon_urls"] = list(user_removed_urls)[-200:]
         
         _write_db(db)
     
@@ -1004,6 +1078,14 @@ def remove_addon(addon_id=None, manifest_url=None):
         api.invalidate_catalogs_cache()
     except Exception:
         pass
+
+    if sync_to_remote and not _is_testing():
+        try:
+            from . import stremio_sync
+            if stremio_sync.is_addon_sync_enabled():
+                stremio_sync.sync_addons_in_background()
+        except Exception:
+            pass
 
 def clear_cached_catalog_for_url(manifest_url):
     if not manifest_url:
