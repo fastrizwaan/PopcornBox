@@ -461,14 +461,15 @@ class MovieWidget(Gtk.Box):
         item_id = movie_data.get("imdb_id") or movie_data.get("id")
         item_type = movie_data.get("type", "movie")
         poster_url = extract_image_url(movie_data)
+        has_valid_title = bool(movie_data.get("title") and movie_data.get("title") != "Unknown")
 
-        # Check metadata cache immediately on construction (fast SQLite WAL read, ~0.05ms)
-        if item_id:
+        # Only check metadata cache if essential info is missing, avoiding main thread SQLite lock contention
+        if item_id and (not poster_url or not has_valid_title):
             try:
                 cached = database.get_cached_metadata(item_id, item_type)
                 if cached:
                     c_title = cached.get("title") or cached.get("name")
-                    if c_title and c_title != "Unknown" and (not movie_data.get("title") or movie_data.get("title") == "Unknown"):
+                    if c_title and c_title != "Unknown" and not has_valid_title:
                         movie_data["title"] = c_title
                     c_poster = cached.get("medium_cover_image") or cached.get("poster")
                     if c_poster and not poster_url:

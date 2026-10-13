@@ -1500,6 +1500,7 @@ def save_cached_metadata(item_id, media_type, details):
 
             conn.commit()
             if has_new:
+                invalidate_dropdown_caches()
                 _notify_genre_listeners()
     except Exception as e:
         print(f"Error saving metadata cache: {e}")
@@ -1737,9 +1738,25 @@ def get_available_years(media_type=None):
         stored_years.add(str(y))
     return sorted(list(stored_years), reverse=True)
 
+_DROPDOWN_CACHE_LOCK = threading.Lock()
+_GENRES_CACHE = {}
+_SORT_OPTIONS_CACHE = {}
+
+def invalidate_dropdown_caches():
+    with _DROPDOWN_CACHE_LOCK:
+        _GENRES_CACHE.clear()
+        _SORT_OPTIONS_CACHE.clear()
+
 def get_available_sort_options(media_type=None):
     """Return options for the Sort/Year dropdown: Popular, Featured, Recent, followed by years."""
-    return ["Popular", "Featured", "Recent"] + get_available_years(media_type)
+    mt = (media_type or "all").lower()
+    with _DROPDOWN_CACHE_LOCK:
+        if mt in _SORT_OPTIONS_CACHE:
+            return list(_SORT_OPTIONS_CACHE[mt])
+    opts = ["Popular", "Featured", "Recent"] + get_available_years(media_type)
+    with _DROPDOWN_CACHE_LOCK:
+        _SORT_OPTIONS_CACHE[mt] = list(opts)
+    return opts
 
 def get_available_genres(media_type=None, include_years=False):
     """
@@ -1747,6 +1764,11 @@ def get_available_genres(media_type=None, include_years=False):
     Standard IMDb narrative genres and language genres matching IMDb details are returned.
     """
     mt = (media_type or "all").lower()
+    if not include_years:
+        with _DROPDOWN_CACHE_LOCK:
+            if mt in _GENRES_CACHE:
+                return list(_GENRES_CACHE[mt])
+
     if mt == "anime":
         genres = list(DEFAULT_ANIME_GENRES)
     elif mt in ("series", "tvshow"):
@@ -1764,6 +1786,10 @@ def get_available_genres(media_type=None, include_years=False):
     genres.extend(stored)
 
     sorted_genres = sorted(list(set(genres)), key=lambda s: s.lower())
+
+    if not include_years:
+        with _DROPDOWN_CACHE_LOCK:
+            _GENRES_CACHE[mt] = list(sorted_genres)
 
     if include_years:
         return sorted_genres, get_available_years(media_type)

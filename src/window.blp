@@ -308,24 +308,28 @@ template $CineWindow: Adw.ApplicationWindow {
                   
                   ScrolledWindow content_scrolled {
                     vexpand: true;
-                  FlowBox content_flowbox {
-                    margin-top: 4; margin-bottom: 24; margin-start: 12; margin-end: 12;
-                    max-children-per-line: 20;
-                    min-children-per-line: 2;
-                    selection-mode: none;
-                    halign: center;
-                    valign: start;
-                    row-spacing: 12;
-                    column-spacing: 10;
+                    hscrollbar-policy: never;
+                    vscrollbar-policy: automatic;
+                    FlowBox content_flowbox {
+                      margin-top: 4; margin-bottom: 24; margin-start: 12; margin-end: 12;
+                      max-children-per-line: 20;
+                      min-children-per-line: 2;
+                      selection-mode: none;
+                      halign: center;
+                      valign: start;
+                      row-spacing: 12;
+                      column-spacing: 10;
+                    }
                   }
-                }
-              };
-            }
+                };
+              }
               Adw.ViewStackPage {
                 name: "unique";
                 title: _("Unique");
                 child: ScrolledWindow unique_scrolled {
                   vexpand: true;
+                  hscrollbar-policy: never;
+                  vscrollbar-policy: automatic;
                   FlowBox unique_flowbox {
                     margin-top: 12; margin-bottom: 24; margin-start: 12; margin-end: 12;
                     max-children-per-line: 20;
@@ -342,6 +346,8 @@ template $CineWindow: Adw.ApplicationWindow {
                 name: "search_results";
                 child: ScrolledWindow search_scrolled {
                   vexpand: true;
+                  hscrollbar-policy: never;
+                  vscrollbar-policy: automatic;
                   Box {
                     orientation: vertical;
                     margin-top: 12; margin-bottom: 12; margin-start: 12; margin-end: 12;

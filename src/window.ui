@@ -503,6 +503,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                     <child>
                                       <object class="GtkScrolledWindow" id="content_scrolled">
                                         <property name="vexpand">true</property>
+                                        <property name="hscrollbar-policy">2</property>
+                                        <property name="vscrollbar-policy">1</property>
                                         <child>
                                           <object class="GtkFlowBox" id="content_flowbox">
                                             <property name="margin-top">4</property>
@@ -531,6 +533,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 <property name="child">
                                   <object class="GtkScrolledWindow" id="unique_scrolled">
                                     <property name="vexpand">true</property>
+                                    <property name="hscrollbar-policy">2</property>
+                                    <property name="vscrollbar-policy">1</property>
                                     <child>
                                       <object class="GtkFlowBox" id="unique_flowbox">
                                         <property name="margin-top">12</property>
@@ -556,6 +560,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 <property name="child">
                                   <object class="GtkScrolledWindow" id="search_scrolled">
                                     <property name="vexpand">true</property>
+                                    <property name="hscrollbar-policy">2</property>
+                                    <property name="vscrollbar-policy">1</property>
                                     <child>
                                       <object class="GtkBox">
                                         <property name="orientation">1</property>

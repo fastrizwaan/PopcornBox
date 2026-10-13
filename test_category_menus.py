@@ -279,6 +279,73 @@ class TestCategoryMenus(unittest.TestCase):
         self.assertIn("Popular - Movies", titles)
         self.assertIn("Popular - Series", titles)
 
+    def test_discover_catalog_list_with_genre_and_filtered_addon(self):
+        """Verify that when a specific addon is filtered, choosing a genre does NOT discard its catalogs."""
+        win = DummyWindow()
+        win.current_genre = "Animation"
+        m_url = "https://stremio-torrentfreak.krazykayaker.com/manifest.json"
+        mock_addon = {
+            "name": "TorrentFreaks",
+            "manifest_url": m_url,
+            "enabled": True,
+            "catalogs": [
+                {"id": "torrentfreak-top10", "name": "TorrentFreaks Top-10", "type": "movie"}
+            ]
+        }
+        with patch("src.database.get_addons", return_value=[mock_addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.is_catalog_provider", return_value=True), \
+             patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = win._get_discover_catalog_list(filter_media_type="all", filter_addon_url=m_url)
+
+        # TorrentFreak catalog must be returned so its items can be client-filtered by Animation
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["catalog_id"], "torrentfreak-top10")
+
+    def test_fetch_items_client_side_genre_filtering(self):
+        """Verify fetch_items requests base catalog without genre route if catalog has no genre extra, and filters items client side."""
+        from src import api
+        m_url = "https://stremio-torrentfreak.krazykayaker.com/manifest.json"
+        mock_addon = {
+            "name": "TorrentFreaks",
+            "manifest_url": m_url,
+            "enabled": True,
+            "catalogs": [
+                {"id": "torrentfreak-top10", "name": "TorrentFreaks Top-10", "type": "movie"}
+            ]
+        }
+        mock_response = {
+            "metas": [
+                {"id": "tt1234567", "title": "Toy Story 5", "genres": ["Animation", "Comedy"]},
+                {"id": "tt7654321", "title": "Die Hard", "genres": ["Action", "Thriller"]}
+            ]
+        }
+        requested_urls = []
+        def mock_get_cached_request(url, **kwargs):
+            requested_urls.append(url)
+            return mock_response
+
+        with patch("src.database.get_addons", return_value=[mock_addon]), \
+             patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
+             patch("src.api._get_cached_request", side_effect=mock_get_cached_request):
+            items = api.fetch_items(
+                media_type="movie",
+                catalog_id="torrentfreak-top10",
+                catalog_url=m_url,
+                genre="Animation",
+                page=1
+            )
+
+        # URL should NOT have genre=Animation appended (which would 404 on the addon server)
+        self.assertEqual(len(requested_urls), 1)
+        self.assertTrue(requested_urls[0].endswith("/catalog/movie/torrentfreak-top10.json"))
+        self.assertNotIn("genre=", requested_urls[0])
+
+        # Client-side filter should keep only Toy Story 5
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "Toy Story 5")
+
 
 if __name__ == "__main__":
     unittest.main()

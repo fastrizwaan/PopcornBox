@@ -1158,10 +1158,11 @@ def filter_items_by_genre(items, genre, media_type=None):
     filtered = []
 
     for item in items:
-        # Check local DB metadata cache if present
+        # Check local DB metadata cache only if genres are not already present on the item
+        has_item_genres = bool(item.get("genres") or item.get("genre") or item.get("genre_ids"))
         cached_meta = None
         item_id = item.get("id") or item.get("imdb_id")
-        if item_id:
+        if not has_item_genres and item_id:
             cached_meta = database.get_cached_metadata(item_id, media_type or item.get("type"))
 
         # Strictly verify media type compatibility first
@@ -1601,38 +1602,72 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             base_url += "/"
             
         actual_cat_type = c_type
+        cat_obj = None
         for a in database.get_addons():
             m_url = a.get("manifest_url", "")
             if m_url and (m_url == catalog_url or catalog_url.startswith(m_url.rsplit("manifest.json", 1)[0])):
                 addon_cats = get_addon_catalogs(a, cache_only=False)
                 candidates = [cat for cat in addon_cats if str(cat.get("id")) == str(catalog_id)]
                 if len(candidates) == 1:
+                    cat_obj = candidates[0]
                     actual_cat_type = candidates[0].get("type") or c_type
                 elif len(candidates) > 1:
-                    exact = next((cat.get("type") for cat in candidates if str(cat.get("type") or "").lower() == c_type.lower()), None)
+                    exact = next((cat for cat in candidates if str(cat.get("type") or "").lower() == c_type.lower()), None)
                     if exact:
-                        actual_cat_type = exact
+                        cat_obj = exact
+                        actual_cat_type = exact.get("type") or c_type
                     else:
-                        compat = next((cat.get("type") for cat in candidates if is_type_match(cat.get("type"), c_type)), None)
-                        actual_cat_type = compat or c_type
+                        compat = next((cat for cat in candidates if is_type_match(cat.get("type"), c_type)), None)
+                        cat_obj = compat or candidates[0]
+                        actual_cat_type = cat_obj.get("type") or c_type
                 elif not candidates and addon_cats:
                     for cat in addon_cats:
                         ct = cat.get("type")
                         if ct and ct.lower() == c_type.lower():
+                            cat_obj = cat
                             actual_cat_type = ct
                             break
                 break
 
-        if genre and genre != "All":
-            cat_obj = None
-            for a in database.get_addons():
-                m_url = a.get("manifest_url", "")
-                if m_url and (m_url == catalog_url or catalog_url.startswith(m_url.rsplit("manifest.json", 1)[0])):
-                    addon_cats = get_addon_catalogs(a, cache_only=False)
-                    cat_obj = next((cat for cat in addon_cats if str(cat.get("id")) == str(catalog_id)), None)
+        server_genre = None
+        server_supports_skip = False
+        if cat_obj:
+            extra = cat_obj.get("extra") or []
+            for ex in extra:
+                if (isinstance(ex, dict) and ex.get("name") == "skip") or ex == "skip":
+                    server_supports_skip = True
                     break
-            if cat_obj and not catalog_supports_genre(cat_obj, genre):
-                return []
+            if "skip" in (cat_obj.get("extraSupported") or []):
+                server_supports_skip = True
+
+            if genre and genre != "All":
+                cat_genres = cat_obj.get("genres") or []
+                matched_opt = next((cg for cg in cat_genres if does_genre_match_filter(cg, genre)), None)
+                if matched_opt:
+                    server_genre = matched_opt
+                else:
+                    genre_extra = None
+                    for ex in extra:
+                        if isinstance(ex, dict) and ex.get("name") == "genre":
+                            genre_extra = ex
+                            break
+                        elif ex == "genre":
+                            genre_extra = {"name": "genre"}
+                            break
+                    if genre_extra is not None:
+                        opts = genre_extra.get("options") or []
+                        if opts:
+                            server_genre = next((opt for opt in opts if does_genre_match_filter(opt, genre)), None)
+                        else:
+                            server_genre = genre
+                    elif "genre" in (cat_obj.get("extraSupported") or []):
+                        server_genre = genre
+        else:
+            server_supports_skip = True
+
+        # If catalog does not support pagination and a subsequent page was requested, return empty
+        if skip > 0 and cat_obj and not server_supports_skip:
+            return []
 
         if is_cancelled and is_cancelled():
             return []
@@ -1640,9 +1675,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         url = f"{base_url}catalog/{actual_cat_type}/{catalog_id}"
         
         extras = []
-        if genre and genre != "All":
-            extras.append(f"genre={urllib.parse.quote(genre)}")
-        if skip > 0:
+        if genre and genre != "All" and server_genre:
+            extras.append(f"genre={urllib.parse.quote(server_genre)}")
+        if skip > 0 and server_supports_skip:
             extras.append(f"skip={skip}")
             
         if extras:

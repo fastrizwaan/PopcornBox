@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import sys
 import tempfile
 import os
+import threading
 import subprocess
 from pathlib import Path
 
@@ -316,6 +317,158 @@ class TestUniqueCombinedView(unittest.TestCase):
         win._load_next_unique_batch.assert_called_once()
 
 
+    def test_refresh_unique_ensures_library_stack_unique(self):
+        win = MagicMock()
+        win.unique_request_id = 0
+        win._unique_abort_event = None
+        win._unique_active_pool = None
+        win.unique_seen_ids = set()
+        win.unique_seen_keys = set()
+        win.unique_page_per_catalog = {}
+        win.unique_exhausted_catalogs = set()
+        win.unique_truly_empty_catalogs = set()
+        win.unique_productive_catalogs = []
+        win.unique_empty_streak = {}
+        win.unique_flowbox = MagicMock()
+        win.library_stack = MagicMock()
+        win.library_stack.get_visible_child_name.return_value = "content"
+        win.discover_back_box = MagicMock()
+        win._get_discover_catalog_list.return_value = []
+
+        CineWindow._refresh_unique_combined_view(win)
+
+        win.library_stack.set_visible_child_name.assert_called_with("unique")
+        win.discover_back_box.set_visible.assert_called_with(False)
+        win.unique_flowbox.remove_all.assert_called_once()
+
+    def test_database_dropdown_caches(self):
+        from src import database
+        database.invalidate_dropdown_caches()
+        genres_1 = database.get_available_genres("movie")
+        genres_2 = database.get_available_genres("movie")
+        self.assertEqual(genres_1, genres_2)
+        self.assertIn("Action", genres_1)
+
+        sort_1 = database.get_available_sort_options("movie")
+        sort_2 = database.get_available_sort_options("movie")
+        self.assertEqual(sort_1, sort_2)
+        self.assertIn("Popular", sort_1)
+        self.assertIn("Featured", sort_1)
+
+        database.invalidate_dropdown_caches()
+        genres_3 = database.get_available_genres("movie")
+        self.assertEqual(genres_1, genres_3)
+
+    def test_populate_discover_row_slot(self):
+        win = MagicMock()
+        win.current_genre = "Action"
+        win.current_year = None
+        win._on_movie_clicked = MagicMock()
+
+        slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        target_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        target_box.append(slot)
+
+        row_info = {
+            "media_type": "movie",
+            "catalog_id": "top",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+            "title": "Popular - Movies",
+            "catalog_name": "Popular",
+            "addon_name": "Cinemeta"
+        }
+        items = [
+            {"id": "tt1", "title": "Movie 1", "type": "movie"},
+            {"id": "tt2", "title": "Movie 2", "type": "movie"}
+        ]
+
+        CineWindow._populate_discover_row_slot(win, slot, row_info, items, target_box)
+
+        # Slot should now contain header box and scrolled window
+        header = slot.get_first_child()
+        self.assertIsNotNone(header)
+        scroll = header.get_next_sibling()
+        self.assertIsNotNone(scroll)
+        self.assertTrue(isinstance(scroll, Gtk.ScrolledWindow))
+
+    def test_do_close_request_handles_none_search_pool(self):
+        win = MagicMock()
+        win._search_pool = None
+        win._unique_active_pool = None
+        win._discover_active_pool = None
+        win._unique_abort_event = threading.Event()
+        win._discover_abort_event = threading.Event()
+        win._current_playing_item = None
+        win.preview_player = None
+        win.mpv = MagicMock()
+        win.mpv.playlist = []
+        win.inhibit_cookie = 0
+
+        # Should not raise AttributeError when _search_pool is None
+        ret = CineWindow.do_close_request(win)
+        self.assertFalse(ret)
+        self.assertTrue(win._unique_abort_event.is_set())
+        self.assertTrue(win._discover_abort_event.is_set())
+
+    def test_do_close_request_shuts_down_active_pools(self):
+        win = MagicMock()
+        search_pool = MagicMock()
+        unique_pool = MagicMock()
+        discover_pool = MagicMock()
+        win._search_pool = search_pool
+        win._unique_active_pool = unique_pool
+        win._discover_active_pool = discover_pool
+        win._current_playing_item = None
+        win.preview_player = None
+        win.mpv = MagicMock()
+        win.mpv.playlist = []
+        win.inhibit_cookie = 0
+
+        ret = CineWindow.do_close_request(win)
+        self.assertFalse(ret)
+        search_pool.shutdown.assert_called_with(wait=False, cancel_futures=True)
+        unique_pool.shutdown.assert_called_with(wait=False, cancel_futures=True)
+        discover_pool.shutdown.assert_called_with(wait=False, cancel_futures=True)
+
+    def test_unique_scrolled_policy_never_horizontal(self):
+        # Verify unique_scrolled in window.ui has hscrollbar-policy=2 (NEVER) and vscrollbar-policy=1 (AUTOMATIC)
+        from pathlib import Path
+        ui_content = Path("src/window.ui").read_text()
+        self.assertIn('<object class="GtkScrolledWindow" id="unique_scrolled">', ui_content)
+        idx = ui_content.find('id="unique_scrolled"')
+        chunk = ui_content[idx:idx + 300]
+        self.assertIn('<property name="hscrollbar-policy">2</property>', chunk)
+        self.assertIn('<property name="vscrollbar-policy">1</property>', chunk)
+
+    def test_deliver_unique_slices_auto_fills_viewport(self):
+        win = MagicMock()
+        win.unique_request_id = 1
+        win.is_fetching_unique = True
+        win.has_more_unique = True
+        win.unique_flowbox = MagicMock()
+        win.unique_flowbox.get_first_child.return_value = None
+        win.unique_scrolled = MagicMock()
+        mock_adj = MagicMock()
+        mock_adj.get_value.return_value = 0
+        mock_adj.get_page_size.return_value = 800
+        mock_adj.get_upper.return_value = 400  # under-filled
+        win.unique_scrolled.get_vadjustment.return_value = mock_adj
+
+        items = [{"id": f"tt{i}", "title": f"Movie {i}"} for i in range(6)]
+        idle_callbacks = []
+        with patch("gi.repository.GLib.idle_add", side_effect=lambda fn, *args: idle_callbacks.append((fn, args))), \
+             patch("src.movie_widget.MovieWidget", side_effect=lambda it, cb: MagicMock()):
+            CineWindow._deliver_unique_slices_to_ui(win, items, req_id=1, has_more=True)
+            while idle_callbacks:
+                fn, args = idle_callbacks.pop(0)
+                fn(*args)
+
+            # _on_unique_scroll should have been called to fill the viewport
+            win._on_unique_scroll.assert_called_with(mock_adj)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
 

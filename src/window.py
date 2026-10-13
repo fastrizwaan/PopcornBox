@@ -1112,9 +1112,12 @@ class MovieDetailsPage(Gtk.Overlay):
                 res = api._ping_stream_url(dict(t))
                 t['ping_status'] = res.get('is_working', False)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-                futures = [executor.submit(check_stream, t) for t in http_streams]
-                concurrent.futures.wait(futures)
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+                    futures = [executor.submit(check_stream, t) for t in http_streams]
+                    concurrent.futures.wait(futures)
+            except (RuntimeError, Exception):
+                return
 
             if _is_event_set(abort_event) or not self._is_current_details_page():
                 return
@@ -5496,9 +5499,37 @@ class CineWindow(Adw.ApplicationWindow):
             timeout_add_once(350, self.revealer_icon_indicator.set_reveal_child, False)
 
     def do_close_request(self) -> bool:
-        # Shut down search thread pool cleanly
-        if hasattr(self, "_search_pool"):
-            self._search_pool.shutdown(wait=False, cancel_futures=True)
+        self._destroyed = True
+
+        # Signal all abort events to stop background threads immediately
+        for ev_name in (
+            "_search_abort_event",
+            "_unique_abort_event",
+            "_discover_abort_event",
+            "_content_abort_event",
+            "page_abort_event",
+            "stream_abort_event",
+            "_live_check_abort_event",
+        ):
+            ev = getattr(self, ev_name, None)
+            if ev:
+                ev.set()
+
+        # Shut down active background thread pools cleanly
+        for pool_name in ("_search_pool", "_unique_active_pool", "_discover_active_pool"):
+            pool = getattr(self, pool_name, None)
+            if pool:
+                try:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+                setattr(self, pool_name, None)
+
+        try:
+            from .movie_widget import cancel_pending_image_downloads
+            cancel_pending_image_downloads()
+        except Exception:
+            pass
 
         # 1. Persist in-progress video position to database before closing
         try:
@@ -5534,21 +5565,26 @@ class CineWindow(Adw.ApplicationWindow):
             logger.debug(f"Stremio sync on close error: {e}")
 
         try:
-            if self.preview_player:
+            if getattr(self, "preview_player", None):
                 self.preview_player.terminate()
                 self.preview_player = None
-            same_playlist = is_same_playlist(self.mpv.playlist)
-            save_pos = settings.get_boolean("save-video-position")
-            if same_playlist or save_pos:
-                self.mpv.quit_watch_later()
-            else:
-                self.mpv.quit()
-            self.mpv.wait_for_shutdown(timeout=3)
-        except mpv.ShutdownError:
+            if hasattr(self, "mpv") and self.mpv:
+                same_playlist = is_same_playlist(self.mpv.playlist)
+                save_pos = settings.get_boolean("save-video-position")
+                if same_playlist or save_pos:
+                    self.mpv.quit_watch_later()
+                else:
+                    self.mpv.quit()
+                self.mpv.wait_for_shutdown(timeout=3)
+        except (mpv.ShutdownError, Exception):
             pass
 
-        if self.inhibit_cookie:
-            self.app.uninhibit(self.inhibit_cookie)
+        if getattr(self, "inhibit_cookie", 0):
+            try:
+                self.app.uninhibit(self.inhibit_cookie)
+            except Exception:
+                pass
+            self.inhibit_cookie = 0
 
         return False
 
@@ -6406,18 +6442,25 @@ class CineWindow(Adw.ApplicationWindow):
         action.connect("activate", on_switch_anime)
         self.add_action(action)
 
-        if hasattr(self, "content_scrolled"):
+        if hasattr(self, "content_scrolled") and self.content_scrolled is not None:
+            self.content_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             adj = self.content_scrolled.get_vadjustment()
             adj.connect("value-changed", self._on_content_scroll)
+            adj.connect("changed", self._on_content_scroll)
 
-        if hasattr(self, "discover_scrolled"):
+        if hasattr(self, "discover_scrolled") and self.discover_scrolled is not None:
             discover_adj = self.discover_scrolled.get_vadjustment()
             discover_adj.connect("value-changed", self._on_discover_scroll)
             discover_adj.connect("changed", self._on_discover_scroll)
 
         if hasattr(self, "unique_scrolled") and self.unique_scrolled is not None:
+            self.unique_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             unique_adj = self.unique_scrolled.get_vadjustment()
             unique_adj.connect("value-changed", self._on_unique_scroll)
+            unique_adj.connect("changed", self._on_unique_scroll)
+
+        if hasattr(self, "search_scrolled") and self.search_scrolled is not None:
+            self.search_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
 
         self.unique_seen_ids = set()
         self.unique_seen_keys = set()
@@ -6849,12 +6892,18 @@ class CineWindow(Adw.ApplicationWindow):
             target_type = active_m_type if active_m_type != "all" else getattr(self, "current_media_type", "movie")
             if self.current_genre and self.current_catalog:
                 cur_cat_type = self.current_catalog.get("media_type") or self.current_catalog.get("type") or target_type
-                if not api.is_type_match(cur_cat_type, target_type) or not api.catalog_supports_genre(self.current_catalog, self.current_genre):
+                if not api.is_type_match(cur_cat_type, target_type):
                     avail_cats = api.get_available_catalogs(target_type)
                     matching_cat = next((c for c in avail_cats if api.catalog_supports_genre(c, self.current_genre)), None)
                     if matching_cat:
                         self.current_catalog = matching_cat
                         self.current_media_type = target_type
+            if hasattr(self, "discover_grid_title") and hasattr(self.discover_grid_title, "set_text") and self.current_catalog:
+                c_name = self.current_catalog.get("display_name") or self.current_catalog.get("catalog_name") or self.current_catalog.get("name") or "Catalog"
+                disp_t = c_name
+                if self.current_genre:
+                    disp_t += f" — {self.current_genre}"
+                self.discover_grid_title.set_text(disp_t)
             self._apply_sort_to_current_catalog()
             self._refresh_content()
         else:
@@ -7013,8 +7062,17 @@ class CineWindow(Adw.ApplicationWindow):
 
         # Clear flowbox on GTK main thread instantly
         if hasattr(self, "unique_flowbox"):
-            while self.unique_flowbox.get_first_child() is not None:
-                self.unique_flowbox.remove(self.unique_flowbox.get_first_child())
+            if hasattr(self.unique_flowbox, "remove_all"):
+                self.unique_flowbox.remove_all()
+            else:
+                while self.unique_flowbox.get_first_child() is not None:
+                    self.unique_flowbox.remove(self.unique_flowbox.get_first_child())
+
+        # Ensure library_stack displays unique and back button is hidden
+        if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "unique":
+            self.library_stack.set_visible_child_name("unique")
+        if hasattr(self, "discover_back_box"):
+            self.discover_back_box.set_visible(False)
 
         # Determine media type and filter variables
         filter_type = getattr(self, "_current_discover_type", "all")
@@ -7042,6 +7100,16 @@ class CineWindow(Adw.ApplicationWindow):
             if match_idx is not None:
                 cat_item = catalogs.pop(match_idx)
                 catalogs.insert(0, cat_item)
+            elif not filter_addon or filter_addon == m_url:
+                c_type = cur_cat.get("media_type") or cur_cat.get("type") or filter_type
+                if api.is_type_match(c_type, filter_type):
+                    catalogs.insert(0, {
+                        "addon_name": cur_cat.get("addon_name", ""),
+                        "manifest_url": m_url,
+                        "catalog_id": c_id,
+                        "catalog_name": cur_cat.get("catalog_name") or cur_cat.get("name") or c_id,
+                        "media_type": c_type
+                    })
 
         self.unique_catalogs = catalogs
         self.unique_catalogs_by_key = {
@@ -7058,7 +7126,6 @@ class CineWindow(Adw.ApplicationWindow):
         """Deliver prepared items to GTK main thread in small non-blocking slices of 6 widgets."""
         abort_ev = getattr(self, "_unique_abort_event", None)
         if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
-            self.is_fetching_unique = False
             return
 
         if not items:
@@ -7100,38 +7167,12 @@ class CineWindow(Adw.ApplicationWindow):
                 GLib.idle_add(_deliver_next_slice, slice_idx + 1)
                 return False
 
-            # All slices in this batch have been delivered to GTK
             self.is_fetching_unique = False
             if not has_more and not items:
                 self.has_more_unique = False
-
-            # Check if viewport still has room on large/wide screens and fetch next batch until filled
-            def _check_viewport_fill():
-                if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
-                    return False
-                if not getattr(self, "has_more_unique", True) or getattr(self, "is_fetching_unique", False):
-                    return False
-                if hasattr(self, "unique_scrolled") and self.unique_scrolled:
-                    adj = self.unique_scrolled.get_vadjustment()
-                    if adj:
-                        val = adj.get_value()
-                        page_size = adj.get_page_size()
-                        upper = adj.get_upper()
-                        if page_size > 0 and (upper <= page_size + 400 or val + page_size >= upper - 800):
-                            self._load_next_unique_batch()
-                            return False
-
-                if hasattr(self, "unique_flowbox"):
-                    child_count = 0
-                    c = self.unique_flowbox.get_first_child()
-                    while c and child_count < 50:
-                        child_count += 1
-                        c = c.get_next_sibling()
-                    if child_count < 48:
-                        self._load_next_unique_batch()
-                return False
-
-            GLib.timeout_add(150, _check_viewport_fill)
+            # Check if viewport needs more cards to fill the window
+            if getattr(self, "has_more_unique", True) and hasattr(self, "unique_scrolled") and self.unique_scrolled is not None:
+                self._on_unique_scroll(self.unique_scrolled.get_vadjustment())
             return False
 
         GLib.idle_add(_deliver_next_slice, 0)
@@ -7152,226 +7193,252 @@ class CineWindow(Adw.ApplicationWindow):
             from . import api, database
             import concurrent.futures
 
-            target_batch_count = 48
+            target_batch_count = 36
             collected = []
             num_catalogs = len(self.unique_catalogs)
             consecutive_empty_passes = 0
             max_passes = 12
 
-            while len(collected) < target_batch_count and len(self.unique_exhausted_catalogs) < num_catalogs and max_passes > 0:
-                max_passes -= 1
-                if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
-                    self.is_fetching_unique = False
-                    return
-
-                batch_cats = []
-                # 1. Productive catalogs first (catalogs that previously yielded matching items)
-                prod_to_remove = []
-                for cat_key in list(getattr(self, "unique_productive_catalogs", [])):
-                    if cat_key in self.unique_exhausted_catalogs:
-                        prod_to_remove.append(cat_key)
-                        continue
-                    cat = getattr(self, "unique_catalogs_by_key", {}).get(cat_key)
-                    if not cat:
-                        prod_to_remove.append(cat_key)
-                        continue
-                    page = self.unique_page_per_catalog.get(cat_key, 1)
-                    if page >= 25:
-                        self.unique_exhausted_catalogs.add(cat_key)
-                        prod_to_remove.append(cat_key)
-                        continue
-                    batch_cats.append((cat, cat_key, page))
-                    if len(batch_cats) >= 4:
-                        break
-                for pk in prod_to_remove:
-                    if pk in getattr(self, "unique_productive_catalogs", []):
-                        self.unique_productive_catalogs.remove(pk)
-
-                # 2. Fill remaining batch slots (up to 6) from unexhausted catalogs
-                for _ in range(num_catalogs):
-                    if len(batch_cats) >= 6:
-                        break
-                    cat = self.unique_catalogs[self.unique_catalog_idx]
-                    cat_key = (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("media_type"))
-                    self.unique_catalog_idx = (self.unique_catalog_idx + 1) % num_catalogs
-                    if cat_key not in self.unique_exhausted_catalogs and cat_key not in [k for _, k, _ in batch_cats]:
-                        page = self.unique_page_per_catalog.get(cat_key, 1)
-                        batch_cats.append((cat, cat_key, page))
-
-                if not batch_cats:
-                    break
-
-                def _fetch_cat(cat_info, key, page):
+            try:
+                while len(collected) < target_batch_count and len(self.unique_exhausted_catalogs) < num_catalogs and max_passes > 0:
+                    max_passes -= 1
                     if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
-                        return None
-                    m_type = cat_info.get("media_type", "movie")
-                    c_id = cat_info.get("catalog_id")
-                    m_url = cat_info.get("manifest_url")
-                    c_name = cat_info.get("catalog_name") or cat_info.get("name") or c_id
-                    a_name = cat_info.get("addon_name") or ""
+                        return
 
-                    if m_url and not api.is_addon_online(m_url):
-                        return (key, page, None, -1)
+                    batch_cats = []
+                    # 1. Productive catalogs first (catalogs that previously yielded matching items)
+                    prod_to_remove = []
+                    for cat_key in list(getattr(self, "unique_productive_catalogs", [])):
+                        if cat_key in self.unique_exhausted_catalogs:
+                            prod_to_remove.append(cat_key)
+                            continue
+                        cat = getattr(self, "unique_catalogs_by_key", {}).get(cat_key)
+                        if not cat:
+                            prod_to_remove.append(cat_key)
+                            continue
+                        page = self.unique_page_per_catalog.get(cat_key, 1)
+                        if page >= 25:
+                            self.unique_exhausted_catalogs.add(cat_key)
+                            prod_to_remove.append(cat_key)
+                            continue
+                        batch_cats.append((cat, cat_key, page))
+                        if len(batch_cats) >= 4:
+                            break
+                    for pk in prod_to_remove:
+                        if pk in getattr(self, "unique_productive_catalogs", []):
+                            self.unique_productive_catalogs.remove(pk)
 
-                    fetch_genre = cur_genre
-                    if not cur_genre and cur_year and c_id == "year":
-                        fetch_genre = cur_year
+                    # 2. Fill remaining batch slots (up to 6) from unexhausted catalogs
+                    for _ in range(num_catalogs):
+                        if len(batch_cats) >= 6:
+                            break
+                        cat = self.unique_catalogs[self.unique_catalog_idx]
+                        cat_key = (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("media_type"))
+                        self.unique_catalog_idx = (self.unique_catalog_idx + 1) % num_catalogs
+                        if cat_key not in self.unique_exhausted_catalogs and cat_key not in [k for _, k, _ in batch_cats]:
+                            page = self.unique_page_per_catalog.get(cat_key, 1)
+                            batch_cats.append((cat, cat_key, page))
 
-                    genre_suffix = f":{fetch_genre}" if fetch_genre else ""
-                    year_suffix = f":y{cur_year}" if cur_year else ""
-                    cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}:p{page}"
+                    if not batch_cats:
+                        break
 
-                    cached = database.get_cached_catalog(cache_key, max_age_hours=24)
-                    if not cached and page == 1:
-                        cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}", max_age_hours=24)
+                    def _fetch_cat(cat_info, key, page):
+                        if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
+                            return None
+                        m_type = cat_info.get("media_type", "movie")
+                        c_id = cat_info.get("catalog_id")
+                        m_url = cat_info.get("manifest_url")
+                        c_name = cat_info.get("catalog_name") or cat_info.get("name") or c_id
+                        a_name = cat_info.get("addon_name") or ""
 
-                    if _is_event_set(abort_ev):
-                        return None
+                        if m_url and not api.is_addon_online(m_url):
+                            return (key, page, None, -1)
 
-                    if cached:
-                        if database.is_adult_content_hidden():
-                            cached = [it for it in cached if not api.is_adult_item(it)]
-                        for it in cached:
-                            if not it.get("addon_name"): it["addon_name"] = a_name
-                            if not it.get("catalog_name"): it["catalog_name"] = c_name
-                            if not it.get("catalog_id"): it["catalog_id"] = c_id
-                            if not it.get("manifest_url"): it["manifest_url"] = m_url
-                        if api.hydrate_missing_catalog_items(cached, media_type=m_type):
-                            if not _is_event_set(abort_ev):
-                                database.save_cached_catalog(cache_key, cached)
-                        filtered = cached
-                        if cur_genre:
-                            filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
-                        elif filtered and m_type:
-                            filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
-                        if filtered and cur_genre and cur_year:
-                            filtered = [it for it in filtered if str(it.get("year", "")).startswith(cur_year)]
-                        return (key, page, filtered, len(cached))
+                        fetch_genre = cur_genre
+                        if not cur_genre and cur_year and c_id == "year":
+                            fetch_genre = cur_year
 
-                    if _is_event_set(abort_ev):
-                        return None
+                        genre_suffix = f":{fetch_genre}" if fetch_genre else ""
+                        year_suffix = f":y{cur_year}" if cur_year else ""
+                        cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}:p{page}"
 
-                    try:
-                        raw_items = api.fetch_items(
-                            media_type=m_type,
-                            catalog_id=c_id,
-                            catalog_url=m_url,
-                            genre=fetch_genre or "",
-                            page=page,
-                            limit=20,
-                            timeout=2.5,
-                            is_cancelled=(lambda: _is_event_set(abort_ev))
-                        )
+                        cached = database.get_cached_catalog(cache_key, max_age_hours=24)
+                        if not cached and page == 1:
+                            cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}", max_age_hours=24)
+                        if not cached and page == 1 and cur_genre:
+                            base_cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{year_suffix}", max_age_hours=24)
+                            if base_cached:
+                                cached = api.filter_items_by_genre(base_cached, cur_genre, media_type=m_type)
+
                         if _is_event_set(abort_ev):
                             return None
-                        items = list(raw_items) if raw_items is not None else None
-                        if items:
+
+                        if cached:
                             if database.is_adult_content_hidden():
-                                items = [it for it in items if not api.is_adult_item(it)]
-                            for it in items:
+                                cached = [it for it in cached if not api.is_adult_item(it)]
+                            for it in cached:
                                 if not it.get("addon_name"): it["addon_name"] = a_name
                                 if not it.get("catalog_name"): it["catalog_name"] = c_name
                                 if not it.get("catalog_id"): it["catalog_id"] = c_id
                                 if not it.get("manifest_url"): it["manifest_url"] = m_url
-                        filtered = items or []
-                        if filtered and cur_genre:
-                            filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
-                        elif filtered and m_type:
-                            filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
-                        if filtered and cur_genre and cur_year:
-                            filtered = [it for it in filtered if str(it.get("year", "")).startswith(cur_year)]
-                        if items and not _is_event_set(abort_ev):
-                            database.save_cached_catalog(cache_key, items)
-                        raw_count = len(raw_items) if raw_items is not None else -1
-                        return (key, page, filtered, raw_count)
-                    except Exception as e:
-                        logger.debug(f"Unique worker catalog fetch error: {e}")
-                        return (key, page, None, -1)
+                            if api.hydrate_missing_catalog_items(cached, media_type=m_type):
+                                if not _is_event_set(abort_ev):
+                                    database.save_cached_catalog(cache_key, cached)
+                            filtered = cached
+                            if cur_genre:
+                                filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
+                            elif filtered and m_type:
+                                filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
+                            if filtered and cur_genre and cur_year:
+                                filtered = [it for it in filtered if str(it.get("year", "")).startswith(cur_year)]
+                            return (key, page, filtered, len(cached))
 
-                cat_results = []
-                pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_cats), 6))
-                self._unique_active_pool = pool
-                try:
-                    futures = [pool.submit(_fetch_cat, c, k, p) for c, k, p in batch_cats]
+                        if _is_event_set(abort_ev):
+                            return None
+
+                        try:
+                            raw_items = api.fetch_items(
+                                media_type=m_type,
+                                catalog_id=c_id,
+                                catalog_url=m_url,
+                                genre=fetch_genre or "",
+                                page=page,
+                                limit=20,
+                                timeout=2.5,
+                                is_cancelled=(lambda: _is_event_set(abort_ev))
+                            )
+                            if _is_event_set(abort_ev):
+                                return None
+                            items = list(raw_items) if raw_items is not None else None
+                            if items:
+                                if database.is_adult_content_hidden():
+                                    items = [it for it in items if not api.is_adult_item(it)]
+                                for it in items:
+                                    if not it.get("addon_name"): it["addon_name"] = a_name
+                                    if not it.get("catalog_name"): it["catalog_name"] = c_name
+                                    if not it.get("catalog_id"): it["catalog_id"] = c_id
+                                    if not it.get("manifest_url"): it["manifest_url"] = m_url
+                            filtered = items or []
+                            if filtered and cur_genre:
+                                filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
+                            elif filtered and m_type:
+                                filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
+                            if filtered and cur_genre and cur_year:
+                                filtered = [it for it in filtered if str(it.get("year", "")).startswith(cur_year)]
+                            if items and not _is_event_set(abort_ev):
+                                database.save_cached_catalog(cache_key, items)
+                            raw_count = len(raw_items) if raw_items is not None else -1
+                            return (key, page, filtered, raw_count)
+                        except Exception as e:
+                            logger.debug(f"Unique worker catalog fetch error: {e}")
+                            return (key, page, None, -1)
+
+                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_cats), 6))
+                    self._unique_active_pool = pool
+                    pass_added = 0
                     try:
-                        for f in concurrent.futures.as_completed(futures, timeout=3.0):
-                            if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
-                                self.is_fetching_unique = False
-                                pool.shutdown(wait=False, cancel_futures=True)
-                                return
-                            res = f.result()
-                            if res:
-                                cat_results.append(res)
-                    except concurrent.futures.TimeoutError:
-                        pass
-                finally:
-                    pool.shutdown(wait=False, cancel_futures=True)
-                    if getattr(self, "_unique_active_pool", None) is pool:
-                        self._unique_active_pool = None
-
-                pass_added = 0
-                for cat_key, page, items, raw_count in cat_results:
-                    if raw_count == -1:
-                        # Network timeout or failure; do not exhaust
-                        continue
-                    elif raw_count == 0:
-                        # Catalog truly at end
-                        self.unique_exhausted_catalogs.add(cat_key)
-                        self.unique_truly_empty_catalogs.add(cat_key)
-                        if cat_key in getattr(self, "unique_productive_catalogs", []):
-                            self.unique_productive_catalogs.remove(cat_key)
-                    else:
-                        if not items:
-                            # Returned raw items, but none matched the current genre/type filter
-                            streak = getattr(self, "unique_empty_streak", {}).get(cat_key, 0) + 1
-                            self.unique_empty_streak[cat_key] = streak
-                            if streak >= 2 or page >= 3:
-                                self.unique_exhausted_catalogs.add(cat_key)
-                                if cat_key in getattr(self, "unique_productive_catalogs", []):
-                                    self.unique_productive_catalogs.remove(cat_key)
-                            else:
-                                self.unique_page_per_catalog[cat_key] = page + 1
-                        else:
-                            # Yielded matching items!
-                            if hasattr(self, "unique_empty_streak"):
-                                self.unique_empty_streak[cat_key] = 0
-                            if not hasattr(self, "unique_productive_catalogs"):
-                                self.unique_productive_catalogs = []
-                            if cat_key not in self.unique_productive_catalogs:
-                                self.unique_productive_catalogs.append(cat_key)
-                            next_page = page + 1
-                            self.unique_page_per_catalog[cat_key] = next_page
-                            if next_page > 25:
-                                self.unique_exhausted_catalogs.add(cat_key)
-                                if cat_key in self.unique_productive_catalogs:
-                                    self.unique_productive_catalogs.remove(cat_key)
-
-                            for item in items:
-                                if database.is_adult_content_hidden() and api.is_adult_item(item):
+                        try:
+                            futures = [pool.submit(_fetch_cat, c, k, p) for c, k, p in batch_cats]
+                        except RuntimeError:
+                            # Executor or Python interpreter shutting down
+                            return
+                        try:
+                            for f in concurrent.futures.as_completed(futures, timeout=3.0):
+                                if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
+                                    pool.shutdown(wait=False, cancel_futures=True)
+                                    return
+                                res = f.result()
+                                if not res:
                                     continue
-                                if self._is_unique_item(item):
-                                    collected.append(item)
-                                    pass_added += 1
-                                    if len(collected) >= target_batch_count:
-                                        break
-                    if len(collected) >= target_batch_count:
-                        break
+                                cat_key, page, items, raw_count = res
+                                if raw_count == -1:
+                                    continue
+                                elif raw_count == 0:
+                                    self.unique_exhausted_catalogs.add(cat_key)
+                                    self.unique_truly_empty_catalogs.add(cat_key)
+                                    if cat_key in getattr(self, "unique_productive_catalogs", []):
+                                        self.unique_productive_catalogs.remove(cat_key)
+                                else:
+                                    if not items:
+                                        streak = getattr(self, "unique_empty_streak", {}).get(cat_key, 0) + 1
+                                        self.unique_empty_streak[cat_key] = streak
+                                        max_streak = 4 if cur_genre else 2
+                                        max_page = 5 if cur_genre else 3
+                                        if streak >= max_streak or page >= max_page:
+                                            self.unique_exhausted_catalogs.add(cat_key)
+                                            if cat_key in getattr(self, "unique_productive_catalogs", []):
+                                                self.unique_productive_catalogs.remove(cat_key)
+                                        else:
+                                            self.unique_page_per_catalog[cat_key] = page + 1
+                                    else:
+                                        # Yielded matching items!
+                                        if hasattr(self, "unique_empty_streak"):
+                                            self.unique_empty_streak[cat_key] = 0
+                                        if not hasattr(self, "unique_productive_catalogs"):
+                                            self.unique_productive_catalogs = []
+                                        if cat_key not in self.unique_productive_catalogs:
+                                            self.unique_productive_catalogs.append(cat_key)
+                                        next_page = page + 1
+                                        self.unique_page_per_catalog[cat_key] = next_page
+                                        if next_page > 25:
+                                            self.unique_exhausted_catalogs.add(cat_key)
+                                            if cat_key in self.unique_productive_catalogs:
+                                                self.unique_productive_catalogs.remove(cat_key)
 
-                if pass_added == 0:
-                    consecutive_empty_passes += 1
-                    if consecutive_empty_passes >= 4:
-                        break
-                else:
-                    consecutive_empty_passes = 0
-                    if len(collected) >= target_batch_count:
-                        break
+                                        # Collect unique items and stream immediately to UI!
+                                        unique_new = []
+                                        for item in items:
+                                            if database.is_adult_content_hidden() and api.is_adult_item(item):
+                                                continue
+                                            if self._is_unique_item(item):
+                                                unique_new.append(item)
+                                                collected.append(item)
+                                                pass_added += 1
 
-            if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
-                self.is_fetching_unique = False
-                return
+                                        if unique_new:
+                                            GLib.idle_add(self._deliver_unique_slices_to_ui, unique_new, req_id, True)
 
-            has_more = len(self.unique_exhausted_catalogs) < num_catalogs
-            self._deliver_unique_slices_to_ui(collected, req_id, has_more=has_more)
+                                if len(collected) >= target_batch_count:
+                                    break
+                        except concurrent.futures.TimeoutError:
+                            pass
+                    finally:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        if getattr(self, "_unique_active_pool", None) is pool:
+                            self._unique_active_pool = None
+
+                    if pass_added == 0:
+                        consecutive_empty_passes += 1
+                        if consecutive_empty_passes >= 4 and len(collected) >= 24:
+                            break
+                        elif consecutive_empty_passes >= 12:
+                            break
+                    else:
+                        consecutive_empty_passes = 0
+                        if len(collected) >= target_batch_count:
+                            break
+
+                has_more = len(self.unique_exhausted_catalogs) < num_catalogs
+                self.has_more_unique = has_more
+                if not collected and not has_more:
+                    GLib.idle_add(self._deliver_unique_slices_to_ui, [], req_id, False)
+            except (RuntimeError, Exception) as e:
+                logger.debug(f"Unique batch worker stopped or encountered error: {e}")
+            finally:
+                def _finish_unique_batch():
+                    if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
+                        return False
+                    self.is_fetching_unique = False
+                    
+                    def check_fill():
+                        if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
+                            return False
+                        if getattr(self, "has_more_unique", True) and hasattr(self, "unique_scrolled") and self.unique_scrolled is not None:
+                            self._on_unique_scroll(self.unique_scrolled.get_vadjustment())
+                        return False
+                    GLib.timeout_add(150, check_fill)
+                    return False
+                GLib.idle_add(_finish_unique_batch)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -7389,8 +7456,11 @@ class CineWindow(Adw.ApplicationWindow):
         self.has_more_content = True
         
         # Clear flowbox
-        while self.content_flowbox.get_first_child() is not None:
-            self.content_flowbox.remove(self.content_flowbox.get_first_child())
+        if hasattr(self.content_flowbox, "remove_all"):
+            self.content_flowbox.remove_all()
+        else:
+            while self.content_flowbox.get_first_child() is not None:
+                self.content_flowbox.remove(self.content_flowbox.get_first_child())
             
         if self.current_catalog:
             self._fetch_content_page()
@@ -7432,6 +7502,10 @@ class CineWindow(Adw.ApplicationWindow):
 
                 # Cache-first: show instantly if we have a recent result
                 cached = database.get_cached_catalog(cache_key, max_age_hours=6)
+                if not cached and page_to_fetch == 1 and genre:
+                    base_cached = database.get_cached_catalog(f"discover:{cat_url}:{cat_id}:{media_type}{year_suffix}", max_age_hours=6)
+                    if base_cached:
+                        cached = api.filter_items_by_genre(base_cached, genre, media_type=media_type)
                 if _is_event_set(abort_ev):
                     self.is_fetching_content = False
                     return
@@ -7536,6 +7610,16 @@ class CineWindow(Adw.ApplicationWindow):
                 else:
                     self.content_error_count = 0
                     self.has_more_content = False
+                    if page_to_fetch == 1 and hasattr(self, "content_flowbox") and not self.content_flowbox.get_first_child():
+                        empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                        empty_box.set_valign(Gtk.Align.CENTER)
+                        empty_box.set_halign(Gtk.Align.CENTER)
+                        empty_box.set_margin_top(60)
+                        empty_box.add_css_class("dim-label")
+                        empty_lbl = Gtk.Label(label=_("No items found for this genre."))
+                        empty_lbl.add_css_class("title-3")
+                        empty_box.append(empty_lbl)
+                        self.content_flowbox.append(empty_box)
 
                 if getattr(self, "has_more_content", True) and hasattr(self, "content_scrolled"):
                     self._on_content_scroll(self.content_scrolled.get_vadjustment())
@@ -7864,7 +7948,7 @@ class CineWindow(Adw.ApplicationWindow):
                 if not api.is_catalog_browsable(cat):
                     continue
 
-                if cur_genre and not api.catalog_supports_genre(cat, cur_genre):
+                if cur_genre and not filter_addon_url and not api.catalog_supports_genre(cat, cur_genre):
                     continue
 
                 c_id = cat.get('id', '')
@@ -8317,6 +8401,13 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "_discover_views") and view_key in self._discover_views:
             self._discover_views[view_key]["next_row_index"] = end_idx
 
+        row_slots = []
+        if target_box:
+            for _ in batch_items:
+                slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+                target_box.append(slot)
+                row_slots.append(slot)
+
         def worker():
             from . import api, database
             import concurrent.futures
@@ -8349,6 +8440,10 @@ class CineWindow(Adw.ApplicationWindow):
                     year_suffix = f":y{current_y}" if current_y else ""
                     cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}"
                     cached = database.get_cached_catalog(cache_key, max_age_hours=48)
+                    if not cached and fetch_genre:
+                        base_cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{year_suffix}", max_age_hours=48)
+                        if base_cached:
+                            cached = api.filter_items_by_genre(base_cached, fetch_genre, media_type=m_type)
                     if _is_event_set(abort_ev):
                         return None
                     if cached:
@@ -8396,12 +8491,16 @@ class CineWindow(Adw.ApplicationWindow):
                         items = None
                     return (row_info, items)
 
-                # Fetch all rows in this batch in parallel
+                # Fetch all rows in this batch in parallel and stream completed rows immediately
                 results = [None] * len(batch_items)
                 executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_items), 6))
                 self._discover_active_pool = executor
                 try:
-                    future_to_idx = {executor.submit(_fetch_single_row, ri): idx for idx, ri in enumerate(batch_items)}
+                    try:
+                        future_to_idx = {executor.submit(_fetch_single_row, ri): idx for idx, ri in enumerate(batch_items)}
+                    except RuntimeError:
+                        # Executor or Python interpreter shutting down
+                        return
                     try:
                         for future in concurrent.futures.as_completed(future_to_idx, timeout=3.5):
                             if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
@@ -8409,7 +8508,24 @@ class CineWindow(Adw.ApplicationWindow):
                                 break
                             idx = future_to_idx[future]
                             try:
-                                results[idx] = future.result()
+                                res = future.result()
+                                results[idx] = res
+                                if res and res[1]:
+                                    def _render_slot(slot_idx=idx, r_data=res):
+                                        if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
+                                            return False
+                                        if slot_idx < len(row_slots):
+                                            self._populate_discover_row_slot(row_slots[slot_idx], r_data[0], r_data[1], target_box)
+                                        return False
+                                    GLib.idle_add(_render_slot)
+                                else:
+                                    def _remove_slot(slot_idx=idx):
+                                        if slot_idx < len(row_slots):
+                                            slot = row_slots[slot_idx]
+                                            if target_box and slot.get_parent() == target_box:
+                                                target_box.remove(slot)
+                                        return False
+                                    GLib.idle_add(_remove_slot)
                             except Exception:
                                 pass
                     except concurrent.futures.TimeoutError:
@@ -8419,99 +8535,20 @@ class CineWindow(Adw.ApplicationWindow):
                     if getattr(self, "_discover_active_pool", None) is executor:
                         self._discover_active_pool = None
 
-                debug_log(f"discover worker fetched all {len(results)} rows for batch {start_idx}..{end_idx}, queueing _apply_batch_results on GLib idle")
-
-                # Render batch results on the main thread
-                def _apply_batch_results():
+                def _finish_batch():
                     if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
                         self._discover_is_loading_rows = False
-                        debug_log(f"_apply_batch_results CANCELLED (req_id {req_id} != {getattr(self, 'discover_request_id', 0)})")
                         return False
-                        
-                    debug_log(f"_apply_batch_results START on main thread for req_id={req_id}")
-                    from .movie_widget import MovieWidget
-                    
-                    for result in results:
-                        if result is None:
-                            continue
-                        row_info, items = result
-                        if not items or len(items) == 0:
-                            continue
 
-                        m_type = row_info.get("media_type", "movie")
-                        c_id = row_info.get("catalog_id")
-                        m_url = row_info.get("manifest_url")
-                        row_title = row_info.get("title", "Catalog")
-                        c_name = row_info.get("catalog_name", c_id)
-                        current_g = getattr(self, "current_genre", None)
-                        current_y = getattr(self, "current_year", None)
-                        if current_y and c_id == "year":
-                            row_title = f"{row_title} · {current_y}"
-                        if current_g and current_g not in row_title:
-                            row_title = f"{row_title} · {current_g}"
-
-                        sec_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-                        sec_header.add_css_class("discover-section-header")
-                        if target_box and not target_box.get_first_child():
-                            sec_header.add_css_class("first-section-header")
-                        
-                        sec_title = Gtk.Label(label=row_title, halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
-                        sec_title.add_css_class("discover-section-title")
-                        sec_header.append(sec_title)
-                        
-                        see_all_btn = Gtk.Button(label=_("See All"))
-                        see_all_btn.add_css_class("discover-see-all-btn")
-                        see_all_btn.add_css_class("flat")
-                        see_all_btn.set_halign(Gtk.Align.END)
-                        see_all_btn.set_valign(Gtk.Align.CENTER)
-                        see_all_btn.set_hexpand(True)
-                        
-                        cat_obj = {
-                            "catalog_id": c_id,
-                            "catalog_name": c_name,
-                            "manifest_url": m_url,
-                            "display_name": row_title
-                        }
-                        see_all_btn.connect("clicked", lambda *a, cat_dict=cat_obj, m_type_val=m_type, title_val=row_title: getattr(self, "_open_catalog_grid")(m_type_val, cat_dict, title_val))
-                        sec_header.append(see_all_btn)
-                        
-                        sec_scroll = Gtk.ScrolledWindow()
-                        sec_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-                        sec_scroll.set_hexpand(True)
-                        sec_scroll.add_css_class("discover-row-scroll")
-                        
-                        sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-                        sec_row.add_css_class("discover-row-box")
-                        
-                        for it in items:
-                            if database.is_adult_content_hidden() and api.is_adult_item(it):
-                                continue
-                            if not it.get("type"):
-                                it["type"] = m_type
-                            if not it.get("catalog_name"):
-                                it["catalog_name"] = c_name
-                            if not it.get("catalog_id"):
-                                it["catalog_id"] = c_id
-                            if not it.get("manifest_url"):
-                                it["manifest_url"] = m_url
-                            if not it.get("addon_name"):
-                                it["addon_name"] = row_info.get("addon_name") or ""
-                            card = MovieWidget(it, self._on_movie_clicked)
-                            card.set_hexpand(False)
-                            sec_row.append(card)
-                            
-                        sec_scroll.set_child(sec_row)
-                        
-                        if target_box:
-                            target_box.append(sec_header)
-                            target_box.append(sec_scroll)
-                        debug_log(f"_apply_batch_results appended row: '{row_title}' ({len(items)} cards)")
+                    for slot in row_slots:
+                        if target_box and slot.get_parent() == target_box and slot.get_first_child() is None:
+                            target_box.remove(slot)
 
                     self._discover_is_loading_rows = False
-                    debug_log(f"_apply_batch_results FINISHED for req_id={req_id}")
+                    debug_log(f"discover batch finished for req_id={req_id}")
 
                     # Check if viewport still has unfilled room on extra-large displays
-                    if req_id == getattr(self, "discover_request_id", 0) and not _is_event_set(abort_ev) and self._discover_next_row_index < len(self._discover_catalog_list):
+                    if self._discover_next_row_index < len(self._discover_catalog_list):
                         if hasattr(self, "discover_scrolled"):
                             adj = self.discover_scrolled.get_vadjustment()
                             val = adj.get_value()
@@ -8519,23 +8556,21 @@ class CineWindow(Adw.ApplicationWindow):
                             upper = adj.get_upper()
                             debug_log(f"check_fill_viewport: val={val:.1f}, page_size={page_size:.1f}, upper={upper:.1f}")
                             if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
-                                debug_log(f"check_fill_viewport TRIGGERING NEXT BATCH (upper <= page_size or near bottom)")
                                 next_bs = 6 if (upper <= page_size or not target_box or not target_box.get_first_child()) else 4
                                 self._load_next_discover_batch(req_id, batch_size=next_bs)
-                    elif req_id == getattr(self, "discover_request_id", 0) and not _is_event_set(abort_ev) and self._discover_next_row_index >= len(self._discover_catalog_list):
-                        if target_box and not target_box.get_first_child() and getattr(self, "current_genre", None):
-                            empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-                            empty_box.set_valign(Gtk.Align.CENTER)
-                            empty_box.set_halign(Gtk.Align.CENTER)
-                            empty_box.set_margin_top(60)
-                            empty_box.add_css_class("dim-label")
-                            empty_lbl = Gtk.Label(label=_("No items found for this genre."))
-                            empty_lbl.add_css_class("title-3")
-                            empty_box.append(empty_lbl)
-                            target_box.append(empty_box)
+                    elif target_box and not target_box.get_first_child() and getattr(self, "current_genre", None):
+                        empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                        empty_box.set_valign(Gtk.Align.CENTER)
+                        empty_box.set_halign(Gtk.Align.CENTER)
+                        empty_box.set_margin_top(60)
+                        empty_box.add_css_class("dim-label")
+                        empty_lbl = Gtk.Label(label=_("No items found for this genre."))
+                        empty_lbl.add_css_class("title-3")
+                        empty_box.append(empty_lbl)
+                        target_box.append(empty_box)
                     return False
 
-                GLib.idle_add(_apply_batch_results)
+                GLib.idle_add(_finish_batch)
             except Exception as e:
                 logger.error(f"Error in discover batch worker: {e}")
                 def _reset_flag():
@@ -8545,6 +8580,79 @@ class CineWindow(Adw.ApplicationWindow):
                 GLib.idle_add(_reset_flag)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _populate_discover_row_slot(self, slot, row_info, items, target_box):
+        if not items or not slot:
+            return
+        from .movie_widget import MovieWidget
+        from . import database, api
+
+        m_type = row_info.get("media_type", "movie")
+        c_id = row_info.get("catalog_id")
+        m_url = row_info.get("manifest_url")
+        row_title = row_info.get("title", "Catalog")
+        c_name = row_info.get("catalog_name", c_id)
+        current_g = getattr(self, "current_genre", None)
+        current_y = getattr(self, "current_year", None)
+        if current_y and c_id == "year":
+            row_title = f"{row_title} · {current_y}"
+        if current_g and current_g not in row_title:
+            row_title = f"{row_title} · {current_g}"
+
+        sec_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        sec_header.add_css_class("discover-section-header")
+        if target_box and target_box.get_first_child() == slot:
+            sec_header.add_css_class("first-section-header")
+
+        sec_title = Gtk.Label(label=row_title, halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
+        sec_title.add_css_class("discover-section-title")
+        sec_header.append(sec_title)
+
+        see_all_btn = Gtk.Button(label=_("See All"))
+        see_all_btn.add_css_class("discover-see-all-btn")
+        see_all_btn.add_css_class("flat")
+        see_all_btn.set_halign(Gtk.Align.END)
+        see_all_btn.set_valign(Gtk.Align.CENTER)
+        see_all_btn.set_hexpand(True)
+
+        cat_obj = {
+            "catalog_id": c_id,
+            "catalog_name": c_name,
+            "manifest_url": m_url,
+            "display_name": row_title
+        }
+        see_all_btn.connect("clicked", lambda *a, cat_dict=cat_obj, m_type_val=m_type, title_val=row_title: getattr(self, "_open_catalog_grid")(m_type_val, cat_dict, title_val))
+        sec_header.append(see_all_btn)
+
+        sec_scroll = Gtk.ScrolledWindow()
+        sec_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        sec_scroll.set_hexpand(True)
+        sec_scroll.add_css_class("discover-row-scroll")
+
+        sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        sec_row.add_css_class("discover-row-box")
+
+        for it in items:
+            if database.is_adult_content_hidden() and api.is_adult_item(it):
+                continue
+            if not it.get("type"):
+                it["type"] = m_type
+            if not it.get("catalog_name"):
+                it["catalog_name"] = c_name
+            if not it.get("catalog_id"):
+                it["catalog_id"] = c_id
+            if not it.get("manifest_url"):
+                it["manifest_url"] = m_url
+            if not it.get("addon_name"):
+                it["addon_name"] = row_info.get("addon_name") or ""
+            card = MovieWidget(it, self._on_movie_clicked)
+            card.set_hexpand(False)
+            sec_row.append(card)
+
+        sec_scroll.set_child(sec_row)
+        slot.append(sec_header)
+        slot.append(sec_scroll)
+        debug_log(f"_populate_discover_row_slot appended row: '{row_title}' ({len(items)} cards)")
 
     def _on_discover_scroll(self, adj):
         if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "discover":
@@ -8603,9 +8711,12 @@ class CineWindow(Adw.ApplicationWindow):
                 except Exception:
                     pass
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(all_uncached), 6)) as executor:
-                list(executor.map(_fetch_one, all_uncached))
-            debug_log("bg_prewarm: Completed prewarming all rows")
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(all_uncached), 6)) as executor:
+                    list(executor.map(_fetch_one, all_uncached))
+                debug_log("bg_prewarm: Completed prewarming all rows")
+            except (RuntimeError, Exception):
+                pass
 
         threading.Thread(target=bg_prewarm, daemon=True).start()
 
@@ -11580,10 +11691,13 @@ class CineWindow(Adw.ApplicationWindow):
             if not getattr(self, "_search_pool", None):
                 self._search_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
                 
-            self._search_pool.submit(do_search_category, "movie", "search_movies_section", "search_movies_flowbox")
-            self._search_pool.submit(do_search_category, "series", "search_series_section", "search_series_flowbox")
-            self._search_pool.submit(do_search_category, "anime", "search_anime_section", "search_anime_flowbox")
-            self._search_pool.submit(do_search_category, "tv", "search_tv_section", "search_tv_flowbox")
+            try:
+                self._search_pool.submit(do_search_category, "movie", "search_movies_section", "search_movies_flowbox")
+                self._search_pool.submit(do_search_category, "series", "search_series_section", "search_series_flowbox")
+                self._search_pool.submit(do_search_category, "anime", "search_anime_section", "search_anime_flowbox")
+                self._search_pool.submit(do_search_category, "tv", "search_tv_section", "search_tv_flowbox")
+            except RuntimeError:
+                pass
             return False
 
         self.search_timeout_id = GLib.timeout_add(500, trigger_search)
