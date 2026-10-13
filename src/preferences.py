@@ -671,7 +671,7 @@ class Preferences(Adw.Dialog):
         from . import stremio_sync
         self.stremio_sync_now_btn.set_sensitive(False)
         self.stremio_sync_now_row.set_subtitle(_("Syncing with Stremio..."))
-        stremio_sync.sync_in_background(callback=self._on_sync_finished)
+        stremio_sync.sync_in_background(callback=self._on_sync_finished, force=True)
 
     def _on_sync_finished(self, result, error):
         self.stremio_sync_now_btn.set_sensitive(True)
@@ -680,7 +680,7 @@ class Preferences(Adw.Dialog):
             self.win._update_continue_watching_section()
         if hasattr(self.win, "main_stack"):
             curr_page = self.win.main_stack.get_visible_child_name()
-            if curr_page in ("continue_watching", "favorites") and hasattr(self.win, "_populate_local_db_page"):
+            if curr_page in ("continue_watching", "favorites", "history") and hasattr(self.win, "_populate_local_db_page"):
                 self.win._populate_local_db_page(curr_page)
         if hasattr(self.win, "_populate_addons"):
             self.win._populate_addons()

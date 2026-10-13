@@ -975,22 +975,22 @@ def sync_addons_in_background(callback=None):
     return thread
 
 
-def sync_in_background(callback=None):
+def sync_in_background(callback=None, force=False):
     """Run full sync (library and addons if enabled) in a background daemon thread."""
     def _worker():
         lib_res = None
         addon_res = None
         first_err = None
         try:
-            if is_sync_enabled():
-                lib_res = sync_library()
+            if is_sync_enabled() or force:
+                lib_res = sync_library(force=force)
         except Exception as err:
             first_err = err
             logger.warning(f"Library sync error: {err}")
 
         try:
-            if is_addon_sync_enabled():
-                addon_res = sync_addons()
+            if is_addon_sync_enabled() or force:
+                addon_res = sync_addons(force=force)
         except Exception as err:
             if not first_err:
                 first_err = err
