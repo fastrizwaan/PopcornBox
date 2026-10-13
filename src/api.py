@@ -457,6 +457,21 @@ def reset_addon_session_status(manifest_url=None):
             _ADDON_SESSION_FAILURES.clear()
     invalidate_catalogs_cache()
 
+_IN_MEMORY_ADDON_HEALTH = {}
+_IN_MEMORY_HEALTH_INIT = False
+
+def _init_in_memory_addon_health():
+    global _IN_MEMORY_ADDON_HEALTH, _IN_MEMORY_HEALTH_INIT
+    try:
+        from . import database
+        health = database.get_addon_health()
+        if isinstance(health, dict):
+            with _ADDON_ONLINE_LOCK:
+                _IN_MEMORY_ADDON_HEALTH.update(health)
+                _IN_MEMORY_HEALTH_INIT = True
+    except Exception:
+        pass
+
 def is_addon_online(manifest_url):
     if not manifest_url or manifest_url.startswith("builtin:"):
         return True
@@ -467,17 +482,29 @@ def is_addon_online(manifest_url):
         # Check session circuit breaker
         if manifest_url in _ADDON_SESSION_BLOCKED:
             return False
-    # Check persisted health cache (TTL: 2 hours)
+        # Check in-memory health cache
+        entry = _IN_MEMORY_ADDON_HEALTH.get(manifest_url)
+        if entry is not None:
+            if not entry.get("online", True):
+                last_checked = float(entry.get("last_checked", 0))
+                if time.time() - last_checked < 7200:
+                    return False
+            return True
+
+    # If not in cache yet, load from database once and update in-memory cache
     try:
         from . import database
-        health = database.get_addon_health()
-        entry = health.get(manifest_url)
-        if entry and not entry.get("online", True):
-            last_checked = float(entry.get("last_checked", 0))
-            if time.time() - last_checked < 7200:
-                return False
+        health = database.get_addon_health() or {}
+        with _ADDON_ONLINE_LOCK:
+            _IN_MEMORY_ADDON_HEALTH.update(health)
+            entry = _IN_MEMORY_ADDON_HEALTH.get(manifest_url)
+            if entry and not entry.get("online", True):
+                last_checked = float(entry.get("last_checked", 0))
+                if time.time() - last_checked < 7200:
+                    return False
     except Exception:
         pass
+
     return True
 
 def check_addons_health_background(callback=None):
@@ -544,6 +571,9 @@ def check_addons_health_background(callback=None):
                         _record_addon_success(url)
                 except Exception:
                     pass
+
+        with _ADDON_ONLINE_LOCK:
+            _IN_MEMORY_ADDON_HEALTH.update(results)
 
         # Persist health results in database
         try:

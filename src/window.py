@@ -6006,8 +6006,10 @@ class CineWindow(Adw.ApplicationWindow):
         self.is_fetching_content = False
         self.content_seen_ids = set()
         
-        # Populate search catalog dropdown with all available catalogs
-        self._update_search_catalog_dropdown()
+        # Populate search catalog dropdown with lightweight placeholder; build full list asynchronously
+        self.search_catalogs_list = [{"display_name": "All Catalogs", "manifest_url": None, "catalog_id": None}]
+        self.search_catalog_dropdown.set_model(Gtk.StringList.new(["All Catalogs"]))
+        GLib.timeout_add(1500, self._update_search_catalog_dropdown)
             
         def on_search_catalog_changed(dropdown, pspec):
             selected = dropdown.get_selected()
@@ -6422,8 +6424,8 @@ class CineWindow(Adw.ApplicationWindow):
             
         self._discover_views = {}
         self._discover_catalog_list_cache = {}
-        debug_log("CineWindow.__init__ calling _populate_addons")
-        self._populate_addons()
+        # Defer populating addons list to avoid freezing GTK main thread during window presentation
+        GLib.timeout_add(2500, lambda: (self._populate_addons(), False)[1])
         
         # Default Launch Option: Discover View and Discover Mode Active
         self._current_discover_type = "all"
@@ -6881,7 +6883,7 @@ class CineWindow(Adw.ApplicationWindow):
         return True
 
     def _refresh_unique_combined_view(self):
-        from .movie_widget import cancel_pending_image_downloads, MovieWidget
+        from .movie_widget import cancel_pending_image_downloads
         cancel_pending_image_downloads()
 
         self.unique_request_id = getattr(self, "unique_request_id", 0) + 1
@@ -6893,12 +6895,12 @@ class CineWindow(Adw.ApplicationWindow):
         self.unique_exhausted_catalogs.clear()
         self.unique_catalog_idx = 0
 
-        # Clear flowbox
+        # Clear flowbox on GTK main thread instantly
         if hasattr(self, "unique_flowbox"):
             while self.unique_flowbox.get_first_child() is not None:
                 self.unique_flowbox.remove(self.unique_flowbox.get_first_child())
 
-        # Determine media type and addon filter
+        # Determine media type and filter variables
         filter_type = getattr(self, "_current_discover_type", "all")
         if filter_type == "all" and hasattr(self, "category_btn_stack"):
             cat_btn = self.category_btn_stack.get_visible_child_name()
@@ -6912,10 +6914,8 @@ class CineWindow(Adw.ApplicationWindow):
 
         filter_addon = getattr(self, "_current_discover_addon", None)
         from . import api
-        catalogs = [
-            c for c in self._get_discover_catalog_list(filter_media_type=filter_type, filter_addon_url=filter_addon)
-            if api.is_addon_online(c.get("manifest_url", ""))
-        ]
+        catalogs = list(self._get_discover_catalog_list(filter_media_type=filter_type, filter_addon_url=filter_addon))
+        catalogs = [c for c in catalogs if api.is_addon_online(c.get("manifest_url", ""))]
 
         # Prioritize current_catalog if available in compatible catalogs
         if getattr(self, "current_catalog", None):
@@ -6934,6 +6934,23 @@ class CineWindow(Adw.ApplicationWindow):
 
         self._load_next_unique_batch()
 
+    def _deliver_unique_slices_to_ui(self, items, req_id):
+        """Deliver prepared items to GTK main thread in small non-blocking slices of 6 widgets."""
+        if not items or req_id != getattr(self, "unique_request_id", 0):
+            return
+        from .movie_widget import MovieWidget
+        SLICE_SIZE = 6
+        for i in range(0, len(items), SLICE_SIZE):
+            chunk = items[i:i + SLICE_SIZE]
+            def _add_slice(cards):
+                if req_id != getattr(self, "unique_request_id", 0):
+                    return False
+                if hasattr(self, "unique_flowbox"):
+                    for it in cards:
+                        self.unique_flowbox.append(MovieWidget(it, self._on_movie_clicked))
+                return False
+            GLib.idle_add(_add_slice, chunk)
+
     def _load_next_unique_batch(self):
         if getattr(self, "is_fetching_unique", False) or not getattr(self, "has_more_unique", True):
             return
@@ -6947,7 +6964,6 @@ class CineWindow(Adw.ApplicationWindow):
 
         def worker():
             from . import api, database
-            from .movie_widget import MovieWidget
             import concurrent.futures
 
             # Fast path: on initial load (idx 0 and no pages fetched yet), harvest local cache for instant <50ms render
@@ -6988,14 +7004,7 @@ class CineWindow(Adw.ApplicationWindow):
                         self.unique_page_per_catalog[cat_key] = 2
 
                 if cached_initial:
-                    def render_initial(chunk):
-                        if req_id != getattr(self, "unique_request_id", 0):
-                            return False
-                        if hasattr(self, "unique_flowbox"):
-                            for item in chunk:
-                                self.unique_flowbox.append(MovieWidget(item, self._on_movie_clicked))
-                        return False
-                    GLib.idle_add(render_initial, cached_initial)
+                    self._deliver_unique_slices_to_ui(cached_initial, req_id)
 
             target_batch_count = 24
             collected = []
@@ -7045,14 +7054,10 @@ class CineWindow(Adw.ApplicationWindow):
                         if database.is_adult_content_hidden():
                             cached = [it for it in cached if not api.is_adult_item(it)]
                         for it in cached:
-                            if not it.get("addon_name"):
-                                it["addon_name"] = a_name
-                            if not it.get("catalog_name"):
-                                it["catalog_name"] = c_name
-                            if not it.get("catalog_id"):
-                                it["catalog_id"] = c_id
-                            if not it.get("manifest_url"):
-                                it["manifest_url"] = m_url
+                            if not it.get("addon_name"): it["addon_name"] = a_name
+                            if not it.get("catalog_name"): it["catalog_name"] = c_name
+                            if not it.get("catalog_id"): it["catalog_id"] = c_id
+                            if not it.get("manifest_url"): it["manifest_url"] = m_url
                         if api.hydrate_missing_catalog_items(cached, media_type=m_type):
                             database.save_cached_catalog(cache_key, cached)
                         if cur_genre:
@@ -7076,14 +7081,10 @@ class CineWindow(Adw.ApplicationWindow):
                             if database.is_adult_content_hidden():
                                 items = [it for it in items if not api.is_adult_item(it)]
                             for it in items:
-                                if not it.get("addon_name"):
-                                    it["addon_name"] = a_name
-                                if not it.get("catalog_name"):
-                                    it["catalog_name"] = c_name
-                                if not it.get("catalog_id"):
-                                    it["catalog_id"] = c_id
-                                if not it.get("manifest_url"):
-                                    it["manifest_url"] = m_url
+                                if not it.get("addon_name"): it["addon_name"] = a_name
+                                if not it.get("catalog_name"): it["catalog_name"] = c_name
+                                if not it.get("catalog_id"): it["catalog_id"] = c_id
+                                if not it.get("manifest_url"): it["manifest_url"] = m_url
                         if items and cur_genre:
                             items = api.filter_items_by_genre(items, cur_genre, media_type=m_type)
                         elif items and m_type:
@@ -7128,14 +7129,7 @@ class CineWindow(Adw.ApplicationWindow):
                         break
 
                 if pass_added:
-                    def render_pass_chunk(chunk):
-                        if req_id != getattr(self, "unique_request_id", 0):
-                            return False
-                        if hasattr(self, "unique_flowbox"):
-                            for item in chunk:
-                                self.unique_flowbox.append(MovieWidget(item, self._on_movie_clicked))
-                        return False
-                    GLib.idle_add(render_pass_chunk, list(pass_added))
+                    self._deliver_unique_slices_to_ui(pass_added, req_id)
 
                 if not pass_added:
                     consecutive_empty_passes += 1
@@ -7622,7 +7616,7 @@ class CineWindow(Adw.ApplicationWindow):
             if filter_addon_url and m_url != filter_addon_url:
                 continue
                 
-            catalogs = api.get_addon_catalogs(addon, cache_only=False)
+            catalogs = api.get_addon_catalogs(addon, cache_only=True)
             if not catalogs:
                 continue
                 
@@ -10277,35 +10271,44 @@ class CineWindow(Adw.ApplicationWindow):
         self._addons_dirty = False
 
     def _update_search_catalog_dropdown(self):
-        from . import api, database
-        movie_cats = api.get_available_search_catalogs("movie", only_working=True)
-        series_cats = api.get_available_search_catalogs("series", only_working=True)
-        anime_cats = api.get_available_search_catalogs("anime", only_working=True) if getattr(self, "anime_supported", False) else []
-        if not movie_cats and not series_cats:
-            movie_cats = api.get_available_search_catalogs("movie", only_working=False)
-            series_cats = api.get_available_search_catalogs("series", only_working=False)
-        
-        seen_cat_keys = set()
-        self.search_catalogs_list = [{"display_name": "All Catalogs", "manifest_url": None, "catalog_id": None}]
-        
-        for cat in movie_cats + series_cats + anime_cats:
-            key = (cat["manifest_url"], cat["catalog_id"])
-            if key not in seen_cat_keys:
-                seen_cat_keys.add(key)
-                self.search_catalogs_list.append({
-                    "display_name": cat["display_name"],
-                    "manifest_url": cat["manifest_url"],
-                    "catalog_id": cat["catalog_id"]
-                })
-                
-        search_cat_names = [c["display_name"] for c in self.search_catalogs_list]
-        if hasattr(self, "search_catalog_dropdown"):
-            self.search_catalog_dropdown.set_model(Gtk.StringList.new(search_cat_names))
-            saved_search_cat = database.get_setting("search_catalog_idx", 0)
-            if 0 <= saved_search_cat < len(search_cat_names):
-                self.search_catalog_dropdown.set_selected(saved_search_cat)
-            else:
-                self.search_catalog_dropdown.set_selected(0)
+        def _bg_worker():
+            from . import api, database
+            movie_cats = api.get_available_search_catalogs("movie", only_working=True)
+            series_cats = api.get_available_search_catalogs("series", only_working=True)
+            anime_cats = api.get_available_search_catalogs("anime", only_working=True) if getattr(self, "anime_supported", False) else []
+            if not movie_cats and not series_cats:
+                movie_cats = api.get_available_search_catalogs("movie", only_working=False)
+                series_cats = api.get_available_search_catalogs("series", only_working=False)
+
+            seen_cat_keys = set()
+            new_list = [{"display_name": "All Catalogs", "manifest_url": None, "catalog_id": None}]
+
+            for cat in movie_cats + series_cats + anime_cats:
+                key = (cat["manifest_url"], cat["catalog_id"])
+                if key not in seen_cat_keys:
+                    seen_cat_keys.add(key)
+                    new_list.append({
+                        "display_name": cat["display_name"],
+                        "manifest_url": cat["manifest_url"],
+                        "catalog_id": cat["catalog_id"]
+                    })
+
+            search_cat_names = [c["display_name"] for c in new_list]
+
+            def _apply_ui():
+                self.search_catalogs_list = new_list
+                if hasattr(self, "search_catalog_dropdown"):
+                    self.search_catalog_dropdown.set_model(Gtk.StringList.new(search_cat_names))
+                    saved_search_cat = database.get_setting("search_catalog_idx", 0)
+                    if 0 <= saved_search_cat < len(search_cat_names):
+                        self.search_catalog_dropdown.set_selected(saved_search_cat)
+                    else:
+                        self.search_catalog_dropdown.set_selected(0)
+                return False
+
+            GLib.idle_add(_apply_ui)
+
+        threading.Thread(target=_bg_worker, daemon=True, name="SearchCatalogDropdownBuilder").start()
 
     def _on_addons_changed(self):
         from .movie_widget import cancel_pending_image_downloads
