@@ -967,7 +967,9 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None):
     return {
         "language_code": orig_lang,
         "language_name": lang_name,
-        "genres": tmdb_genres
+        "genres": tmdb_genres,
+        "adult": bool(result_item.get("adult", False)),
+        "tmdb_id": result_item.get("id")
     }
 
 

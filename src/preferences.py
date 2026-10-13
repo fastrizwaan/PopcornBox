@@ -203,8 +203,16 @@ class Preferences(Adw.Dialog):
 
     def _on_hide_adult_content_changed(self, settings, key):
         val = settings.get_boolean(key)
-        from . import database
+        from . import database, api
         database.set_adult_content_hidden(val)
+        database.clear_all_cached_catalogs()
+        api.invalidate_catalogs_cache()
+        if hasattr(self, "win"):
+            if hasattr(self.win, "_on_addons_changed"):
+                self.win._on_addons_changed()
+            if hasattr(self.win, "_is_unique_mode_active") and self.win._is_unique_mode_active() is True:
+                if hasattr(self.win, "_refresh_unique_combined_view"):
+                    self.win._refresh_unique_combined_view()
 
     def _on_sub_color_changed(self, settings, key):
         self.mpv["sub-color"] = settings.get_string(key)

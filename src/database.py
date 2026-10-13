@@ -677,6 +677,12 @@ def is_adult_content_hidden():
 
 def set_adult_content_hidden(enabled):
     set_setting("hide_adult_content", bool(enabled))
+    clear_all_cached_catalogs()
+    try:
+        from . import api
+        api.invalidate_catalogs_cache()
+    except Exception:
+        pass
 
 def _normalize_stream_for_storage(stream):
     if not stream or not isinstance(stream, dict):
@@ -1034,6 +1040,44 @@ def set_addon_enabled(addon_id, enabled):
         api.invalidate_catalogs_cache()
     except Exception:
         pass
+
+def set_addon_catalogs_enabled(addon_id, enabled):
+    manifest_url = None
+    with _db_lock:
+        db = _read_db()
+        for a in db.get("addons", []):
+            if a.get("id") == addon_id:
+                a["catalogs_enabled"] = bool(enabled)
+                manifest_url = a.get("manifest_url")
+                break
+        _write_db(db)
+    if manifest_url:
+        clear_cached_catalog_for_url(manifest_url)
+    try:
+        from . import api
+        api.invalidate_catalogs_cache()
+    except Exception:
+        pass
+
+def set_addon_streams_enabled(addon_id, enabled):
+    with _db_lock:
+        db = _read_db()
+        for a in db.get("addons", []):
+            if a.get("id") == addon_id:
+                a["streams_enabled"] = bool(enabled)
+                break
+        _write_db(db)
+    clear_all_cached_streams()
+
+def is_addon_catalogs_enabled(addon):
+    if not addon or not addon.get("enabled", True):
+        return False
+    return bool(addon.get("catalogs_enabled", True))
+
+def is_addon_streams_enabled(addon):
+    if not addon or not addon.get("enabled", True):
+        return False
+    return bool(addon.get("streams_enabled", True))
 
 # --- SQLite Metadata & Stream Cache ---
 
@@ -1701,6 +1745,9 @@ def get_cached_catalog(cache_key, max_age_hours=24):
         if cache_key in _MEM_CATALOG_CACHE:
             data, ts = _MEM_CATALOG_CACHE[cache_key]
             if (now - ts) / 3600 < max_age_hours:
+                if is_adult_content_hidden():
+                    from . import api
+                    return [it for it in data if not api.is_adult_item(it)]
                 return data
             else:
                 del _MEM_CATALOG_CACHE[cache_key]
@@ -1722,6 +1769,9 @@ def get_cached_catalog(cache_key, max_age_hours=24):
                         if len(_MEM_CATALOG_CACHE) > 500:
                             _MEM_CATALOG_CACHE.clear()
                         _MEM_CATALOG_CACHE[cache_key] = (data, updated_at)
+                    if is_adult_content_hidden():
+                        from . import api
+                        return [it for it in data if not api.is_adult_item(it)]
                     return data
     except Exception as e:
         print(f"Error reading catalog cache: {e}")
@@ -1730,6 +1780,9 @@ def get_cached_catalog(cache_key, max_age_hours=24):
 def save_cached_catalog(cache_key, items):
     if not cache_key or not items:
         return
+    if is_adult_content_hidden():
+        from . import api
+        items = [it for it in items if not api.is_adult_item(it)]
     now = time.time()
     with _MEM_CATALOG_LOCK:
         if len(_MEM_CATALOG_CACHE) > 500:
@@ -1747,6 +1800,18 @@ def save_cached_catalog(cache_key, items):
             conn.commit()
     except Exception as e:
         print(f"Error saving catalog cache: {e}")
+
+def clear_all_cached_catalogs():
+    with _MEM_CATALOG_LOCK:
+        _MEM_CATALOG_CACHE.clear()
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM catalog_cache")
+            conn.commit()
+    except Exception as e:
+        print(f"Error clearing all cached catalogs: {e}")
 
 
 

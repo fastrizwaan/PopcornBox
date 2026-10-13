@@ -297,11 +297,14 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
     found_title = None
     found_year = None
     found_poster = None
+    is_adult = False
 
     # 0. Check local database cache first (instant SQLite read)
     try:
         existing = database.get_cached_metadata(item_id, item_type)
-        if existing and (existing.get("title") or existing.get("medium_cover_image") or existing.get("poster")):
+        if existing and (existing.get("title") or existing.get("medium_cover_image") or existing.get("poster") or existing.get("adult")):
+            if existing.get("adult") or existing.get("isAdult"):
+                is_adult = True
             cached_title = existing.get("title") or existing.get("name")
             cached_poster = existing.get("medium_cover_image") or existing.get("poster")
             cached_year = str(existing.get("year", "")) if existing.get("year") else ""
@@ -312,11 +315,11 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
             if cached_year:
                 found_year = cached_year
 
-            if found_poster and poster_widget:
+            if found_poster and poster_widget and not is_adult:
                 GLib.idle_add(load_image_into_picture, found_poster, poster_widget, width, height)
-            if on_meta_resolved and (found_title or found_poster):
-                GLib.idle_add(on_meta_resolved, found_title, found_year, found_poster)
-            if found_title and found_poster:
+            if on_meta_resolved and (found_title or found_poster or is_adult):
+                GLib.idle_add(on_meta_resolved, found_title, found_year, found_poster, is_adult)
+            if (found_title and found_poster) or is_adult:
                 return
     except Exception:
         pass
@@ -327,7 +330,7 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
     from .api import _get_cached_request
 
     # FIRST FALLBACK: Cinemeta direct (fastest stremio meta provider, ~20-50ms)
-    if str(item_id).startswith("tt") and (not found_poster or not found_title):
+    if str(item_id).startswith("tt") and (not found_poster or not found_title or not is_adult):
         try:
             url = f"https://v3-cinemeta.strem.io/meta/{item_type}/{item_id}.json"
             meta_data = _get_cached_request(url, max_age_hours=168, timeout=1.5)
@@ -336,6 +339,14 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                 meta_data = _get_cached_request(alt_url, max_age_hours=168, timeout=1.5)
             if meta_data and isinstance(meta_data.get("meta"), dict):
                 cm = meta_data["meta"]
+                from . import api
+                if api.is_adult_item(cm):
+                    is_adult = True
+                elif str(item_id).startswith("tt") and database.is_adult_content_hidden():
+                    from . import tmdb_helper
+                    t_info = tmdb_helper.fetch_title_language_and_genres(item_id, item_type)
+                    if t_info and t_info.get("adult"):
+                        is_adult = True
                 if not found_poster and cm.get("poster"):
                     found_poster = cm.get("poster")
                 if not found_title and cm.get("name"):
@@ -354,6 +365,8 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
             from . import api
             details = api.fetch_movie_details(item_id, item_type, title=title)
             if details:
+                if api.is_adult_item(details):
+                    is_adult = True
                 if not found_poster:
                     found_poster = details.get("medium_cover_image") or details.get("poster")
                 if not found_title:
@@ -364,7 +377,7 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
             pass
 
     # Save to database cache
-    if found_poster or found_title or found_year:
+    if found_poster or found_title or found_year or is_adult:
         try:
             cached = database.get_cached_metadata(item_id, item_type) or {}
             if found_poster:
@@ -374,6 +387,8 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                 cached["title"] = found_title
             if found_year:
                 cached["year"] = found_year
+            if is_adult:
+                cached["adult"] = True
             cached["id"] = item_id
             database.save_cached_metadata(item_id, item_type, cached)
         except Exception:
@@ -382,11 +397,11 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
     if task_gen is not None and not is_image_generation_active(task_gen):
         return
 
-    if found_poster and poster_widget:
+    if found_poster and poster_widget and not is_adult:
         GLib.idle_add(load_image_into_picture, found_poster, poster_widget, width, height)
 
-    if on_meta_resolved and (found_title or found_year or found_poster):
-        GLib.idle_add(on_meta_resolved, found_title, found_year, found_poster)
+    if on_meta_resolved and (found_title or found_year or found_poster or is_adult):
+        GLib.idle_add(on_meta_resolved, found_title, found_year, found_poster, is_adult)
 
 class MovieWidget(Gtk.Box):
     def __init__(self, movie_data, click_callback, on_remove_clicked=None):
@@ -512,8 +527,25 @@ class MovieWidget(Gtk.Box):
             self.year_label.add_css_class("pt-card-year")
             self.append(self.year_label)
 
-    def _apply_resolved_meta(self, title, year, poster_url):
+        cat_name = movie_data.get("catalog_name")
+        addon_name = movie_data.get("addon_name")
+        tooltip_lines = [title_text]
+        if year_str:
+            tooltip_lines.append(f"({year_str})")
+        if addon_name and cat_name:
+            tooltip_lines.append(f"Catalog: {addon_name} · {cat_name}")
+        elif addon_name:
+            tooltip_lines.append(f"Addon: {addon_name}")
+        elif cat_name:
+            tooltip_lines.append(f"Catalog: {cat_name}")
+        self.set_tooltip_text("\n".join(tooltip_lines))
+
+    def _apply_resolved_meta(self, title, year, poster_url, is_adult=False):
         try:
+            from . import database, api
+            if is_adult or (database.is_adult_content_hidden() and api.is_adult_item(self.movie_data)):
+                self.set_visible(False)
+                return
             if title and title != "Unknown" and (not self.movie_data.get("title") or self.movie_data.get("title") == "Unknown"):
                 self.movie_data["title"] = title
                 if hasattr(self, "title_label") and self.title_label:
@@ -530,6 +562,20 @@ class MovieWidget(Gtk.Box):
             if poster_url:
                 self.movie_data["medium_cover_image"] = poster_url
                 self.movie_data["poster"] = poster_url
+
+            cat_name = self.movie_data.get("catalog_name")
+            addon_name = self.movie_data.get("addon_name")
+            t_lines = [self.movie_data.get("title", "Unknown")]
+            y_val = self.movie_data.get("year")
+            if y_val:
+                t_lines.append(f"({y_val})")
+            if addon_name and cat_name:
+                t_lines.append(f"Catalog: {addon_name} · {cat_name}")
+            elif addon_name:
+                t_lines.append(f"Addon: {addon_name}")
+            elif cat_name:
+                t_lines.append(f"Catalog: {cat_name}")
+            self.set_tooltip_text("\n".join(t_lines))
         except Exception:
             pass
 
@@ -724,8 +770,12 @@ class ContinueWatchingWidget(Gtk.Box):
             sub_label.add_css_class("pt-card-year")
             self.append(sub_label)
 
-    def _apply_resolved_meta(self, title, year, poster_url):
+    def _apply_resolved_meta(self, title, year, poster_url, is_adult=False):
         try:
+            from . import database, api
+            if is_adult or (database.is_adult_content_hidden() and api.is_adult_item(self.item_data)):
+                self.set_visible(False)
+                return
             if title and title != "Unknown" and (not self.item_data.get("title") or self.item_data.get("title") == "Unknown"):
                 self.item_data["title"] = title
                 if hasattr(self, "title_label") and self.title_label:

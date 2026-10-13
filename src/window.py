@@ -461,6 +461,14 @@ class MovieDetailsPage(Gtk.Overlay):
 
         meta_detail_vbox.append(meta_hbox)
 
+        self.catalog_source_label = Gtk.Label(label="")
+        self.catalog_source_label.set_halign(Gtk.Align.START)
+        self.catalog_source_label.set_wrap(True)
+        self.catalog_source_label.add_css_class("dim-label")
+        self.catalog_source_label.set_margin_top(2)
+        self.catalog_source_label.set_visible(False)
+        meta_detail_vbox.append(self.catalog_source_label)
+
         self.desc_label = Gtk.Label(label="")
         self.desc_label.set_wrap(True)
         self.desc_label.set_halign(Gtk.Align.START)
@@ -1391,9 +1399,17 @@ class MovieDetailsPage(Gtk.Overlay):
                 threading.Thread(target=fetch_credits, daemon=True).start()
             else:
                 print(f"[CARD CLICK Step 7 WARNING] api.fetch_movie_details returned None for '{item_id}'")
+                from . import database, api
+                is_safe_blocked = database.is_adult_content_hidden() and api.is_adult_item(self.movie_stub)
                 def try_fast_trailer():
                     if fetch_id == self._details_fetch_id and self._is_current_details_page():
-                        self._start_fast_trailer_fetch(item_id, fetch_id, fast_abort)
+                        if is_safe_blocked:
+                            self.title_label.set_text(_("Content Filtered"))
+                            self.desc_label.set_text(_("This content is filtered because 'Hide 18+ / Explicit Content' is enabled in Preferences."))
+                            if hasattr(self, "meta_label"):
+                                self.meta_label.set_text(_("18+ / Explicit Content Blocked"))
+                        else:
+                            self._start_fast_trailer_fetch(item_id, fetch_id, fast_abort)
                     return False
                 GLib.idle_add(try_fast_trailer)
 
@@ -1813,6 +1829,29 @@ class MovieDetailsPage(Gtk.Overlay):
             self.imdb_btn.set_visible(False)
             self.meta_dot.set_visible(False)
             
+        cat_name = details.get("catalog_name") or self.movie_stub.get("catalog_name")
+        addon_name = details.get("addon_name") or self.movie_stub.get("addon_name")
+        if not addon_name:
+            m_url = details.get("manifest_url") or self.movie_stub.get("manifest_url")
+            if m_url:
+                for a in database.get_addons():
+                    if a.get("manifest_url") == m_url:
+                        addon_name = a.get("name")
+                        break
+
+        if hasattr(self, "catalog_source_label"):
+            if addon_name and cat_name:
+                self.catalog_source_label.set_text(f"📦 Catalog: {addon_name} · {cat_name}")
+                self.catalog_source_label.set_visible(True)
+            elif addon_name:
+                self.catalog_source_label.set_text(f"📦 Addon: {addon_name}")
+                self.catalog_source_label.set_visible(True)
+            elif cat_name:
+                self.catalog_source_label.set_text(f"📦 Catalog: {cat_name}")
+                self.catalog_source_label.set_visible(True)
+            else:
+                self.catalog_source_label.set_visible(False)
+
         self.desc_label.set_text(details.get("description") or details.get("overview") or "")
         
         cast_str = ", ".join(details.get("cast", []))
@@ -6706,6 +6745,10 @@ class CineWindow(Adw.ApplicationWindow):
         if not isinstance(item, dict):
             return False
 
+        from . import database, api
+        if database.is_adult_content_hidden() and api.is_adult_item(item):
+            return False
+
         filter_type = getattr(self, "_current_unique_media_type", None)
         if filter_type and filter_type != "all":
             from . import api
@@ -6833,6 +6876,8 @@ class CineWindow(Adw.ApplicationWindow):
                     m_type = cat_info.get("media_type", "movie")
                     c_id = cat_info.get("catalog_id")
                     m_url = cat_info.get("manifest_url")
+                    c_name = cat_info.get("catalog_name") or cat_info.get("name") or c_id
+                    a_name = cat_info.get("addon_name") or ""
 
                     if m_url and not api.is_addon_online(m_url):
                         return (key, page, None)
@@ -6847,6 +6892,17 @@ class CineWindow(Adw.ApplicationWindow):
 
                     cached = database.get_cached_catalog(cache_key, max_age_hours=24)
                     if cached:
+                        if database.is_adult_content_hidden():
+                            cached = [it for it in cached if not api.is_adult_item(it)]
+                        for it in cached:
+                            if not it.get("addon_name"):
+                                it["addon_name"] = a_name
+                            if not it.get("catalog_name"):
+                                it["catalog_name"] = c_name
+                            if not it.get("catalog_id"):
+                                it["catalog_id"] = c_id
+                            if not it.get("manifest_url"):
+                                it["manifest_url"] = m_url
                         if api.hydrate_missing_catalog_items(cached, media_type=m_type):
                             database.save_cached_catalog(cache_key, cached)
                         if cur_genre:
@@ -6866,6 +6922,18 @@ class CineWindow(Adw.ApplicationWindow):
                             page=page,
                             limit=20
                         )
+                        if items:
+                            if database.is_adult_content_hidden():
+                                items = [it for it in items if not api.is_adult_item(it)]
+                            for it in items:
+                                if not it.get("addon_name"):
+                                    it["addon_name"] = a_name
+                                if not it.get("catalog_name"):
+                                    it["catalog_name"] = c_name
+                                if not it.get("catalog_id"):
+                                    it["catalog_id"] = c_id
+                                if not it.get("manifest_url"):
+                                    it["manifest_url"] = m_url
                         if items and cur_genre:
                             items = api.filter_items_by_genre(items, cur_genre, media_type=m_type)
                         elif items and m_type:
@@ -6899,6 +6967,8 @@ class CineWindow(Adw.ApplicationWindow):
                     else:
                         self.unique_page_per_catalog[cat_key] = page + 1
                         for item in items:
+                            if database.is_adult_content_hidden() and api.is_adult_item(item):
+                                continue
                             if self._is_unique_item(item):
                                 collected.append(item)
                                 added_in_pass += 1
@@ -7997,8 +8067,18 @@ class CineWindow(Adw.ApplicationWindow):
                         sec_row.add_css_class("discover-row-box")
                         
                         for it in items:
+                            if database.is_adult_content_hidden() and api.is_adult_item(it):
+                                continue
                             if not it.get("type"):
-                                 it["type"] = m_type
+                                it["type"] = m_type
+                            if not it.get("catalog_name"):
+                                it["catalog_name"] = c_name
+                            if not it.get("catalog_id"):
+                                it["catalog_id"] = c_id
+                            if not it.get("manifest_url"):
+                                it["manifest_url"] = m_url
+                            if not it.get("addon_name"):
+                                it["addon_name"] = row_info.get("addon_name") or ""
                             card = MovieWidget(it, self._on_movie_clicked)
                             card.set_hexpand(False)
                             sec_row.append(card)
@@ -8426,7 +8506,10 @@ class CineWindow(Adw.ApplicationWindow):
         self._append_flowbox(flowbox, items, seen_ids, on_remove_clicked=on_remove_clicked)
 
     def _append_flowbox(self, flowbox, items, seen_ids=None, on_remove_clicked=None):
+        from . import database, api
         for item in items:
+            if database.is_adult_content_hidden() and api.is_adult_item(item):
+                continue
             item_id = item.get("id") or item.get("imdb_id")
             if seen_ids is not None and item_id:
                 if item_id in seen_ids:
@@ -10186,14 +10269,27 @@ class CineWindow(Adw.ApplicationWindow):
         while self.addons_listbox.get_first_child() is not None:
             self.addons_listbox.remove(self.addons_listbox.get_first_child())
 
-        from . import database
+        from . import database, api
         import urllib.request
         addons = database.get_addons()
         debug_log(f"_populate_installed_addons DB returned {len(addons)} addons")
         target_row = None
         for addon in addons:
+            has_cats = bool(addon.get("catalogs")) or api.addon_has_resource(addon, "catalog")
+            has_streams = api.addon_has_resource(addon, "stream")
+
             name_str = GLib.markup_escape_text(addon.get("name", "Unknown") or "Unknown")
             desc_str = GLib.markup_escape_text(addon.get("description", "") or "")
+
+            status_tags = []
+            if has_cats and not addon.get("catalogs_enabled", True):
+                status_tags.append(_("Catalogs disabled"))
+            if has_streams and not addon.get("streams_enabled", True):
+                status_tags.append(_("Media disabled"))
+            if status_tags:
+                tag_str = " • ".join(status_tags)
+                desc_str = f"{desc_str} ({tag_str})" if desc_str else f"({tag_str})"
+
             row = Adw.ActionRow(title=name_str, subtitle=desc_str)
             row._is_catalog_row = False
             row._addon_title = (addon.get("name") or "Unknown").lower()
@@ -10233,6 +10329,21 @@ class CineWindow(Adw.ApplicationWindow):
 
             box = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
 
+            if has_cats and has_streams:
+                cat_toggle = Gtk.ToggleButton(label=_("Catalog"), valign=Gtk.Align.CENTER)
+                cat_toggle.set_active(addon.get("catalogs_enabled", True))
+                cat_toggle.set_tooltip_text(_("Enable/disable catalogs from this addon"))
+                cat_toggle.add_css_class("flat")
+                cat_toggle.connect("toggled", lambda btn, a=addon: (database.set_addon_catalogs_enabled(a.get("id"), btn.get_active()), self._on_addons_changed()))
+                box.append(cat_toggle)
+
+                stream_toggle = Gtk.ToggleButton(label=_("Media"), valign=Gtk.Align.CENTER)
+                stream_toggle.set_active(addon.get("streams_enabled", True))
+                stream_toggle.set_tooltip_text(_("Enable/disable media streams from this addon"))
+                stream_toggle.add_css_class("flat")
+                stream_toggle.connect("toggled", lambda btn, a=addon: (database.set_addon_streams_enabled(a.get("id"), btn.get_active()), self._on_addons_changed()))
+                box.append(stream_toggle)
+
             enable_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
             enable_switch.set_active(addon.get("enabled", True))
             enable_switch.connect("notify::active", lambda sw, pspec, a=addon: (database.set_addon_enabled(a.get("id"), sw.get_active()), self._on_addons_changed()))
@@ -10245,6 +10356,39 @@ class CineWindow(Adw.ApplicationWindow):
             popover_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             popover.set_child(popover_box)
             menu_btn.set_popover(popover)
+
+            if has_cats or has_streams:
+                features_lbl = Gtk.Label(label=_("Addon Features"), xalign=0.0)
+                features_lbl.add_css_class("dim-label")
+                features_lbl.set_margin_top(4)
+                features_lbl.set_margin_bottom(2)
+                popover_box.append(features_lbl)
+
+            if has_cats:
+                cat_check = Gtk.CheckButton(label=_("Enable Catalogs"))
+                cat_check.set_active(addon.get("catalogs_enabled", True))
+                def on_cat_toggled(btn, a=addon, pop=popover):
+                    pop.popdown()
+                    database.set_addon_catalogs_enabled(a.get("id"), btn.get_active())
+                    self._on_addons_changed()
+                cat_check.connect("toggled", on_cat_toggled)
+                popover_box.append(cat_check)
+
+            if has_streams:
+                stream_check = Gtk.CheckButton(label=_("Enable Media / Streams"))
+                stream_check.set_active(addon.get("streams_enabled", True))
+                def on_stream_toggled(btn, a=addon, pop=popover):
+                    pop.popdown()
+                    database.set_addon_streams_enabled(a.get("id"), btn.get_active())
+                    self._on_addons_changed()
+                stream_check.connect("toggled", on_stream_toggled)
+                popover_box.append(stream_check)
+
+            if has_cats or has_streams:
+                sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+                sep.set_margin_top(4)
+                sep.set_margin_bottom(4)
+                popover_box.append(sep)
 
             if addon.get("behaviorHints", {}).get("configurable", False) or "/configure" in manifest_url:
                 config_btn = Gtk.Button(label=_("Configure"))

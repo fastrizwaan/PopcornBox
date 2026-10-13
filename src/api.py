@@ -321,35 +321,48 @@ def is_item_type_compatible(item, expected_type, cached_meta=None):
     return is_type_match(itype, expected)
 
 ADULT_GENRES_TAGS = {
-    "adult", "erotica", "ecchi", "hentai", "softcore", "pinku eiga",
-    "pink film", "sex", "sexuality", "porn", "pornography", "nudity",
-    "explicit nudity", "nsfw", "sploitation", "bdsm", "sm", "r18", "r-18",
+    "adult", "erotica", "erotic", "ecchi", "hentai", "softcore", "pinku eiga",
+    "pink film", "sex", "sexuality", "sexual", "porn", "porno", "pornography", "pornographic",
+    "nudity", "explicit nudity", "nsfw", "sploitation", "bdsm", "sm", "r18", "r-18",
     "blowjob", "brazzers", "creampie", "cum in mouth", "deep throat",
     "doggystyle", "face sitting", "facial", "gangbang", "handjob",
-    "masturbation", "milf", "pov", "squirt", "threesome", "big dick",
+    "masturbation", "milf", "dilf", "pov", "squirt", "threesome", "foursome", "big dick",
     "bubble butt", "cowgirl", "mofos", "missionary", "piss", "pussy licking",
-    "pussy fingering"
+    "pussy fingering", "pervert", "perverted", "sukebe", "jav", "uncensored"
 }
 
 ADULT_RATINGS = {
-    "18", "18+", "R18", "R-18", "R18+", "NC-17", "XXX", "X", "TV-MA",
-    "RX", "AV", "ADULT", "PORN", "R21", "OVER 18", "A"
+    "18", "18+", "R18", "R-18", "R18+", "NC-17", "XXX", "XX", "X", "TV-MA",
+    "RX", "AV", "ADULT", "PORN", "R21", "OVER 18", "A", "AO", "FSK 18", "18A",
+    "UNRATED (ADULT)", "NOT RATED (ADULT)", "RESTRICTED 18"
 }
 
 ADULT_KEYWORD_REGEX = re.compile(
-    r'\b(18\+|xxx|hentai|ecchi|erotica|softcore|pinku eiga|pink film|sex video|jav|adult movie|nude|nudity|hatsuj[ôo]|dirty couple exchange|horny couple|groper train|futariecci|futari ecchi|incha couple|blowjob|brazzers|creampie|cum|doggystyle|masturbation|milf|pov|squirt|threesome|pussy)\b',
+    r'\b('
+    r'18\+|xxx+|hentai|ecchi|erotica?|erotism|softcore|pinku\s+eiga|pink\s+film|'
+    r'sex\s+(?:video|tape|movie|film|scenes|act|zanmai)|sexual|sexuality|'
+    r'jav|adult\s+(?:movie|film|video|content|only)|nude|nudity|naked|topless|bare\s+breast|uncensored|'
+    r'hatsuj[ôo]|dirty\s+(?:couple|movie)|horny\s+couple|groper(?:\s+train)?|'
+    r'futariecch?i|incha\s+couple|blowjob|brazzers|bangbros|creampie|cum|cumshot|'
+    r'deepthroat|deep\s+throat|doggystyle|masturbat(?:ion|e)|milf|dilf|pov|squirt(?:ing)?|'
+    r'threesome|foursome|pussy|cock|penis|vagina|anal\s+sex|tits|boobs|'
+    r'pervert(?:ed|s|ion)?|porno?(?:graphy|graphic|s)?|sukebe|chikan|shishunki\s+sex|'
+    r'swinger[s]?|playboy|penthouse|hustler|mofos|gangbang|orgy|striptease|stripper|'
+    r'fetish|voyeur(?:ism)?|bdsm|trimmed\s+bush|hairy\s+bush|rape|'
+    r'asses?|deep\s+inside|pure\s+evil|pure\s+pink|bikini\s+car\s+wash|sexploitation'
+    r')\b',
     re.IGNORECASE
 )
 
-def is_adult_item(item):
+def is_adult_item(item, check_cache=True):
     if not item or not isinstance(item, dict):
         return False
 
     if item.get("adult") is True or item.get("isAdult") is True:
         return True
 
-    rating = str(item.get("certification") or item.get("contentRating") or item.get("rating") or "").strip().upper()
-    if rating in ADULT_RATINGS or any(r in rating for r in ["R18", "NC-17", "XXX", "18+"]):
+    rating = str(item.get("certification") or item.get("contentRating") or item.get("rating") or item.get("mpaa") or "").strip().upper()
+    if rating in ADULT_RATINGS or any(r in rating for r in ["R18", "NC-17", "XXX", "18+", "ADULT", "PORN"]):
         return True
 
     genres = item.get("genres") or item.get("genre") or []
@@ -374,7 +387,19 @@ def is_adult_item(item):
     if ADULT_KEYWORD_REGEX.search(genres_str):
         return True
 
+    # Fast check of local SQLite metadata cache for already resolved adult flags/metadata
+    if check_cache:
+        item_id = item.get("id") or item.get("imdb_id")
+        if item_id:
+            try:
+                cached = database.get_cached_metadata(item_id)
+                if cached and isinstance(cached, dict):
+                    return is_adult_item(cached, check_cache=False)
+            except Exception:
+                pass
+
     return False
+
 
 # Session-level addon circuit breaker.
 # Tracks consecutive timeout/error failures per manifest URL for this app session.
@@ -453,6 +478,8 @@ def get_addon_catalogs(addon, cache_only=False):
     """Return the catalogs for an addon. If catalogs is empty, attempts to fetch
     from cached/remote manifest and persists to database."""
     if not addon or not isinstance(addon, dict):
+        return []
+    if not addon.get("catalogs_enabled", True):
         return []
     catalogs = addon.get("catalogs")
     if catalogs:
@@ -724,12 +751,14 @@ def has_meta_resource(addon, media_type=None, item_id=None):
 
 def has_stream_resource(addon, media_type=None, item_id=None):
     """Return True if the addon supports stream ('stream') resource for this item."""
+    if not addon.get("streams_enabled", True):
+        return False
     return addon_has_resource(addon, "stream", media_type=media_type, item_id=item_id)
 
 def get_stream_addons(media_type=None, item_id=None):
     """Return all enabled addons that provide streams/torrents for this media type and item."""
     from . import database
-    addons = [a for a in database.get_addons() if a.get("enabled", True)]
+    addons = [a for a in database.get_addons() if a.get("enabled", True) and a.get("streams_enabled", True)]
     return [
         a for a in addons 
         if not a.get("manifest_url", "").startswith("builtin://") 
@@ -739,7 +768,7 @@ def get_stream_addons(media_type=None, item_id=None):
 def has_stream_addons(media_type=None, item_id=None):
     """Return True if there is at least one enabled stream/torrent addon for this media type and item."""
     from . import database
-    addons = [a for a in database.get_addons() if a.get("enabled", True)]
+    addons = [a for a in database.get_addons() if a.get("enabled", True) and a.get("streams_enabled", True)]
     for a in addons:
         if not a.get("manifest_url", "").startswith("builtin://"):
             if item_id and str(item_id).startswith("tt"):
@@ -751,6 +780,8 @@ def has_stream_addons(media_type=None, item_id=None):
 
 def has_catalog_resource(addon, media_type=None):
     """Return True if the addon supports catalog ('catalog') resource for this media type."""
+    if not addon.get("catalogs_enabled", True):
+        return False
     return addon_has_resource(addon, "catalog", media_type=media_type)
 
 def has_subtitles_resource(addon, media_type=None, item_id=None):
@@ -1128,6 +1159,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     addon_items = future.result()
                     new_batch = []
                     q_lower = query.lower()
+                    cur_addon = future_to_addon.get(future) or {}
+                    cur_addon_name = cur_addon.get("name", "")
+                    cur_manifest_url = cur_addon.get("manifest_url", "")
                     for m in addon_items:
                         if database.is_adult_content_hidden() and is_adult_item(m):
                             continue
@@ -1175,7 +1209,11 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                             "year": year,
                             "medium_cover_image": poster_url,
                             "poster": poster_url,
-                            "type": m.get("type") or media_type
+                            "type": m.get("type") or media_type,
+                            "addon_name": cur_addon_name,
+                            "catalog_name": "Search",
+                            "catalog_id": target_catalog_id or "search",
+                            "manifest_url": cur_manifest_url
                         }
                         seen_titles.setdefault(title_lower, []).append(item_obj)
                         items.append(item_obj)
@@ -1277,6 +1315,19 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         if data is None:
             return None
             
+        found_addon_name = ""
+        found_catalog_name = str(catalog_id).title()
+        for a in database.get_addons():
+            m_url = a.get("manifest_url", "")
+            if m_url and (m_url == catalog_url or catalog_url.startswith(m_url.rsplit("manifest.json", 1)[0])):
+                found_addon_name = a.get("name", "")
+                addon_cats = get_addon_catalogs(a, cache_only=True)
+                for cat in (addon_cats or []):
+                    if str(cat.get("id")) == str(catalog_id) and cat.get("name"):
+                        found_catalog_name = cat.get("name")
+                        break
+                break
+
         if isinstance(data.get("metas"), list):
             from .movie_widget import extract_image_url
             movies = []
@@ -1332,6 +1383,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                         alias_ids.append(tt_m.group(1))
 
                 item_genres = m.get("genres") or (m.get("genre") if isinstance(m.get("genre"), list) else ([m.get("genre")] if m.get("genre") else []))
+                item_cat_name = m.get("catalog_name") or found_catalog_name
+                item_addon_name = m.get("addon_name") or found_addon_name
 
                 movies.append({
                     "id": imdb_id,
@@ -1341,11 +1394,17 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     "medium_cover_image": poster,
                     "poster": poster,
                     "type": item_type,
-                    "genres": item_genres
+                    "genres": item_genres,
+                    "addon_name": item_addon_name,
+                    "catalog_name": item_cat_name,
+                    "catalog_id": catalog_id,
+                    "manifest_url": catalog_url
                 })
             if genre and genre != "All":
                 movies = filter_items_by_genre(movies, genre, media_type=media_type)
             hydrate_missing_catalog_items(movies, media_type=media_type)
+            if database.is_adult_content_hidden():
+                movies = [m for m in movies if not is_adult_item(m)]
             return movies
         return []
 
@@ -1357,6 +1416,13 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
         return False
     missing_titles = [m for m in items if (not m.get("title") or m.get("title") == "Unknown") and m.get("id")]
     if not missing_titles:
+        if database.is_adult_content_hidden():
+            adult_items = [m for m in items if is_adult_item(m)]
+            for am in adult_items:
+                try:
+                    items.remove(am)
+                except ValueError:
+                    pass
         return False
 
     updated = False
@@ -1374,11 +1440,20 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                 m["poster"] = m["medium_cover_image"]
             if not m.get("year") and c_meta.get("year"):
                 m["year"] = str(c_meta.get("year", ""))
+            if c_meta.get("adult") or c_meta.get("isAdult"):
+                m["adult"] = True
             updated = True
         else:
             still_missing.append(m)
 
     if not still_missing:
+        if database.is_adult_content_hidden():
+            adult_items = [m for m in items if is_adult_item(m)]
+            for am in adult_items:
+                try:
+                    items.remove(am)
+                except ValueError:
+                    pass
         return updated
 
     import concurrent.futures
@@ -1402,6 +1477,10 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     m_item["poster"] = meta_dict["poster"]
                 if not m_item.get("year") and meta_dict.get("year"):
                     m_item["year"] = str(meta_dict["year"])
+                if meta_dict.get("adult") or meta_dict.get("isAdult"):
+                    m_item["adult"] = True
+                if meta_dict.get("certification"):
+                    m_item["certification"] = meta_dict["certification"]
 
         # 2. If still missing, try fetch_movie_details
         if not m_item.get("title") or m_item.get("title") == "Unknown":
@@ -1413,6 +1492,20 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     m_item["poster"] = det["medium_cover_image"]
                 if not m_item.get("year") and det.get("year"):
                     m_item["year"] = str(det["year"])
+                if det.get("adult") or det.get("isAdult"):
+                    m_item["adult"] = True
+                if det.get("certification"):
+                    m_item["certification"] = det["certification"]
+
+        # Fast TMDb check for adult flag if still unknown and IMDb ID
+        if database.is_adult_content_hidden() and not m_item.get("adult") and str(m_id).startswith("tt"):
+            try:
+                from . import tmdb_helper
+                t_info = tmdb_helper.fetch_title_language_and_genres(m_id, m_type, m_item.get("title"))
+                if t_info and t_info.get("adult"):
+                    m_item["adult"] = True
+            except Exception:
+                pass
 
         # Save to metadata_cache so subsequent views are instant
         if m_item.get("title") and m_item.get("title") != "Unknown":
@@ -1424,6 +1517,10 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     cached_rec["poster"] = m_item["medium_cover_image"]
                 if m_item.get("year"):
                     cached_rec["year"] = m_item["year"]
+                if m_item.get("adult"):
+                    cached_rec["adult"] = True
+                if m_item.get("certification"):
+                    cached_rec["certification"] = m_item["certification"]
                 cached_rec["id"] = m_id
                 database.save_cached_metadata(m_id, m_type, cached_rec)
             except Exception:
@@ -1431,6 +1528,15 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(still_missing), 12)) as ex:
         list(ex.map(_hydrate_single_item, still_missing))
+
+    if database.is_adult_content_hidden():
+        adult_items = [m for m in items if is_adult_item(m)]
+        for am in adult_items:
+            try:
+                items.remove(am)
+            except ValueError:
+                pass
+
     return True
 
 def is_valid_meta(res):
@@ -1514,6 +1620,8 @@ def merge_metadata(base, extra):
         merged["imdbRating"] = extra["imdbRating"]
     if not merged.get("certification") and extra.get("certification"):
         merged["certification"] = extra["certification"]
+    if not merged.get("adult") and (extra.get("adult") or extra.get("isAdult")):
+        merged["adult"] = True
     if not merged.get("trailer") and extra.get("trailer"):
         merged["trailer"] = extra["trailer"]
     if not merged.get("director") and extra.get("director"):
@@ -1540,6 +1648,8 @@ def enrich_metadata_with_language_and_genres(res, imdb_id, media_type="movie", t
         from . import tmdb_helper
         lang_info = tmdb_helper.fetch_title_language_and_genres(item_id, media_type, item_title)
         if lang_info:
+            if lang_info.get("adult"):
+                res["adult"] = True
             lang_name = lang_info.get("language_name")
             lang_code = lang_info.get("language_code")
             if lang_name:
