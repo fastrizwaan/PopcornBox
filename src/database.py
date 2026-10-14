@@ -1278,6 +1278,12 @@ def _get_cache_db():
             updated_at REAL
         )
     """)
+    # Migration: Purge any contaminated rate-limit / banned messages from cache
+    try:
+        _cache_conn.execute("DELETE FROM stream_cache WHERE data LIKE '%ratelimit%' OR data LIKE '%Aguarde 5 Minutos%' OR data LIKE '%(Banned)%'")
+        _cache_conn.commit()
+    except Exception:
+        pass
     _cache_conn.execute("""
         CREATE TABLE IF NOT EXISTS trailer_stream_cache (
             youtube_id TEXT PRIMARY KEY,
@@ -1999,7 +2005,24 @@ def get_cached_streams(cache_key, max_age_hours=24):
             if row and row[0]:
                 updated_at = row[1]
                 if (time.time() - updated_at) / 3600 < max_age_hours:
-                    return json.loads(row[0])
+                    raw_streams = json.loads(row[0])
+                    if isinstance(raw_streams, list):
+                        clean = []
+                        has_warning = False
+                        for s in raw_streams:
+                            s_str = str(s).lower()
+                            if "ratelimit" in s_str or "muitas requisi" in s_str or "aguarde 5 minutos" in s_str or "(banned)" in s_str:
+                                has_warning = True
+                                continue
+                            clean.append(s)
+                        if has_warning:
+                            if clean:
+                                cursor.execute("UPDATE stream_cache SET data = ? WHERE cache_key = ?", (json.dumps(clean), str(cache_key)))
+                            else:
+                                cursor.execute("DELETE FROM stream_cache WHERE cache_key = ?", (str(cache_key),))
+                            conn.commit()
+                            return clean if clean else None
+                    return raw_streams
     except Exception as e:
         print(f"Error reading stream cache: {e}")
     return None

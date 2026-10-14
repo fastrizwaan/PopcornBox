@@ -15,6 +15,7 @@ from . import database
 from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids, TMDB_GENRES, fetch_tmdb_standalone_metadata
 import concurrent.futures
 import threading
+import contextlib
 import re
 
 def _create_ssl_context():
@@ -98,6 +99,316 @@ _OFFLINE_HOST_FAIL_COUNT = {}
 _OFFLINE_HOSTS_LOCK = threading.Lock()
 _OFFLINE_HOST_COOLDOWN = 60 # 1 minute circuit breaker for offline addons
 _OFFLINE_HOST_MAX_FAILS = 2 # Trip breaker only after consecutive failures
+
+# ---------------------------------------------------------------------------
+# Provider Protection System (Rate Limiting, Cooldowns, & Concurrency Control)
+# ---------------------------------------------------------------------------
+_PROVIDER_PROTECTION_LOCK = threading.RLock()
+_PROVIDER_HOST_LOCKS = {}             # host -> threading.Lock()
+_PROVIDER_LAST_REQUEST_TIME = {}      # host -> float (timestamp)
+_PROVIDER_COOLDOWNS = {}              # host -> float (cooldown expiry timestamp)
+_PROVIDER_COOLDOWN_REASONS = {}       # host -> str
+_STREAM_URL_CACHE = {}                # url -> (data, expiry_timestamp)
+_STREAM_URL_CACHE_LOCK = threading.Lock()
+_STREAM_URL_CACHE_TTL = 900           # 15 minutes cache for identical stream URLs
+
+def _get_provider_host(url_or_manifest):
+    if not url_or_manifest:
+        return ""
+    try:
+        parsed = urllib.parse.urlparse(str(url_or_manifest))
+        host = parsed.netloc.lower()
+        return host if host else str(url_or_manifest).lower()
+    except Exception:
+        return str(url_or_manifest).lower()
+
+def is_provider_in_cooldown(url_or_manifest):
+    host = _get_provider_host(url_or_manifest)
+    if not host:
+        return False
+    with _PROVIDER_PROTECTION_LOCK:
+        exp = _PROVIDER_COOLDOWNS.get(host, 0)
+        now = time.time()
+        if exp > now:
+            return True
+        elif host in _PROVIDER_COOLDOWNS:
+            del _PROVIDER_COOLDOWNS[host]
+            _PROVIDER_COOLDOWN_REASONS.pop(host, None)
+    return False
+
+def get_provider_cooldown_remaining(url_or_manifest):
+    host = _get_provider_host(url_or_manifest)
+    if not host:
+        return 0
+    with _PROVIDER_PROTECTION_LOCK:
+        exp = _PROVIDER_COOLDOWNS.get(host, 0)
+        return max(0, int(exp - time.time()))
+
+def set_provider_cooldown(url_or_manifest, duration_seconds=300, reason="Rate limit"):
+    host = _get_provider_host(url_or_manifest)
+    if not host:
+        return
+    with _PROVIDER_PROTECTION_LOCK:
+        duration = max(10, int(duration_seconds))
+        _PROVIDER_COOLDOWNS[host] = time.time() + duration
+        _PROVIDER_COOLDOWN_REASONS[host] = str(reason)
+    logging.warning(f"[Provider Protection] Backing off from provider '{host}' for {duration}s. Reason: {reason}")
+
+def clear_provider_cooldown(url_or_manifest=None):
+    with _PROVIDER_PROTECTION_LOCK:
+        if url_or_manifest:
+            host = _get_provider_host(url_or_manifest)
+            _PROVIDER_COOLDOWNS.pop(host, None)
+            _PROVIDER_COOLDOWN_REASONS.pop(host, None)
+        else:
+            _PROVIDER_COOLDOWNS.clear()
+            _PROVIDER_COOLDOWN_REASONS.clear()
+
+def check_stream_rate_limit_warning(stream):
+    """
+    Check if a stream entry returned by an addon is actually a rate-limit/ban notice.
+    Returns the warning string if detected, or None.
+    """
+    if not isinstance(stream, dict):
+        return None
+
+    # Check behaviorHints (e.g. bingeGroup: "fenixflix-ratelimit")
+    bh = stream.get("behaviorHints")
+    if isinstance(bh, dict):
+        bg = str(bh.get("bingeGroup") or "").lower()
+        if "ratelimit" in bg or "rate-limit" in bg or "banned" in bg:
+            return str(stream.get("title") or stream.get("name") or bg).strip()
+
+    name = str(stream.get("name") or "")
+    title = str(stream.get("title") or stream.get("stream_title") or "")
+    desc = str(stream.get("description") or "")
+    filename = str(stream.get("filename") or "")
+    combined = f"{name} {title} {desc} {filename}".lower()
+
+    warning_signatures = [
+        "muitas requisições",
+        "muitas requisicoes",
+        "aguarde 5 minutos",
+        "aguarde alguns minutos",
+        "rate limit exceeded",
+        "rate limit reached",
+        "rate-limit",
+        "too many requests",
+        "slow down",
+        "temporarily banned",
+        "temporarily blocked",
+        "(banned)",
+        "ip banned",
+        "ip blocked",
+    ]
+    for sig in warning_signatures:
+        if sig in combined:
+            return (title or name or desc or sig).strip()
+
+    has_media = bool(stream.get("url") or stream.get("infoHash") or stream.get("magnet") or stream.get("ytId"))
+    if not has_media and any(w in combined for w in ["banned", "bloqueado", "aguarde", "limit"]):
+        return (title or name or "Rate limit message").strip()
+
+    return None
+
+def _get_cached_stream_url(url):
+    if not url:
+        return None
+    with _STREAM_URL_CACHE_LOCK:
+        entry = _STREAM_URL_CACHE.get(url)
+        if entry:
+            data, exp = entry
+            if time.time() < exp:
+                return data
+            del _STREAM_URL_CACHE[url]
+    return None
+
+def _save_cached_stream_url(url, streams, ttl=_STREAM_URL_CACHE_TTL):
+    if not url or streams is None:
+        return
+    with _STREAM_URL_CACHE_LOCK:
+        if len(_STREAM_URL_CACHE) > 500:
+            now = time.time()
+            expired = [k for k, v in _STREAM_URL_CACHE.items() if v[1] <= now]
+            for k in expired:
+                del _STREAM_URL_CACHE[k]
+            if len(_STREAM_URL_CACHE) > 500:
+                _STREAM_URL_CACHE.clear()
+        _STREAM_URL_CACHE[url] = (streams, time.time() + ttl)
+
+@contextlib.contextmanager
+def _acquire_provider_slot(host, min_interval=0.4, timeout=8.0, abort_event=None):
+    """
+    Acquires a concurrency slot for a provider host:
+    - Never more than 1 in-flight request per host.
+    - At least min_interval (400ms) spacing between successive requests.
+    - Aborts cleanly on cooldown or abort_event.
+    """
+    if not host:
+        yield True
+        return
+
+    with _PROVIDER_PROTECTION_LOCK:
+        if host not in _PROVIDER_HOST_LOCKS:
+            _PROVIDER_HOST_LOCKS[host] = threading.Lock()
+        lock = _PROVIDER_HOST_LOCKS[host]
+
+    start_wait = time.time()
+    acquired = False
+    while time.time() - start_wait < timeout:
+        if abort_event and abort_event.is_set():
+            yield False
+            return
+        if is_provider_in_cooldown(host):
+            yield False
+            return
+        if lock.acquire(timeout=0.08):
+            acquired = True
+            break
+
+    if not acquired:
+        yield False
+        return
+
+    try:
+        if abort_event and abort_event.is_set():
+            yield False
+            return
+        if is_provider_in_cooldown(host):
+            yield False
+            return
+
+        now = time.time()
+        with _PROVIDER_PROTECTION_LOCK:
+            last_req = _PROVIDER_LAST_REQUEST_TIME.get(host, 0)
+        time_since_last = now - last_req
+        if time_since_last < min_interval:
+            sleep_needed = min_interval - time_since_last
+            sleep_end = time.time() + sleep_needed
+            while time.time() < sleep_end:
+                if abort_event and abort_event.is_set():
+                    yield False
+                    return
+                time.sleep(min(0.04, max(0.001, sleep_end - time.time())))
+
+        with _PROVIDER_PROTECTION_LOCK:
+            _PROVIDER_LAST_REQUEST_TIME[host] = time.time()
+
+        yield True
+    finally:
+        with _PROVIDER_PROTECTION_LOCK:
+            _PROVIDER_LAST_REQUEST_TIME[host] = time.time()
+        lock.release()
+
+def _request_addon_streams(addon, url, timeout=8, abort_event=None):
+    """
+    Politely requests stream data from an addon URL with:
+    - Host-level concurrency limit (max 1 concurrent in-flight request per host)
+    - Minimum inter-request delay (400ms spacing per host)
+    - Active cooldown check (e.g. from 429 or provider ban/wait warnings)
+    - HTTP 429 Retry-After handling
+    - Detection and filtering of provider rate-limit/ban messages
+    - Short-term stream URL in-memory caching
+    """
+    if not url or (abort_event and abort_event.is_set()):
+        return []
+
+    manifest_url = addon.get("manifest_url", "")
+    host = _get_provider_host(manifest_url) or _get_provider_host(url)
+
+    # 1. Cooldown check
+    if is_provider_in_cooldown(host):
+        rem = get_provider_cooldown_remaining(host)
+        logging.info(f"[Provider Protection] Addon '{addon.get('name')}' ({host}) is in cooldown for {rem}s. Skipping request.")
+        return []
+
+    # 2. Check stream URL cache
+    cached_streams = _get_cached_stream_url(url)
+    if cached_streams is not None:
+        return cached_streams
+
+    # 3. Acquire host slot (concurrency limit + polite delay)
+    with _acquire_provider_slot(host, min_interval=0.4, timeout=timeout, abort_event=abort_event) as acquired:
+        if not acquired:
+            return []
+
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+            )
+            with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as response:
+                data_str = response.read().decode('utf-8')
+            if not data_str or not data_str.strip():
+                return []
+            data = json.loads(data_str)
+            _record_addon_success(manifest_url)
+
+            raw_streams = data.get("streams", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            clean_streams = []
+            warning_msg = None
+
+            for s in raw_streams:
+                if isinstance(s, dict):
+                    warn = check_stream_rate_limit_warning(s)
+                    if warn:
+                        warning_msg = warn
+                        continue
+                    clean_streams.append(s)
+                else:
+                    clean_streams.append(s)
+
+            if warning_msg:
+                set_provider_cooldown(host, duration_seconds=300, reason=warning_msg)
+                logging.warning(f"[Provider Protection] Provider '{addon.get('name')}' returned rate-limit notice: '{warning_msg}'. Cooldown set for 300s.")
+
+            if clean_streams:
+                _save_cached_stream_url(url, clean_streams)
+
+            return clean_streams
+
+        except urllib.error.HTTPError as e:
+            code = e.code
+            if code == 429:
+                retry_after = e.headers.get("Retry-After") if hasattr(e, "headers") else None
+                cooldown_secs = 300
+                if retry_after:
+                    try:
+                        cooldown_secs = max(int(retry_after), 30)
+                    except ValueError:
+                        try:
+                            import email.utils
+                            t = email.utils.parsedate_to_datetime(retry_after).timestamp()
+                            cooldown_secs = max(int(t - time.time()), 30)
+                        except Exception:
+                            cooldown_secs = 300
+                set_provider_cooldown(host, duration_seconds=cooldown_secs, reason="HTTP 429 Too Many Requests")
+                logging.warning(f"[Provider Protection] Provider '{addon.get('name')}' ({host}) returned HTTP 429. Cooldown set for {cooldown_secs}s.")
+                return []
+            elif code >= 500:
+                _record_addon_failure(manifest_url)
+            else:
+                _record_addon_success(manifest_url)
+            try:
+                e.close()
+            except Exception:
+                pass
+            return []
+        except urllib.error.URLError as e:
+            logging.debug(f"Error fetching from addon {addon.get('name')}: {e.reason}")
+            _record_addon_failure(manifest_url)
+            return []
+        except TimeoutError:
+            logging.debug(f"Timeout fetching from addon {addon.get('name')}")
+            _record_addon_failure(manifest_url)
+            return []
+        except Exception as e:
+            err_str = str(e).lower()
+            logging.debug(f"Error fetching from addon {addon.get('name')}: {e}")
+            if any(kw in err_str for kw in ["timed out", "timeout", "connection refused", "connection reset", "no route", "name or service"]):
+                _record_addon_failure(manifest_url)
+            return []
+
 
 def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0):
     if not url:
@@ -3045,6 +3356,8 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
     valid_streams = []
     seen_keys = {}  # {dedup_key: index in valid_streams} for O(1) duplicate lookup
     for s in all_streams:
+        if check_stream_rate_limit_warning(s):
+            continue
         yt_id = str(s.get("ytId") or "").strip()
         raw_stream_url = str(s.get("url") or "")
         external_url = str(s.get("externalUrl") or "")
@@ -3499,8 +3812,10 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
     cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
     if use_cache:
         cached = database.get_cached_streams(cache_key, max_age_hours=24)
-        if cached is not None:
-            return cached
+        if cached:
+            cached = [s for s in cached if not check_stream_rate_limit_warning(s)]
+            if cached:
+                return cached
 
     actual_media = media_type
     
@@ -3577,38 +3892,8 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
         else:
             url = f"{base_url}stream/{actual_media}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
             
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-            with urllib.request.urlopen(req, timeout=12, context=_SSL_CONTEXT) as response:
-                data = json.loads(response.read().decode('utf-8'))
-            _record_addon_success(manifest_url)
-            if isinstance(data, dict):
-                return addon.get("name", "Unknown"), data.get("streams", [])
-            elif isinstance(data, list):
-                return addon.get("name", "Unknown"), data
-            return addon.get("name", "Unknown"), []
-        except urllib.error.HTTPError as e:
-            code = e.code
-            logging.debug(f"HTTP Error {code} fetching from addon {addon.get('name')}")
-            if code >= 500:
-                _record_addon_failure(manifest_url)
-            else:
-                _record_addon_success(manifest_url)
-            try:
-                e.close()
-            except Exception:
-                pass
-            return addon.get("name", "Unknown"), []
-        except urllib.error.URLError as e:
-            print(f"Error fetching from addon {addon.get('name')}: {e.reason}")
-            _record_addon_failure(manifest_url)
-            return addon.get("name", "Unknown"), []
-        except Exception as e:
-            err_str = str(e).lower()
-            print(f"Error fetching from addon {addon.get('name')}: {e}")
-            if any(kw in err_str for kw in ["timed out", "timeout", "connection refused", "connection reset", "no route", "name or service"]):
-                _record_addon_failure(manifest_url)
-            return addon.get("name", "Unknown"), []
+        streams = _request_addon_streams(addon, url, timeout=12)
+        return addon.get("name", "Unknown"), streams
             
     all_streams = []
     num_workers = min(len(stremio_addons), 20)
@@ -3723,7 +4008,7 @@ def ping_and_filter_streams(streams):
             filtered.append(s)
     return filtered
 
-def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None):
+def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False):
     if not imdb_id:
         if callback: callback([], is_cached=False, is_complete=True)
         return []
@@ -3748,6 +4033,11 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     # Check cache immediately using the provided ID
     cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
     cached = database.get_cached_streams(cache_key, max_age_hours=24)
+    if cached:
+        cached = [s for s in cached if not check_stream_rate_limit_warning(s)]
+    if cached and not force_refresh:
+        if callback: callback(cached, is_cached=True, is_complete=True)
+        return cached
     if cached and callback:
         callback(cached, is_cached=True, is_complete=False)
 
@@ -3838,45 +4128,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         else:
             url = f"{base_url}stream/{matched_media_type}/{urllib.parse.quote(str(cur_id), safe=':')}.json"
             
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-            with urllib.request.urlopen(req, timeout=8, context=_SSL_CONTEXT) as response:
-                data = json.loads(response.read().decode('utf-8'))
-            if isinstance(data, dict):
-                return addon.get("name", "Unknown"), data.get("streams", [])
-            elif isinstance(data, list):
-                return addon.get("name", "Unknown"), data
-            return addon.get("name", "Unknown"), []
-        except urllib.error.HTTPError as e:
-            code = e.code
-            logging.debug(f"HTTP Error {code} fetching from addon {addon.get('name')}: {url}")
-            # 4xx means the addon is up but doesn't have this content — don't block it
-            # 5xx / connection issues means the server is down
-            if code >= 500:
-                _record_addon_failure(manifest_url)
-            else:
-                _record_addon_success(manifest_url)  # 404 etc means addon is alive
-            try:
-                e.close()
-            except Exception:
-                pass
-            return addon.get("name", "Unknown"), []
-        except urllib.error.URLError as e:
-            reason = str(e.reason)
-            print(f"Error fetching from addon {addon.get('name')}: {reason}")
-            _record_addon_failure(manifest_url)
-            return addon.get("name", "Unknown"), []
-        except TimeoutError as e:
-            print(f"Timeout fetching from addon {addon.get('name')}")
-            _record_addon_failure(manifest_url)
-            return addon.get("name", "Unknown"), []
-        except Exception as e:
-            err_str = str(e).lower()
-            print(f"Error fetching from addon {addon.get('name')}: {e}")
-            # Only penalise on connection/timeout errors, not data parse issues
-            if any(kw in err_str for kw in ["timed out", "timeout", "connection refused", "connection reset", "no route", "name or service"]):
-                _record_addon_failure(manifest_url)
-            return addon.get("name", "Unknown"), []
+        streams = _request_addon_streams(addon, url, timeout=8, abort_event=abort_event)
+        return addon.get("name", "Unknown"), streams
 
     all_raw_streams = []
     if cached:
@@ -3902,13 +4155,14 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     if num_workers > 0 and all_stream_addons:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
             future_to_addon = {}
-            queried_addon_ids = set()
+            queried_addon_urls = set()
             
             # Submit immediately for any addon that directly supports initial imdb_id
             for addon in all_stream_addons:
+                m_url = addon.get("manifest_url", "")
                 if has_stream_resource(addon, media_type=actual_media, item_id=imdb_id):
                     future_to_addon[executor.submit(fetch_from_addon, addon, imdb_id)] = (addon, imdb_id)
-                    queried_addon_ids.add((addon.get("manifest_url", ""), str(imdb_id)))
+                    queried_addon_urls.add(m_url)
                 
             # Fire off ID resolution in the background
             def resolve_and_submit():
@@ -3945,13 +4199,17 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                             resolved_ids = future.result()
                             if resolved_ids:
                                 for addon in all_stream_addons:
+                                    m_url = addon.get("manifest_url", "")
+                                    # Never query an addon twice for the same media item!
+                                    if m_url in queried_addon_urls:
+                                        continue
                                     for cur_id in resolved_ids:
-                                        addon_key = (addon.get("manifest_url", ""), str(cur_id))
-                                        if addon_key not in queried_addon_ids and has_stream_resource(addon, media_type=actual_media, item_id=cur_id):
+                                        if has_stream_resource(addon, media_type=actual_media, item_id=cur_id):
                                             new_fut = executor.submit(fetch_from_addon, addon, cur_id)
                                             future_to_addon[new_fut] = (addon, cur_id)
-                                            queried_addon_ids.add(addon_key)
+                                            queried_addon_urls.add(m_url)
                                             futures.add(new_fut)
+                                            break
                         except Exception as e:
                             print(f"Error resolving IDs: {e}")
                     else:
@@ -3964,6 +4222,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                 if addon_obj:
                                     _record_addon_success(addon_obj.get("manifest_url", ""))
                                 for s in streams:
+                                    if check_stream_rate_limit_warning(s):
+                                        continue
                                     s["addon_name"] = addon_name
                                     all_raw_streams.append(s)
                                 if callback:
