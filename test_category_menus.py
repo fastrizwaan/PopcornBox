@@ -69,6 +69,7 @@ class DummyWindow:
         self._menus_built = False
         self._menus_building = False
         
+        self.home_active_btn = MockMenuButton()
         self.discover_active_btn = MockMenuButton()
         self.movies_active_btn = MockMenuButton()
         self.series_active_btn = MockMenuButton()

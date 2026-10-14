@@ -12,7 +12,7 @@ import gzip
 import zlib
 import base64
 from . import database
-from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids, TMDB_GENRES
+from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids, TMDB_GENRES, fetch_tmdb_standalone_metadata
 import concurrent.futures
 import threading
 import re
@@ -1101,11 +1101,11 @@ def catalog_supports_genre(cat, genre):
     extra = cat.get("extra") or []
     genre_extra = None
     for ex in extra:
-        if isinstance(ex, dict) and ex.get("name") == "genre":
+        if isinstance(ex, dict) and ex.get("name") in ("genre", "year"):
             genre_extra = ex
             break
-        elif ex == "genre":
-            genre_extra = {"name": "genre"}
+        elif ex in ("genre", "year"):
+            genre_extra = {"name": ex}
             break
 
     if genre_extra is not None:
@@ -1120,7 +1120,7 @@ def catalog_supports_genre(cat, genre):
 
     # 3. Check "extraSupported"
     extra_sup = cat.get("extraSupported") or []
-    if "genre" in extra_sup:
+    if "genre" in extra_sup or "year" in extra_sup:
         return True
 
     # 4. Check if catalog ID or Name is dedicated to this language genre
@@ -1155,6 +1155,21 @@ def filter_items_by_genre(items, genre, media_type=None):
         return items or []
 
     g_norm = str(genre).strip().lower()
+
+    # If the filter is a 4-digit year, filter by release year, NOT narrative genre
+    if g_norm.isdigit() and len(g_norm) == 4:
+        filtered = []
+        for item in items:
+            if media_type and media_type not in ("all", "discover"):
+                if not is_item_type_compatible(item, media_type):
+                    continue
+            y = str(item.get("year") or "").strip()
+            if not y and item.get("releaseInfo"):
+                y = str(item.get("releaseInfo")).split("-")[0].strip()
+            if not y or y.startswith(g_norm):
+                filtered.append(item)
+        return filtered
+
     filtered = []
 
     for item in items:
@@ -1261,7 +1276,7 @@ def invalidate_catalogs_cache():
     with _AVAILABLE_CATALOGS_LOCK:
         _AVAILABLE_CATALOGS_CACHE.clear()
 
-def get_available_catalogs(c_type="movie"):
+def get_available_catalogs(c_type="movie", cache_only=True):
     with _AVAILABLE_CATALOGS_LOCK:
         if c_type in _AVAILABLE_CATALOGS_CACHE:
             return list(_AVAILABLE_CATALOGS_CACHE[c_type])
@@ -1279,7 +1294,7 @@ def get_available_catalogs(c_type="movie"):
         base_url = manifest_url.rsplit("manifest.json", 1)[0]
         if not base_url.endswith("/"): base_url += "/"
             
-        addon_catalogs = get_addon_catalogs(addon, cache_only=False)
+        addon_catalogs = get_addon_catalogs(addon, cache_only=cache_only)
         for cat in addon_catalogs:
             if not is_catalog_browsable(cat):
                 continue
@@ -1631,12 +1646,16 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
 
         server_genre = None
         server_supports_skip = False
+        genre_extra = None
         if cat_obj:
             extra = cat_obj.get("extra") or []
             for ex in extra:
                 if (isinstance(ex, dict) and ex.get("name") == "skip") or ex == "skip":
                     server_supports_skip = True
-                    break
+                elif isinstance(ex, dict) and ex.get("name") in ("genre", "year"):
+                    genre_extra = ex
+                elif ex in ("genre", "year"):
+                    genre_extra = {"name": ex}
             if "skip" in (cat_obj.get("extraSupported") or []):
                 server_supports_skip = True
 
@@ -1645,23 +1664,14 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 matched_opt = next((cg for cg in cat_genres if does_genre_match_filter(cg, genre)), None)
                 if matched_opt:
                     server_genre = matched_opt
-                else:
-                    genre_extra = None
-                    for ex in extra:
-                        if isinstance(ex, dict) and ex.get("name") == "genre":
-                            genre_extra = ex
-                            break
-                        elif ex == "genre":
-                            genre_extra = {"name": "genre"}
-                            break
-                    if genre_extra is not None:
-                        opts = genre_extra.get("options") or []
-                        if opts:
-                            server_genre = next((opt for opt in opts if does_genre_match_filter(opt, genre)), None)
-                        else:
-                            server_genre = genre
-                    elif "genre" in (cat_obj.get("extraSupported") or []):
+                elif genre_extra is not None:
+                    opts = genre_extra.get("options") or []
+                    if opts:
+                        server_genre = next((opt for opt in opts if does_genre_match_filter(opt, genre)), None)
+                    else:
                         server_genre = genre
+                elif "genre" in (cat_obj.get("extraSupported") or []) or "year" in (cat_obj.get("extraSupported") or []):
+                    server_genre = genre
         else:
             server_supports_skip = True
 
@@ -1676,7 +1686,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         
         extras = []
         if genre and genre != "All" and server_genre:
-            extras.append(f"genre={urllib.parse.quote(server_genre)}")
+            extra_param_name = genre_extra.get("name", "genre") if genre_extra else "genre"
+            extras.append(f"{extra_param_name}={urllib.parse.quote(server_genre)}")
         if skip > 0 and server_supports_skip:
             extras.append(f"skip={skip}")
             
@@ -1716,7 +1727,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     continue
                 poster = extract_image_url(m)
                 title = m.get("name") or m.get("title", "")
-                year = str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else ""
+                year = str(m.get("releaseInfo", "")).split("-")[0] if m.get("releaseInfo") else (str(m.get("year", "")).strip() if m.get("year") else "")
                 item_type = m.get("type") or media_type
                 if (not title or title == "Unknown" or not poster) and imdb_id:
                     cached_m = database.get_cached_metadata(imdb_id, item_type)
@@ -1777,7 +1788,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     "catalog_id": catalog_id,
                     "manifest_url": catalog_url
                 })
-            if genre and genre != "All":
+            if genre and genre != "All" and str(catalog_id) not in ("year", "years", "acc85513", "tmdb.year"):
                 movies = filter_items_by_genre(movies, genre, media_type=media_type)
             hydrate_missing_catalog_items(movies, media_type=media_type)
             if database.is_adult_content_hidden():
@@ -2169,6 +2180,15 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
             "thumbnail": res.get("medium_cover_image") or ""
         }]
 
+    desc = str(res.get("description", "")).strip()
+    if not desc or desc in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD") or not res.get("background") or not res.get("runtime"):
+        try:
+            tmdb_extra = fetch_tmdb_standalone_metadata(imdb_id, media_type=media_type, title=title, poster=poster)
+            if tmdb_extra:
+                res = merge_metadata(res, tmdb_extra)
+        except Exception:
+            pass
+
     if not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
         res = enrich_metadata_with_language_and_genres(res, imdb_id, media_type, title)
 
@@ -2539,6 +2559,14 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 return _save_and_return_meta(col_res, imdb_id, "collections", title, poster=poster)
         except Exception as e:
             print(f"[COLLECTIONS] Failed to fetch TMDB collection details for {imdb_id}: {e}")
+
+    # Robust TMDB fallback before returning generic unavailable placeholder
+    try:
+        tmdb_res = fetch_tmdb_standalone_metadata(imdb_id, media_type=c_type, title=title, poster=poster)
+        if tmdb_res and is_valid_meta(tmdb_res):
+            return _save_and_return_meta(tmdb_res, imdb_id, media_type, title, poster=poster)
+    except Exception:
+        pass
 
     if cached:
         return cached

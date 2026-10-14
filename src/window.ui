@@ -45,12 +45,71 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                         <property name="transition-type">0</property>
                                         <child>
                                           <object class="GtkStackPage">
+                                            <property name="name">home</property>
+                                            <property name="child">
+                                              <object class="GtkBox">
+                                                <style>
+                                                  <class name="linked"/>
+                                                </style>
+                                                <child>
+                                                  <object class="GtkMenuButton" id="home_active_btn">
+                                                    <property name="always-show-arrow">true</property>
+                                                    <property name="child">
+                                                      <object class="AdwButtonContent">
+                                                        <property name="icon-name">go-home-symbolic</property>
+                                                        <property name="label" translatable="yes">Home</property>
+                                                      </object>
+                                                    </property>
+                                                    <property name="tooltip-text" translatable="yes">Home</property>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkButton" id="discover_inactive_btn_home">
+                                                    <property name="action-name">win.switch-to-discover</property>
+                                                    <property name="icon-name">popcorn-discover-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Discover</property>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkButton" id="movies_inactive_btn_home">
+                                                    <property name="action-name">win.switch-to-movies</property>
+                                                    <property name="icon-name">popcorn-movies-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Movies</property>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkButton" id="series_inactive_btn_home">
+                                                    <property name="action-name">win.switch-to-series</property>
+                                                    <property name="icon-name">popcorn-tv-series-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Series</property>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkButton" id="anime_inactive_btn_home">
+                                                    <property name="action-name">win.switch-to-anime</property>
+                                                    <property name="icon-name">popcorn-anime-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Anime</property>
+                                                  </object>
+                                                </child>
+                                              </object>
+                                            </property>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkStackPage">
                                             <property name="name">discover</property>
                                             <property name="child">
                                               <object class="GtkBox">
                                                 <style>
                                                   <class name="linked"/>
                                                 </style>
+                                                <child>
+                                                  <object class="GtkButton" id="home_inactive_btn_discover">
+                                                    <property name="action-name">win.switch-to-home</property>
+                                                    <property name="icon-name">go-home-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Home</property>
+                                                  </object>
+                                                </child>
                                                 <child>
                                                   <object class="GtkMenuButton" id="discover_active_btn">
                                                     <property name="always-show-arrow">true</property>
@@ -60,6 +119,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                         <property name="label" translatable="yes">Discover</property>
                                                       </object>
                                                     </property>
+                                                    <property name="tooltip-text" translatable="yes">Discover</property>
                                                   </object>
                                                 </child>
                                                 <child>
@@ -96,6 +156,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                   <class name="linked"/>
                                                 </style>
                                                 <child>
+                                                  <object class="GtkButton" id="home_inactive_btn_movies">
+                                                    <property name="action-name">win.switch-to-home</property>
+                                                    <property name="icon-name">go-home-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Home</property>
+                                                  </object>
+                                                </child>
+                                                <child>
                                                   <object class="GtkButton" id="discover_inactive_btn_movies">
                                                     <property name="action-name">win.switch-to-discover</property>
                                                     <property name="icon-name">popcorn-discover-symbolic</property>
@@ -111,6 +178,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                         <property name="label" translatable="yes">Movies</property>
                                                       </object>
                                                     </property>
+                                                    <property name="tooltip-text" translatable="yes">Movies</property>
                                                   </object>
                                                 </child>
                                                 <child>
@@ -140,6 +208,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                   <class name="linked"/>
                                                 </style>
                                                 <child>
+                                                  <object class="GtkButton" id="home_inactive_btn_series">
+                                                    <property name="action-name">win.switch-to-home</property>
+                                                    <property name="icon-name">go-home-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Home</property>
+                                                  </object>
+                                                </child>
+                                                <child>
                                                   <object class="GtkButton" id="discover_inactive_btn_series">
                                                     <property name="action-name">win.switch-to-discover</property>
                                                     <property name="icon-name">popcorn-discover-symbolic</property>
@@ -162,6 +237,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                         <property name="label" translatable="yes">Series</property>
                                                       </object>
                                                     </property>
+                                                    <property name="tooltip-text" translatable="yes">Series</property>
                                                   </object>
                                                 </child>
                                                 <child>
@@ -183,6 +259,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <style>
                                                   <class name="linked"/>
                                                 </style>
+                                                <child>
+                                                  <object class="GtkButton" id="home_inactive_btn_anime">
+                                                    <property name="action-name">win.switch-to-home</property>
+                                                    <property name="icon-name">go-home-symbolic</property>
+                                                    <property name="tooltip-text" translatable="yes">Home</property>
+                                                  </object>
+                                                </child>
                                                 <child>
                                                   <object class="GtkButton" id="discover_inactive_btn_anime">
                                                     <property name="action-name">win.switch-to-discover</property>
@@ -213,6 +296,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                         <property name="label" translatable="yes">Anime</property>
                                                       </object>
                                                     </property>
+                                                    <property name="tooltip-text" translatable="yes">Anime</property>
                                                   </object>
                                                 </child>
                                               </object>
@@ -222,17 +306,19 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                       </object>
                                     </child>
                                     <child type="start">
-                                      <object class="GtkDropDown" id="library_genre_dropdown">
-                                        <property name="valign">3</property>
-                                        <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Filter by Genre</property>
-                                      </object>
-                                    </child>
-                                    <child type="start">
                                       <object class="GtkDropDown" id="library_sort_dropdown">
                                         <property name="valign">3</property>
                                         <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Sort or Filter by Year</property>
+                                        <property name="tooltip-text" translatable="yes">Catalog or Filter</property>
+                                        <property name="visible">false</property>
+                                      </object>
+                                    </child>
+                                    <child type="start">
+                                      <object class="GtkDropDown" id="library_genre_dropdown">
+                                        <property name="valign">3</property>
+                                        <property name="enable-search">true</property>
+                                        <property name="tooltip-text" translatable="yes">Context Filter</property>
+                                        <property name="visible">false</property>
                                       </object>
                                     </child>
                                     <child type="start">
@@ -240,6 +326,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                         <property name="label" translatable="yes">Unique</property>
                                         <property name="valign">3</property>
                                         <property name="tooltip-text" translatable="yes">Combined view: show all unique cards with no sections and no duplicates</property>
+                                        <property name="visible">false</property>
                                       </object>
                                     </child>
                                     <child type="title">

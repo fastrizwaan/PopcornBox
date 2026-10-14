@@ -36,15 +36,55 @@ template $CineWindow: Adw.ApplicationWindow {
                   Stack category_btn_stack {
                     transition-type: none;
                     StackPage {
+                      name: "home";
+                      child: Box {
+                        styles ["linked"]
+                        MenuButton home_active_btn {
+                          always-show-arrow: true;
+                          child: Adw.ButtonContent {
+                            icon-name: "go-home-symbolic";
+                            label: _("Home");
+                          };
+                          tooltip-text: _("Home");
+                        }
+                        Button discover_inactive_btn_home {
+                          action-name: "win.switch-to-discover";
+                          icon-name: "popcorn-discover-symbolic";
+                          tooltip-text: _("Discover");
+                        }
+                        Button movies_inactive_btn_home {
+                          action-name: "win.switch-to-movies";
+                          icon-name: "popcorn-movies-symbolic";
+                          tooltip-text: _("Movies");
+                        }
+                        Button series_inactive_btn_home {
+                          action-name: "win.switch-to-series";
+                          icon-name: "popcorn-tv-series-symbolic";
+                          tooltip-text: _("Series");
+                        }
+                        Button anime_inactive_btn_home {
+                          action-name: "win.switch-to-anime";
+                          icon-name: "popcorn-anime-symbolic";
+                          tooltip-text: _("Anime");
+                        }
+                      };
+                    }
+                    StackPage {
                       name: "discover";
                       child: Box {
                         styles ["linked"]
+                        Button home_inactive_btn_discover {
+                          action-name: "win.switch-to-home";
+                          icon-name: "go-home-symbolic";
+                          tooltip-text: _("Home");
+                        }
                         MenuButton discover_active_btn {
                           always-show-arrow: true;
                           child: Adw.ButtonContent {
                             icon-name: "popcorn-discover-symbolic";
                             label: _("Discover");
                           };
+                          tooltip-text: _("Discover");
                         }
                         Button movies_inactive_btn_discover {
                           action-name: "win.switch-to-movies";
@@ -67,6 +107,11 @@ template $CineWindow: Adw.ApplicationWindow {
                       name: "movies";
                       child: Box {
                         styles ["linked"]
+                        Button home_inactive_btn_movies {
+                          action-name: "win.switch-to-home";
+                          icon-name: "go-home-symbolic";
+                          tooltip-text: _("Home");
+                        }
                         Button discover_inactive_btn_movies {
                           action-name: "win.switch-to-discover";
                           icon-name: "popcorn-discover-symbolic";
@@ -78,6 +123,7 @@ template $CineWindow: Adw.ApplicationWindow {
                             icon-name: "popcorn-movies-symbolic";
                             label: _("Movies");
                           };
+                          tooltip-text: _("Movies");
                         }
                         Button series_inactive_btn {
                           action-name: "win.switch-to-series";
@@ -95,6 +141,11 @@ template $CineWindow: Adw.ApplicationWindow {
                       name: "series";
                       child: Box {
                         styles ["linked"]
+                        Button home_inactive_btn_series {
+                          action-name: "win.switch-to-home";
+                          icon-name: "go-home-symbolic";
+                          tooltip-text: _("Home");
+                        }
                         Button discover_inactive_btn_series {
                           action-name: "win.switch-to-discover";
                           icon-name: "popcorn-discover-symbolic";
@@ -111,6 +162,7 @@ template $CineWindow: Adw.ApplicationWindow {
                             icon-name: "popcorn-tv-series-symbolic";
                             label: _("Series");
                           };
+                          tooltip-text: _("Series");
                         }
                         Button anime_inactive_btn_series {
                           action-name: "win.switch-to-anime";
@@ -123,6 +175,11 @@ template $CineWindow: Adw.ApplicationWindow {
                       name: "anime";
                       child: Box {
                         styles ["linked"]
+                        Button home_inactive_btn_anime {
+                          action-name: "win.switch-to-home";
+                          icon-name: "go-home-symbolic";
+                          tooltip-text: _("Home");
+                        }
                         Button discover_inactive_btn_anime {
                           action-name: "win.switch-to-discover";
                           icon-name: "popcorn-discover-symbolic";
@@ -144,23 +201,26 @@ template $CineWindow: Adw.ApplicationWindow {
                             icon-name: "popcorn-anime-symbolic";
                             label: _("Anime");
                           };
+                          tooltip-text: _("Anime");
                         }
                       };
                     }
                   }
 
                 [start]
-                DropDown library_genre_dropdown {
-                  valign: center;
-                  enable-search: true;
-                  tooltip-text: _("Filter by Genre");
-                }
-
-                [start]
                 DropDown library_sort_dropdown {
                   valign: center;
                   enable-search: true;
-                  tooltip-text: _("Sort or Filter by Year");
+                  tooltip-text: _("Catalog or Filter");
+                  visible: false;
+                }
+
+                [start]
+                DropDown library_genre_dropdown {
+                  valign: center;
+                  enable-search: true;
+                  tooltip-text: _("Context Filter");
+                  visible: false;
                 }
 
                 [start]
@@ -168,6 +228,7 @@ template $CineWindow: Adw.ApplicationWindow {
                   label: _("Unique");
                   valign: center;
                   tooltip-text: _("Combined view: show all unique cards with no sections and no duplicates");
+                  visible: false;
                 }
 
                 [title]

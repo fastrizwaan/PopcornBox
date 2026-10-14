@@ -973,3 +973,167 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None):
     }
 
 
+def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, poster=None):
+    """
+    Fetch comprehensive metadata directly from TMDB when Cinemeta or other addons fail or return incomplete metadata.
+    Returns metadata dict compatible with PopcornBox UI (MovieDetailsPage, database cache).
+    """
+    if not item_id and not title:
+        return None
+
+    api_key = get_tmdb_api_key()
+    c_type = "tv" if media_type in ["series", "anime", "tv", "tvshow"] else "movie"
+    tmdb_id = resolve_to_tmdb_id(item_id, media_type, title)
+
+    # If TMDB ID could not be resolved, try public Stremio TMDB addon with item_id
+    if not tmdb_id:
+        try:
+            addon_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{media_type}/{urllib.parse.quote(str(item_id), safe=':')}.json"
+            addon_data = _get_cached_request(addon_url, max_age_hours=168)
+            if addon_data and "meta" in addon_data:
+                meta = addon_data["meta"]
+                return {
+                    "id": meta.get("id") or item_id,
+                    "title": meta.get("name") or title or "Media Item",
+                    "year": str(meta.get("year", "")),
+                    "medium_cover_image": meta.get("poster") or poster or "",
+                    "background": meta.get("background") or "",
+                    "description": meta.get("description") or "No synopsis available.",
+                    "runtime": str(meta.get("runtime", "")),
+                    "genre": ", ".join(meta.get("genres", [])) if isinstance(meta.get("genres"), list) else (meta.get("genre") or ""),
+                    "genres": meta.get("genres", []),
+                    "imdbRating": str(meta.get("imdbRating", "")),
+                    "trailer": meta.get("trailer"),
+                    "videos": meta.get("videos", [])
+                }
+        except Exception:
+            pass
+        return None
+
+    # Fetch full TMDB object
+    data = None
+    if api_key:
+        try:
+            url = f"https://api.themoviedb.org/3/{c_type}/{tmdb_id}?api_key={api_key}&append_to_response=external_ids,credits,videos,content_ratings,release_dates"
+            data = _get_cached_request(url, max_age_hours=168)
+        except Exception:
+            pass
+
+    if not data:
+        # Fallback to public Stremio TMDB addon
+        try:
+            addon_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{media_type}/tmdb:{tmdb_id}.json"
+            addon_data = _get_cached_request(addon_url, max_age_hours=168)
+            if addon_data and "meta" in addon_data:
+                meta = addon_data["meta"]
+                return {
+                    "id": meta.get("id") or (f"tmdb:{tmdb_id}" if not str(item_id).startswith("tt") else item_id),
+                    "title": meta.get("name") or title or "Media Item",
+                    "year": str(meta.get("year", "")),
+                    "medium_cover_image": meta.get("poster") or poster or "",
+                    "background": meta.get("background") or "",
+                    "description": meta.get("description") or "No synopsis available.",
+                    "runtime": str(meta.get("runtime", "")),
+                    "genre": ", ".join(meta.get("genres", [])) if isinstance(meta.get("genres"), list) else (meta.get("genre") or ""),
+                    "genres": meta.get("genres", []),
+                    "imdbRating": str(meta.get("imdbRating", "")),
+                    "trailer": meta.get("trailer"),
+                    "videos": meta.get("videos", [])
+                }
+        except Exception:
+            pass
+        return None
+
+    # Parse TMDB API response
+    imdb_id = data.get("external_ids", {}).get("imdb_id") or (item_id if str(item_id).startswith("tt") else f"tmdb:{tmdb_id}")
+    clean_title = data.get("title") or data.get("name") or title or "Media Item"
+    overview = data.get("overview") or "No synopsis available."
+    rel_date = data.get("release_date") or data.get("first_air_date") or ""
+    year = rel_date.split("-")[0] if rel_date else ""
+    poster_path = data.get("poster_path")
+    backdrop_path = data.get("backdrop_path")
+    poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else (poster or "")
+    backdrop_url = f"https://image.tmdb.org/t/p/w1280{backdrop_path}" if backdrop_path else ""
+
+    vote_avg = data.get("vote_average")
+    rating_str = f"{vote_avg:.1f}" if vote_avg else ""
+
+    runtime_min = data.get("runtime")
+    if not runtime_min and data.get("episode_run_time"):
+        r_list = data.get("episode_run_time")
+        if r_list: runtime_min = r_list[0]
+    runtime_str = f"{runtime_min} min" if runtime_min else ""
+
+    genre_names = []
+    for g in data.get("genres", []):
+        if isinstance(g, dict) and g.get("name"):
+            norm = database.normalize_imdb_genre(g["name"], media_type=media_type)
+            if norm and norm not in genre_names:
+                genre_names.append(norm)
+            elif g["name"] not in genre_names:
+                genre_names.append(g["name"])
+
+    # Cast & Director
+    credits = data.get("credits", {})
+    cast_list = [c.get("name") for c in credits.get("cast", [])[:10] if c.get("name")]
+    director_name = ""
+    for cr in credits.get("crew", []):
+        if cr.get("job") == "Director":
+            director_name = cr.get("name", "")
+            break
+
+    # Trailer
+    trailer_url = None
+    videos_res = data.get("videos", {}).get("results", [])
+    for v in videos_res:
+        if v.get("site") == "YouTube" and v.get("type") in ("Trailer", "Teaser") and v.get("key"):
+            trailer_url = f"https://www.youtube.com/watch?v={v['key']}"
+            if v.get("type") == "Trailer":
+                break
+
+    # Videos / Episodes for Series
+    episodes = []
+    if c_type == "tv" and data.get("seasons"):
+        for s in data.get("seasons", []):
+            s_num = s.get("season_number")
+            if s_num is None or s_num < 1:
+                continue
+            # Fetch season episodes
+            try:
+                s_url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{s_num}?api_key={api_key}"
+                s_data = _get_cached_request(s_url, max_age_hours=168)
+                if s_data and s_data.get("episodes"):
+                    for ep in s_data["episodes"]:
+                        ep_num = ep.get("episode_number")
+                        episodes.append({
+                            "id": f"{imdb_id}:{s_num}:{ep_num}",
+                            "title": ep.get("name") or f"Episode {ep_num}",
+                            "name": ep.get("name") or f"Episode {ep_num}",
+                            "season": s_num,
+                            "episode": ep_num,
+                            "overview": ep.get("overview") or "",
+                            "released": ep.get("air_date") or "",
+                            "thumbnail": f"https://image.tmdb.org/t/p/w500{ep.get('still_path')}" if ep.get("still_path") else ""
+                        })
+            except Exception:
+                pass
+
+    return {
+        "id": imdb_id,
+        "title": clean_title,
+        "year": year,
+        "medium_cover_image": poster_url,
+        "background": backdrop_url,
+        "description": overview,
+        "runtime": runtime_str,
+        "genre": ", ".join(genre_names),
+        "genres": genre_names,
+        "imdbRating": rating_str,
+        "cast": cast_list,
+        "director": director_name,
+        "trailer": trailer_url,
+        "videos": episodes
+    }
+
+
+

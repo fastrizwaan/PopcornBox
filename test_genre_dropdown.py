@@ -116,7 +116,8 @@ class TestGenreDropdownDatabase(unittest.TestCase):
         available_genres = database.get_available_genres("movie")
         self.assertIn("Sci-Fi", available_genres)
         self.assertIn("Animation", available_genres)
-        self.assertIn("Hindi", available_genres)
+        self.assertNotIn("Hindi", available_genres)
+        self.assertIn("Hindi", database.get_available_languages())
         self.assertNotIn("Cyberpunk", available_genres)
         self.assertNotIn("2028", available_genres)
 

@@ -1317,6 +1317,8 @@ def _get_cache_db():
     try:
         _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_type ON item_genres(media_type, genre)")
         _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_genre ON item_genres(genre)")
+        _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_year ON item_genres(year)")
+        _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_metadata_year ON metadata_cache(json_extract(data, '$.year'))")
     except Exception:
         pass
 
@@ -1402,6 +1404,51 @@ def _get_cache_db():
             _cache_conn.commit()
     except Exception:
         pass
+
+    # Migration: Backfill genres from catalog_cache into item_genres and metadata_cache
+    try:
+        cur = _cache_conn.cursor()
+        cur.execute("SELECT val FROM cache_meta WHERE key = 'backfill_catalog_genres_to_db_v1'")
+        if not cur.fetchone():
+            cur.execute("SELECT cache_key, data FROM catalog_cache WHERE data IS NOT NULL AND data != '' AND data != '[]'")
+            rows = cur.fetchall()
+            meta_batch = []
+            genre_batch = []
+            seen_ids = set()
+            now_t = time.time()
+            for ckey, data_str in rows:
+                try:
+                    cat_items = json.loads(data_str)
+                    if isinstance(cat_items, list):
+                        for it in cat_items:
+                            if not isinstance(it, dict):
+                                continue
+                            iid = it.get("id") or it.get("imdb_id")
+                            if not iid:
+                                continue
+                            mtype = it.get("type") or "movie"
+                            yr = str(it.get("year") or "")
+                            genres = it.get("genres") or []
+                            if isinstance(genres, str):
+                                genres = [genres]
+                            if iid not in seen_ids:
+                                seen_ids.add(iid)
+                                meta_batch.append((str(iid), str(mtype), json.dumps(it), now_t))
+                            for g in genres:
+                                norm = normalize_imdb_genre(str(g).strip(), media_type=mtype)
+                                if norm:
+                                    genre_batch.append((str(iid), str(mtype), norm, yr))
+                except Exception:
+                    pass
+            if meta_batch:
+                _cache_conn.executemany("INSERT OR IGNORE INTO metadata_cache VALUES (?, ?, ?, ?)", meta_batch)
+            if genre_batch:
+                _cache_conn.executemany("INSERT OR IGNORE INTO item_genres VALUES (?, ?, ?, ?)", genre_batch)
+            _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('backfill_catalog_genres_to_db_v1', '1')")
+            _cache_conn.commit()
+    except Exception as e:
+        print(f"Error in backfill_catalog_genres migration: {e}")
+
     _cache_conn.commit()
     _cache_db_initialized = True
     return _cache_conn
@@ -1706,6 +1753,157 @@ def get_stored_genres(media_type=None):
         print(f"Error reading stored genres: {e}")
     return sorted(list(genres), key=lambda s: s.lower())
 
+def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None, limit=60, offset=0):
+    """Retrieve catalog item dicts from SQLite cache matching a specific genre and optional media_type/year/sort_mode."""
+    if not genre or genre in ("All", "All Genres", "all"):
+        if year:
+            return get_cached_items_by_year(year, media_type=media_type, sort_mode=sort_mode, limit=limit, offset=offset)
+        return []
+    items = []
+    seen_ids = set()
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            query = """
+                SELECT m.data
+                FROM item_genres ig
+                JOIN metadata_cache m ON ig.item_id = m.id
+                WHERE lower(ig.genre) = lower(?)
+            """
+            params = [genre.strip()]
+            if media_type and media_type not in ("all", "discover"):
+                mt = str(media_type).lower()
+                if mt == "movie":
+                    query += " AND (ig.media_type IN ('movie', 'collections') OR ig.media_type IS NULL OR ig.media_type = '')"
+                elif mt == "series":
+                    query += " AND (ig.media_type IN ('series', 'tv', 'show') OR ig.media_type IS NULL OR ig.media_type = '')"
+                elif mt == "anime":
+                    query += " AND (ig.media_type = 'anime' OR ig.media_type IS NULL OR ig.media_type = '')"
+                else:
+                    query += " AND ig.media_type = ?"
+                    params.append(mt)
+            if year:
+                yr_str = str(year).strip()
+                query += " AND (ig.year LIKE ? OR json_extract(m.data, '$.year') LIKE ?)"
+                params.extend([f"{yr_str}%", f"{yr_str}%"])
+
+            if sort_mode == "Recent":
+                query += """
+                    ORDER BY CASE WHEN ig.year GLOB '[1-2][0-9][0-9][0-9]' THEN ig.year ELSE '0000' END DESC,
+                             COALESCE(json_extract(m.data, '$.rating'), json_extract(m.data, '$.imdbRating'), 0) DESC,
+                             m.updated_at DESC
+                    LIMIT ? OFFSET ?
+                """
+            else:
+                query += """
+                    ORDER BY COALESCE(json_extract(m.data, '$.rating'), json_extract(m.data, '$.imdbRating'), 0) DESC,
+                             m.updated_at DESC
+                    LIMIT ? OFFSET ?
+                """
+            params.extend([limit, offset])
+            cursor.execute(query, params)
+            for row in cursor.fetchall():
+                if not row or not row[0]:
+                    continue
+                try:
+                    it = json.loads(row[0])
+                    if isinstance(it, dict):
+                        iid = it.get("id") or it.get("imdb_id")
+                        if iid and iid not in seen_ids:
+                            seen_ids.add(iid)
+                            items.append(it)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"Error fetching cached items by genre: {e}")
+    return items
+
+def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, limit=80, offset=0):
+    """Retrieve catalog item dicts from SQLite cache matching a specific release year and optional media_type/genre."""
+    if not year or str(year) in ("All Years", "All", "all", "None"):
+        return []
+    yr_str = str(year).strip()
+    if not (yr_str.isdigit() and len(yr_str) == 4):
+        return []
+    items = []
+    seen_ids = set()
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+
+            if genre and str(genre) not in ("All", "All Genres", "all"):
+                query = """
+                    SELECT m.data
+                    FROM item_genres ig
+                    JOIN metadata_cache m ON ig.item_id = m.id
+                    WHERE lower(ig.genre) = lower(?)
+                      AND (ig.year = ? OR json_extract(m.data, '$.year') = ? OR json_extract(m.data, '$.year') = ?)
+                """
+                params = [genre.strip(), yr_str, yr_str, int(yr_str)]
+                if media_type and media_type not in ("all", "discover"):
+                    mt = str(media_type).lower()
+                    if mt == "movie":
+                        query += " AND (ig.media_type IN ('movie', 'collections') OR ig.media_type IS NULL OR ig.media_type = '')"
+                    elif mt == "series":
+                        query += " AND (ig.media_type IN ('series', 'tv', 'show') OR ig.media_type IS NULL OR ig.media_type = '')"
+                    elif mt == "anime":
+                        query += " AND (ig.media_type = 'anime' OR ig.media_type IS NULL OR ig.media_type = '')"
+                    else:
+                        query += " AND ig.media_type = ?"
+                        params.append(mt)
+            else:
+                query = """
+                    SELECT m.data
+                    FROM metadata_cache m
+                    WHERE (json_extract(m.data, '$.year') = ? OR json_extract(m.data, '$.year') = ?
+                           OR m.id IN (SELECT item_id FROM item_genres WHERE year = ?))
+                """
+                params = [yr_str, int(yr_str), yr_str]
+                if media_type and media_type not in ("all", "discover"):
+                    mt = str(media_type).lower()
+                    if mt == "movie":
+                        query += " AND (m.media_type IN ('movie', 'collections') OR m.media_type IS NULL OR m.media_type = '')"
+                    elif mt == "series":
+                        query += " AND (m.media_type IN ('series', 'tv', 'show') OR m.media_type IS NULL OR m.media_type = '')"
+                    elif mt == "anime":
+                        query += " AND (m.media_type = 'anime' OR m.media_type IS NULL OR m.media_type = '')"
+                    else:
+                        query += " AND m.media_type = ?"
+                        params.append(mt)
+
+            if sort_mode == "Recent":
+                query += """
+                    ORDER BY COALESCE(json_extract(m.data, '$.year'), 0) DESC,
+                             COALESCE(json_extract(m.data, '$.rating'), json_extract(m.data, '$.imdbRating'), 0) DESC,
+                             m.updated_at DESC
+                    LIMIT ? OFFSET ?
+                """
+            else:
+                query += """
+                    ORDER BY COALESCE(json_extract(m.data, '$.rating'), json_extract(m.data, '$.imdbRating'), 0) DESC,
+                             m.updated_at DESC
+                    LIMIT ? OFFSET ?
+                """
+            params.extend([limit, offset])
+            cursor.execute(query, params)
+            for row in cursor.fetchall():
+                if not row or not row[0]:
+                    continue
+                try:
+                    it = json.loads(row[0])
+                    if isinstance(it, dict):
+                        iid = it.get("id") or it.get("imdb_id")
+                        if iid and iid not in seen_ids:
+                            seen_ids.add(iid)
+                            items.append(it)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"Error fetching cached items by year: {e}")
+    return items
+
 def get_stored_years(media_type=None):
     """Return distinct 4-digit release years stored in item_genres."""
     years = set()
@@ -1758,17 +1956,22 @@ def get_available_sort_options(media_type=None):
         _SORT_OPTIONS_CACHE[mt] = list(opts)
     return opts
 
+def get_available_languages():
+    """Return distinct languages for the Language filter dropdown."""
+    return [
+        "English", "Hindi", "Spanish", "French", "German",
+        "Japanese", "Korean", "Italian", "Chinese", "Tamil",
+        "Telugu", "Malayalam", "Kannada", "Russian", "Portuguese",
+        "Arabic", "Turkish", "Dutch", "Polish", "Swedish",
+        "Thai", "Indonesian", "Vietnamese"
+    ]
+
 def get_available_genres(media_type=None, include_years=False):
     """
-    Get strict canonical IMDb genres and language genres for media_type ('movie', 'series', 'anime', or 'all').
-    Standard IMDb narrative genres and language genres matching IMDb details are returned.
+    Get strict canonical narrative IMDb genres for media_type ('movie', 'series', 'anime', or 'all').
+    Languages are excluded and provided separately via get_available_languages().
     """
     mt = (media_type or "all").lower()
-    if not include_years:
-        with _DROPDOWN_CACHE_LOCK:
-            if mt in _GENRES_CACHE:
-                return list(_GENRES_CACHE[mt])
-
     if mt == "anime":
         genres = list(DEFAULT_ANIME_GENRES)
     elif mt in ("series", "tvshow"):
@@ -1776,20 +1979,9 @@ def get_available_genres(media_type=None, include_years=False):
     elif mt == "movie":
         genres = list(IMDB_MOVIE_GENRES)
     else:  # all / discover
-        genres = list(IMDB_ALL_GENRES)
-
-    # Include popular language genres
-    genres.extend(POPULAR_LANGUAGE_GENRES)
-
-    # Also include any valid genres stored in the database
-    stored = get_stored_genres(media_type=mt)
-    genres.extend(stored)
+        genres = sorted(list(set(IMDB_MOVIE_GENRES + IMDB_SERIES_GENRES)))
 
     sorted_genres = sorted(list(set(genres)), key=lambda s: s.lower())
-
-    if not include_years:
-        with _DROPDOWN_CACHE_LOCK:
-            _GENRES_CACHE[mt] = list(sorted_genres)
 
     if include_years:
         return sorted_genres, get_available_years(media_type)
@@ -1996,6 +2188,32 @@ def save_cached_catalog(cache_key, items):
                 "INSERT OR REPLACE INTO catalog_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
                 (str(cache_key), json.dumps(items), now)
             )
+            # Index items and genres into metadata_cache and item_genres for instant DB genre filtering
+            try:
+                meta_batch = []
+                genre_batch = []
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    iid = it.get("id") or it.get("imdb_id")
+                    if not iid:
+                        continue
+                    mtype = it.get("type") or "movie"
+                    yr = str(it.get("year") or "")
+                    genres = it.get("genres") or []
+                    if isinstance(genres, str):
+                        genres = [genres]
+                    meta_batch.append((str(iid), str(mtype), json.dumps(it), now))
+                    for g in genres:
+                        norm = normalize_imdb_genre(str(g).strip(), media_type=mtype)
+                        if norm:
+                            genre_batch.append((str(iid), str(mtype), norm, yr))
+                if meta_batch:
+                    cursor.executemany("INSERT OR IGNORE INTO metadata_cache VALUES (?, ?, ?, ?)", meta_batch)
+                if genre_batch:
+                    cursor.executemany("INSERT OR IGNORE INTO item_genres VALUES (?, ?, ?, ?)", genre_batch)
+            except Exception:
+                pass
             conn.commit()
     except Exception as e:
         print(f"Error saving catalog cache: {e}")

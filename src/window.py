@@ -21,6 +21,9 @@ import os
 import re
 import gi
 import mpv
+if not hasattr(mpv, "ShutdownError") or not (isinstance(getattr(mpv, "ShutdownError", None), type) and issubclass(mpv.ShutdownError, BaseException)):
+    class _MockShutdownError(Exception): pass
+    mpv.ShutdownError = _MockShutdownError
 import ctypes
 import json
 import base64
@@ -3255,10 +3258,11 @@ class MovieDetailsPage(Gtk.Overlay):
             if not hash_val:
                 hash_val = info_hash_from_magnet(magnet)
             sources = self.selected_torrent.get("sources") if isinstance(getattr(self, "selected_torrent", None), dict) else None
-            if hash_val and api.is_stremio_server_running():
-                stremio_url = api.build_stremio_stream_url(hash_val, file_index=file_index, sources=sources, magnet_link=magnet)
-                if stremio_url:
-                    magnet = stremio_url
+            if not magnet and hash_val:
+                t_name = self.selected_torrent.get("filename") or self.selected_torrent.get("stream_title") or self.selected_torrent.get("name") or self.selected_torrent.get("title") or media_title or ""
+                magnet = api.build_magnet(hash_val, t_name, sources=sources)
+            elif magnet and sources:
+                magnet = api.add_trackers_to_magnet(magnet, sources=sources)
 
         if magnet.startswith("http://") or magnet.startswith("https://"):
             if self.window:
@@ -3343,10 +3347,19 @@ class CineWindow(Adw.ApplicationWindow):
     library_stack: Adw.ViewStack = Gtk.Template.Child()
     header_stack: Gtk.Stack = Gtk.Template.Child()
     category_btn_stack: Gtk.Stack = Gtk.Template.Child()
+    home_active_btn: Gtk.MenuButton = Gtk.Template.Child()
     discover_active_btn: Gtk.MenuButton = Gtk.Template.Child()
     movies_active_btn: Gtk.MenuButton = Gtk.Template.Child()
     series_active_btn: Gtk.MenuButton = Gtk.Template.Child()
     anime_active_btn: Gtk.MenuButton = Gtk.Template.Child()
+    home_inactive_btn_discover: Gtk.Button = Gtk.Template.Child()
+    home_inactive_btn_movies: Gtk.Button = Gtk.Template.Child()
+    home_inactive_btn_series: Gtk.Button = Gtk.Template.Child()
+    home_inactive_btn_anime: Gtk.Button = Gtk.Template.Child()
+    discover_inactive_btn_home: Gtk.Button = Gtk.Template.Child()
+    movies_inactive_btn_home: Gtk.Button = Gtk.Template.Child()
+    series_inactive_btn_home: Gtk.Button = Gtk.Template.Child()
+    anime_inactive_btn_home: Gtk.Button = Gtk.Template.Child()
     discover_inactive_btn_movies: Gtk.Button = Gtk.Template.Child()
     discover_inactive_btn_series: Gtk.Button = Gtk.Template.Child()
     discover_inactive_btn_anime: Gtk.Button = Gtk.Template.Child()
@@ -5832,6 +5845,21 @@ class CineWindow(Adw.ApplicationWindow):
         def on_duration_change(_name, value):
             idle_add_once(self._update_duration, float(value or 0))
 
+        @self.mpv.property_observer("paused-for-cache")
+        def on_paused_for_cache(_name, paused):
+            def update():
+                if paused:
+                    if hasattr(self, "player_loading_box"):
+                        self.player_loading_box.set_visible(True)
+                    if hasattr(self, "spinner"):
+                        self.spinner.set_visible(True)
+                    if hasattr(self, "player_buffering_label"):
+                        self.player_buffering_label.set_text(_("Buffering..."))
+                else:
+                    if not getattr(self, "is_loading_stream", False):
+                        self.hide_player_loading()
+            idle_add_once(update)
+
         @self.mpv.property_observer("mute")
         def on_mute_change(_name, muted):
             def update_mute():
@@ -6173,13 +6201,30 @@ class CineWindow(Adw.ApplicationWindow):
                 self._sync_library_genre_dropdown_selection(self.current_genre)
                 self._refresh_content()
                 
+        expr = Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
+        if hasattr(self, "genre_dropdown") and self.genre_dropdown is not None:
+            self.genre_dropdown.set_expression(expr)
         self.genre_dropdown.connect("notify::selected", on_genre_changed)
         if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown is not None:
+            self.library_genre_dropdown.set_expression(Gtk.PropertyExpression.new(Gtk.StringObject, None, "string"))
             self.library_genre_dropdown.connect("notify::selected", self._on_library_genre_changed)
         if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown is not None:
+            self.library_sort_dropdown.set_expression(Gtk.PropertyExpression.new(Gtk.StringObject, None, "string"))
             self.library_sort_dropdown.connect("notify::selected", self._on_library_sort_changed)
         if hasattr(self, "library_unique_check") and self.library_unique_check is not None:
             self.library_unique_check.connect("toggled", self._on_unique_toggled)
+
+        # Action: Toggle Unique View (stateful boolean action used by header and Home menu)
+        action = Gio.SimpleAction.new_stateful("toggle-unique", None, GLib.Variant.new_boolean(False))
+        def on_toggle_unique(action, parameter):
+            curr = action.get_state().get_boolean()
+            new_state = not curr
+            action.set_state(GLib.Variant.new_boolean(new_state))
+            if hasattr(self, "library_unique_check") and self.library_unique_check:
+                self.library_unique_check.set_active(new_state)
+        action.connect("activate", on_toggle_unique)
+        self.add_action(action)
+
         from . import database
         database.register_genre_listener(self._on_database_genres_updated)
 
@@ -6206,22 +6251,49 @@ class CineWindow(Adw.ApplicationWindow):
         
         self._init_default_category_menus()
 
-        # Action: Switch to Discover
+        # Action: Switch to Home (landing feed with hidden dropdowns & unique checkbox)
+        action = Gio.SimpleAction.new("switch-to-home", None)
+        def on_switch_home(action, parameter):
+            self._cancel_all_background_fetching()
+            self.category_btn_stack.set_visible_child_name("home")
+            if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
+                self.library_sort_dropdown.set_visible(False)
+            if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
+                self.library_genre_dropdown.set_visible(False)
+            if hasattr(self, "library_unique_check") and self.library_unique_check:
+                self.library_unique_check.set_visible(False)
+            self.discover_back_box.set_visible(False)
+            self._current_discover_type = "all"
+            self._current_discover_addon = None
+            self.library_stack.set_visible_child_name("discover")
+            self._refresh_discover_page(filter_media_type="all")
+        action.connect("activate", on_switch_home)
+        self.add_action(action)
+
+        # Action: Switch to Discover (catalog & filter cards view with dropdowns)
         action = Gio.SimpleAction.new("switch-to-discover", None)
         def on_switch_discover(action, parameter):
             self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("discover")
+            if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
+                self.library_sort_dropdown.set_visible(True)
+            if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
+                self.library_genre_dropdown.set_visible(True)
+            if hasattr(self, "library_unique_check") and self.library_unique_check:
+                self.library_unique_check.set_visible(True)
             self.discover_back_box.set_visible(False)
             self._current_discover_type = "all"
+            self.current_media_type = "movie"
             self._current_discover_addon = None
-            self._update_genre_dropdown("all")
             self._update_sort_dropdown("all")
+            self._update_genre_dropdown("all")
             if self._is_unique_mode_active() is True:
                 self.library_stack.set_visible_child_name("unique")
                 self._refresh_unique_combined_view()
             else:
-                self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type="all")
+                self.library_stack.set_visible_child_name("content")
+                self._apply_sort_to_current_catalog()
+                self._refresh_content()
         action.connect("activate", on_switch_discover)
         self.add_action(action)
 
@@ -6231,15 +6303,25 @@ class CineWindow(Adw.ApplicationWindow):
             self._cancel_all_background_fetching()
             m_type = parameter.get_string()
             self.category_btn_stack.set_visible_child_name("discover")
+            if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
+                self.library_sort_dropdown.set_visible(True)
+            if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
+                self.library_genre_dropdown.set_visible(True)
+            if hasattr(self, "library_unique_check") and self.library_unique_check:
+                self.library_unique_check.set_visible(True)
             self.discover_back_box.set_visible(False)
             self._current_discover_type = m_type
+            self.current_media_type = m_type if m_type != "all" else "movie"
             self._current_discover_addon = None
+            self._update_sort_dropdown(m_type)
+            self._update_genre_dropdown(m_type)
             if self._is_unique_mode_active() is True:
                 self.library_stack.set_visible_child_name("unique")
                 self._refresh_unique_combined_view()
             else:
-                self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type=m_type)
+                self.library_stack.set_visible_child_name("content")
+                self._apply_sort_to_current_catalog()
+                self._refresh_content()
         action.connect("activate", on_select_discover_type)
         self.add_action(action)
 
@@ -6349,12 +6431,18 @@ class CineWindow(Adw.ApplicationWindow):
         action.connect("activate", on_select_catalog_genre)
         self.add_action(action)
 
-        # Action: Switch to Movies (multi-row view of all movie catalogs)
+        # Action: Switch to Movies (card listing with dropdowns)
         action = Gio.SimpleAction.new("switch-to-movies", None)
         def on_switch_movies(action, parameter):
             from . import api
             self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("movies")
+            if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
+                self.library_sort_dropdown.set_visible(True)
+            if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
+                self.library_genre_dropdown.set_visible(True)
+            if hasattr(self, "library_unique_check") and self.library_unique_check:
+                self.library_unique_check.set_visible(True)
             self.discover_back_box.set_visible(False)
             self._current_discover_type = "movie"
             self.current_media_type = "movie"
@@ -6369,23 +6457,30 @@ class CineWindow(Adw.ApplicationWindow):
                 c_mtype = self.current_catalog.get("media_type") or self.current_catalog.get("type")
                 if c_mtype and not api.is_type_match(c_mtype, "movie"):
                     self.current_catalog = None
-            self._update_genre_dropdown("movie")
             self._update_sort_dropdown("movie")
+            self._update_genre_dropdown("movie")
             if self._is_unique_mode_active() is True:
                 self.library_stack.set_visible_child_name("unique")
                 self._refresh_unique_combined_view()
             else:
-                self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type="movie")
+                self.library_stack.set_visible_child_name("content")
+                self._apply_sort_to_current_catalog()
+                self._refresh_content()
         action.connect("activate", on_switch_movies)
         self.add_action(action)
         
-        # Action: Switch to Series (multi-row view of all series catalogs)
+        # Action: Switch to Series (card listing with dropdowns)
         action = Gio.SimpleAction.new("switch-to-series", None)
         def on_switch_series(action, parameter):
             from . import api
             self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("series")
+            if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
+                self.library_sort_dropdown.set_visible(True)
+            if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
+                self.library_genre_dropdown.set_visible(True)
+            if hasattr(self, "library_unique_check") and self.library_unique_check:
+                self.library_unique_check.set_visible(True)
             self.discover_back_box.set_visible(False)
             self._current_discover_type = "series"
             self.current_media_type = "series"
@@ -6400,23 +6495,30 @@ class CineWindow(Adw.ApplicationWindow):
                 c_mtype = self.current_catalog.get("media_type") or self.current_catalog.get("type")
                 if c_mtype and not api.is_type_match(c_mtype, "series"):
                     self.current_catalog = None
-            self._update_genre_dropdown("series")
             self._update_sort_dropdown("series")
+            self._update_genre_dropdown("series")
             if self._is_unique_mode_active() is True:
                 self.library_stack.set_visible_child_name("unique")
                 self._refresh_unique_combined_view()
             else:
-                self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type="series")
+                self.library_stack.set_visible_child_name("content")
+                self._apply_sort_to_current_catalog()
+                self._refresh_content()
         action.connect("activate", on_switch_series)
         self.add_action(action)
 
-        # Action: Switch to Anime (multi-row view of all anime catalogs)
+        # Action: Switch to Anime (card listing with dropdowns)
         action = Gio.SimpleAction.new("switch-to-anime", None)
         def on_switch_anime(action, parameter):
             from . import api
             self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("anime")
+            if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
+                self.library_sort_dropdown.set_visible(True)
+            if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
+                self.library_genre_dropdown.set_visible(True)
+            if hasattr(self, "library_unique_check") and self.library_unique_check:
+                self.library_unique_check.set_visible(True)
             self.discover_back_box.set_visible(False)
             self._current_discover_type = "anime"
             self.current_media_type = "anime"
@@ -6431,14 +6533,15 @@ class CineWindow(Adw.ApplicationWindow):
                 c_mtype = self.current_catalog.get("media_type") or self.current_catalog.get("type")
                 if c_mtype and not api.is_type_match(c_mtype, "anime"):
                     self.current_catalog = None
-            self._update_genre_dropdown("anime")
             self._update_sort_dropdown("anime")
+            self._update_genre_dropdown("anime")
             if self._is_unique_mode_active() is True:
                 self.library_stack.set_visible_child_name("unique")
                 self._refresh_unique_combined_view()
             else:
-                self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type="anime")
+                self.library_stack.set_visible_child_name("content")
+                self._apply_sort_to_current_catalog()
+                self._refresh_content()
         action.connect("activate", on_switch_anime)
         self.add_action(action)
 
@@ -6494,20 +6597,27 @@ class CineWindow(Adw.ApplicationWindow):
         # Defer populating addons list to avoid freezing GTK main thread during window presentation
         GLib.timeout_add(2500, lambda: (self._populate_addons(), False)[1])
         
-        # Default Launch Option: Discover View and Discover Mode Active
+        # Default Launch Option: Home View (landing page with hidden dropdowns & unique checkbox)
         self._current_discover_type = "all"
         self._current_discover_addon = None
         self.current_media_type = "movie"
-        self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}
+        self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json", "media_type": "movie", "display_name": "Popular Movies"}
         self.current_genre = None
         self.current_sort = "Popular"
         self.current_year = None
+        self.current_language = None
         self._syncing_sort_dropdown = False
-        self.category_btn_stack.set_visible_child_name("discover")
+        self.category_btn_stack.set_visible_child_name("home")
         self.library_stack.set_visible_child_name("discover")
-        self._update_genre_dropdown("all")
+        if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
+            self.library_sort_dropdown.set_visible(False)
+        if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
+            self.library_genre_dropdown.set_visible(False)
+        if hasattr(self, "library_unique_check") and self.library_unique_check:
+            self.library_unique_check.set_visible(False)
         self._update_sort_dropdown("all")
-        debug_log("CineWindow.__init__ calling initial _refresh_discover_page(filter_media_type='all')")
+        self._update_genre_dropdown("all")
+        debug_log("CineWindow.__init__ calling initial _refresh_discover_page(filter_media_type='all') for Home")
         self._refresh_discover_page(filter_media_type="all")
         
         self.search_entry.connect("search-changed", self._on_search_changed)
@@ -6651,6 +6761,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         for btn in [
             getattr(self, "movies_active_btn", None),
+            getattr(self, "movies_inactive_btn_home", None),
             getattr(self, "movies_inactive_btn_discover", None),
             getattr(self, "movies_inactive_btn", None),
             getattr(self, "movies_inactive_btn_anime", None),
@@ -6660,6 +6771,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         for btn in [
             getattr(self, "series_active_btn", None),
+            getattr(self, "series_inactive_btn_home", None),
             getattr(self, "series_inactive_btn_discover", None),
             getattr(self, "series_inactive_btn", None),
             getattr(self, "series_inactive_btn_anime", None),
@@ -6669,6 +6781,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         for btn in [
             getattr(self, "anime_active_btn", None),
+            getattr(self, "anime_inactive_btn_home", None),
             getattr(self, "anime_inactive_btn_discover", None),
             getattr(self, "anime_inactive_btn_movies", None),
             getattr(self, "anime_inactive_btn_series", None),
@@ -6676,14 +6789,19 @@ class CineWindow(Adw.ApplicationWindow):
             if btn:
                 btn.set_visible(show_anime)
 
-        curr_cat = self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else "discover"
+        curr_cat = self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else "home"
         if (not show_movies and curr_cat == "movies") or \
            (not show_series and curr_cat == "series") or \
            (not show_anime and curr_cat == "anime"):
-            self.category_btn_stack.set_visible_child_name("discover")
+            self.category_btn_stack.set_visible_child_name("home")
+            if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
+                self.library_sort_dropdown.set_visible(False)
+            if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
+                self.library_genre_dropdown.set_visible(False)
+            if hasattr(self, "library_unique_check") and self.library_unique_check:
+                self.library_unique_check.set_visible(False)
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
-            self._update_genre_dropdown("all")
             self._refresh_discover_page(filter_media_type="all")
 
     def _sync_library_genre_dropdown_selection(self, genre):
@@ -6710,17 +6828,73 @@ class CineWindow(Adw.ApplicationWindow):
             return
         from . import database
         m_type = media_type or getattr(self, "_current_discover_type", "all")
-        sorted_genres = database.get_available_genres(m_type)
-        items = [_("All Genres")] + sorted_genres
+        if m_type == "all":
+            m_type = getattr(self, "current_media_type", "movie")
 
+        cur_sort = getattr(self, "current_sort", "Popular")
+
+        if cur_sort == "Year" or (len(str(cur_sort)) == 4 and str(cur_sort).isdigit()):
+            # Context: Years (All Years first, then current year to 1960)
+            context_mode = "year"
+            import datetime
+            curr_y = datetime.datetime.now().year
+            years = [str(y) for y in range(curr_y, 1959, -1)]
+            items = [_("All Years")] + years
+            target_val = getattr(self, "current_year", None) or _("All Years")
+        elif cur_sort == "Language":
+            # Context: Languages
+            context_mode = "language"
+            items = database.get_available_languages()
+            target_val = getattr(self, "current_language", "English") or "English"
+        elif cur_sort in getattr(self, "_dropdown_catalogs_map", {}):
+            # Context: Addon catalog genres
+            context_mode = f"catalog:{cur_sort}"
+            cat_info = self._dropdown_catalogs_map.get(cur_sort)
+            cat_genres = cat_info.get("genres") if cat_info else None
+            if cat_genres:
+                items = [_("All Genres")] + [g for g in cat_genres if g not in ("All", "All Genres")]
+            else:
+                items = [_("All Genres")]
+            target_val = getattr(self, "current_genre", None) or _("All Genres")
+        else:
+            # Context: Narrative genres (Popular, Recent, Featured, Trending, Genre)
+            context_mode = f"genres:{m_type}"
+            sorted_genres = database.get_available_genres(m_type)
+            items = [_("All Genres")] + sorted_genres
+            target_val = getattr(self, "current_genre", None) or _("All Genres")
+
+        # Fast path: if the dropdown model already matches this context, don't recreate Gtk.StringList
+        if getattr(self, "_current_genre_context", None) == context_mode and hasattr(self.library_genre_dropdown, "get_model"):
+            model = self.library_genre_dropdown.get_model()
+            if model and model.get_n_items() == len(items):
+                target_idx = 0
+                if target_val:
+                    for i in range(model.get_n_items()):
+                        if model.get_string(i) == target_val:
+                            target_idx = i
+                            break
+                self._syncing_genre_dropdown = True
+                try:
+                    self.library_genre_dropdown.set_selected(target_idx)
+                finally:
+                    self._syncing_genre_dropdown = False
+                return
+
+        self._current_genre_context = context_mode
         self._syncing_genre_dropdown = True
         try:
-            current_selected = getattr(self, "current_genre", None)
             self.library_genre_dropdown.set_model(Gtk.StringList.new(items))
 
             target_idx = 0
-            if current_selected and current_selected in items:
-                target_idx = items.index(current_selected)
+            if target_val and target_val in items:
+                target_idx = items.index(target_val)
+            elif cur_sort == "Year" and items:
+                target_idx = 0
+                self.current_year = None
+            elif cur_sort == "Language" and items:
+                target_idx = 0
+                self.current_language = items[0]
+                self.current_genre = items[0]
             else:
                 self.current_genre = None
 
@@ -6738,11 +6912,18 @@ class CineWindow(Adw.ApplicationWindow):
             return
         target = sort_or_year or "Popular"
         target_idx = 0
+        found = False
         for i in range(model.get_n_items()):
             item_str = model.get_string(i)
             if item_str == target:
                 target_idx = i
+                found = True
                 break
+        if not found and target.isdigit() and len(target) == 4:
+            for i in range(model.get_n_items()):
+                if model.get_string(i) == "Year":
+                    target_idx = i
+                    break
         self._syncing_sort_dropdown = True
         try:
             self.library_sort_dropdown.set_selected(target_idx)
@@ -6752,9 +6933,37 @@ class CineWindow(Adw.ApplicationWindow):
     def _update_sort_dropdown(self, media_type=None):
         if not hasattr(self, "library_sort_dropdown") or self.library_sort_dropdown is None or not hasattr(self.library_sort_dropdown, "set_model"):
             return
-        from . import database
+        from . import api
         m_type = media_type or getattr(self, "_current_discover_type", "all")
-        items = database.get_available_sort_options(m_type)
+        if m_type == "all":
+            m_type = getattr(self, "current_media_type", "movie")
+
+        base_items = ["Popular", "Recent", "Featured", "Trending", "Year", "Language", "Genre"]
+
+        if not hasattr(self, "_dropdown_catalogs_map"):
+            self._dropdown_catalogs_map = {}
+
+        target_type = m_type if m_type != "all" else "movie"
+        try:
+            catalogs = api.get_available_catalogs(target_type)
+        except Exception:
+            catalogs = []
+
+        cat_names = []
+        for c in catalogs:
+            raw_name = c.get("display_name") or c.get("name") or c.get("catalog_name") or c.get("catalog_id")
+            if not raw_name:
+                continue
+            addon_name = c.get("addon_name") or ""
+            if addon_name and addon_name.lower() not in raw_name.lower():
+                disp = f"{addon_name} - {raw_name}"
+            else:
+                disp = raw_name
+            if disp not in base_items and disp not in cat_names:
+                cat_names.append(disp)
+                self._dropdown_catalogs_map[disp] = c
+
+        items = base_items + cat_names
 
         self._syncing_sort_dropdown = True
         try:
@@ -6764,9 +6973,12 @@ class CineWindow(Adw.ApplicationWindow):
             target_idx = 0
             if current_selected and current_selected in items:
                 target_idx = items.index(current_selected)
+            elif getattr(self, "current_year", None) and "Year" in items:
+                target_idx = items.index("Year")
+            elif current_selected and len(current_selected) == 4 and current_selected.isdigit() and "Year" in items:
+                target_idx = items.index("Year")
             else:
                 self.current_sort = items[0] if items else "Popular"
-                self.current_year = None
 
             self.library_sort_dropdown.set_selected(target_idx)
         except Exception as e:
@@ -6783,34 +6995,77 @@ class CineWindow(Adw.ApplicationWindow):
         self._cancel_all_background_fetching()
         sort_str = selected_item.get_string()
         self.current_sort = sort_str
+
         if len(sort_str) == 4 and sort_str.isdigit():
             self.current_year = sort_str
+        elif sort_str == "Year":
+            pass
         else:
             self.current_year = None
 
+        if sort_str == "Language":
+            if not getattr(self, "current_language", None):
+                self.current_language = "English"
+            self.current_genre = self.current_language
+        elif sort_str == "Genre":
+            if not getattr(self, "current_genre", None):
+                self.current_genre = None
+
         debug_log(f"library_sort_dropdown changed: selected='{sort_str}', current_sort='{self.current_sort}', current_year='{self.current_year}'")
 
+        m_type = getattr(self, "_current_discover_type", "all")
+        if m_type == "all":
+            m_type = getattr(self, "current_media_type", "movie")
+        self._update_genre_dropdown(m_type)
+
         cur_lib_page = self.library_stack.get_visible_child_name() if hasattr(self, "library_stack") else "discover"
-        if self._is_unique_mode_active() is True:
+        if cur_lib_page == "discover":
+            if self._is_unique_mode_active() is True:
+                self.library_stack.set_visible_child_name("unique")
+                self._refresh_unique_combined_view()
+            else:
+                self.library_stack.set_visible_child_name("content")
+                self._apply_sort_to_current_catalog()
+                self._refresh_content()
+        elif self._is_unique_mode_active() is True:
             self._refresh_unique_combined_view()
         elif cur_lib_page == "content":
             self._apply_sort_to_current_catalog()
             self._refresh_content()
         else:
-            filter_type = getattr(self, "_current_discover_type", "all")
-            filter_addon = getattr(self, "_current_discover_addon", None)
-            self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=filter_addon, force_refresh=True)
+            self._apply_sort_to_current_catalog()
+            self._refresh_content()
 
     def _apply_sort_to_current_catalog(self):
-        """Map self.current_sort / self.current_year to an appropriate catalog in current_catalog."""
+        """Map self.current_sort / self.current_year / self.current_language / addon catalog to current_catalog."""
+        import datetime
+        m_type = getattr(self, "current_media_type", "movie")
         if not hasattr(self, "current_catalog") or not self.current_catalog:
+            self.current_catalog = {
+                "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+                "catalog_id": "top",
+                "media_type": m_type,
+                "display_name": "Popular Content"
+            }
+
+        cur_sort = getattr(self, "current_sort", "Popular")
+
+        cat_map = getattr(self, "_dropdown_catalogs_map", {})
+        if cur_sort in cat_map:
+            cat_info = cat_map[cur_sort]
+            self.current_catalog = dict(cat_info)
+            disp_title = self.current_catalog.get("display_name") or self.current_catalog.get("name") or cur_sort
+            if getattr(self, "current_genre", None):
+                disp_title += f" · {self.current_genre}"
+            if hasattr(self, "discover_grid_title") and hasattr(self.discover_grid_title, "set_text"):
+                self.discover_grid_title.set_text(disp_title)
             return
 
-        m_type = getattr(self, "current_media_type", "movie")
         is_anime = (m_type == "anime") or ("kitsu" in str(self.current_catalog.get("manifest_url", "")).lower())
 
         if is_anime:
-            if getattr(self, "current_sort", "Popular") == "Featured":
+            self.current_catalog["manifest_url"] = "https://anime-kitsu.strem.fun/manifest.json"
+            if cur_sort == "Featured":
                 cat_id = "kitsu-anime-top"
                 base_title = "Top Rated Anime"
             else:
@@ -6819,28 +7074,57 @@ class CineWindow(Adw.ApplicationWindow):
             self.current_catalog["catalog_id"] = cat_id
             self.current_catalog["display_name"] = base_title
         else:
-            type_lbl = "Movies" if m_type == "movie" else ("Series" if m_type == "series" else "Content")
+            if not self.current_catalog.get("manifest_url") or "kitsu" in str(self.current_catalog.get("manifest_url", "")).lower():
+                self.current_catalog["manifest_url"] = "https://v3-cinemeta.strem.io/manifest.json"
+            active_disc_type = getattr(self, "_current_discover_type", None)
+            if active_disc_type == "all" and getattr(self, "category_btn_stack", None) and getattr(self.category_btn_stack, "get_visible_child_name", lambda: None)() == "discover":
+                type_lbl = "Discover"
+            elif m_type == "movie":
+                type_lbl = "Movies"
+            elif m_type == "series":
+                type_lbl = "Series"
+            elif m_type == "anime":
+                type_lbl = "Anime"
+            else:
+                type_lbl = "Content"
             cur_year = getattr(self, "current_year", None)
-            cur_sort = getattr(self, "current_sort", "Popular")
 
-            if cur_year:
+            if cur_sort == "Year" or (cur_year and len(str(cur_year)) == 4 and str(cur_year).isdigit()):
                 cat_id = "year"
-                base_title = f"{type_lbl} — {cur_year}"
+                if cur_year and len(str(cur_year)) == 4 and str(cur_year).isdigit():
+                    base_title = f"{type_lbl} — {cur_year}"
+                else:
+                    base_title = f"{type_lbl} — All Years"
+            elif cur_sort == "Language":
+                cat_id = "top"
+                lang_val = getattr(self, "current_language", "English") or "English"
+                base_title = f"{type_lbl} — {lang_val}"
             elif cur_sort == "Featured":
                 cat_id = "imdbRating"
                 base_title = f"Featured {type_lbl}"
             elif cur_sort == "Recent":
-                cat_id = "year"
+                if getattr(self, "current_genre", None):
+                    cat_id = "top"
+                else:
+                    cat_id = "year"
                 base_title = f"Recent {type_lbl}"
+            elif cur_sort == "Trending":
+                cat_id = "top"
+                base_title = f"Trending {type_lbl}"
+            elif cur_sort == "Genre":
+                cat_id = "top"
+                genre_val = getattr(self, "current_genre", None) or "All Genres"
+                base_title = f"{type_lbl} — {genre_val}"
             else:  # Popular
                 cat_id = "top"
                 base_title = f"Popular {type_lbl}"
 
             self.current_catalog["catalog_id"] = cat_id
             self.current_catalog["display_name"] = base_title
+            self.current_catalog["media_type"] = m_type
 
         disp_title = self.current_catalog.get("display_name", "Catalog")
-        if getattr(self, "current_genre", None):
+        if getattr(self, "current_genre", None) and cur_sort not in ("Genre", "Language", "Year"):
             disp_title += f" · {self.current_genre}"
         if hasattr(self, "discover_grid_title") and hasattr(self.discover_grid_title, "set_text"):
             self.discover_grid_title.set_text(disp_title)
@@ -6852,13 +7136,30 @@ class CineWindow(Adw.ApplicationWindow):
         if not selected_item:
             return
         self._cancel_all_background_fetching()
-        genre_str = selected_item.get_string()
-        if genre_str in ("All Genres", _("All Genres"), "All", _("All")):
-            self.current_genre = None
-        else:
-            self.current_genre = genre_str
+        val_str = selected_item.get_string()
 
-        debug_log(f"library_genre_dropdown changed: selected='{genre_str}', current_genre='{self.current_genre}'")
+        cur_sort = getattr(self, "current_sort", "Popular")
+        if cur_sort == "Year" or (len(str(cur_sort)) == 4 and str(cur_sort).isdigit()):
+            if val_str in ("All Years", _("All Years"), "All", _("All")):
+                self.current_year = None
+            else:
+                self.current_year = val_str
+            self.current_genre = None
+        elif cur_sort == "Language":
+            self.current_language = val_str
+            self.current_genre = val_str
+        elif cur_sort == "Genre":
+            if val_str in ("All Genres", _("All Genres"), "All", _("All")):
+                self.current_genre = None
+            else:
+                self.current_genre = val_str
+        else:
+            if val_str in ("All Genres", _("All Genres"), "All", _("All")):
+                self.current_genre = None
+            else:
+                self.current_genre = val_str
+
+        debug_log(f"library_genre_dropdown changed: selected='{val_str}', current_genre='{self.current_genre}', current_year='{getattr(self, 'current_year', None)}'")
 
         # Sync hidden genre_dropdown if visible
         if hasattr(self, "genre_dropdown") and self.genre_dropdown.get_visible():
@@ -6876,7 +7177,15 @@ class CineWindow(Adw.ApplicationWindow):
 
         # Refresh active library view
         cur_lib_page = self.library_stack.get_visible_child_name() if hasattr(self, "library_stack") else "discover"
-        if self._is_unique_mode_active() is True:
+        if cur_lib_page == "discover":
+            if self._is_unique_mode_active() is True:
+                self.library_stack.set_visible_child_name("unique")
+                self._refresh_unique_combined_view()
+            else:
+                self.library_stack.set_visible_child_name("content")
+                self._apply_sort_to_current_catalog()
+                self._refresh_content()
+        elif self._is_unique_mode_active() is True:
             self._refresh_unique_combined_view()
         elif cur_lib_page == "content":
             from . import api
@@ -6890,7 +7199,7 @@ class CineWindow(Adw.ApplicationWindow):
                 elif cat_btn == "anime":
                     active_m_type = "anime"
             target_type = active_m_type if active_m_type != "all" else getattr(self, "current_media_type", "movie")
-            if self.current_genre and self.current_catalog:
+            if self.current_genre and self.current_catalog and cur_sort not in ("Year", "Language"):
                 cur_cat_type = self.current_catalog.get("media_type") or self.current_catalog.get("type") or target_type
                 if not api.is_type_match(cur_cat_type, target_type):
                     avail_cats = api.get_available_catalogs(target_type)
@@ -6907,17 +7216,8 @@ class CineWindow(Adw.ApplicationWindow):
             self._apply_sort_to_current_catalog()
             self._refresh_content()
         else:
-            filter_type = getattr(self, "_current_discover_type", "all")
-            if filter_type == "all" and hasattr(self, "category_btn_stack"):
-                cat_btn = self.category_btn_stack.get_visible_child_name()
-                if cat_btn == "movies":
-                    filter_type = "movie"
-                elif cat_btn == "series":
-                    filter_type = "series"
-                elif cat_btn == "anime":
-                    filter_type = "anime"
-            filter_addon = getattr(self, "_current_discover_addon", None)
-            self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=filter_addon, force_refresh=True)
+            self._apply_sort_to_current_catalog()
+            self._refresh_content()
 
     def _on_database_genres_updated(self):
         """Called when new metadata/genres are saved to SQLite database."""
@@ -6935,6 +7235,9 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_unique_toggled(self, button):
         self._cancel_all_background_fetching()
         is_active = button.get_active()
+        act = self.lookup_action("toggle-unique")
+        if act and act.get_state().get_boolean() != is_active:
+            act.set_state(GLib.Variant.new_boolean(is_active))
         debug_log(f"_on_unique_toggled: active={is_active}")
         if is_active:
             if hasattr(self, "discover_back_box"):
@@ -7229,13 +7532,13 @@ class CineWindow(Adw.ApplicationWindow):
                             self.unique_productive_catalogs.remove(pk)
 
                     # 2. Fill remaining batch slots (up to 6) from unexhausted catalogs
-                    for _ in range(num_catalogs):
+                    for _cat_idx in range(num_catalogs):
                         if len(batch_cats) >= 6:
                             break
                         cat = self.unique_catalogs[self.unique_catalog_idx]
                         cat_key = (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("media_type"))
                         self.unique_catalog_idx = (self.unique_catalog_idx + 1) % num_catalogs
-                        if cat_key not in self.unique_exhausted_catalogs and cat_key not in [k for _, k, _ in batch_cats]:
+                        if cat_key not in self.unique_exhausted_catalogs and cat_key not in [bc_k for _bc_cat, bc_k, _bc_pg in batch_cats]:
                             page = self.unique_page_per_catalog.get(cat_key, 1)
                             batch_cats.append((cat, cat_key, page))
 
@@ -7255,7 +7558,7 @@ class CineWindow(Adw.ApplicationWindow):
                             return (key, page, None, -1)
 
                         fetch_genre = cur_genre
-                        if not cur_genre and cur_year and c_id == "year":
+                        if not cur_genre and cur_year and c_id in ("year", "years", "acc85513", "tmdb.year"):
                             fetch_genre = cur_year
 
                         genre_suffix = f":{fetch_genre}" if fetch_genre else ""
@@ -7289,8 +7592,8 @@ class CineWindow(Adw.ApplicationWindow):
                                 filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
                             elif filtered and m_type:
                                 filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
-                            if filtered and cur_genre and cur_year:
-                                filtered = [it for it in filtered if str(it.get("year", "")).startswith(cur_year)]
+                            if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
+                                filtered = [it for it in filtered if not it.get("year") or str(it.get("year", "")).startswith(cur_year)]
                             return (key, page, filtered, len(cached))
 
                         if _is_event_set(abort_ev):
@@ -7323,8 +7626,8 @@ class CineWindow(Adw.ApplicationWindow):
                                 filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
                             elif filtered and m_type:
                                 filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
-                            if filtered and cur_genre and cur_year:
-                                filtered = [it for it in filtered if str(it.get("year", "")).startswith(cur_year)]
+                            if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
+                                filtered = [it for it in filtered if not it.get("year") or str(it.get("year", "")).startswith(cur_year)]
                             if items and not _is_event_set(abort_ev):
                                 database.save_cached_catalog(cache_key, items)
                             raw_count = len(raw_items) if raw_items is not None else -1
@@ -7487,23 +7790,67 @@ class CineWindow(Adw.ApplicationWindow):
                 self.is_fetching_content = False
                 return
             from . import api, database
+            import concurrent.futures
             items = []
+            raw_count = 0
+            active_discover_type = getattr(self, "_current_discover_type", "all")
             try:
                 cat_url = catalog.get("manifest_url")
                 cat_id = catalog.get("catalog_id")
 
                 fetch_genre = genre
-                if not genre and year and cat_id == "year":
-                    fetch_genre = year
+                cur_sort_val = getattr(self, "current_sort", None)
+                if cur_sort_val == "Year" or (cat_id == "year" and not genre):
+                    fetch_genre = str(year) if year and str(year) not in ("All Years", "All", _("All Years")) else ""
+                elif not genre and cur_sort_val == "Language":
+                    fetch_genre = getattr(self, "current_language", None)
 
                 genre_suffix = f":{fetch_genre}" if fetch_genre else ""
                 year_suffix = f":y{year}" if year else ""
-                cache_key = f"discover:{cat_url}:{cat_id}:{media_type}{genre_suffix}{year_suffix}:p{page_to_fetch}"
+                cache_key = f"discover:{cat_url}:{cat_id}:{active_discover_type}{genre_suffix}{year_suffix}:p{page_to_fetch}"
+
+                # 1. DB-first on page 1: instant results from SQLite cache
+                if page_to_fetch == 1:
+                    db_first_items = []
+                    target_db_mt = media_type if active_discover_type != "all" else None
+                    if year and str(year) not in ("All Years", "All", _("All Years")):
+                        db_first_items = database.get_cached_items_by_year(
+                            year,
+                            media_type=target_db_mt,
+                            genre=genre,
+                            sort_mode=cur_sort_val,
+                            limit=80,
+                            offset=0
+                        )
+                    elif genre:
+                        db_first_items = database.get_cached_items_by_genre(
+                            genre,
+                            media_type=target_db_mt,
+                            year=year,
+                            sort_mode=cur_sort_val,
+                            limit=80,
+                            offset=0
+                        )
+                    if db_first_items and not _is_event_set(abort_ev):
+                        def apply_db_first(items_to_show=db_first_items):
+                            if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
+                                return False
+                            self._populate_flowbox(self.content_flowbox, items_to_show, self.content_seen_ids)
+                            self._schedule_deferred_menu_build(1000)
+                            def check_fill_db():
+                                if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
+                                    return False
+                                if getattr(self, "has_more_content", True) and hasattr(self, "content_scrolled") and self.content_scrolled:
+                                    self._on_content_scroll(self.content_scrolled.get_vadjustment())
+                                return False
+                            GLib.timeout_add(150, check_fill_db)
+                            return False
+                        GLib.idle_add(apply_db_first)
 
                 # Cache-first: show instantly if we have a recent result
                 cached = database.get_cached_catalog(cache_key, max_age_hours=6)
                 if not cached and page_to_fetch == 1 and genre:
-                    base_cached = database.get_cached_catalog(f"discover:{cat_url}:{cat_id}:{media_type}{year_suffix}", max_age_hours=6)
+                    base_cached = database.get_cached_catalog(f"discover:{cat_url}:{cat_id}:{active_discover_type}{year_suffix}", max_age_hours=6)
                     if base_cached:
                         cached = api.filter_items_by_genre(base_cached, genre, media_type=media_type)
                 if _is_event_set(abort_ev):
@@ -7515,44 +7862,90 @@ class CineWindow(Adw.ApplicationWindow):
                             database.save_cached_catalog(cache_key, cached)
                     if genre:
                         cached = api.filter_items_by_genre(cached, genre, media_type=media_type)
-                    elif cached and media_type:
+                    elif cached and media_type and active_discover_type != "all":
                         cached = [it for it in cached if api.is_item_type_compatible(it, media_type)]
-                    if genre and year:
-                        cached = [it for it in cached if str(it.get("year", "")).startswith(year)]
+                    if cached and year and cat_id != "year":
+                        cached = [it for it in cached if not it.get("year") or str(it.get("year", "")).startswith(str(year))]
+                    if cached and cur_sort_val == "Recent":
+                        cached.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
                     def apply_cached(cached_items=cached):
                         if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
                             return False
                         self.is_fetching_content = False
                         if cached_items:
                             self.content_error_count = 0
-                            if page_to_fetch == 1:
+                            if page_to_fetch == 1 and not (hasattr(self, "content_flowbox") and self.content_flowbox.get_first_child()):
                                 self._populate_flowbox(self.content_flowbox, cached_items, self.content_seen_ids)
                                 self._schedule_deferred_menu_build(1000)
                             else:
                                 self._append_flowbox(self.content_flowbox, cached_items, self.content_seen_ids)
                             self.content_page = page_to_fetch + 1
-                        if getattr(self, "has_more_content", True) and hasattr(self, "content_scrolled"):
-                            self._on_content_scroll(self.content_scrolled.get_vadjustment())
+                        def check_fill_cached():
+                            if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
+                                return False
+                            if getattr(self, "has_more_content", True) and hasattr(self, "content_scrolled") and self.content_scrolled:
+                                self._on_content_scroll(self.content_scrolled.get_vadjustment())
+                            return False
+                        GLib.timeout_add(150, check_fill_cached)
                         return False
                     GLib.idle_add(apply_cached)
                     # Silent background refresh — update cache only, don't redraw
                     try:
-                        fresh = api.fetch_items(
-                            media_type=media_type,
-                            catalog_id=cat_id,
-                            catalog_url=cat_url,
-                            genre=fetch_genre or "",
-                            page=page_to_fetch,
-                            is_cancelled=(lambda: _is_event_set(abort_ev))
-                        )
+                        yr_str = str(year) if year and str(year) not in ("All Years", "All", _("All Years")) else ""
+                        if active_discover_type == "all" and (year or cur_sort_val == "Year"):
+                            def _fetch_sub_bg(mt):
+                                if _is_event_set(abort_ev):
+                                    return []
+                                return api.fetch_items(
+                                    media_type=mt,
+                                    catalog_id="year",
+                                    catalog_url="https://v3-cinemeta.strem.io/manifest.json",
+                                    genre=yr_str,
+                                    page=page_to_fetch,
+                                    is_cancelled=(lambda: _is_event_set(abort_ev))
+                                ) or []
+
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                                f_m = ex.submit(_fetch_sub_bg, "movie")
+                                f_s = ex.submit(_fetch_sub_bg, "series")
+                                m_items = f_m.result()
+                                s_items = f_s.result()
+                            fresh = []
+                            max_len = max(len(m_items), len(s_items))
+                            for i in range(max_len):
+                                if i < len(m_items):
+                                    fresh.append(m_items[i])
+                                if i < len(s_items):
+                                    fresh.append(s_items[i])
+                        elif year and (cur_sort_val == "Year" or cat_id == "year"):
+                            target_mt = "series" if active_discover_type == "series" else ("anime" if active_discover_type == "anime" else "movie")
+                            fresh = api.fetch_items(
+                                media_type=target_mt,
+                                catalog_id=cat_id if cat_id == "year" else "year",
+                                catalog_url=cat_url or "https://v3-cinemeta.strem.io/manifest.json",
+                                genre=yr_str,
+                                page=page_to_fetch,
+                                is_cancelled=(lambda: _is_event_set(abort_ev))
+                            )
+                        else:
+                            fresh = api.fetch_items(
+                                media_type=media_type,
+                                catalog_id=cat_id,
+                                catalog_url=cat_url,
+                                genre=fetch_genre or "",
+                                page=page_to_fetch,
+                                is_cancelled=(lambda: _is_event_set(abort_ev))
+                            )
                         if _is_event_set(abort_ev):
                             return
                         if fresh and genre:
                             fresh = api.filter_items_by_genre(fresh, genre, media_type=media_type)
-                        elif fresh and media_type:
+                        elif fresh and media_type and active_discover_type != "all":
                             fresh = [it for it in fresh if api.is_item_type_compatible(it, media_type)]
-                        if fresh and genre and year:
-                            fresh = [it for it in fresh if str(it.get("year", "")).startswith(year)]
+                        if fresh and year and cat_id != "year":
+                            fresh = [it for it in fresh if not it.get("year") or str(it.get("year", "")).startswith(str(year))]
+                        if fresh and cur_sort_val == "Recent":
+                            fresh.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
                         if fresh and not _is_event_set(abort_ev):
                             database.save_cached_catalog(cache_key, fresh)
                     except Exception:
@@ -7563,23 +7956,110 @@ class CineWindow(Adw.ApplicationWindow):
                 if _is_event_set(abort_ev):
                     self.is_fetching_content = False
                     return
-                items = api.fetch_items(
-                    media_type=media_type,
-                    catalog_id=cat_id,
-                    catalog_url=cat_url,
-                    genre=fetch_genre or "",
-                    page=page_to_fetch,
-                    is_cancelled=(lambda: _is_event_set(abort_ev))
-                )
+                yr_str = str(year) if year and str(year) not in ("All Years", "All", _("All Years")) else ""
+                if active_discover_type == "all" and (year or cur_sort_val == "Year"):
+                    def _fetch_sub(mt):
+                        if _is_event_set(abort_ev):
+                            return []
+                        return api.fetch_items(
+                            media_type=mt,
+                            catalog_id="year",
+                            catalog_url="https://v3-cinemeta.strem.io/manifest.json",
+                            genre=yr_str,
+                            page=page_to_fetch,
+                            is_cancelled=(lambda: _is_event_set(abort_ev))
+                        ) or []
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                        f_m = ex.submit(_fetch_sub, "movie")
+                        f_s = ex.submit(_fetch_sub, "series")
+                        m_items = f_m.result()
+                        s_items = f_s.result()
+                    combined = []
+                    max_len = max(len(m_items), len(s_items))
+                    for i in range(max_len):
+                        if i < len(m_items):
+                            combined.append(m_items[i])
+                        if i < len(s_items):
+                            combined.append(s_items[i])
+                    items = combined
+                    if not items and page_to_fetch == 1 and yr_str:
+                        for a in database.get_addons():
+                            if _is_event_set(abort_ev):
+                                break
+                            m_u = a.get("manifest_url", "")
+                            if not m_u or not a.get("enabled", True):
+                                continue
+                            addon_cats = api.get_addon_catalogs(a, cache_only=True)
+                            for c in (addon_cats or []):
+                                if c.get("id") in ("years", "year", "acc85513", "tmdb.year"):
+                                    extra_res = api.fetch_items(
+                                        media_type=c.get("type", "movie"),
+                                        catalog_id=c.get("id"),
+                                        catalog_url=m_u,
+                                        genre=yr_str,
+                                        page=page_to_fetch,
+                                        is_cancelled=(lambda: _is_event_set(abort_ev))
+                                    )
+                                    if extra_res:
+                                        items.extend(extra_res)
+                            if items:
+                                break
+                elif year and (cur_sort_val == "Year" or cat_id == "year"):
+                    target_mt = "series" if active_discover_type == "series" else ("anime" if active_discover_type == "anime" else "movie")
+                    items = api.fetch_items(
+                        media_type=target_mt,
+                        catalog_id=cat_id if cat_id == "year" else "year",
+                        catalog_url=cat_url or "https://v3-cinemeta.strem.io/manifest.json",
+                        genre=yr_str,
+                        page=page_to_fetch,
+                        is_cancelled=(lambda: _is_event_set(abort_ev))
+                    )
+                    if not items and page_to_fetch == 1 and yr_str:
+                        for a in database.get_addons():
+                            if _is_event_set(abort_ev):
+                                break
+                            m_u = a.get("manifest_url", "")
+                            if not m_u or not a.get("enabled", True):
+                                continue
+                            addon_cats = api.get_addon_catalogs(a, cache_only=True)
+                            for c in (addon_cats or []):
+                                if c.get("id") in ("years", "year", "acc85513", "tmdb.year") and api.is_type_match(c.get("type"), target_mt):
+                                    extra_res = api.fetch_items(
+                                        media_type=target_mt,
+                                        catalog_id=c.get("id"),
+                                        catalog_url=m_u,
+                                        genre=yr_str,
+                                        page=1,
+                                        is_cancelled=(lambda: _is_event_set(abort_ev))
+                                    )
+                                    if extra_res:
+                                        items = extra_res
+                                        break
+                            if items:
+                                break
+                else:
+                    items = api.fetch_items(
+                        media_type=media_type,
+                        catalog_id=cat_id,
+                        catalog_url=cat_url,
+                        genre=fetch_genre or "",
+                        page=page_to_fetch,
+                        is_cancelled=(lambda: _is_event_set(abort_ev))
+                    )
+
                 if _is_event_set(abort_ev):
                     self.is_fetching_content = False
                     return
+                raw_count = len(items) if items else 0
                 if items and genre:
                     items = api.filter_items_by_genre(items, genre, media_type=media_type)
-                elif items and media_type:
+                elif items and media_type and active_discover_type != "all":
                     items = [it for it in items if api.is_item_type_compatible(it, media_type)]
-                if items and genre and year:
-                    items = [it for it in items if str(it.get("year", "")).startswith(year)]
+                if items and year and cat_id != "year":
+                    items = [it for it in items if not it.get("year") or str(it.get("year", "")).startswith(str(year))]
+                if items and cur_sort_val == "Recent":
+                    items.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
                 if items and not _is_event_set(abort_ev):
                     database.save_cached_catalog(cache_key, items)
             except Exception as e:
@@ -7600,29 +8080,42 @@ class CineWindow(Adw.ApplicationWindow):
                         self.has_more_content = False
                 elif items:
                     self.content_error_count = 0
-                    is_first_page = (page_to_fetch == 1)
-                    if is_first_page:
+                    if page_to_fetch == 1 and not (hasattr(self, "content_flowbox") and self.content_flowbox.get_first_child()):
                         self._populate_flowbox(self.content_flowbox, items, self.content_seen_ids)
                         self._schedule_deferred_menu_build(1000)
                     else:
                         self._append_flowbox(self.content_flowbox, items, self.content_seen_ids)
                     self.content_page = page_to_fetch + 1
                 else:
-                    self.content_error_count = 0
-                    self.has_more_content = False
-                    if page_to_fetch == 1 and hasattr(self, "content_flowbox") and not self.content_flowbox.get_first_child():
-                        empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-                        empty_box.set_valign(Gtk.Align.CENTER)
-                        empty_box.set_halign(Gtk.Align.CENTER)
-                        empty_box.set_margin_top(60)
-                        empty_box.add_css_class("dim-label")
-                        empty_lbl = Gtk.Label(label=_("No items found for this genre."))
-                        empty_lbl.add_css_class("title-3")
-                        empty_box.append(empty_lbl)
-                        self.content_flowbox.append(empty_box)
+                    if raw_count > 0 and page_to_fetch < 20:
+                        # Server returned items, but client genre filter yielded none on this page: advance page and continue
+                        self.content_page = page_to_fetch + 1
+                    else:
+                        self.content_error_count = 0
+                        self.has_more_content = False
+                        if not (hasattr(self, "content_flowbox") and self.content_flowbox.get_first_child()):
+                            empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                            empty_box.set_valign(Gtk.Align.CENTER)
+                            empty_box.set_halign(Gtk.Align.CENTER)
+                            empty_box.set_margin_top(60)
+                            empty_box.add_css_class("dim-label")
+                            if getattr(self, "current_year", None):
+                                empty_lbl = Gtk.Label(label=_("No items found for this year."))
+                            elif getattr(self, "current_sort", None) == "Language":
+                                empty_lbl = Gtk.Label(label=_("No items found for this language."))
+                            else:
+                                empty_lbl = Gtk.Label(label=_("No items found for this genre."))
+                            empty_lbl.add_css_class("title-3")
+                            empty_box.append(empty_lbl)
+                            self.content_flowbox.append(empty_box)
 
-                if getattr(self, "has_more_content", True) and hasattr(self, "content_scrolled"):
-                    self._on_content_scroll(self.content_scrolled.get_vadjustment())
+                def check_fill_results():
+                    if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
+                        return False
+                    if getattr(self, "has_more_content", True) and hasattr(self, "content_scrolled") and self.content_scrolled:
+                        self._on_content_scroll(self.content_scrolled.get_vadjustment())
+                    return False
+                GLib.timeout_add(150, check_fill_results)
                 return False
 
             GLib.idle_add(apply_results)
@@ -8403,7 +8896,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         row_slots = []
         if target_box:
-            for _ in batch_items:
+            for _slot_item in batch_items:
                 slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
                 target_box.append(slot)
                 row_slots.append(slot)
@@ -8433,7 +8926,7 @@ class CineWindow(Adw.ApplicationWindow):
                     current_y = getattr(self, "current_year", None)
 
                     fetch_genre = current_g
-                    if not current_g and current_y and c_id == "year":
+                    if not current_g and current_y and c_id in ("year", "years", "acc85513", "tmdb.year"):
                         fetch_genre = current_y
 
                     genre_suffix = f":{fetch_genre}" if fetch_genre else ""
@@ -8454,8 +8947,8 @@ class CineWindow(Adw.ApplicationWindow):
                             cached = api.filter_items_by_genre(cached, current_g, media_type=m_type)
                         elif cached and m_type:
                             cached = [it for it in cached if api.is_item_type_compatible(it, m_type)]
-                        if current_g and current_y:
-                            cached = [it for it in cached if str(it.get("year", "")).startswith(current_y)]
+                        if cached and current_y and c_id not in ("year", "years", "acc85513", "tmdb.year"):
+                            cached = [it for it in cached if not it.get("year") or str(it.get("year", "")).startswith(current_y)]
                         if not cached and current_g:
                             cached = None
                         if cached:
@@ -8481,8 +8974,8 @@ class CineWindow(Adw.ApplicationWindow):
                             items = api.filter_items_by_genre(items, current_g, media_type=m_type)
                         elif items and m_type:
                             items = [it for it in items if api.is_item_type_compatible(it, m_type)]
-                        if items and current_g and current_y:
-                            items = [it for it in items if str(it.get("year", "")).startswith(current_y)]
+                        if items and current_y and c_id not in ("year", "years", "acc85513", "tmdb.year"):
+                            items = [it for it in items if not it.get("year") or str(it.get("year", "")).startswith(current_y)]
                         debug_log(f"discover row FETCHED from API: '{row_title}'", f"Got {len(items) if items else 0} items")
                         if items and not _is_event_set(abort_ev):
                             database.save_cached_catalog(cache_key, items)
@@ -8558,13 +9051,16 @@ class CineWindow(Adw.ApplicationWindow):
                             if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
                                 next_bs = 6 if (upper <= page_size or not target_box or not target_box.get_first_child()) else 4
                                 self._load_next_discover_batch(req_id, batch_size=next_bs)
-                    elif target_box and not target_box.get_first_child() and getattr(self, "current_genre", None):
+                    elif target_box and not target_box.get_first_child() and (getattr(self, "current_genre", None) or getattr(self, "current_year", None)):
                         empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
                         empty_box.set_valign(Gtk.Align.CENTER)
                         empty_box.set_halign(Gtk.Align.CENTER)
                         empty_box.set_margin_top(60)
                         empty_box.add_css_class("dim-label")
-                        empty_lbl = Gtk.Label(label=_("No items found for this genre."))
+                        if getattr(self, "current_year", None):
+                            empty_lbl = Gtk.Label(label=_("No items found for this year."))
+                        else:
+                            empty_lbl = Gtk.Label(label=_("No items found for this genre."))
                         empty_lbl.add_css_class("title-3")
                         empty_box.append(empty_lbl)
                         target_box.append(empty_box)
@@ -8594,7 +9090,7 @@ class CineWindow(Adw.ApplicationWindow):
         c_name = row_info.get("catalog_name", c_id)
         current_g = getattr(self, "current_genre", None)
         current_y = getattr(self, "current_year", None)
-        if current_y and c_id == "year":
+        if current_y and c_id in ("year", "years", "acc85513", "tmdb.year"):
             row_title = f"{row_title} · {current_y}"
         if current_g and current_g not in row_title:
             row_title = f"{row_title} · {current_g}"
@@ -8872,6 +9368,15 @@ class CineWindow(Adw.ApplicationWindow):
     def _init_default_category_menus(self):
         """Immediately assign valid initial menu models and defer background full menu construction."""
         debug_log("_init_default_category_menus START")
+        btn = getattr(self, "home_active_btn", None)
+        if btn and btn.get_menu_model() is None:
+            menu = Gio.Menu.new()
+            top_item = Gio.MenuItem.new(_("★ Home"), None)
+            top_item.set_action_and_target_value("win.switch-to-home", None)
+            menu.append_item(top_item)
+            unique_item = Gio.MenuItem.new(_("Unique View"), "win.toggle-unique")
+            menu.append_item(unique_item)
+            btn.set_menu_model(menu)
         btn = getattr(self, "discover_active_btn", None)
         if btn and btn.get_menu_model() is None:
             initial_menu = self._build_discover_menu()
@@ -9020,10 +9525,15 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_content_scroll(self, adj):
         if getattr(self, "is_fetching_content", False) or not getattr(self, "has_more_content", True):
             return
+        if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "content":
+            return
         val = adj.get_value()
         page_size = adj.get_page_size()
         upper = adj.get_upper()
-        if page_size > 0 and upper > (page_size + 100) and (val + page_size >= upper - 400):
+        if page_size <= 0:
+            return
+        # Viewport unfilled (no scrollbar: upper <= page_size + 50) OR user scrolled near bottom
+        if upper <= page_size + 50 or (val + page_size >= upper - 500):
             if getattr(self, "current_catalog", None):
                 self._fetch_content_page()
 
@@ -9148,25 +9658,38 @@ class CineWindow(Adw.ApplicationWindow):
         if "progress" not in stats and "downloaded" not in stats and "activePeers" not in stats:
             return status_msg
             
-        prog = stats.get("progress", 0)
-        dl = stats.get("downloaded", 0)
-        tot = stats.get("totalLength", 0)
-        spd_dl = stats.get("downloadSpeed", 0) / 1024
-        spd_ul = stats.get("uploadSpeed", 0) / 1024
-        peers = stats.get("activePeers", 0)
-        seeds = stats.get("seeds", 0)
+        prog = float(stats.get("progress", 0) or 0)
+        dl = float(stats.get("downloaded", 0) or 0)
+        tot = float(stats.get("totalLength", 0) or 0)
+        spd_dl = float(stats.get("downloadSpeed", 0) or 0) / 1024
+        spd_ul = float(stats.get("uploadSpeed", 0) or 0) / 1024
+        peers = int(stats.get("activePeers", 0) or 0)
+        seeds = int(stats.get("seeds", 0) or 0)
 
         metric_str = f"{prog * 100.0:.1f}%"
         
         if spd_dl > 0 or spd_ul > 0:
-            metric_str += f" - D: {spd_dl:.1f} KiB/s | U: {spd_ul:.1f} KiB/s"
+            if spd_dl >= 1024:
+                dl_txt = f"{spd_dl / 1024:.1f} MB/s"
+            else:
+                dl_txt = f"{spd_dl:.1f} KB/s"
+                
+            if spd_ul >= 1024:
+                ul_txt = f"{spd_ul / 1024:.1f} MB/s"
+            else:
+                ul_txt = f"{spd_ul:.1f} KB/s"
+                
+            metric_str += f" - ↓ {dl_txt} | ↑ {ul_txt}"
         else:
             metric_str += " - Connecting..."
             
         if tot > 0:
-            metric_str += f" ({dl / (1024 * 1024):.1f} MB / {tot / (1024 * 1024 * 1024):.2f} GB)"
+            tot_gb = tot / (1024 * 1024 * 1024)
+            dl_mb = dl / (1024 * 1024)
+            metric_str += f" ({dl_mb:.1f} MB / {tot_gb:.2f} GB)"
         elif dl > 0:
-            metric_str += f" ({dl / (1024 * 1024):.1f} MB downloaded)"
+            dl_mb = dl / (1024 * 1024)
+            metric_str += f" ({dl_mb:.1f} MB downloaded)"
             
         metric_str += f" | Peers: {peers} / Seeds: {seeds}"
             
@@ -9175,8 +9698,16 @@ class CineWindow(Adw.ApplicationWindow):
         return metric_str
 
     def update_player_loading(self, text):
-        if hasattr(self, "player_buffering_label"):
-            GLib.idle_add(self.player_buffering_label.set_text, text)
+        def _apply():
+            if hasattr(self, "player_buffering_label"):
+                self.player_buffering_label.set_text(text)
+            if getattr(self, "is_loading_stream", False):
+                if hasattr(self, "player_loading_box") and not self.player_loading_box.get_visible():
+                    self.player_loading_box.set_visible(True)
+                if hasattr(self, "spinner") and not self.spinner.get_visible():
+                    self.spinner.set_visible(True)
+            return False
+        GLib.idle_add(_apply)
 
     def hide_player_loading(self):
         GLib.idle_add(self._hide_player_loading_ui)
@@ -9218,7 +9749,7 @@ class CineWindow(Adw.ApplicationWindow):
             if is_youtube_raw_url:
                 self.show_player_loading(_("Loading trailer..."), title=title)
         else:
-            self.hide_player_loading()
+            self.is_loading_stream = True
             if is_download or item_id:
                 if is_download:
                     self.previous_page_before_player = "downloads"
@@ -9355,7 +9886,6 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
         else:
-            self.hide_player_loading()
             # Disable ytdl for direct video streams so yt-dlp does not intercept without Referer
             # and trigger Cloudflare anti-bot challenge
             try:
@@ -9381,7 +9911,7 @@ class CineWindow(Adw.ApplicationWindow):
         is_playing_tr = self._is_playing_trailer() or bool(is_youtube_trailer or is_youtube_raw_url or (title and "(trailer)" in str(title).lower()))
         self.next_ep_dismissed = is_playing_tr
         self.next_ep_auto_triggered = is_playing_tr
-        if hasattr(self, "next_episode_revealer"):
+        if hasattr(self, "next_episode_revealer") and hasattr(self.next_episode_revealer, "set_reveal_child"):
             self.next_episode_revealer.set_reveal_child(False)
 
         seek_target = start_time
@@ -9784,13 +10314,6 @@ class CineWindow(Adw.ApplicationWindow):
             from . import api
             magnet = api.add_trackers_to_magnet(magnet, sources=sources)
 
-        # Check if local Stremio streaming server is running (port 11470)
-        stremio_stream_url = None
-        if hash_val and not (magnet and (magnet.startswith("http://") or magnet.startswith("https://"))):
-            from . import api
-            if api.is_stremio_server_running():
-                stremio_stream_url = api.build_stremio_stream_url(hash_val, file_index=file_index, sources=sources)
-
         title_text = self.stream_queue_title or "Stream"
         stream_name = torrent.get("filename") or torrent.get("name") or torrent.get("stream_title") or "" if isinstance(torrent, dict) else ""
         if stream_name:
@@ -9827,11 +10350,6 @@ class CineWindow(Adw.ApplicationWindow):
             else:
                 clean_target = yt_target
             self._play_stream(clean_target, display_title, headers=headers, preserve_queue=True)
-            return
-
-        if stremio_stream_url:
-            logger.info(f"Streaming via local Stremio server: {stremio_stream_url}")
-            self._play_stream(stremio_stream_url, display_title, headers=headers, preserve_queue=True)
             return
 
         if magnet and (magnet.startswith("http://") or magnet.startswith("https://")):
@@ -10745,7 +11263,7 @@ class CineWindow(Adw.ApplicationWindow):
         ]
 
         # Setup type filter dropdown
-        type_labels = [label for _, label in self._addon_types_list]
+        type_labels = [label for t_val, label in self._addon_types_list]
         self.addon_type_dropdown.set_model(Gtk.StringList.new(type_labels))
         self.addon_type_dropdown.set_selected(0)
         self.addon_type_dropdown.connect("notify::selected", lambda *a: self.addons_listbox.invalidate_filter())
@@ -11497,10 +12015,16 @@ class CineWindow(Adw.ApplicationWindow):
                     if len(self.nav_stack) > 50:
                         self.nav_stack.pop(0)
             return
+        lib_page = "content"
+        if hasattr(self, "library_stack") and hasattr(self.library_stack, "get_visible_child_name"):
+            lib_page = self.library_stack.get_visible_child_name() or "content"
+        cat_btn = "movies"
+        if hasattr(self, "category_btn_stack") and hasattr(self.category_btn_stack, "get_visible_child_name"):
+            cat_btn = self.category_btn_stack.get_visible_child_name() or "movies"
         current = {
             "main_page": main_page,
-            "library_page": self.library_stack.get_visible_child_name() if hasattr(self, "library_stack") else "content",
-            "category_btn": self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else "movies"
+            "library_page": lib_page,
+            "category_btn": cat_btn,
         }
         if main_page == "details":
             page = self.details_box.get_first_child() if hasattr(self, "details_box") else None

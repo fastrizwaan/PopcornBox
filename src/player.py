@@ -538,7 +538,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                             break
                         if (time.time() - last_nonzero_time) > 30:
                             break
-                        time.sleep(0.1)
+                        time.sleep(0.5)
                     if engine and engine.is_alive():
                         launch_player_only(engine)
                 threading.Thread(target=resume_stream, daemon=True).start()
@@ -583,7 +583,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                                 break
                             if (time.time() - last_nonzero_time) > 30:
                                 break
-                            time.sleep(1)
+                            time.sleep(0.5)
                         if engine and engine.is_alive():
                             launch_player_only(engine)
                     threading.Thread(target=resume_stream, daemon=True).start()
@@ -623,7 +623,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                     
                 print("Phase 3: Waiting for playable buffer...")
                 last_nonzero_time = time.time()
-                for i in range(300):
+                for i in range(600):
                     with _engines_lock:
                         if _engines.get(info_hash) != engine or not engine.is_alive(): return
                     if _streaming_hash != info_hash: return
@@ -640,7 +640,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                     if engine.is_buffering_finished():
                         break
                     if (time.time() - last_nonzero_time) > 30: break
-                    time.sleep(0.1)
+                    time.sleep(0.5)
                     
                 with _engines_lock:
                     if _engines.get(info_hash) != engine or not engine.is_alive(): return
