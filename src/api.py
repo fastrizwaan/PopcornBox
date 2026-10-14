@@ -278,6 +278,8 @@ def is_item_type_compatible(item, expected_type, cached_meta=None):
         return True
 
     expected = str(expected_type).strip().lower()
+    if expected in ("collections", "other", "catalog", "channels", "channel", "live", "tv", "music", "radio", "podcast"):
+        return True
 
     itype = item.get("type") or item.get("media_type")
     if not itype and cached_meta:
@@ -1089,50 +1091,64 @@ def catalog_supports_genre(cat, genre):
         return False
     g_norm = str(genre).strip().lower()
 
+    from . import database
+    is_lang = database.is_language_genre(g_norm)
+    is_yr = g_norm.isdigit() and len(g_norm) == 4
+
     # 1. Check legacy/direct "genres" field on catalog object
     cat_genres = cat.get("genres")
     if cat_genres and isinstance(cat_genres, list) and len(cat_genres) > 0:
         for cg in cat_genres:
             if does_genre_match_filter(cg, g_norm):
                 return True
-        return False
 
     # 2. Check "extra" declarations
     extra = cat.get("extra") or []
-    genre_extra = None
+    had_restricted_opts = False
     for ex in extra:
-        if isinstance(ex, dict) and ex.get("name") in ("genre", "year"):
-            genre_extra = ex
-            break
-        elif ex in ("genre", "year"):
-            genre_extra = {"name": ex}
-            break
+        ex_name = ex.get("name") if isinstance(ex, dict) else ex
+        if is_yr and ex_name not in ("year", "genre"):
+            continue
+        if is_lang and ex_name not in ("language", "genre"):
+            continue
+        if not is_yr and not is_lang and ex_name != "genre":
+            continue
 
-    if genre_extra is not None:
-        opts = genre_extra.get("options")
+        opts = ex.get("options") if isinstance(ex, dict) else None
         if opts and isinstance(opts, list) and len(opts) > 0:
+            had_restricted_opts = True
             for opt in opts:
                 if does_genre_match_filter(opt, g_norm):
                     return True
-            return False
-        # If genre is supported in extra without restricted options, it accepts arbitrary genres
-        return True
+            continue
+        elif is_yr and ex_name == "year":
+            return True
+        elif not is_lang and not is_yr:
+            # Unrestricted genre extra accepts arbitrary narrative genres
+            return True
+
+    if had_restricted_opts:
+        return False
 
     # 3. Check "extraSupported"
     extra_sup = cat.get("extraSupported") or []
-    if "genre" in extra_sup or "year" in extra_sup:
+    if is_yr and "year" in extra_sup:
+        return True
+    if not is_lang and not is_yr and "genre" in extra_sup:
         return True
 
-    # 4. Check if catalog ID or Name is dedicated to this language genre
-    # e.g., catalog id='hi', name='Hindi - IndianRegional' matching genre='Hindi'
-    from . import database
-    if database.is_language_genre(g_norm):
+    # 4. Check if catalog ID or Name is dedicated to this language or year
+    if is_lang:
         lang_code = database.get_language_code(g_norm)
         cat_id = str(cat.get("id") or cat.get("catalog_id") or "").strip().lower()
         cat_name = str(cat.get("name") or cat.get("catalog_name") or cat.get("display_name") or "").strip().lower()
-        if cat_id == g_norm or (lang_code and cat_id == lang_code):
+        if cat_id == g_norm or (lang_code and cat_id == lang_code) or (lang_code and f"-{lang_code}-" in cat_id) or (lang_code and cat_id.startswith(f"{lang_code}-")):
             return True
         if re.search(r'\b' + re.escape(g_norm) + r'\b', cat_name):
+            return True
+    elif is_yr:
+        cat_id = str(cat.get("id") or cat.get("catalog_id") or "").strip().lower()
+        if cat_id in ("year", "years", "acc85513", "tmdb.year"):
             return True
 
     return False
@@ -1439,6 +1455,7 @@ def get_available_search_catalogs(c_type="movie", only_working=True):
 
 
 def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None, target_manifest_url=None, target_catalog_id=None, is_cancelled=None, timeout=3.5):
+    from . import database
     c_type = "series" if media_type == "series" else media_type
     page_limit = limit if (limit and limit > 0) else 50
     skip = (page - 1) * page_limit
@@ -1646,34 +1663,54 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
 
         server_genre = None
         server_supports_skip = False
-        genre_extra = None
+        target_extra = None
+        g_str = str(genre).strip() if genre else ""
+        is_yr = bool(g_str.isdigit() and len(g_str) == 4)
+
         if cat_obj:
             extra = cat_obj.get("extra") or []
+            year_extra = None
+            genre_extra = None
+            lang_extra = None
             for ex in extra:
-                if (isinstance(ex, dict) and ex.get("name") == "skip") or ex == "skip":
+                ex_dict = ex if isinstance(ex, dict) else {"name": ex}
+                ex_name = ex_dict.get("name")
+                if ex_name == "skip":
                     server_supports_skip = True
-                elif isinstance(ex, dict) and ex.get("name") in ("genre", "year"):
-                    genre_extra = ex
-                elif ex in ("genre", "year"):
-                    genre_extra = {"name": ex}
+                elif ex_name == "year":
+                    year_extra = ex_dict
+                elif ex_name == "genre":
+                    genre_extra = ex_dict
+                elif ex_name == "language":
+                    lang_extra = ex_dict
             if "skip" in (cat_obj.get("extraSupported") or []):
                 server_supports_skip = True
+
+            is_lang = database.is_language_genre(g_str.lower())
+            if is_yr:
+                target_extra = year_extra or genre_extra
+            elif is_lang:
+                target_extra = lang_extra or genre_extra
+            else:
+                target_extra = genre_extra
 
             if genre and genre != "All":
                 cat_genres = cat_obj.get("genres") or []
                 matched_opt = next((cg for cg in cat_genres if does_genre_match_filter(cg, genre)), None)
                 if matched_opt:
                     server_genre = matched_opt
-                elif genre_extra is not None:
-                    opts = genre_extra.get("options") or []
+                elif target_extra is not None:
+                    opts = target_extra.get("options") or []
                     if opts:
                         server_genre = next((opt for opt in opts if does_genre_match_filter(opt, genre)), None)
                     else:
-                        server_genre = genre
+                        server_genre = g_str
                 elif "genre" in (cat_obj.get("extraSupported") or []) or "year" in (cat_obj.get("extraSupported") or []):
-                    server_genre = genre
+                    server_genre = g_str
         else:
             server_supports_skip = True
+            if genre and genre != "All":
+                server_genre = g_str
 
         # If catalog does not support pagination and a subsequent page was requested, return empty
         if skip > 0 and cat_obj and not server_supports_skip:
@@ -1686,7 +1723,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         
         extras = []
         if genre and genre != "All" and server_genre:
-            extra_param_name = genre_extra.get("name", "genre") if genre_extra else "genre"
+            extra_param_name = target_extra.get("name") if target_extra else ("year" if is_yr else "genre")
             extras.append(f"{extra_param_name}={urllib.parse.quote(server_genre)}")
         if skip > 0 and server_supports_skip:
             extras.append(f"skip={skip}")

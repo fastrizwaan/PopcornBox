@@ -390,6 +390,54 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         self.assertEqual(self.win.current_catalog["catalog_id"], "year")
         self.assertEqual(self.win.current_catalog["display_name"], "Movies — 2025")
 
+    def test_discover_scroll_threshold_requires_scroll(self):
+        """Test that _on_discover_scroll only triggers when scrolled near bottom."""
+        self.win.library_stack = MagicMock()
+        self.win.library_stack.get_visible_child_name.return_value = "discover"
+        self.win._discover_is_loading_rows = False
+        self.win._discover_catalog_list = [{"title": f"Cat {i}"} for i in range(20)]
+        self.win._discover_next_row_index = 6
+        self.win._load_next_discover_batch = MagicMock()
+
+        adj = MagicMock()
+        # Case 1: val=0, upper <= page_size (no scrollable content)
+        adj.get_value.return_value = 0.0
+        adj.get_page_size.return_value = 600.0
+        adj.get_upper.return_value = 600.0
+        CineWindow._on_discover_scroll(self.win, adj)
+        self.win._load_next_discover_batch.assert_not_called()
+
+        # Case 2: val=0, upper=2000 (at top of tall page)
+        adj.get_upper.return_value = 2000.0
+        CineWindow._on_discover_scroll(self.win, adj)
+        self.win._load_next_discover_batch.assert_not_called()
+
+        # Case 3: val=1500, page_size=600, upper=2000 (scrolled near bottom: 1500+600=2100 >= 2000-600)
+        adj.get_value.return_value = 1500.0
+        CineWindow._on_discover_scroll(self.win, adj)
+        self.win._load_next_discover_batch.assert_called_once()
+
+    def test_discover_cache_hit_does_not_fetch_rows(self):
+        """Test that switching back to a cached discover view does not trigger network fetches."""
+        self.win._discover_views = {}
+        view_key = "all|all|all|all|Popular"
+        cached_box = MagicMock()
+        self.win._discover_views[view_key] = {
+            "box": cached_box,
+            "catalog_list": [{"title": "Cat 1"}],
+            "next_row_index": 1,
+            "request_id": 1
+        }
+        self.win.discover_scrolled = MagicMock()
+        self.win.discover_scrolled.get_child.return_value = None
+        self.win._load_next_discover_batch = MagicMock()
+        self.win._update_continue_watching_section = MagicMock()
+
+        CineWindow._refresh_discover_page(self.win, filter_media_type="all", filter_addon_url=None, force_refresh=False)
+
+        self.win.discover_scrolled.set_child.assert_called_once_with(cached_box)
+        self.win._load_next_discover_batch.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
