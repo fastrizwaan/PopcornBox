@@ -662,6 +662,14 @@ def extract_youtube_id(url_or_id):
         return ""
     s = str(url_or_id).strip()
     import re
+    if s.startswith("yt_id:"):
+        parts = s.split(":")
+        for p in reversed(parts):
+            p_clean = p.strip()
+            if len(p_clean) == 11 and re.match(r'^[a-zA-Z0-9_-]{11}$', p_clean):
+                return p_clean
+        s = parts[-1].strip()
+
     if re.match(r'^[a-zA-Z0-9_-]{11}$', s):
         return s
     patterns = [
@@ -732,7 +740,6 @@ def resolve_youtube_url(clean_id_or_url, watch_url=None):
                 "--no-cache-dir",
                 "--socket-timeout", "6",
                 "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
-                "--extractor-args", "youtube:player_client=android,web",
                 watch_url
             ]
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)

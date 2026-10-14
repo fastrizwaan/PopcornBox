@@ -185,7 +185,9 @@ class MovieDetailsPage(Gtk.Overlay):
         item_raw_id = str(self.movie_stub.get("id", ""))
         poster_raw = str(self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster") or "")
         
-        if item_raw_id.startswith("bolly:s:") or item_raw_id.startswith("hub:s:") or ":s:" in item_raw_id:
+        if item_raw_id.startswith("yt_id:") or self.media_type in ["channel", "channels"]:
+            self.media_type = "channel"
+        elif item_raw_id.startswith("bolly:s:") or item_raw_id.startswith("hub:s:") or ":s:" in item_raw_id:
             self.media_type = "series"
         elif item_raw_id.startswith("bolly:m:") or item_raw_id.startswith("hub:m:") or ":m:" in item_raw_id:
             self.media_type = "movie"
@@ -865,6 +867,22 @@ class MovieDetailsPage(Gtk.Overlay):
                 return True
         return False
 
+    @property
+    def is_channel(self):
+        mtype = str(getattr(self, "media_type", "")).lower()
+        if mtype in ("channel", "channels"):
+            return True
+        stub = getattr(self, "movie_stub", {}) or {}
+        item_id = str(stub.get("id", ""))
+        if item_id.startswith("yt_id:") or str(stub.get("type", "")).lower() in ("channel", "channels"):
+            return True
+        details = getattr(self, "movie_details", {}) or {}
+        if isinstance(details, dict):
+            det_id = str(details.get("id", ""))
+            if det_id.startswith("yt_id:") or str(details.get("type", "")).lower() in ("channel", "channels"):
+                return True
+        return False
+
     def _change_season_delta(self, delta):
         if not hasattr(self, 'seasons') or not self.seasons: return
         curr_idx = self.season_dropdown.get_selected()
@@ -893,7 +911,7 @@ class MovieDetailsPage(Gtk.Overlay):
         filtered_eps = []
         for ep in self.current_episodes:
             ep_num = ep.get("episode", 1)
-            ep_title = ep.get("title") or ep.get("name") or (f"Episode {ep_num}" if self.media_type in ["series", "anime"] else f"Movie {ep_num}")
+            ep_title = ep.get("title") or ep.get("name") or (f"Video {ep_num}" if self.is_channel else (f"Episode {ep_num}" if self.media_type in ["series", "anime"] else f"Movie {ep_num}"))
             overview = ep.get("overview") or ""
             if query:
                 match_q = (query in ep_title.lower() or query in str(ep_num) or query in overview.lower())
@@ -901,7 +919,7 @@ class MovieDetailsPage(Gtk.Overlay):
             filtered_eps.append(ep)
 
         if not filtered_eps:
-            no_match_text = "No matching episodes found" if self.media_type in ["series", "anime"] else "No matching movies found"
+            no_match_text = "No matching videos found" if self.is_channel else ("No matching episodes found" if self.media_type in ["series", "anime"] else "No matching movies found")
             empty_lbl = Gtk.Label(label=no_match_text)
             empty_lbl.add_css_class("dim-label")
             empty_lbl.set_margin_top(16)
@@ -913,13 +931,15 @@ class MovieDetailsPage(Gtk.Overlay):
 
         def build_ep_card(ep):
             ep_num = ep.get("episode", 1)
-            ep_title = ep.get("title") or ep.get("name") or (f"Episode {ep_num}" if self.media_type in ["series", "anime"] else f"Movie {ep_num}")
+            ep_title = ep.get("title") or ep.get("name") or (f"Video {ep_num}" if self.is_channel else (f"Episode {ep_num}" if self.media_type in ["series", "anime"] else f"Movie {ep_num}"))
             overview = ep.get("overview") or ""
             released = ep.get("released") or ""
 
             btn = Gtk.Button()
             btn.add_css_class("ep-card-row")
-            if getattr(self, 'selected_episode', None) == ep_num:
+            if self.is_channel and getattr(self, 'selected_video', None) and self.selected_video.get("id") == ep.get("id"):
+                btn.add_css_class("selected")
+            elif not self.is_channel and getattr(self, 'selected_episode', None) == ep_num:
                 btn.add_css_class("selected")
 
             hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -941,7 +961,12 @@ class MovieDetailsPage(Gtk.Overlay):
             vbox.set_valign(Gtk.Align.CENTER)
 
             title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            card_title_text = f"Ep {ep_num}. {ep_title}" if self.media_type in ["series", "anime"] else f"{ep_num}. {ep_title}"
+            if self.is_channel:
+                card_title_text = ep_title
+            elif self.media_type in ["series", "anime"]:
+                card_title_text = f"Ep {ep_num}. {ep_title}"
+            else:
+                card_title_text = f"{ep_num}. {ep_title}"
             ep_name_lbl = Gtk.Label(label=card_title_text)
             ep_name_lbl.add_css_class("ep-card-title")
             ep_name_lbl.set_halign(Gtk.Align.START)
@@ -972,6 +997,12 @@ class MovieDetailsPage(Gtk.Overlay):
                 vbox.append(ov_lbl)
 
             hbox.append(vbox)
+            if self.is_channel:
+                play_icon = Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
+                play_icon.add_css_class("dim-label")
+                play_icon.set_valign(Gtk.Align.CENTER)
+                play_icon.set_margin_end(8)
+                hbox.append(play_icon)
             btn.set_child(hbox)
 
             def make_ep_cb(episode_item, episode_num):
@@ -1036,7 +1067,6 @@ class MovieDetailsPage(Gtk.Overlay):
                             self.window._on_movie_clicked(movie_data)
                         return
 
-                    self._user_navigated_to_streams = True
                     self.selected_video = episode_item
                     self.selected_episode = episode_num
                     s_val = episode_item.get("season") or getattr(self, 'selected_season', 1) or 1
@@ -1053,8 +1083,10 @@ class MovieDetailsPage(Gtk.Overlay):
                         self.remembered_working_stream = None
                         self.selected_torrent = None
                     if hasattr(self, 'stream_ep_title_label'):
-                        this_ep_title = episode_item.get("title") or episode_item.get("name") or f"Episode {episode_num}"
-                        if self.media_type in ["series", "anime", "tv"]:
+                        this_ep_title = episode_item.get("title") or episode_item.get("name") or (f"Video {episode_num}" if self.is_channel else f"Episode {episode_num}")
+                        if self.is_channel:
+                            self.stream_ep_title_label.set_text(f"▶ {this_ep_title}")
+                        elif self.media_type in ["series", "anime", "tv"]:
                             self.stream_ep_title_label.set_text(f"▶ S{s_val}E{episode_num}: {this_ep_title}")
                         else:
                             self.stream_ep_title_label.set_text(f"▶ {this_ep_title}")
@@ -1067,9 +1099,18 @@ class MovieDetailsPage(Gtk.Overlay):
                             self.episode_dropdown.set_selected(ep_idx)
                             self._ignore_dropdown_changes = False
                     self.update_continue_btn()
-                    self.sidebar_stack.set_visible_child_name("streams")
-                    self.render_episodes_list()
-                    self.fetch_torrents_async(force=False)
+                    if self.is_channel:
+                        self.render_episodes_list()
+                        media_title = episode_item.get("title") or episode_item.get("name") or "Video"
+                        if self.window:
+                            self.window.show_player_loading("Loading video...", media_title)
+                        self._auto_play_on_streams_loaded = True
+                        self.fetch_torrents_async(force=True)
+                    else:
+                        self._user_navigated_to_streams = True
+                        self.sidebar_stack.set_visible_child_name("streams")
+                        self.render_episodes_list()
+                        self.fetch_torrents_async(force=False)
                 return cb
 
             btn.connect("clicked", make_ep_cb(ep, ep_num))
@@ -1626,7 +1667,7 @@ class MovieDetailsPage(Gtk.Overlay):
         sel_season = getattr(self, "selected_season", None)
         sel_episode = getattr(self, "selected_episode", None)
 
-        if self.media_type in ["series", "anime", "tv"]:
+        if self.media_type in ["series", "anime", "tv"] and not self.is_channel:
             cw_s = (cw_item or {}).get("season")
             cw_e = (cw_item or {}).get("episode")
             cw_pos = float((cw_item or {}).get("position") or 0.0)
@@ -1659,12 +1700,14 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.on_watch_clicked(btn)
 
             self._continue_btn_hid = self.continue_btn.connect("clicked", on_continue_clicked)
-        elif self.is_collection:
+        elif self.is_collection or self.is_channel:
             if cw_item and hasattr(self, 'videos') and self.videos:
                 cw_id = str(cw_item.get("id") or cw_item.get("imdb_id") or "")
                 matching_v = next((v for v in self.videos if str(v.get("id") or v.get("imdb_id") or "") == cw_id), None)
                 if matching_v:
                     self.selected_video = matching_v
+            if not getattr(self, 'selected_video', None) and hasattr(self, 'current_episodes') and self.current_episodes:
+                self.selected_video = self.current_episodes[0]
             sel_v = getattr(self, 'selected_video', None)
             v_title = sel_v.get("title") if isinstance(sel_v, dict) else None
             pos = float((cw_item or {}).get("position") or 0.0)
@@ -1907,17 +1950,21 @@ class MovieDetailsPage(Gtk.Overlay):
         self.update_continue_btn(details)
 
         trailer_url = details.get("trailer")
-        if trailer_url:
+        if trailer_url and not self.is_channel:
             self._apply_trailer_url(trailer_url, self._details_fetch_id)
-        elif not getattr(self, "trailer_url", None):
+        elif not getattr(self, "trailer_url", None) or self.is_channel:
             self.trailer_url = None
             self.reset_trailer_btn_ui()
             self.trailer_btn.set_sensitive(False)
+        if hasattr(self, 'trailer_btn'):
+            self.trailer_btn.set_visible(not self.is_channel)
 
         if hasattr(self, 'play_next_check'):
-            has_multiple_eps = self.media_type in ["series", "anime"] or (bool(details.get("videos")) and len(details.get("videos", [])) > 1)
+            has_multiple_eps = self.media_type in ["series", "anime", "channel"] or self.is_channel or (bool(details.get("videos")) and len(details.get("videos", [])) > 1)
             self.play_next_check.set_visible(has_multiple_eps)
-            if self.media_type not in ["series", "anime"] and has_multiple_eps:
+            if self.is_channel:
+                self.play_next_check.set_label("Play Next Video")
+            elif self.media_type not in ["series", "anime"] and has_multiple_eps:
                 self.play_next_check.set_label("Play Next Movie")
             else:
                 self.play_next_check.set_label("Play Next Ep")
@@ -1925,17 +1972,24 @@ class MovieDetailsPage(Gtk.Overlay):
         if details.get("videos") and len(details.get("videos", [])) > 0:
             videos = details.get("videos")
             self.videos = videos
-            has_multiple = len(videos) > 1 or self.media_type in ["series", "anime"] or self.is_collection
+            has_multiple = len(videos) > 1 or self.media_type in ["series", "anime", "channel"] or self.is_channel or self.is_collection
 
             self.stream_back_btn.set_visible(has_multiple)
-            self.stream_back_btn.set_tooltip_text("Back to Episodes" if self.media_type in ["series", "anime"] else "Back to Movies")
+            if self.is_channel:
+                self.stream_back_btn.set_tooltip_text("Back to Videos")
+            elif self.media_type in ["series", "anime"]:
+                self.stream_back_btn.set_tooltip_text("Back to Episodes")
+            else:
+                self.stream_back_btn.set_tooltip_text("Back to Movies")
             if has_multiple and not getattr(self, '_user_navigated_to_streams', False):
                 self.sidebar_stack.set_visible_child_name("episodes")
             else:
                 self.sidebar_stack.set_visible_child_name("streams")
 
             if hasattr(self, 'ep_search_entry'):
-                if self.media_type in ["series", "anime"]:
+                if self.is_channel:
+                    self.ep_search_entry.set_placeholder_text("Search videos...")
+                elif self.media_type in ["series", "anime"]:
                     self.ep_search_entry.set_placeholder_text("Search videos / episodes...")
                 else:
                     self.ep_search_entry.set_placeholder_text("Search movies in collection...")
@@ -1946,7 +2000,7 @@ class MovieDetailsPage(Gtk.Overlay):
             seasons = sorted(list(set([v.get("season", 1) for v in videos])))
             self.seasons = seasons
 
-            show_seasons = len(self.seasons) > 1 or self.media_type in ["series", "anime"]
+            show_seasons = not self.is_channel and (len(self.seasons) > 1 or self.media_type in ["series", "anime"])
             if hasattr(self, 'season_nav_box'):
                 self.season_nav_box.set_visible(show_seasons)
             self.season_dropdown.set_model(Gtk.StringList.new([f"Season {s}" for s in self.seasons]))
@@ -1976,8 +2030,10 @@ class MovieDetailsPage(Gtk.Overlay):
                     else:
                         self.selected_torrent = None
                     if hasattr(self, 'stream_ep_title_label'):
-                        ep_title = self.selected_video.get("title") or self.selected_video.get("name") or f"Episode {self.selected_episode}"
-                        if self.media_type in ["series", "anime", "tv"]:
+                        ep_title = self.selected_video.get("title") or self.selected_video.get("name") or (f"Video {self.selected_episode}" if self.is_channel else f"Episode {self.selected_episode}")
+                        if self.is_channel:
+                            self.stream_ep_title_label.set_text(f"▶ {ep_title}")
+                        elif self.media_type in ["series", "anime", "tv"]:
                             self.stream_ep_title_label.set_text(f"▶ S{s_val}E{self.selected_episode}: {ep_title}")
                         else:
                             self.stream_ep_title_label.set_text(f"▶ {ep_title}")
@@ -2000,17 +2056,33 @@ class MovieDetailsPage(Gtk.Overlay):
                 if item_id:
                     database.set_setting(f"last_s_{item_id}", s)
                 eps = [v for v in self.videos if v.get("season", 1) == s]
-                unique_eps = []
-                seen_eps = set()
-                for e in eps:
-                    ep_num = e.get("episode", 0)
-                    if ep_num not in seen_eps:
-                        seen_eps.add(ep_num)
-                        unique_eps.append(e)
-                unique_eps.sort(key=lambda x: x.get("episode", 0))
-                self.current_episodes = unique_eps
+                if self.is_channel:
+                    unique_eps = []
+                    seen_ids = set()
+                    for ep_idx_val, e in enumerate(eps):
+                        eid = e.get("id") or str(ep_idx_val)
+                        if eid not in seen_ids:
+                            seen_ids.add(eid)
+                            unique_eps.append(e)
+                    if any(e.get("released") or e.get("publishedAt") for e in unique_eps):
+                        unique_eps.sort(key=lambda x: str(x.get("released") or x.get("publishedAt") or ""), reverse=True)
+                    else:
+                        unique_eps.reverse()
+                    self.current_episodes = unique_eps
+                else:
+                    unique_eps = []
+                    seen_eps = set()
+                    for e in eps:
+                        ep_num = e.get("episode", 0)
+                        if ep_num not in seen_eps:
+                            seen_eps.add(ep_num)
+                            unique_eps.append(e)
+                    unique_eps.sort(key=lambda x: x.get("episode", 0))
+                    self.current_episodes = unique_eps
                 
-                if self.media_type in ["series", "anime", "tv"]:
+                if self.is_channel:
+                    ep_strings = [e.get('title') or e.get('name') or f"Video {idx+1}" for idx, e in enumerate(unique_eps)]
+                elif self.media_type in ["series", "anime", "tv"]:
                     ep_strings = [f"Ep {e.get('episode')}: {e.get('title') or e.get('name', '')}" for e in unique_eps]
                 else:
                     ep_strings = [f"{e.get('episode', idx+1)}. {e.get('title') or e.get('name', '')}" for idx, e in enumerate(unique_eps)]
@@ -2020,16 +2092,19 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.episode_dropdown.set_model(Gtk.StringList.new(ep_strings))
                     ep_nums = [e.get('episode') for e in unique_eps]
                     
-                    curr_ep = getattr(self, "selected_episode", None)
-                    if curr_ep is not None and curr_ep in ep_nums:
-                        saved_ep = curr_ep
+                    if self.is_channel:
+                        default_ep_idx = 0
                     else:
-                        saved_ep = (database.get_setting(f"last_ep_{item_id}_{s}", None) if item_id else None) or self.movie_stub.get("episode")
+                        curr_ep = getattr(self, "selected_episode", None)
+                        if curr_ep is not None and curr_ep in ep_nums:
+                            saved_ep = curr_ep
+                        else:
+                            saved_ep = (database.get_setting(f"last_ep_{item_id}_{s}", None) if item_id else None) or self.movie_stub.get("episode")
 
-                    if saved_ep in ep_nums:
-                        default_ep_idx = ep_nums.index(saved_ep)
-                    else:
-                        default_ep_idx = ep_nums.index(1) if 1 in ep_nums else 0
+                        if saved_ep in ep_nums:
+                            default_ep_idx = ep_nums.index(saved_ep)
+                        else:
+                            default_ep_idx = ep_nums.index(1) if 1 in ep_nums else 0
                         
                     if default_ep_idx < len(ep_strings):
                         self.episode_dropdown.set_selected(default_ep_idx)
@@ -2281,6 +2356,9 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def fetch_torrents_async(self, force=False):
         selected_video = getattr(self, 'selected_video', None)
+        if not selected_video and hasattr(self, 'current_episodes') and self.current_episodes:
+            selected_video = self.current_episodes[0]
+            self.selected_video = selected_video
         video_id = selected_video.get("id") if (selected_video and isinstance(selected_video, dict)) else None
         
         details_id = getattr(self, "movie_details", {}).get("id") if hasattr(self, "movie_details") and self.movie_details else None
@@ -2436,18 +2514,19 @@ class MovieDetailsPage(Gtk.Overlay):
 
         # Check if trailer button needs activating from discovered stream addons (e.g. Streailer).
         # Guard with _fetch_gen so stale stream batches can't corrupt a newly loaded page.
-        if not getattr(self, 'trailer_url', None) and all_torrents:
+        if not self.is_channel and not getattr(self, 'trailer_url', None) and all_torrents:
             current_fetch_gen = getattr(self, '_fetch_gen', 0)
             found_yt = None
             for t in all_torrents:
-                t_yt = t.get("ytId")
-                t_url = t.get("url") or ""
-                if t_yt:
-                    found_yt = t_yt
-                    break
-                elif "youtube.com" in t_url.lower() or "youtu.be" in t_url.lower():
-                    found_yt = t_url
-                    break
+                if t.get("is_trailer") or any("trailer" in str(a).lower() or "streailer" in str(a).lower() for a in t.get("addon_names", [])):
+                    t_yt = t.get("ytId")
+                    t_url = t.get("url") or ""
+                    if t_yt:
+                        found_yt = t_yt
+                        break
+                    elif "youtube.com" in t_url.lower() or "youtu.be" in t_url.lower():
+                        found_yt = t_url
+                        break
             if found_yt and getattr(self, '_fetch_gen', 0) == current_fetch_gen:
                 # Use _apply_trailer_url for race-safe connection management
                 self._apply_trailer_url(found_yt, self._details_fetch_id)
@@ -3009,11 +3088,12 @@ class MovieDetailsPage(Gtk.Overlay):
                 or self.movie_stub.get("id")
             )
             req_media_type = self.media_type
-            if self.is_collection or str(imdb_id).startswith("ctmdb."):
+            if self.is_collection or str(imdb_id).startswith("ctmdb.") or self.is_channel:
                 sel_v = getattr(self, 'selected_video', None)
                 if sel_v and isinstance(sel_v, dict) and sel_v.get("id"):
                     imdb_id = sel_v.get("id")
-                    req_media_type = "movie"
+                    if not self.is_channel:
+                        req_media_type = "movie"
                     v_title = sel_v.get("title") or sel_v.get("name")
                     if v_title:
                         media_title = v_title
@@ -10344,11 +10424,32 @@ class CineWindow(Adw.ApplicationWindow):
         if url and isinstance(url, str) and not url.startswith("http://127.0.0.1") and not url.startswith("http://localhost") and not url.startswith(player.DOWNLOAD_BASE) and not url.startswith("file://"):
             player.stop_player(remove_torrent=False)
 
+        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+        is_channel_context = bool(
+            (media_type in ["channel", "channels"])
+            or (item_id and str(item_id).startswith("yt_id:"))
+            or (page and getattr(page, 'is_channel', False))
+            or (isinstance(getattr(self, "_current_playing_item", None), dict) and (
+                self._current_playing_item.get("type") in ["channel", "channels"]
+                or str(self._current_playing_item.get("id", "")).startswith("yt_id:")
+                or str(self._current_playing_item.get("imdb_id", "")).startswith("yt_id:")
+                or self._current_playing_item.get("is_trailer") is False
+            ))
+        )
         is_youtube_raw_url = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower()) and ("googlevideo.com" not in url.lower())
         is_youtube_trailer = url and isinstance(url, str) and ("googlevideo.com" in url.lower())
-        is_youtube = bool(is_youtube_raw_url or is_youtube_trailer or (title and "(trailer)" in str(title).lower()))
-        if is_youtube:
-            self._current_playing_item = {"is_trailer": True, "title": title, "stream_url": url}
+        is_trailer = not is_channel_context and bool(
+            is_youtube_trailer
+            or (title and "(trailer)" in str(title).lower())
+            or (isinstance(getattr(self, "_current_playing_item", None), dict) and self._current_playing_item.get("is_trailer"))
+            or is_youtube_raw_url
+        )
+        if is_trailer:
+            if not getattr(self, "_current_playing_item", None) or not isinstance(self._current_playing_item, dict):
+                self._current_playing_item = {"is_trailer": True, "title": title, "stream_url": url}
+            else:
+                self._current_playing_item["is_trailer"] = True
+                self._current_playing_item["stream_url"] = url
             if is_youtube_raw_url:
                 self.show_player_loading(_("Loading trailer..."), title=title)
         else:
@@ -10414,7 +10515,7 @@ class CineWindow(Adw.ApplicationWindow):
                 if not is_download and page and hasattr(page, "update_continue_btn"):
                     page.update_continue_btn()
 
-            if not getattr(self, "_pending_subtitle_request", None) and not is_youtube:
+            if not getattr(self, "_pending_subtitle_request", None) and not is_trailer:
                 p_imdb = (p_id if not is_download else item_id) or getattr(self, "current_imdb_id", None)
                 if not p_imdb and getattr(self, "_current_playing_item", None):
                     p_imdb = self._current_playing_item.get("imdb_id") or self._current_playing_item.get("id")
@@ -10478,7 +10579,10 @@ class CineWindow(Adw.ApplicationWindow):
 
         if is_youtube_raw_url:
             # Let MPV's ytdl_hook.lua handle raw youtube URLs
-            self.show_player_loading(_("Loading trailer..."), title=title)
+            if is_trailer:
+                self.show_player_loading(_("Loading trailer..."), title=title)
+            else:
+                self.show_player_loading(_("Loading video..."), title=title)
             try:
                 self.mpv["ytdl"] = True
                 self.mpv["ytdl-raw-options"] = "no-playlist="
@@ -10511,7 +10615,7 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
 
-        is_playing_tr = self._is_playing_trailer() or bool(is_youtube_trailer or is_youtube_raw_url or (title and "(trailer)" in str(title).lower()))
+        is_playing_tr = self._is_playing_trailer() or is_trailer
         self.next_ep_dismissed = is_playing_tr
         self.next_ep_auto_triggered = is_playing_tr
         if hasattr(self, "next_episode_revealer") and hasattr(self.next_episode_revealer, "set_reveal_child"):
@@ -10527,7 +10631,7 @@ class CineWindow(Adw.ApplicationWindow):
             if pos > 5.0 and prog < 0.92:
                 seek_target = pos
 
-        if seek_target and float(seek_target) > 5.0 and not is_youtube:
+        if seek_target and float(seek_target) > 5.0 and not is_trailer:
             self._seek_after_loaded = float(seek_target)
             try:
                 self.mpv.command("loadfile", url, "replace", -1, f"start={float(seek_target):.2f}")
@@ -10819,17 +10923,30 @@ class CineWindow(Adw.ApplicationWindow):
         self._last_marked_stream_idx = None
 
         # Check if the current queue stream is a trailer
-        is_stream_trailer = bool(
-            current_stream.get("is_trailer")
-            or current_stream.get("ytId")
-            or (isinstance(current_stream, dict) and current_stream.get("behaviorHints", {}).get("bingeGroup") == "trailer")
-            or any("trailer" in str(a).lower() or "streailer" in str(a).lower() for a in current_stream.get("addon_names", []))
-            or "(trailer)" in str(title).lower()
-            or "trailer" in str(current_stream.get("title", "")).lower()
-            or "trailer" in str(current_stream.get("name", "")).lower()
-            or "trailer" in str(current_stream.get("stream_title", "")).lower()
-            or ("youtube.com" in str(current_stream.get("url", "")).lower() or "youtu.be" in str(current_stream.get("url", "")).lower())
+        is_channel_item = bool(
+            media_type in ["channel", "channels"]
+            or str(imdb_id or "").startswith("yt_id:")
+            or (page and getattr(page, 'is_channel', False))
         )
+        if is_channel_item:
+            is_stream_trailer = bool(
+                current_stream.get("is_trailer")
+                or (isinstance(current_stream, dict) and current_stream.get("behaviorHints", {}).get("bingeGroup") == "trailer")
+                or any("trailer" in str(a).lower() or "streailer" in str(a).lower() for a in current_stream.get("addon_names", []))
+                or "(trailer)" in str(title).lower()
+            )
+        else:
+            is_stream_trailer = bool(
+                current_stream.get("is_trailer")
+                or current_stream.get("ytId")
+                or (isinstance(current_stream, dict) and current_stream.get("behaviorHints", {}).get("bingeGroup") == "trailer")
+                or any("trailer" in str(a).lower() or "streailer" in str(a).lower() for a in current_stream.get("addon_names", []))
+                or "(trailer)" in str(title).lower()
+                or "trailer" in str(current_stream.get("title", "")).lower()
+                or "trailer" in str(current_stream.get("name", "")).lower()
+                or "trailer" in str(current_stream.get("stream_title", "")).lower()
+                or ("youtube.com" in str(current_stream.get("url", "")).lower() or "youtu.be" in str(current_stream.get("url", "")).lower())
+            )
 
         cur_prov = None
         if isinstance(current_stream, dict):
@@ -11202,10 +11319,14 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _is_playing_trailer(self):
         playing_item = getattr(self, "_current_playing_item", {}) or {}
-        if playing_item.get("is_trailer"):
+        if playing_item.get("is_trailer") is True:
             return True
+        if playing_item.get("is_trailer") is False:
+            return False
+        if playing_item.get("type") in ["channel", "channels"] or str(playing_item.get("id", "")).startswith("yt_id:") or str(playing_item.get("imdb_id", "")).startswith("yt_id:"):
+            return False
         title = str(playing_item.get("title") or playing_item.get("stream_title") or getattr(self.mpv, "media_title", "") or "").lower()
-        if "(trailer)" in title or "trailer" in title:
+        if "(trailer)" in title:
             return True
         stream_url = str(playing_item.get("stream_url") or getattr(self, "loaded_path", "") or getattr(self.mpv, "path", "") or "").lower()
         if "googlevideo.com" in stream_url or "youtube.com" in stream_url or "youtu.be" in stream_url:
@@ -11218,6 +11339,16 @@ class CineWindow(Adw.ApplicationWindow):
         page = self.details_box.get_first_child()
         if not page:
             return False
+        if getattr(page, 'is_channel', False):
+            eps = getattr(page, 'current_episodes', []) or self._get_videos_for_current_page(page)
+            if not eps or len(eps) <= 1:
+                return False
+            sel_v = getattr(page, 'selected_video', None)
+            if sel_v:
+                sel_id = sel_v.get("id")
+                curr_idx = next((i for i, v in enumerate(eps) if v.get("id") == sel_id), -1)
+                return (0 <= curr_idx < len(eps) - 1)
+            return True
         videos = self._get_videos_for_current_page(page)
         if not videos or len(videos) <= 1:
             return False
@@ -11317,38 +11448,61 @@ class CineWindow(Adw.ApplicationWindow):
         page = self.details_box.get_first_child()
         if not page:
             return False
-        videos = self._get_videos_for_current_page(page)
-        if not videos or len(videos) <= 1:
-            return False
-            
-        current_season = getattr(page, 'selected_season', 1) or 1
-        current_episode = getattr(page, 'selected_episode', None)
-        if current_episode is None:
-            return False
-            
-        next_ep = current_episode + 1
-        eps_in_season = [v for v in videos if v.get("season", 1) == current_season]
-        found_next_ep = any(e.get("episode") == next_ep for e in eps_in_season)
-        
-        target_season = current_season
-        target_episode = next_ep
-        
-        if not found_next_ep:
-            target_season = current_season + 1
-            eps_in_next_season = [v for v in videos if v.get("season", 1) == target_season]
-            if not eps_in_next_season:
+        if getattr(page, 'is_channel', False):
+            eps = getattr(page, 'current_episodes', []) or self._get_videos_for_current_page(page)
+            if not eps or len(eps) <= 1:
                 return False
-            
-            target_episode = min((e.get("episode", 1) for e in eps_in_next_season), default=1)
-            
-        next_v = next((v for v in videos if v.get("season", 1) == target_season and v.get("episode") == target_episode), None)
-        next_title = (next_v.get("title") or next_v.get("name")) if next_v else None
-        if getattr(page, 'media_type', '') in ["series", "anime", "tv"]:
-            msg = f"Playing next: Season {target_season} Episode {target_episode}"
-            load_msg = f"Loading Season {target_season} Episode {target_episode}..."
+            sel_v = getattr(page, 'selected_video', None)
+            curr_idx = -1
+            if sel_v:
+                curr_idx = next((i for i, v in enumerate(eps) if v.get("id") == sel_v.get("id")), -1)
+            if curr_idx < 0:
+                curr_ep = getattr(page, 'selected_episode', None)
+                if curr_ep is not None:
+                    curr_idx = next((i for i, v in enumerate(eps) if v.get("episode") == curr_ep), -1)
+            next_idx = curr_idx + 1
+            if 0 <= next_idx < len(eps):
+                next_v = eps[next_idx]
+                target_season = next_v.get("season", 1) or 1
+                target_episode = next_v.get("episode", next_idx + 1)
+            else:
+                return False
+            next_title = next_v.get("title") or next_v.get("name") or f"Video {target_episode}"
+            msg = f"Playing next: {next_title}"
+            load_msg = f"Loading {next_title}..."
         else:
-            msg = f"Playing next: {next_title or f'Part {target_episode}'}"
-            load_msg = f"Loading {next_title or f'Part {target_episode}'}..."
+            videos = self._get_videos_for_current_page(page)
+            if not videos or len(videos) <= 1:
+                return False
+                
+            current_season = getattr(page, 'selected_season', 1) or 1
+            current_episode = getattr(page, 'selected_episode', None)
+            if current_episode is None:
+                return False
+                
+            next_ep = current_episode + 1
+            eps_in_season = [v for v in videos if v.get("season", 1) == current_season]
+            found_next_ep = any(e.get("episode") == next_ep for e in eps_in_season)
+            
+            target_season = current_season
+            target_episode = next_ep
+            
+            if not found_next_ep:
+                target_season = current_season + 1
+                eps_in_next_season = [v for v in videos if v.get("season", 1) == target_season]
+                if not eps_in_next_season:
+                    return False
+                
+                target_episode = min((e.get("episode", 1) for e in eps_in_next_season), default=1)
+                
+            next_v = next((v for v in videos if v.get("season", 1) == target_season and v.get("episode") == target_episode), None)
+            next_title = (next_v.get("title") or next_v.get("name")) if next_v else None
+            if getattr(page, 'media_type', '') in ["series", "anime", "tv"]:
+                msg = f"Playing next: Season {target_season} Episode {target_episode}"
+                load_msg = f"Loading Season {target_season} Episode {target_episode}..."
+            else:
+                msg = f"Playing next: {next_title or f'Part {target_episode}'}"
+                load_msg = f"Loading {next_title or f'Part {target_episode}'}..."
             
         self._show_toast(msg)
         self.main_stack.set_visible_child_name("player")

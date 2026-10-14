@@ -2669,7 +2669,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         for addon in database.get_addons():
             if addon.get("id") == "local.iptv-org":
                 channels_data = _get_cached_request("https://iptv-org.github.io/api/channels.json", max_age_hours=24)
-                ch = next((c for c in channels_data if c.get("id") == imdb_id), None) if channels_data else None
+                ch = next((c for c in channels_data if isinstance(c, dict) and c.get("id") == imdb_id), None) if isinstance(channels_data, list) else None
                 if ch:
                     res = {
                         "id": ch.get("id"),
@@ -2758,10 +2758,19 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             if not t_val or "error getting meta" in t_val.lower() or t_val.lower().startswith("error"):
                 return None
 
+            is_channel_meta = (
+                matched_type in ["channel", "channels"]
+                or str(imdb_id).startswith("yt_id:")
+                or not any(v.get("episode") is not None or v.get("number") is not None for v in cm.get("videos", []))
+            )
             videos = []
-            for v in cm.get("videos", []):
-                ep_num = v.get("episode") or v.get("number") or 1
-                ep_title = v.get("title") or v.get("name") or f"Episode {ep_num}"
+            for idx, v in enumerate(cm.get("videos", [])):
+                if is_channel_meta:
+                    ep_num = v.get("episode") or v.get("number") or (idx + 1)
+                    ep_title = v.get("title") or v.get("name") or f"Video {idx + 1}"
+                else:
+                    ep_num = v.get("episode") or v.get("number") or (idx + 1)
+                    ep_title = v.get("title") or v.get("name") or f"Episode {ep_num}"
                 videos.append({
                     "id": v.get("id", ""),
                     "season": v.get("season", 1),
@@ -2770,8 +2779,8 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                     "title": ep_title,
                     "name": ep_title,
                     "overview": v.get("overview", ""),
-                    "released": v.get("released") or v.get("firstAired", ""),
-                    "thumbnail": v.get("thumbnail", "")
+                    "released": v.get("released") or v.get("publishedAt") or v.get("firstAired", ""),
+                    "thumbnail": v.get("thumbnail") or v.get("thumbnailHigh") or v.get("thumbnailMax", "")
                 })
             
             true_id = cm.get("imdb_id") or imdb_id
@@ -2823,7 +2832,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 "id": true_id,
                 "title": cm.get("name") or title or (t_val if cm.get("videos") else ""),
                 "year": str(cm.get("releaseInfo", "")).split("-")[0] if cm.get("releaseInfo") else "",
-                "medium_cover_image": cm.get("poster", ""),
+                "medium_cover_image": cm.get("poster") or cm.get("thumbnail", ""),
                 "background": cm.get("background", ""),
                 "description": cm.get("description", "No synopsis available."),
                 "runtime": cm.get("runtime", ""),
@@ -4057,6 +4066,28 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             "name": "Live Stream",
             "title": item_title,
             "behaviorHints": {"filename": "stream.mp3"}
+        }]
+        if callback: callback(stream_obj, is_cached=False, is_complete=True)
+        return stream_obj
+
+    if str(imdb_id).startswith("yt_id:"):
+        from .player import extract_youtube_id
+        yt_vid = extract_youtube_id(imdb_id)
+        if not yt_vid:
+            parts = str(imdb_id).split(":")
+            yt_vid = parts[-1]
+        watch_url = f"https://www.youtube.com/watch?v={yt_vid}"
+        stream_title = ep_title or title or "YouTube Stream"
+        stream_obj = [{
+            "ytId": yt_vid,
+            "url": watch_url,
+            "name": "YouTube",
+            "title": stream_title,
+            "addon_name": "YouTube",
+            "addon_names": ["YouTube"],
+            "is_http": True,
+            "quality": "1080p",
+            "behaviorHints": {"filename": f"{stream_title}.mp4"}
         }]
         if callback: callback(stream_obj, is_cached=False, is_complete=True)
         return stream_obj
