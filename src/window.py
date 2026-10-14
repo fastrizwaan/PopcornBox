@@ -1069,7 +1069,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.update_continue_btn()
                     self.sidebar_stack.set_visible_child_name("streams")
                     self.render_episodes_list()
-                    self.fetch_torrents_async(force=True)
+                    self.fetch_torrents_async(force=False)
                 return cb
 
             btn.connect("clicked", make_ep_cb(ep, ep_num))
@@ -1984,7 +1984,7 @@ class MovieDetailsPage(Gtk.Overlay):
                         self.stream_ep_title_label.set_visible(True)
                     self.update_continue_btn()
                     self.render_episodes_list()
-                    self.fetch_torrents_async(force=True)
+                    self.fetch_torrents_async(force=False)
                 
             self._on_episode_dropdown_changed = on_episode_changed
             self._ep_dropdown_hid = self.episode_dropdown.connect("notify::selected", on_episode_changed)
@@ -2421,7 +2421,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 callback=lambda t, is_cached=False, is_complete=False: GLib.idle_add(on_stream_batch, t, is_cached, is_complete),
                 title=target_title,
                 abort_event=current_abort_event,
-                ep_title=ep_title
+                ep_title=ep_title,
+                force_refresh=force
             )
         threading.Thread(target=fetch, daemon=True).start()
 
@@ -8148,7 +8149,7 @@ class CineWindow(Adw.ApplicationWindow):
                             elif filtered and m_type:
                                 filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
                             if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
-                                filtered = [it for it in filtered if not it.get("year") or str(it.get("year", "")).startswith(cur_year)]
+                                filtered = [it for it in filtered if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(cur_year)]
                             return (key, page, filtered, len(cached))
 
                         if _is_event_set(abort_ev):
@@ -8182,7 +8183,7 @@ class CineWindow(Adw.ApplicationWindow):
                             elif filtered and m_type:
                                 filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
                             if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
-                                filtered = [it for it in filtered if not it.get("year") or str(it.get("year", "")).startswith(cur_year)]
+                                filtered = [it for it in filtered if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(cur_year)]
                             if items and not _is_event_set(abort_ev):
                                 database.save_cached_catalog(cache_key, items)
                             raw_count = len(raw_items) if raw_items is not None else -1
@@ -8420,7 +8421,7 @@ class CineWindow(Adw.ApplicationWindow):
                     elif cached and media_type and active_discover_type != "all":
                         cached = [it for it in cached if api.is_item_type_compatible(it, media_type)]
                     if cached and year and cat_id != "year":
-                        cached = [it for it in cached if not it.get("year") or str(it.get("year", "")).startswith(str(year))]
+                        cached = [it for it in cached if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(year))]
                     if cached and cur_sort_val == "Recent":
                         cached.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
                     def apply_cached(cached_items=cached):
@@ -8612,7 +8613,7 @@ class CineWindow(Adw.ApplicationWindow):
                 elif items and media_type and active_discover_type != "all":
                     items = [it for it in items if api.is_item_type_compatible(it, media_type)]
                 if items and year and cat_id != "year":
-                    items = [it for it in items if not it.get("year") or str(it.get("year", "")).startswith(str(year))]
+                    items = [it for it in items if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(year))]
                 if items and cur_sort_val == "Recent":
                     items.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
                 if items and not _is_event_set(abort_ev):
@@ -8729,10 +8730,8 @@ class CineWindow(Adw.ApplicationWindow):
             c_id = str(self.current_catalog.get("catalog_id", "")).lower()
             if c_id in ["top", "kitsu-anime-trending"]:
                 self.current_sort = "Popular"
-                self.current_year = None
             elif c_id in ["imdbrating", "kitsu-anime-top"]:
                 self.current_sort = "Featured"
-                self.current_year = None
             elif c_id in ("year", "years", "acc85513", "tmdb.year"):
                 if getattr(self, "current_year", None):
                     self.current_sort = "Year"
@@ -8750,8 +8749,8 @@ class CineWindow(Adw.ApplicationWindow):
         cur_y = getattr(self, "current_year", None)
         if self.current_genre and isinstance(self.current_genre, str) and self.current_genre not in disp_title:
             disp_title += f" — {self.current_genre}"
-        elif isinstance(cur_y, str) and cur_y.isdigit() and len(cur_y) == 4 and cur_y not in disp_title:
-            disp_title += f" — {cur_y}"
+        if isinstance(cur_y, str) and cur_y.isdigit() and len(cur_y) == 4 and cur_y not in disp_title:
+            disp_title += f" ({cur_y})"
         if hasattr(self, "discover_grid_title") and hasattr(self.discover_grid_title, "set_text"):
             self.discover_grid_title.set_text(disp_title)
         if hasattr(self, "discover_back_box"):
@@ -9002,8 +9001,6 @@ class CineWindow(Adw.ApplicationWindow):
                     continue
 
                 if cur_genre and not filter_addon_url and not api.catalog_supports_genre(cat, cur_genre):
-                    continue
-                if cur_year and not filter_addon_url and not api.catalog_supports_genre(cat, cur_year):
                     continue
 
                 c_id = cat.get('id', '')
@@ -9667,10 +9664,10 @@ class CineWindow(Adw.ApplicationWindow):
         c_name = row_info.get("catalog_name", c_id)
         current_g = getattr(self, "current_genre", None)
         current_y = getattr(self, "current_year", None)
-        if current_y and c_id in ("year", "years", "acc85513", "tmdb.year"):
-            row_title = f"{row_title} · {current_y}"
         if current_g and current_g not in row_title:
             row_title = f"{row_title} · {current_g}"
+        if current_y and current_y not in row_title:
+            row_title = f"{row_title} · {current_y}"
 
         sec_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         sec_header.add_css_class("discover-section-header")

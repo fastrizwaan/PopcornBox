@@ -342,6 +342,112 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertIsNone(self.win.current_language)
         self.assertEqual(self.win.category_btn_stack.get_visible_child_name(), "home")
 
+    def test_get_discover_catalog_list_with_genre_and_year(self):
+        """When both genre and year are selected, _get_discover_catalog_list must retain genre-supporting catalogs and not drop to 0."""
+        self.win.current_genre = "Horror"
+        self.win.current_year = "2026"
+        self.win.current_sort = "Popular"
+        self.win._discover_catalog_list_cache = {}
+
+        mock_addon = {
+            "name": "Cinemeta",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+            "enabled": True,
+            "catalogs": [
+                {
+                    "id": "top",
+                    "name": "Popular",
+                    "type": "movie",
+                    "extra": [{"name": "genre", "options": ["Action", "Horror", "Comedy"]}]
+                },
+                {
+                    "id": "year",
+                    "name": "New",
+                    "type": "movie",
+                    "extra": [{"name": "genre", "options": ["2026", "2025", "2024"]}]
+                }
+            ]
+        }
+
+        with patch("src.database.get_addons", return_value=[mock_addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.is_catalog_provider", return_value=True), \
+             patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+
+        # 'top' catalog supports Horror, so it must be included (not dropped due to year check)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["catalog_id"], "top")
+        self.assertIn("Popular - Movies", rows[0]["title"])
+
+    def test_get_discover_catalog_list_with_year_only(self):
+        """When only year is selected, year catalogs are prioritized first and other catalogs are kept."""
+        self.win.current_genre = None
+        self.win.current_year = "2026"
+        self.win.current_sort = "Popular"
+        self.win._discover_catalog_list_cache = {}
+
+        mock_addon = {
+            "name": "Cinemeta",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+            "enabled": True,
+            "catalogs": [
+                {
+                    "id": "top",
+                    "name": "Popular",
+                    "type": "movie",
+                    "extra": [{"name": "genre", "options": ["Action", "Horror", "Comedy"]}]
+                },
+                {
+                    "id": "year",
+                    "name": "New",
+                    "type": "movie",
+                    "extra": [{"name": "genre", "options": ["2026", "2025", "2024"]}]
+                }
+            ]
+        }
+
+        with patch("src.database.get_addons", return_value=[mock_addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.is_catalog_provider", return_value=True), \
+             patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+
+        self.assertEqual(len(rows), 2)
+        # Year catalog must be prioritized first
+        self.assertEqual(rows[0]["catalog_id"], "year")
+        self.assertEqual(rows[1]["catalog_id"], "top")
+
+    def test_populate_discover_row_slot_titles_with_genre_and_year(self):
+        """_populate_discover_row_slot should append both genre and year cleanly to row_title."""
+        self.win.current_genre = "Horror"
+        self.win.current_year = "2026"
+        self.win._on_movie_clicked = MagicMock()
+        self.win._open_catalog_grid = MagicMock()
+
+        slot = Gtk.Box()
+        target_box = Gtk.Box()
+        target_box.append(slot)
+
+        row_info = {
+            "title": "Popular - Movies",
+            "catalog_id": "top",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+            "media_type": "movie"
+        }
+        items = [{"id": "tt12345", "name": "Horror Movie 2026", "year": "2026"}]
+
+        CineWindow._populate_discover_row_slot(self.win, slot, row_info, items, target_box)
+
+        # Slot should contain the section header and scroll
+        header = slot.get_first_child()
+        self.assertIsNotNone(header)
+        title_label = header.get_first_child()
+        self.assertIsNotNone(title_label)
+        self.assertEqual(title_label.get_text(), "Popular - Movies · Horror · 2026")
+
 
 if __name__ == "__main__":
     unittest.main()
