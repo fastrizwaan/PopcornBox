@@ -47,11 +47,6 @@ template $CineWindow: Adw.ApplicationWindow {
                           };
                           tooltip-text: _("Home");
                         }
-                        Button discover_inactive_btn_home {
-                          action-name: "win.switch-to-discover";
-                          icon-name: "popcorn-discover-symbolic";
-                          tooltip-text: _("Discover");
-                        }
                         Button movies_inactive_btn_home {
                           action-name: "win.switch-to-movies";
                           icon-name: "popcorn-movies-symbolic";
@@ -67,39 +62,10 @@ template $CineWindow: Adw.ApplicationWindow {
                           icon-name: "popcorn-anime-symbolic";
                           tooltip-text: _("Anime");
                         }
-                      };
-                    }
-                    StackPage {
-                      name: "discover";
-                      child: Box {
-                        styles ["linked"]
-                        Button home_inactive_btn_discover {
-                          action-name: "win.switch-to-home";
-                          icon-name: "go-home-symbolic";
-                          tooltip-text: _("Home");
-                        }
-                        MenuButton discover_active_btn {
-                          always-show-arrow: true;
-                          child: Adw.ButtonContent {
-                            icon-name: "popcorn-discover-symbolic";
-                            label: _("Discover");
-                          };
+                        Button discover_inactive_btn_home {
+                          action-name: "win.switch-to-discover";
+                          icon-name: "popcorn-discover-symbolic";
                           tooltip-text: _("Discover");
-                        }
-                        Button movies_inactive_btn_discover {
-                          action-name: "win.switch-to-movies";
-                          icon-name: "popcorn-movies-symbolic";
-                          tooltip-text: _("Movies");
-                        }
-                        Button series_inactive_btn_discover {
-                          action-name: "win.switch-to-series";
-                          icon-name: "popcorn-tv-series-symbolic";
-                          tooltip-text: _("Series");
-                        }
-                        Button anime_inactive_btn_discover {
-                          action-name: "win.switch-to-anime";
-                          icon-name: "popcorn-anime-symbolic";
-                          tooltip-text: _("Anime");
                         }
                       };
                     }
@@ -111,11 +77,6 @@ template $CineWindow: Adw.ApplicationWindow {
                           action-name: "win.switch-to-home";
                           icon-name: "go-home-symbolic";
                           tooltip-text: _("Home");
-                        }
-                        Button discover_inactive_btn_movies {
-                          action-name: "win.switch-to-discover";
-                          icon-name: "popcorn-discover-symbolic";
-                          tooltip-text: _("Discover");
                         }
                         MenuButton movies_active_btn {
                           always-show-arrow: true;
@@ -135,6 +96,11 @@ template $CineWindow: Adw.ApplicationWindow {
                           icon-name: "popcorn-anime-symbolic";
                           tooltip-text: _("Anime");
                         }
+                        Button discover_inactive_btn_movies {
+                          action-name: "win.switch-to-discover";
+                          icon-name: "popcorn-discover-symbolic";
+                          tooltip-text: _("Discover");
+                        }
                       };
                     }
                     StackPage {
@@ -145,11 +111,6 @@ template $CineWindow: Adw.ApplicationWindow {
                           action-name: "win.switch-to-home";
                           icon-name: "go-home-symbolic";
                           tooltip-text: _("Home");
-                        }
-                        Button discover_inactive_btn_series {
-                          action-name: "win.switch-to-discover";
-                          icon-name: "popcorn-discover-symbolic";
-                          tooltip-text: _("Discover");
                         }
                         Button movies_inactive_btn {
                           action-name: "win.switch-to-movies";
@@ -169,6 +130,11 @@ template $CineWindow: Adw.ApplicationWindow {
                           icon-name: "popcorn-anime-symbolic";
                           tooltip-text: _("Anime");
                         }
+                        Button discover_inactive_btn_series {
+                          action-name: "win.switch-to-discover";
+                          icon-name: "popcorn-discover-symbolic";
+                          tooltip-text: _("Discover");
+                        }
                       };
                     }
                     StackPage {
@@ -179,11 +145,6 @@ template $CineWindow: Adw.ApplicationWindow {
                           action-name: "win.switch-to-home";
                           icon-name: "go-home-symbolic";
                           tooltip-text: _("Home");
-                        }
-                        Button discover_inactive_btn_anime {
-                          action-name: "win.switch-to-discover";
-                          icon-name: "popcorn-discover-symbolic";
-                          tooltip-text: _("Discover");
                         }
                         Button movies_inactive_btn_anime {
                           action-name: "win.switch-to-movies";
@@ -202,6 +163,45 @@ template $CineWindow: Adw.ApplicationWindow {
                             label: _("Anime");
                           };
                           tooltip-text: _("Anime");
+                        }
+                        Button discover_inactive_btn_anime {
+                          action-name: "win.switch-to-discover";
+                          icon-name: "popcorn-discover-symbolic";
+                          tooltip-text: _("Discover");
+                        }
+                      };
+                    }
+                    StackPage {
+                      name: "discover";
+                      child: Box {
+                        styles ["linked"]
+                        Button home_inactive_btn_discover {
+                          action-name: "win.switch-to-home";
+                          icon-name: "go-home-symbolic";
+                          tooltip-text: _("Home");
+                        }
+                        Button movies_inactive_btn_discover {
+                          action-name: "win.switch-to-movies";
+                          icon-name: "popcorn-movies-symbolic";
+                          tooltip-text: _("Movies");
+                        }
+                        Button series_inactive_btn_discover {
+                          action-name: "win.switch-to-series";
+                          icon-name: "popcorn-tv-series-symbolic";
+                          tooltip-text: _("Series");
+                        }
+                        Button anime_inactive_btn_discover {
+                          action-name: "win.switch-to-anime";
+                          icon-name: "popcorn-anime-symbolic";
+                          tooltip-text: _("Anime");
+                        }
+                        Button discover_active_btn {
+                          action-name: "win.toggle-discover";
+                          child: Adw.ButtonContent {
+                            icon-name: "popcorn-discover-symbolic";
+                            label: _("Discover");
+                          };
+                          tooltip-text: _("Discover");
                         }
                       };
                     }
@@ -308,22 +308,55 @@ template $CineWindow: Adw.ApplicationWindow {
             }
             Revealer discover_options_revealer {
               transition-type: slide_down;
-              Box navigation_box {
+              Box discover_toolbar {
+                orientation: horizontal;
                 spacing: 6;
-                margin-bottom: 12; margin-start: 12; margin-end: 12;
+                margin-top: 6;
+                margin-bottom: 6;
+                margin-start: 12;
+                margin-end: 12;
                 halign: center;
 
-                DropDown media_type_dropdown {
+                DropDown type_dropdown {
                   valign: center;
+                  enable-search: true;
+                  tooltip-text: _("All Types");
                 }
 
                 DropDown catalog_dropdown {
                   valign: center;
+                  enable-search: true;
+                  tooltip-text: _("All Catalogs");
+                }
+
+                DropDown section_dropdown {
+                  valign: center;
+                  enable-search: true;
+                  tooltip-text: _("All Sections");
                 }
 
                 DropDown genre_dropdown {
                   valign: center;
-                  visible: false;
+                  enable-search: true;
+                  tooltip-text: _("All Genres");
+                }
+
+                DropDown year_dropdown {
+                  valign: center;
+                  enable-search: true;
+                  tooltip-text: _("All Years");
+                }
+
+                DropDown language_dropdown {
+                  valign: center;
+                  enable-search: true;
+                  tooltip-text: _("All Languages");
+                }
+
+                CheckButton unique_check {
+                  label: _("Unique");
+                  valign: center;
+                  tooltip-text: _("Deduplicate media across multiple provider streams/catalogs");
                 }
               }
             }

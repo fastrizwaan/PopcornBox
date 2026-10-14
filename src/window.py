@@ -3348,7 +3348,7 @@ class CineWindow(Adw.ApplicationWindow):
     header_stack: Gtk.Stack = Gtk.Template.Child()
     category_btn_stack: Gtk.Stack = Gtk.Template.Child()
     home_active_btn: Gtk.MenuButton = Gtk.Template.Child()
-    discover_active_btn: Gtk.MenuButton = Gtk.Template.Child()
+    discover_active_btn: Gtk.Button = Gtk.Template.Child()
     movies_active_btn: Gtk.MenuButton = Gtk.Template.Child()
     series_active_btn: Gtk.MenuButton = Gtk.Template.Child()
     anime_active_btn: Gtk.MenuButton = Gtk.Template.Child()
@@ -3375,6 +3375,7 @@ class CineWindow(Adw.ApplicationWindow):
     discover_filter_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
     library_window_title: Adw.WindowTitle = Gtk.Template.Child()
     discover_options_revealer: Gtk.Revealer = Gtk.Template.Child()
+    discover_toolbar: Gtk.Box = Gtk.Template.Child()
     discover_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
     discover_box: Gtk.Box = Gtk.Template.Child()
     discover_back_box: Gtk.Box = Gtk.Template.Child()
@@ -3383,9 +3384,13 @@ class CineWindow(Adw.ApplicationWindow):
     library_header: Adw.HeaderBar = Gtk.Template.Child()
     search_header: Adw.HeaderBar = Gtk.Template.Child()
     search_entry: Gtk.SearchEntry = Gtk.Template.Child()
+    type_dropdown: Gtk.DropDown = Gtk.Template.Child()
     catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
-    media_type_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    section_dropdown: Gtk.DropDown = Gtk.Template.Child()
     genre_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    year_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    language_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    unique_check: Gtk.CheckButton = Gtk.Template.Child()
     library_genre_dropdown: Gtk.DropDown = Gtk.Template.Child()
     library_sort_dropdown: Gtk.DropDown = Gtk.Template.Child()
     library_unique_check: Gtk.CheckButton = Gtk.Template.Child()
@@ -6110,101 +6115,9 @@ class CineWindow(Adw.ApplicationWindow):
         # Cache catalog lists per media type to avoid recomputing on every dropdown change
         self._catalog_list_cache = {}
 
-        def on_media_type_changed(dropdown, pspec):
-            if getattr(self, "_syncing_dropdowns", False):
-                return
-            selected = dropdown.get_selected()
-            if selected < len(self.media_type_keys):
-                self.current_media_type = self.media_type_keys[selected]
+        # Initialize secondary Discover filter toolbar
+        self._init_discover_toolbar()
 
-            m_type = self.current_media_type
-
-            # Fast path: serve from session cache if available
-            if hasattr(self, "_catalog_list_cache") and m_type in self._catalog_list_cache:
-                self.all_catalogs = self._catalog_list_cache[m_type]
-                cat_names = [c["display_name"] for c in self.all_catalogs]
-                if not cat_names:
-                    cat_names = ["No Catalogs Found"]
-                self.catalog_dropdown.set_model(Gtk.StringList.new(cat_names))
-                on_catalog_changed(self.catalog_dropdown, None)
-                # Refresh cache in background for next time
-                def _refresh_cache():
-                    cats = api.get_available_catalogs(m_type)
-                    if hasattr(self, "_catalog_list_cache"):
-                        self._catalog_list_cache[m_type] = cats
-                threading.Thread(target=_refresh_cache, daemon=True).start()
-                return
-
-            # Show loading placeholder immediately, then fill async
-            self.catalog_dropdown.set_model(Gtk.StringList.new(["Loading..."]))
-
-            def _fetch_catalogs():
-                cats = api.get_available_catalogs(m_type)
-                if hasattr(self, "_catalog_list_cache"):
-                    self._catalog_list_cache[m_type] = cats
-                def _apply():
-                    if getattr(self, "_syncing_dropdowns", False):
-                        return False
-                    if self.current_media_type != m_type:
-                        return False  # User switched again before we finished
-                    self.all_catalogs = cats
-                    cat_names = [c["display_name"] for c in self.all_catalogs]
-                    if not cat_names:
-                        cat_names = ["No Catalogs Found"]
-                    self.catalog_dropdown.set_model(Gtk.StringList.new(cat_names))
-                    on_catalog_changed(self.catalog_dropdown, None)
-                    return False
-                GLib.idle_add(_apply)
-
-            threading.Thread(target=_fetch_catalogs, daemon=True).start()
-
-
-        self.media_type_dropdown.connect("notify::selected", on_media_type_changed)
-        
-        def on_catalog_changed(dropdown, pspec):
-            if getattr(self, "_syncing_dropdowns", False):
-                return
-            selected = dropdown.get_selected()
-            if not self.all_catalogs or selected >= len(self.all_catalogs):
-                self.current_catalog = None
-                return
-                
-            self.current_catalog = self.all_catalogs[selected]
-            genres = self.current_catalog.get("genres", [])
-            
-            if genres:
-                genre_names = ["All"] + genres
-                self.genre_dropdown.set_model(Gtk.StringList.new(genre_names))
-                self.genre_dropdown.set_visible(True)
-            else:
-                self.genre_dropdown.set_visible(False)
-                self.current_genre = None
-                
-            if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() == "content" and not getattr(self, "_suppress_discover_grid_switch", False):
-                self.discover_back_box.set_visible(True)
-                disp_title = self.current_catalog.get("display_name", "Catalog") if self.current_catalog else "Catalog"
-                self.discover_grid_title.set_text(disp_title)
-
-            self._refresh_content()
-            
-        self.catalog_dropdown.connect("notify::selected", on_catalog_changed)
-        
-        def on_genre_changed(dropdown, pspec):
-            if getattr(self, "_syncing_dropdowns", False):
-                return
-            if not self.genre_dropdown.get_visible():
-                return
-            selected_item = dropdown.get_selected_item()
-            if selected_item:
-                genre_str = selected_item.get_string()
-                self.current_genre = genre_str if genre_str != "All" else None
-                self._sync_library_genre_dropdown_selection(self.current_genre)
-                self._refresh_content()
-                
-        expr = Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
-        if hasattr(self, "genre_dropdown") and self.genre_dropdown is not None:
-            self.genre_dropdown.set_expression(expr)
-        self.genre_dropdown.connect("notify::selected", on_genre_changed)
         if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown is not None:
             self.library_genre_dropdown.set_expression(Gtk.PropertyExpression.new(Gtk.StringObject, None, "string"))
             self.library_genre_dropdown.connect("notify::selected", self._on_library_genre_changed)
@@ -6222,6 +6135,8 @@ class CineWindow(Adw.ApplicationWindow):
             action.set_state(GLib.Variant.new_boolean(new_state))
             if hasattr(self, "library_unique_check") and self.library_unique_check:
                 self.library_unique_check.set_active(new_state)
+            if hasattr(self, "unique_check") and self.unique_check:
+                self.unique_check.set_active(new_state)
         action.connect("activate", on_toggle_unique)
         self.add_action(action)
 
@@ -6256,6 +6171,8 @@ class CineWindow(Adw.ApplicationWindow):
         def on_switch_home(action, parameter):
             self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("home")
+            if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
+                self.discover_options_revealer.set_reveal_child(False)
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
                 self.library_sort_dropdown.set_visible(False)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
@@ -6263,6 +6180,9 @@ class CineWindow(Adw.ApplicationWindow):
             if hasattr(self, "library_unique_check") and self.library_unique_check:
                 self.library_unique_check.set_visible(False)
             self.discover_back_box.set_visible(False)
+            self.current_genre = None
+            self.current_year = None
+            self.current_language = None
             self._current_discover_type = "all"
             self._current_discover_addon = None
             self.library_stack.set_visible_child_name("discover")
@@ -6276,24 +6196,25 @@ class CineWindow(Adw.ApplicationWindow):
             self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("discover")
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
-                self.library_sort_dropdown.set_visible(True)
+                self.library_sort_dropdown.set_visible(False)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
-                self.library_genre_dropdown.set_visible(True)
+                self.library_genre_dropdown.set_visible(False)
             if hasattr(self, "library_unique_check") and self.library_unique_check:
-                self.library_unique_check.set_visible(True)
+                self.library_unique_check.set_visible(False)
             self.discover_back_box.set_visible(False)
-            self._current_discover_type = "all"
-            self.current_media_type = "movie"
-            self._current_discover_addon = None
-            self._update_sort_dropdown("all")
-            self._update_genre_dropdown("all")
-            if self._is_unique_mode_active() is True:
-                self.library_stack.set_visible_child_name("unique")
-                self._refresh_unique_combined_view()
-            else:
-                self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type="all", force_refresh=False)
+            if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
+                self.discover_options_revealer.set_reveal_child(True)
+            self.reload_catalog_grid()
         action.connect("activate", on_switch_discover)
+        self.add_action(action)
+
+        # Action: Toggle Discover secondary toolbar
+        action = Gio.SimpleAction.new("toggle-discover", None)
+        def on_toggle_discover(action, parameter):
+            if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
+                is_revealed = self.discover_options_revealer.get_reveal_child()
+                self.discover_options_revealer.set_reveal_child(not is_revealed)
+        action.connect("activate", on_toggle_discover)
         self.add_action(action)
 
         # Action: Select Discover Filter Type
@@ -6436,6 +6357,8 @@ class CineWindow(Adw.ApplicationWindow):
             from . import api
             self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("movies")
+            if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
+                self.discover_options_revealer.set_reveal_child(False)
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
                 self.library_sort_dropdown.set_visible(True)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
@@ -6443,6 +6366,9 @@ class CineWindow(Adw.ApplicationWindow):
             if hasattr(self, "library_unique_check") and self.library_unique_check:
                 self.library_unique_check.set_visible(True)
             self.discover_back_box.set_visible(False)
+            self.current_genre = None
+            self.current_year = None
+            self.current_language = None
             self._current_discover_type = "movie"
             self.current_media_type = "movie"
             self._current_discover_addon = None
@@ -6474,6 +6400,8 @@ class CineWindow(Adw.ApplicationWindow):
             from . import api
             self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("series")
+            if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
+                self.discover_options_revealer.set_reveal_child(False)
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
                 self.library_sort_dropdown.set_visible(True)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
@@ -6481,6 +6409,9 @@ class CineWindow(Adw.ApplicationWindow):
             if hasattr(self, "library_unique_check") and self.library_unique_check:
                 self.library_unique_check.set_visible(True)
             self.discover_back_box.set_visible(False)
+            self.current_genre = None
+            self.current_year = None
+            self.current_language = None
             self._current_discover_type = "series"
             self.current_media_type = "series"
             self._current_discover_addon = None
@@ -6512,6 +6443,8 @@ class CineWindow(Adw.ApplicationWindow):
             from . import api
             self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("anime")
+            if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
+                self.discover_options_revealer.set_reveal_child(False)
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
                 self.library_sort_dropdown.set_visible(True)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
@@ -6519,6 +6452,9 @@ class CineWindow(Adw.ApplicationWindow):
             if hasattr(self, "library_unique_check") and self.library_unique_check:
                 self.library_unique_check.set_visible(True)
             self.discover_back_box.set_visible(False)
+            self.current_genre = None
+            self.current_year = None
+            self.current_language = None
             self._current_discover_type = "anime"
             self.current_media_type = "anime"
             self._current_discover_addon = None
@@ -7294,6 +7230,543 @@ class CineWindow(Adw.ApplicationWindow):
             self._apply_sort_to_current_catalog()
             self._refresh_content()
 
+    def _init_discover_toolbar(self):
+        """Initialize the Discover secondary filter toolbar underneath the headerbar."""
+        self._syncing_discover_toolbar = True
+        try:
+            expr = Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
+            for dd in [
+                getattr(self, "type_dropdown", None),
+                getattr(self, "catalog_dropdown", None),
+                getattr(self, "section_dropdown", None),
+                getattr(self, "genre_dropdown", None),
+                getattr(self, "year_dropdown", None),
+                getattr(self, "language_dropdown", None),
+            ]:
+                if dd is not None and hasattr(dd, "set_expression"):
+                    dd.set_expression(expr)
+
+            # Backward compatibility alias
+            self.media_type_dropdown = getattr(self, "type_dropdown", None)
+
+            self._populate_discover_type_dropdown()
+            self._populate_discover_catalog_dropdown("all")
+            self._populate_discover_section_dropdown(None, "all")
+            self._populate_discover_genre_dropdown(None, "all", None)
+            self._populate_discover_year_dropdown(None, "all", None)
+            self._populate_discover_language_dropdown(None, "all", None)
+
+            if hasattr(self, "type_dropdown") and self.type_dropdown:
+                self.type_dropdown.connect("notify::selected", self._on_discover_type_changed)
+            if hasattr(self, "catalog_dropdown") and self.catalog_dropdown:
+                self.catalog_dropdown.connect("notify::selected", self._on_discover_catalog_changed)
+            if hasattr(self, "section_dropdown") and self.section_dropdown:
+                self.section_dropdown.connect("notify::selected", self._on_discover_section_changed)
+            if hasattr(self, "genre_dropdown") and self.genre_dropdown:
+                self.genre_dropdown.connect("notify::selected", self._on_discover_genre_changed)
+            if hasattr(self, "year_dropdown") and self.year_dropdown:
+                self.year_dropdown.connect("notify::selected", self._on_discover_year_changed)
+            if hasattr(self, "language_dropdown") and self.language_dropdown:
+                self.language_dropdown.connect("notify::selected", self._on_discover_language_changed)
+            if hasattr(self, "unique_check") and self.unique_check:
+                self.unique_check.connect("toggled", self._on_discover_unique_toggled)
+        finally:
+            self._syncing_discover_toolbar = False
+
+    def _get_current_discover_type(self):
+        if not hasattr(self, "type_dropdown") or not self.type_dropdown:
+            return "all"
+        sel = self.type_dropdown.get_selected()
+        if hasattr(self, "_discover_type_items") and 0 <= sel < len(self._discover_type_items):
+            return self._discover_type_items[sel][1]
+        return "all"
+
+    def _populate_discover_type_dropdown(self):
+        from . import api
+        all_addons = api.database.get_addons()
+        types_found = set()
+        for addon in all_addons:
+            if not addon.get("enabled", True): continue
+            if not api.has_catalog_resource(addon) and not api.has_stream_resource(addon) and not api.has_meta_resource(addon):
+                continue
+            for t in addon.get("types", []):
+                if t: types_found.add(str(t).lower())
+            for cat in api.get_addon_catalogs(addon, cache_only=True):
+                if cat.get("type"):
+                    types_found.add(str(cat.get("type")).lower())
+
+        type_items = [
+            ("All Types", "all"),
+            ("Movies", "movie"),
+            ("Series", "series"),
+        ]
+        known_mappings = [
+            (["tv", "channel", "tvchannel"], "tv", "TV Channels"),
+            (["anime"], "anime", "Anime"),
+            (["music", "radio"], "music", "Radio / Music"),
+            (["live"], "live", "Live Streams"),
+        ]
+        added_keys = {"all", "movie", "series"}
+        for check_list, key_name, label_name in known_mappings:
+            if any(t in types_found for t in check_list):
+                if key_name not in added_keys:
+                    type_items.append((label_name, key_name))
+                    added_keys.add(key_name)
+
+        for t in sorted(types_found):
+            if t not in added_keys and t not in ["movie", "movies", "series", "tv", "channel", "tvchannel", "anime", "music", "radio", "live"]:
+                type_items.append((t.title(), t))
+                added_keys.add(t)
+
+        self._discover_type_items = type_items
+        self.media_type_keys = [it[1] for it in type_items]
+        self.media_type_labels = [it[0] for it in type_items]
+
+        if hasattr(self, "type_dropdown") and self.type_dropdown:
+            cur_sel = self.type_dropdown.get_selected()
+            self.type_dropdown.set_model(Gtk.StringList.new([it[0] for it in type_items]))
+            if 0 <= cur_sel < len(type_items):
+                self.type_dropdown.set_selected(cur_sel)
+            else:
+                self.type_dropdown.set_selected(0)
+
+    def _populate_discover_catalog_dropdown(self, chosen_type):
+        from . import api
+        all_addons = api.database.get_addons()
+        items = [{
+            "display_name": "All Catalogs",
+            "addon": None,
+            "manifest_url": None,
+            "addon_name": "All Catalogs"
+        }]
+
+        seen_urls = set()
+        for addon in all_addons:
+            if not addon.get("enabled", True):
+                continue
+            m_url = addon.get("manifest_url") or ""
+            if not m_url or m_url.startswith("builtin:"):
+                continue
+            if m_url in seen_urls:
+                continue
+
+            matches = False
+            if chosen_type == "all":
+                if api.has_catalog_resource(addon) or addon.get("catalogs"):
+                    matches = True
+            else:
+                if api.has_catalog_resource(addon, media_type=chosen_type):
+                    matches = True
+                else:
+                    cats = api.get_addon_catalogs(addon, cache_only=True)
+                    if any(api.is_type_match(c.get("type"), chosen_type) for c in cats):
+                        matches = True
+
+            if matches:
+                seen_urls.add(m_url)
+                name = addon.get("name") or "Unknown Addon"
+                items.append({
+                    "display_name": name,
+                    "addon": addon,
+                    "manifest_url": m_url,
+                    "addon_name": name
+                })
+
+        self._discover_catalog_items = items
+        if hasattr(self, "catalog_dropdown") and self.catalog_dropdown:
+            self.catalog_dropdown.set_model(Gtk.StringList.new([it["display_name"] for it in items]))
+            self.catalog_dropdown.set_selected(0)
+
+    def _populate_discover_section_dropdown(self, addon, chosen_type):
+        from . import api
+        items = [{
+            "display_name": "All Sections",
+            "cat": None,
+            "catalog_id": None
+        }]
+
+        if addon is not None:
+            addon_cats = api.get_addon_catalogs(addon, cache_only=True) or addon.get("catalogs", [])
+            if chosen_type != "all":
+                matching_cats = [c for c in addon_cats if api.is_type_match(c.get("type"), chosen_type)]
+            else:
+                matching_cats = [c for c in addon_cats if api.is_catalog_browsable(c)]
+            if not matching_cats:
+                matching_cats = [c for c in addon_cats if api.is_catalog_browsable(c)]
+
+            seen_ids = set()
+            for c in matching_cats:
+                cid = c.get("id") or ""
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                name = c.get("name") or cid.title()
+                items.append({
+                    "display_name": name,
+                    "cat": c,
+                    "catalog_id": cid
+                })
+
+        self._discover_section_items = items
+        if hasattr(self, "section_dropdown") and self.section_dropdown:
+            self.section_dropdown.set_model(Gtk.StringList.new([it["display_name"] for it in items]))
+            self.section_dropdown.set_selected(0)
+            self.section_dropdown.set_sensitive(len(items) > 1)
+
+    def _populate_discover_genre_dropdown(self, addon, chosen_type, active_cat=None):
+        from . import database
+        if addon is None:
+            genres = database.get_available_genres(chosen_type)
+            self._discover_genre_items = ["All Genres"] + genres
+            if hasattr(self, "genre_dropdown") and self.genre_dropdown:
+                self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
+                self.genre_dropdown.set_selected(0)
+                self.genre_dropdown.set_sensitive(True)
+            return
+
+        cats = [active_cat] if active_cat else [s.get("cat") for s in getattr(self, "_discover_section_items", []) if s.get("cat")]
+        supports_genre = False
+        declared_genres = []
+
+        for c in cats:
+            extra_sup = c.get("extraSupported") or []
+            if "genre" in extra_sup:
+                supports_genre = True
+            c_genres = c.get("genres") or []
+            if c_genres:
+                supports_genre = True
+                for g in c_genres:
+                    if g not in declared_genres:
+                        declared_genres.append(g)
+            for ex in (c.get("extra") or []):
+                ex_name = ex.get("name") if isinstance(ex, dict) else ex
+                if ex_name == "genre":
+                    supports_genre = True
+                    if isinstance(ex, dict) and ex.get("options"):
+                        for opt in ex["options"]:
+                            if opt not in declared_genres:
+                                declared_genres.append(opt)
+
+        if hasattr(self, "genre_dropdown") and self.genre_dropdown:
+            if not supports_genre:
+                self._discover_genre_items = ["All Genres"]
+                self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
+                self.genre_dropdown.set_selected(0)
+                self.genre_dropdown.set_sensitive(False)
+            else:
+                genres_to_use = declared_genres if declared_genres else database.get_available_genres(chosen_type)
+                self._discover_genre_items = ["All Genres"] + genres_to_use
+                self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
+                self.genre_dropdown.set_selected(0)
+                self.genre_dropdown.set_sensitive(True)
+
+    def _populate_discover_year_dropdown(self, addon, chosen_type, active_cat=None):
+        from . import database
+        if addon is None:
+            years = database.get_available_years(chosen_type)
+            self._discover_year_items = ["All Years"] + years
+            if hasattr(self, "year_dropdown") and self.year_dropdown:
+                self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
+                self.year_dropdown.set_selected(0)
+                self.year_dropdown.set_sensitive(True)
+            return
+
+        cats = [active_cat] if active_cat else [s.get("cat") for s in getattr(self, "_discover_section_items", []) if s.get("cat")]
+        supports_year = False
+        for c in cats:
+            extra_sup = c.get("extraSupported") or []
+            if "year" in extra_sup:
+                supports_year = True
+                break
+            for ex in (c.get("extra") or []):
+                ex_name = ex.get("name") if isinstance(ex, dict) else ex
+                if ex_name == "year":
+                    supports_year = True
+                    break
+            cid = str(c.get("id") or "").lower()
+            if cid in ("year", "years", "acc85513", "tmdb.year"):
+                supports_year = True
+                break
+
+        if hasattr(self, "year_dropdown") and self.year_dropdown:
+            if supports_year:
+                years = database.get_available_years(chosen_type)
+                self._discover_year_items = ["All Years"] + years
+                self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
+                self.year_dropdown.set_selected(0)
+                self.year_dropdown.set_sensitive(True)
+            else:
+                self._discover_year_items = ["All Years"]
+                self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
+                self.year_dropdown.set_selected(0)
+                self.year_dropdown.set_sensitive(False)
+
+    def _populate_discover_language_dropdown(self, addon, chosen_type, active_cat=None):
+        from . import database
+        if addon is None:
+            langs = database.get_available_languages()
+            self._discover_language_items = ["All Languages"] + langs
+            if hasattr(self, "language_dropdown") and self.language_dropdown:
+                self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
+                self.language_dropdown.set_selected(0)
+                self.language_dropdown.set_sensitive(True)
+            return
+
+        cats = [active_cat] if active_cat else [s.get("cat") for s in getattr(self, "_discover_section_items", []) if s.get("cat")]
+        supports_lang = False
+        addon_langs = []
+
+        for c in cats:
+            extra_sup = c.get("extraSupported") or []
+            if "language" in extra_sup or "lang" in extra_sup:
+                supports_lang = True
+            for ex in (c.get("extra") or []):
+                ex_name = ex.get("name") if isinstance(ex, dict) else ex
+                if ex_name in ("language", "lang"):
+                    supports_lang = True
+                    if isinstance(ex, dict) and ex.get("options"):
+                        for opt in ex["options"]:
+                            if opt not in addon_langs:
+                                addon_langs.append(opt)
+                elif ex_name == "genre" and isinstance(ex, dict):
+                    for opt in (ex.get("options") or []):
+                        if database.is_language_genre(opt):
+                            supports_lang = True
+                            if opt not in addon_langs:
+                                addon_langs.append(opt)
+            for cg in (c.get("genres") or []):
+                if database.is_language_genre(cg):
+                    supports_lang = True
+                    if cg not in addon_langs:
+                        addon_langs.append(cg)
+            cat_name = str(c.get("name") or c.get("id") or "").lower()
+            addon_name = str(addon.get("name") or "").lower()
+            if any(l.lower() in cat_name or l.lower() in addon_name for l in ["tamil", "hindi", "telugu", "malayalam", "kannada", "indian", "french", "spanish", "german", "italian", "japanese", "korean", "russian"]):
+                supports_lang = True
+
+        if hasattr(self, "language_dropdown") and self.language_dropdown:
+            if supports_lang:
+                langs_to_show = addon_langs if addon_langs else database.get_available_languages()
+                self._discover_language_items = ["All Languages"] + langs_to_show
+                self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
+                self.language_dropdown.set_selected(0)
+                self.language_dropdown.set_sensitive(True)
+            else:
+                self._discover_language_items = ["All Languages"]
+                self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
+                self.language_dropdown.set_selected(0)
+                self.language_dropdown.set_sensitive(False)
+
+    def _restore_dropdown_selection(self, dropdown, items, target_str):
+        if not dropdown or not target_str or not items:
+            return
+        if target_str in items:
+            dropdown.set_selected(items.index(target_str))
+        else:
+            dropdown.set_selected(0)
+
+    def _on_discover_type_changed(self, dropdown, pspec):
+        if getattr(self, "_syncing_discover_toolbar", False):
+            return
+        sel = dropdown.get_selected()
+        if not hasattr(self, "_discover_type_items") or sel < 0 or sel >= len(self._discover_type_items):
+            return
+        chosen_type = self._discover_type_items[sel][1]
+        self._syncing_discover_toolbar = True
+        try:
+            self._populate_discover_catalog_dropdown(chosen_type)
+            self._populate_discover_section_dropdown(None, chosen_type)
+            self._populate_discover_genre_dropdown(None, chosen_type, None)
+            self._populate_discover_year_dropdown(None, chosen_type, None)
+            self._populate_discover_language_dropdown(None, chosen_type, None)
+        finally:
+            self._syncing_discover_toolbar = False
+        self._on_discover_filter_changed()
+
+    def _on_discover_catalog_changed(self, dropdown, pspec):
+        if getattr(self, "_syncing_discover_toolbar", False):
+            return
+        sel = dropdown.get_selected()
+        if not hasattr(self, "_discover_catalog_items") or sel < 0 or sel >= len(self._discover_catalog_items):
+            return
+        cat_info = self._discover_catalog_items[sel]
+        addon = cat_info.get("addon")
+        chosen_type = self._get_current_discover_type()
+
+        self._syncing_discover_toolbar = True
+        try:
+            self._populate_discover_section_dropdown(addon, chosen_type)
+            active_cat = self._discover_section_items[0].get("cat") if getattr(self, "_discover_section_items", None) else None
+            self._populate_discover_genre_dropdown(addon, chosen_type, active_cat)
+            self._populate_discover_year_dropdown(addon, chosen_type, active_cat)
+            self._populate_discover_language_dropdown(addon, chosen_type, active_cat)
+        finally:
+            self._syncing_discover_toolbar = False
+        self._on_discover_filter_changed()
+
+    def _on_discover_section_changed(self, dropdown, pspec):
+        if getattr(self, "_syncing_discover_toolbar", False):
+            return
+        sel = dropdown.get_selected()
+        if not hasattr(self, "_discover_section_items") or sel < 0 or sel >= len(self._discover_section_items):
+            return
+        sec_info = self._discover_section_items[sel]
+        active_cat = sec_info.get("cat")
+
+        c_sel = self.catalog_dropdown.get_selected() if hasattr(self, "catalog_dropdown") else 0
+        addon = self._discover_catalog_items[c_sel].get("addon") if hasattr(self, "_discover_catalog_items") and c_sel < len(self._discover_catalog_items) else None
+        chosen_type = self._get_current_discover_type()
+
+        self._syncing_discover_toolbar = True
+        try:
+            cur_g = self.genre_dropdown.get_selected_item().get_string() if hasattr(self, "genre_dropdown") and self.genre_dropdown and self.genre_dropdown.get_selected_item() else None
+            cur_y = self.year_dropdown.get_selected_item().get_string() if hasattr(self, "year_dropdown") and self.year_dropdown and self.year_dropdown.get_selected_item() else None
+            cur_l = self.language_dropdown.get_selected_item().get_string() if hasattr(self, "language_dropdown") and self.language_dropdown and self.language_dropdown.get_selected_item() else None
+
+            self._populate_discover_genre_dropdown(addon, chosen_type, active_cat)
+            self._restore_dropdown_selection(self.genre_dropdown, getattr(self, "_discover_genre_items", []), cur_g)
+
+            self._populate_discover_year_dropdown(addon, chosen_type, active_cat)
+            self._restore_dropdown_selection(self.year_dropdown, getattr(self, "_discover_year_items", []), cur_y)
+
+            self._populate_discover_language_dropdown(addon, chosen_type, active_cat)
+            self._restore_dropdown_selection(self.language_dropdown, getattr(self, "_discover_language_items", []), cur_l)
+        finally:
+            self._syncing_discover_toolbar = False
+        self._on_discover_filter_changed()
+
+    def _on_discover_genre_changed(self, dropdown, pspec):
+        if getattr(self, "_syncing_discover_toolbar", False):
+            return
+        self._on_discover_filter_changed()
+
+    def _on_discover_year_changed(self, dropdown, pspec):
+        if getattr(self, "_syncing_discover_toolbar", False):
+            return
+        self._on_discover_filter_changed()
+
+    def _on_discover_language_changed(self, dropdown, pspec):
+        if getattr(self, "_syncing_discover_toolbar", False):
+            return
+        self._on_discover_filter_changed()
+
+    def _on_discover_unique_toggled(self, button):
+        if getattr(self, "_syncing_discover_toolbar", False):
+            return
+        self._on_discover_filter_changed()
+
+    def _get_current_discover_filter_dict(self):
+        t_sel = self.type_dropdown.get_selected() if hasattr(self, "type_dropdown") and self.type_dropdown else 0
+        m_type = self._discover_type_items[t_sel][1] if hasattr(self, "_discover_type_items") and t_sel < len(self._discover_type_items) else "all"
+
+        c_sel = self.catalog_dropdown.get_selected() if hasattr(self, "catalog_dropdown") and self.catalog_dropdown else 0
+        cat_info = self._discover_catalog_items[c_sel] if hasattr(self, "_discover_catalog_items") and c_sel < len(self._discover_catalog_items) else {}
+        addon_url = cat_info.get("manifest_url")
+
+        s_sel = self.section_dropdown.get_selected() if hasattr(self, "section_dropdown") and self.section_dropdown else 0
+        sec_info = self._discover_section_items[s_sel] if hasattr(self, "_discover_section_items") and s_sel < len(self._discover_section_items) else {}
+        catalog_id = sec_info.get("catalog_id")
+        section = sec_info.get("display_name")
+        if section == "All Sections":
+            section = None
+
+        g_item = self.genre_dropdown.get_selected_item() if hasattr(self, "genre_dropdown") and self.genre_dropdown else None
+        g_str = g_item.get_string() if g_item else None
+        genre = g_str if g_str and g_str not in ("All Genres", _("All Genres"), "All") else None
+
+        y_item = self.year_dropdown.get_selected_item() if hasattr(self, "year_dropdown") and self.year_dropdown else None
+        y_str = y_item.get_string() if y_item else None
+        year = y_str if y_str and y_str not in ("All Years", _("All Years"), "All") else None
+
+        l_item = self.language_dropdown.get_selected_item() if hasattr(self, "language_dropdown") and self.language_dropdown else None
+        l_str = l_item.get_string() if l_item else None
+        language = l_str if l_str and l_str not in ("All Languages", _("All Languages"), "All") else None
+
+        unique_only = self.unique_check.get_active() if hasattr(self, "unique_check") and self.unique_check else False
+
+        return {
+            "type": m_type,
+            "catalog_id": catalog_id,
+            "section": section,
+            "genre": genre,
+            "year": year,
+            "language": language,
+            "unique_only": unique_only,
+            "addon_url": addon_url,
+        }
+
+    def _on_discover_filter_changed(self):
+        if getattr(self, "_syncing_discover_toolbar", False):
+            return
+        filters = self._get_current_discover_filter_dict()
+        cb = getattr(self, "_on_filters_changed_callback", None)
+        if callable(cb):
+            cb(filters)
+        self.reload_catalog_grid(filters)
+
+    def reload_catalog_grid(self, filters=None):
+        if filters is None:
+            filters = self._get_current_discover_filter_dict()
+
+        self._cancel_all_background_fetching()
+
+        m_type = filters.get("type") or "all"
+        catalog_id = filters.get("catalog_id")
+        section = filters.get("section")
+        genre = filters.get("genre")
+        year = filters.get("year")
+        language = filters.get("language")
+        unique_only = bool(filters.get("unique_only", False))
+        addon_url = filters.get("addon_url")
+
+        self._current_discover_type = m_type
+        self.current_media_type = m_type if m_type != "all" else "movie"
+        self._current_discover_addon = addon_url
+        self.current_genre = genre
+        self.current_year = year
+        self.current_language = language
+
+        if hasattr(self, "library_unique_check") and self.library_unique_check is not None:
+            if self.library_unique_check != getattr(self, "unique_check", None):
+                if self.library_unique_check.get_active() != unique_only:
+                    self.library_unique_check.set_active(unique_only)
+
+        if unique_only:
+            self.library_stack.set_visible_child_name("unique")
+            self._refresh_unique_combined_view()
+            return
+
+        if catalog_id and addon_url:
+            self.current_catalog = {
+                "manifest_url": addon_url,
+                "catalog_id": catalog_id,
+                "media_type": m_type if m_type != "all" else "movie",
+                "display_name": section or catalog_id.title()
+            }
+            disp_title = section or catalog_id.title()
+            if genre:
+                disp_title += f" — {genre}"
+            if year:
+                disp_title += f" ({year})"
+            if language:
+                disp_title += f" · {language}"
+            if hasattr(self, "discover_grid_title") and self.discover_grid_title:
+                self.discover_grid_title.set_text(disp_title)
+            if hasattr(self, "discover_back_box") and self.discover_back_box:
+                self.discover_back_box.set_visible(False)
+            self.library_stack.set_visible_child_name("content")
+            self._refresh_content()
+            return
+
+        self.library_stack.set_visible_child_name("discover")
+        if hasattr(self, "discover_back_box") and self.discover_back_box:
+            self.discover_back_box.set_visible(False)
+        self._refresh_discover_page(
+            filter_media_type=m_type,
+            filter_addon_url=addon_url,
+            force_refresh=True
+        )
+
     def _on_database_genres_updated(self):
         """Called when new metadata/genres are saved to SQLite database."""
         def do_update():
@@ -7302,9 +7775,10 @@ class CineWindow(Adw.ApplicationWindow):
         GLib.idle_add(do_update)
 
     def _is_unique_mode_active(self):
-        btn = getattr(self, "library_unique_check", None)
-        if btn is not None and hasattr(btn, "get_active"):
-            return btn.get_active() is True
+        for btn_name in ("unique_check", "library_unique_check"):
+            btn = getattr(self, btn_name, None)
+            if btn is not None and hasattr(btn, "get_active") and btn.get_active() is True:
+                return True
         return False
 
     def _on_unique_toggled(self, button):
@@ -7313,6 +7787,12 @@ class CineWindow(Adw.ApplicationWindow):
         act = self.lookup_action("toggle-unique")
         if act and act.get_state().get_boolean() != is_active:
             act.set_state(GLib.Variant.new_boolean(is_active))
+        if hasattr(self, "library_unique_check") and self.library_unique_check and self.library_unique_check != button:
+            if self.library_unique_check.get_active() != is_active:
+                self.library_unique_check.set_active(is_active)
+        if hasattr(self, "unique_check") and self.unique_check and self.unique_check != button:
+            if self.unique_check.get_active() != is_active:
+                self.unique_check.set_active(is_active)
         debug_log(f"_on_unique_toggled: active={is_active}")
         if is_active:
             if hasattr(self, "discover_back_box"):
@@ -9475,9 +9955,9 @@ class CineWindow(Adw.ApplicationWindow):
             menu.append_item(unique_item)
             btn.set_menu_model(menu)
         btn = getattr(self, "discover_active_btn", None)
-        if btn and btn.get_menu_model() is None:
+        if btn and hasattr(btn, "get_menu_model") and btn.get_menu_model() is None:
             initial_menu = self._build_discover_menu()
-            if initial_menu:
+            if initial_menu and hasattr(btn, "set_menu_model"):
                 btn.set_menu_model(initial_menu)
         for m_type, btn_name in [("movie", "movies_active_btn"), ("series", "series_active_btn"), ("anime", "anime_active_btn")]:
             btn = getattr(self, btn_name, None)
@@ -9526,10 +10006,12 @@ class CineWindow(Adw.ApplicationWindow):
         self._menus_building = True
 
         btn_map = {
-            "discover": getattr(self, "discover_active_btn", None),
             "movie": getattr(self, "movies_active_btn", None),
             "series": getattr(self, "series_active_btn", None),
         }
+        disc_btn = getattr(self, "discover_active_btn", None)
+        if disc_btn and hasattr(disc_btn, "set_menu_model"):
+            btn_map["discover"] = disc_btn
         if getattr(self, "anime_supported", False):
             btn_map["anime"] = getattr(self, "anime_active_btn", None)
 
