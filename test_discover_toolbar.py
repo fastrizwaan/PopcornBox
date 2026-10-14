@@ -448,6 +448,50 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertIsNotNone(title_label)
         self.assertEqual(title_label.get_text(), "Popular - Movies · Horror · 2026")
 
+    def test_get_discover_catalog_list_with_custom_catalog_types(self):
+        """When an addon uses a custom type in catalog manifests (e.g. HdHub), filtering by 'movie' must retain movie catalogs."""
+        self.win.current_genre = None
+        self.win.current_year = None
+        self.win.current_sort = "Popular"
+        self.win._discover_catalog_list_cache = {}
+
+        mock_addon = {
+            "name": "HdHub",
+            "manifest_url": "https://hdhub.thevolecitor.qzz.io/manifest.json",
+            "enabled": True,
+            "resources": ["catalog", "stream"],
+            "types": ["movie", "series", "HdHub"],
+            "catalogs": [
+                {"id": "hdhub-featured-movies", "name": "Featured Movies", "type": "HdHub"},
+                {"id": "hdhub-featured-series", "name": "Featured Series", "type": "HdHub"},
+                {"id": "hdhub-popular-movies", "name": "Popular Movies", "type": "HdHub"},
+                {"id": "hdhub-popular-series", "name": "Popular Series", "type": "HdHub"}
+            ]
+        }
+
+        # 1. Test is_catalog_provider recognizing the custom catalog types
+        self.assertTrue(api.is_catalog_provider(mock_addon, media_type="movie"))
+        self.assertTrue(api.is_catalog_provider(mock_addon, media_type="series"))
+
+        # 2. Test _get_discover_catalog_list generating the expected movie rows
+        with patch("src.database.get_addons", return_value=[mock_addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = CineWindow._get_discover_catalog_list(
+                self.win,
+                filter_media_type="movie",
+                filter_addon_url=mock_addon["manifest_url"]
+            )
+
+        self.assertEqual(len(rows), 2)
+        catalog_ids = [r["catalog_id"] for r in rows]
+        self.assertIn("hdhub-featured-movies", catalog_ids)
+        self.assertIn("hdhub-popular-movies", catalog_ids)
+        # Verify media_type is normalized to movie
+        for r in rows:
+            self.assertEqual(r["media_type"], "movie")
+
 
 if __name__ == "__main__":
     unittest.main()

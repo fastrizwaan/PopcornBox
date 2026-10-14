@@ -7360,7 +7360,7 @@ class CineWindow(Adw.ApplicationWindow):
                     matches = True
                 else:
                     cats = api.get_addon_catalogs(addon, cache_only=True)
-                    if any(api.is_type_match(c.get("type"), chosen_type) for c in cats):
+                    if any(api.is_catalog_type_match(c, chosen_type, addon.get("name")) for c in cats):
                         matches = True
 
             if matches:
@@ -7389,7 +7389,7 @@ class CineWindow(Adw.ApplicationWindow):
         if addon is not None:
             addon_cats = api.get_addon_catalogs(addon, cache_only=True) or addon.get("catalogs", [])
             if chosen_type != "all":
-                matching_cats = [c for c in addon_cats if api.is_type_match(c.get("type"), chosen_type)]
+                matching_cats = [c for c in addon_cats if api.is_catalog_type_match(c, chosen_type, addon.get("name")) and api.is_catalog_browsable(c)]
             else:
                 matching_cats = [c for c in addon_cats if api.is_catalog_browsable(c)]
             if not matching_cats:
@@ -8984,11 +8984,11 @@ class CineWindow(Adw.ApplicationWindow):
             m_url = addon.get('manifest_url', '')
             if not m_url or m_url.startswith('builtin:'):
                 continue
+            if filter_addon_url and m_url != filter_addon_url:
+                continue
             if not api.is_addon_online(m_url):
                 continue
             if not api.is_catalog_provider(addon, media_type=filter_media_type if filter_media_type != "all" else None):
-                continue
-            if filter_addon_url and m_url != filter_addon_url:
                 continue
                 
             catalogs = api.get_addon_catalogs(addon, cache_only=True)
@@ -9003,28 +9003,14 @@ class CineWindow(Adw.ApplicationWindow):
                 if cur_genre and not filter_addon_url and not api.catalog_supports_genre(cat, cur_genre):
                     continue
 
+                # Check media type filter if specified
+                if filter_media_type and filter_media_type != "all":
+                    if not api.is_catalog_type_match(cat, filter_media_type, addon_name):
+                        continue
+
                 c_id = cat.get('id', '')
                 c_name = cat.get('name') or c_id
                 c_type = cat.get('type') or 'movie'
-                
-                # Check media type filter if specified
-                if filter_media_type and filter_media_type != "all":
-                    if not api.is_type_match(c_type, filter_media_type):
-                        if filter_media_type == "anime":
-                            if "anime" not in str(c_type).lower() and "anime" not in c_name.lower() and "anime" not in str(c_id).lower() and "anime" not in addon_name.lower():
-                                continue
-                        elif filter_media_type == "movie":
-                            if api.is_type_match(c_type, "series") or api.is_type_match(c_type, "tv"):
-                                continue
-                            if "movie" not in str(c_type).lower() and "movie" not in c_name.lower() and "movie" not in str(c_id).lower() and "film" not in c_name.lower():
-                                continue
-                        elif filter_media_type == "series":
-                            if api.is_type_match(c_type, "movie"):
-                                continue
-                            if "series" not in str(c_type).lower() and "series" not in c_name.lower() and "series" not in str(c_id).lower() and c_id != "tv" and c_type != "tv":
-                                continue
-                        else:
-                            continue
                 
                 clean_name = c_name
                 if addon_name and clean_name.lower().startswith(addon_name.lower()):
@@ -9045,7 +9031,17 @@ class CineWindow(Adw.ApplicationWindow):
                 for cat in sorted_group:
                     c_id = cat.get('id')
                     c_name = cat.get('name') or c_id
-                    c_type = cat.get('type', 'movie')
+                    raw_type = cat.get('type', 'movie')
+                    c_type = raw_type
+                    if str(c_type).lower() not in ('movie', 'series', 'anime', 'tv', 'channel', 'live', 'music', 'radio'):
+                        if api.is_catalog_type_match(cat, 'movie', addon_name):
+                            c_type = 'movie'
+                        elif api.is_catalog_type_match(cat, 'series', addon_name):
+                            c_type = 'series'
+                        elif api.is_catalog_type_match(cat, 'anime', addon_name):
+                            c_type = 'anime'
+                        elif api.is_catalog_type_match(cat, 'tv', addon_name):
+                            c_type = 'tv'
                     
                     row_key = (m_url, c_id, c_type)
                     if row_key in seen_row_keys:
@@ -9081,6 +9077,7 @@ class CineWindow(Adw.ApplicationWindow):
                     rows.append({
                         'addon_name': addon_name,
                         'media_type': c_type,
+                        'raw_type': raw_type,
                         'catalog_id': c_id,
                         'catalog_name': c_name,
                         'manifest_url': m_url,

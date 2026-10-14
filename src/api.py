@@ -580,6 +580,38 @@ def is_type_match(type1, type2):
         return True
     return False
 
+def is_catalog_type_match(cat, media_type, addon_name=""):
+    """
+    Check if a catalog object matches the requested media_type ('movie', 'series', 'anime', 'tv', etc.).
+    Supports addons with custom catalog types (e.g. 'HdHub', 'BollywoodX') where the catalog name or id
+    identifies the media category.
+    """
+    if not cat or not media_type or media_type in ("all", "all_types"):
+        return True
+    c_type = str(cat.get("type") or "").strip().lower()
+    tgt = str(media_type).strip().lower()
+    if is_type_match(c_type, tgt):
+        return True
+
+    c_id = str(cat.get("id") or "").strip().lower()
+    c_name = str(cat.get("name") or c_id).strip().lower()
+    a_name = str(addon_name or "").strip().lower()
+
+    if tgt == "anime":
+        return "anime" in c_type or "anime" in c_name or "anime" in c_id or "anime" in a_name
+    elif tgt == "movie":
+        if is_type_match(c_type, "series") or is_type_match(c_type, "tv"):
+            return False
+        return "movie" in c_type or "movie" in c_name or "movie" in c_id or "film" in c_name or "film" in c_id
+    elif tgt == "series":
+        if is_type_match(c_type, "movie"):
+            return False
+        return "series" in c_type or "series" in c_name or "series" in c_id or c_id == "tv" or c_type == "tv"
+    elif tgt in ("tv", "channel"):
+        return is_type_match(c_type, "tv") or "tv" in c_name or "channel" in c_name or "iptv" in a_name
+
+    return False
+
 def is_item_type_compatible(item, expected_type, cached_meta=None):
     """
     Check if an item matches the expected media type ('movie', 'series', 'anime', etc.).
@@ -629,6 +661,8 @@ def is_item_type_compatible(item, expected_type, cached_meta=None):
             return False
         return True
     elif expected == "anime":
+        return True
+    elif expected not in ("movie", "series", "anime", "tv", "channel"):
         return True
 
     return is_type_match(itype, expected)
@@ -1225,7 +1259,13 @@ def is_catalog_provider(addon, media_type=None):
     if not catalogs:
         return False
     if media_type:
-        return any(is_type_match(c.get("type"), media_type) for c in catalogs)
+        addon_name = addon.get("name", "")
+        if any(is_catalog_type_match(c, media_type, addon_name) for c in catalogs):
+            return True
+        addon_types = addon.get("types") or []
+        if any(is_type_match(t, media_type) for t in addon_types):
+            return True
+        return False
     return True
 
 def is_search_provider(addon, media_type=None):
@@ -1630,16 +1670,7 @@ def get_available_catalogs(c_type="movie", cache_only=True):
             cat_name = cat.get("name") or ""
             cat_id = cat.get("id", "")
 
-            matched = is_type_match(cat_type, c_type)
-            if not matched and c_type == "anime":
-                if "anime" in str(cat_type).lower() or "anime" in cat_name.lower() or "anime" in cat_id.lower() or "anime" in addon_name.lower():
-                    matched = True
-            elif not matched and c_type == "movie":
-                if not is_type_match(cat_type, "series") and not is_type_match(cat_type, "tv") and ("movie" in str(cat_type).lower() or "movie" in cat_name.lower() or "movie" in str(cat_id).lower() or "film" in cat_name.lower()):
-                    matched = True
-            elif not matched and c_type == "series":
-                if not is_type_match(cat_type, "movie") and ("series" in str(cat_type).lower() or "series" in cat_name.lower() or "series" in str(cat_id).lower() or cat_id == "tv" or cat_type == "tv"):
-                    matched = True
+            matched = is_catalog_type_match(cat, c_type, addon_name)
 
             if matched:
                 genres = list(cat.get("genres") or [])
