@@ -2369,9 +2369,22 @@ def get_cached_trailer_stream(youtube_id, max_age_hours=24):
             if row and row[0]:
                 updated_at = row[2]
                 ua = row[1] or ""
-                # Invalidate stale entries without user_agent (pre-migration cache)
-                if not ua and "googlevideo.com" in row[0].lower():
-                    return None
+                # Invalidate stale entries without user_agent or non-android/expired googlevideo streams
+                if "googlevideo.com" in row[0].lower():
+                    if not ua:
+                        return None
+                    try:
+                        import urllib.parse
+                        parsed = urllib.parse.urlparse(row[0])
+                        qs = urllib.parse.parse_qs(parsed.query)
+                        exp = qs.get("expire", [None])[0]
+                        if exp and float(exp) <= time.time():
+                            return None
+                        cver = qs.get("cver", [""])[0]
+                        if "android" not in cver.lower():
+                            return None
+                    except Exception:
+                        pass
                 if (time.time() - updated_at) / 3600 < max_age_hours:
                     return (row[0], ua)
     except Exception as e:

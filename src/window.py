@@ -1452,7 +1452,8 @@ class MovieDetailsPage(Gtk.Overlay):
                         # Step 1 UI build (Metadata and Images displayed)
                         self.build_ui(details)
                         # Step 2: Now resolve trailer YouTube URL & direct stream
-                        tr = details.get("trailer")
+                        from . import api
+                        tr = api.extract_trailer_id(details) or (api.extract_trailer_id(self.movie_stub) if hasattr(self, "movie_stub") else None)
                         if tr:
                             self._apply_trailer_url(tr, fetch_id)
                         else:
@@ -1970,7 +1971,8 @@ class MovieDetailsPage(Gtk.Overlay):
 
         self.update_continue_btn(details)
 
-        trailer_url = details.get("trailer")
+        from . import api
+        trailer_url = api.extract_trailer_id(details) or (api.extract_trailer_id(self.movie_stub) if hasattr(self, "movie_stub") else None)
         if trailer_url and not self.is_channel:
             self._apply_trailer_url(trailer_url, self._details_fetch_id)
         elif not getattr(self, "trailer_url", None) or self.is_channel:
@@ -2842,9 +2844,11 @@ class MovieDetailsPage(Gtk.Overlay):
         if not trailer_url:
             trailer_url = getattr(self, "trailer_url", None)
         if not trailer_url and hasattr(self, "movie_details") and self.movie_details:
-            trailer_url = self.movie_details.get("trailer")
+            from . import api
+            trailer_url = api.extract_trailer_id(self.movie_details)
         if not trailer_url and hasattr(self, "movie_stub") and self.movie_stub:
-            trailer_url = self.movie_stub.get("trailer") or self.movie_stub.get("ytId")
+            from . import api
+            trailer_url = api.extract_trailer_id(self.movie_stub)
 
         if not trailer_url:
             print("[Trailer] No trailer URL found.")
@@ -11139,7 +11143,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.show_player_loading(_("Loading video..."), title=title)
             try:
                 self.mpv["ytdl"] = True
-                self.mpv["ytdl-raw-options"] = "no-playlist="
+                self.mpv["ytdl-raw-options"] = "no-playlist=,extractor-args=youtube:player_client=android"
                 self.mpv["user-agent"] = ""
                 self.mpv["referrer"] = ""
                 self.mpv["http-header-fields"] = []
@@ -11175,6 +11179,14 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "next_episode_revealer") and hasattr(self.next_episode_revealer, "set_reveal_child"):
             self.next_episode_revealer.set_reveal_child(False)
 
+        try:
+            if audio_url:
+                self.mpv["audio-files"] = [audio_url]
+            else:
+                self.mpv["audio-files"] = []
+        except Exception as e:
+            logger.debug(f"Error setting mpv audio-files: {e}")
+
         seek_target = start_time
         if seek_target is None and getattr(self, "_pending_seek_position", None):
             seek_target = self._pending_seek_position
@@ -11197,12 +11209,6 @@ class CineWindow(Adw.ApplicationWindow):
         else:
             self._seek_after_loaded = None
             self.mpv.loadfile(url, "replace")
-
-        if audio_url:
-            try:
-                self.mpv.command("audio-add", audio_url, "auto")
-            except Exception as e:
-                logger.error(f"Error adding audio track to trailer: {e}")
 
         self.mpv.pause = False
         self.is_inactive = False

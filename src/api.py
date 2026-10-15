@@ -289,6 +289,74 @@ def check_stream_rate_limit_warning(stream):
 
     return None
 
+def extract_trailer_id(m):
+    """
+    Extract YouTube trailer ID or URL from any metadata dict or catalog item.
+    Handles 'trailer' (str/dict), 'trailerStreams' (list), 'trailers' (list),
+    'ytId' / 'youtube_id', and trailer entries within 'videos'.
+    """
+    if not m or not isinstance(m, dict):
+        return None
+
+    # 1. Direct trailer field
+    tr = m.get("trailer")
+    if tr:
+        if isinstance(tr, str) and tr.strip():
+            clean = tr.strip()
+            if clean.lower() not in ("none", "null", "false", ""):
+                return clean
+        elif isinstance(tr, dict):
+            sub = tr.get("source") or tr.get("ytId") or tr.get("url")
+            if sub and str(sub).strip():
+                return str(sub).strip()
+
+    # 2. trailerStreams list (standard Cinemeta format)
+    trailer_streams = m.get("trailerStreams")
+    if trailer_streams and isinstance(trailer_streams, list):
+        for ts in trailer_streams:
+            if isinstance(ts, dict):
+                yt_id = ts.get("ytId") or ts.get("url")
+                if yt_id and str(yt_id).strip():
+                    return str(yt_id).strip()
+            elif isinstance(ts, str) and ts.strip():
+                return ts.strip()
+
+    # 3. trailers list (Cinemeta / Stremio format)
+    trailers = m.get("trailers")
+    if trailers and isinstance(trailers, list):
+        for t in trailers:
+            if isinstance(t, dict):
+                source = t.get("source") or t.get("ytId") or t.get("url")
+                if source and str(source).strip():
+                    return str(source).strip()
+            elif isinstance(t, str) and t.strip():
+                return t.strip()
+
+    # 4. Direct ytId or youtube_id
+    direct_yt = m.get("ytId") or m.get("youtube_id")
+    if direct_yt and isinstance(direct_yt, str) and direct_yt.strip():
+        return direct_yt.strip()
+
+    # 5. Check videos list for a trailer entry
+    videos = m.get("videos")
+    if videos and isinstance(videos, list):
+        for v in videos:
+            if isinstance(v, dict):
+                is_tr = (
+                    v.get("trailer") is True
+                    or str(v.get("type", "")).lower() == "trailer"
+                    or "trailer" in str(v.get("title", "")).lower()
+                )
+                if is_tr:
+                    vid_id = v.get("ytId") or v.get("source") or v.get("id") or v.get("url")
+                    if vid_id and str(vid_id).strip():
+                        s_vid = str(vid_id).strip()
+                        if s_vid.startswith("yt_id:"):
+                            return s_vid.split("yt_id:", 1)[1]
+                        return s_vid
+
+    return None
+
 def _get_cached_stream_url(url):
     if not url:
         return None
@@ -2104,7 +2172,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                         item_bg = m.get("background") or m.get("backdrop") or ""
                         item_cast = list(m.get("cast") or [])
                         item_videos = m.get("videos") or []
-                        item_trailer = m.get("trailer")
+                        item_trailer = extract_trailer_id(m)
 
                         item_obj = {
                             "id": imdb_id,
@@ -2371,7 +2439,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 item_bg = m.get("background") or m.get("backdrop") or ""
                 item_cast = list(m.get("cast") or [])
                 item_videos = m.get("videos") or []
-                item_trailer = m.get("trailer")
+                item_trailer = extract_trailer_id(m)
 
                 item_dict = {
                     "id": imdb_id,
@@ -2528,6 +2596,10 @@ def _run_metadata_hydration_worker():
                     except Exception:
                         pass
 
+                clean_tr = extract_trailer_id(meta_dict)
+                if clean_tr:
+                    meta_dict["trailer"] = clean_tr
+
                 # Save into SQLite metadata_cache and item_genres
                 database.save_cached_metadata(item_id, m_type, meta_dict)
                 orig_id = item_dict.get("id") if item_dict else None
@@ -2560,7 +2632,9 @@ def _run_metadata_hydration_worker():
                         item_dict["cast"] = list(meta_dict["cast"])
                     if not item_dict.get("videos") and meta_dict.get("videos"):
                         item_dict["videos"] = meta_dict["videos"]
-                    if not item_dict.get("trailer") and meta_dict.get("trailer"):
+                    if clean_tr and not item_dict.get("trailer"):
+                        item_dict["trailer"] = clean_tr
+                    elif not item_dict.get("trailer") and meta_dict.get("trailer"):
                         item_dict["trailer"] = meta_dict["trailer"]
 
                     cb = item_dict.get("_on_hydrated")
@@ -3015,29 +3089,18 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
                     except Exception:
                         pass
 
-    if existing and existing.get("trailer") and not res.get("trailer"):
-        res["trailer"] = existing["trailer"]
+    if not res.get("trailer"):
+        res_tr = extract_trailer_id(res) or (extract_trailer_id(existing) if existing else None)
+        if res_tr:
+            res["trailer"] = res_tr
 
     if not res.get("trailer") and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
         try:
             c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
-            tmdb_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
-            tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168, timeout=2.5)
-            if tmdb_data and "meta" in tmdb_data:
-                tm_meta = tmdb_data["meta"]
-                tr_id = tm_meta.get("trailer")
-                if not tr_id:
-                    for ts in tm_meta.get("trailerStreams", []):
-                        if isinstance(ts, dict) and ts.get("ytId"):
-                            tr_id = ts.get("ytId")
-                            break
-                if not tr_id:
-                    for t in tm_meta.get("trailers", []):
-                        if isinstance(t, dict):
-                            tr_id = t.get("source") or t.get("ytId")
-                        elif isinstance(t, str):
-                            tr_id = t
-                        if tr_id: break
+            cm_url = f"https://v3-cinemeta.strem.io/meta/{c_type}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
+            cm_data = _get_cached_request(cm_url, max_age_hours=168, timeout=2.5)
+            if cm_data and isinstance(cm_data.get("meta"), dict):
+                tr_id = extract_trailer_id(cm_data["meta"])
                 if tr_id:
                     res["trailer"] = tr_id
         except Exception:
@@ -3160,6 +3223,11 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         has_real_desc = bool(desc) and desc not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD")
         has_videos = bool(cached.get("videos")) if media_type in ["series", "anime", "tv"] else True
         if has_real_desc and has_videos:
+            if not cached.get("trailer"):
+                cached_tr = extract_trailer_id(cached)
+                if cached_tr:
+                    cached["trailer"] = cached_tr
+                    database.save_cached_metadata(imdb_id, media_type, cached)
             if not cached.get("language") and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
                 cached = enrich_metadata_with_language_and_genres(cached, imdb_id, media_type, title)
                 database.save_cached_metadata(imdb_id, media_type, cached)
@@ -3308,28 +3376,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                     except Exception:
                         pass
                         
-            extracted_trailer = None
-            trailer_streams = cm.get("trailerStreams", [])
-            if trailer_streams and isinstance(trailer_streams, list):
-                for ts in trailer_streams:
-                    if isinstance(ts, dict) and ts.get("ytId"):
-                        extracted_trailer = ts.get("ytId")
-                        break
-            
-            if not extracted_trailer:
-                trailers = cm.get("trailers", [])
-                if trailers and isinstance(trailers, list):
-                    for t in trailers:
-                        if isinstance(t, dict):
-                            if t.get("source"): extracted_trailer = t.get("source")
-                            elif t.get("ytId"): extracted_trailer = t.get("ytId")
-                        elif isinstance(t, str):
-                            extracted_trailer = t
-                        if extracted_trailer: break
-                        
-            if not extracted_trailer and isinstance(cm.get("trailer"), str):
-                extracted_trailer = cm.get("trailer")
-                
+            extracted_trailer = extract_trailer_id(cm)
             cert = cm.get("certification") or cm.get("contentRating") or cm.get("rating") or cm.get("mpaa") or cm.get("ageRating") or cm.get("certification_badge") or ""
             if isinstance(cert, list): cert = ", ".join(cert)
 
@@ -3496,8 +3543,10 @@ def fetch_trailer_link_fast(imdb_id, media_type="movie", abort_event=None):
     # 1. Check cached metadata first — trailer may already be known
     try:
         cached = database.get_cached_metadata(primary_id)
-        if cached and cached.get("trailer"):
-            return cached["trailer"]
+        if cached:
+            tr = extract_trailer_id(cached)
+            if tr:
+                return tr
     except Exception:
         pass
 
@@ -3506,27 +3555,20 @@ def fetch_trailer_link_fast(imdb_id, media_type="movie", abort_event=None):
 
     c_type = "series" if media_type in ["series", "anime"] else "movie"
 
-    # 2. Query TMDB addon (fast, usually <1s cached)
+    # 2. Query Cinemeta metadata (authoritative & fast, usually <300ms)
     try:
-        tmdb_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{urllib.parse.quote(str(primary_id), safe=':')}.json"
-        tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168, timeout=2.5)
-        if tmdb_data and "meta" in tmdb_data:
-            tm_meta = tmdb_data["meta"]
-            tr_id = tm_meta.get("trailer")
-            if not tr_id:
-                for ts in tm_meta.get("trailerStreams", []):
-                    if isinstance(ts, dict) and ts.get("ytId"):
-                        tr_id = ts.get("ytId")
-                        break
-            if not tr_id:
-                for t in tm_meta.get("trailers", []):
-                    if isinstance(t, dict):
-                        tr_id = t.get("source") or t.get("ytId")
-                    elif isinstance(t, str):
-                        tr_id = t
-                    if tr_id:
-                        break
+        cm_url = f"https://v3-cinemeta.strem.io/meta/{c_type}/{urllib.parse.quote(str(primary_id), safe=':')}.json"
+        cm_data = _get_cached_request(cm_url, max_age_hours=168, timeout=2.5)
+        if cm_data and isinstance(cm_data.get("meta"), dict):
+            tr_id = extract_trailer_id(cm_data["meta"])
             if tr_id:
+                try:
+                    cached = database.get_cached_metadata(primary_id)
+                    if cached and not cached.get("trailer"):
+                        cached["trailer"] = tr_id
+                        database.save_cached_metadata(primary_id, media_type, cached)
+                except Exception:
+                    pass
                 return tr_id
     except Exception:
         pass

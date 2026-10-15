@@ -757,8 +757,10 @@ def resolve_youtube_url(clean_id_or_url, watch_url=None):
                 "--no-playlist",
                 "--no-check-certificates",
                 "--no-cache-dir",
+                "--no-update",
                 "--socket-timeout", "6",
-                "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+                "--extractor-args", "youtube:player_client=android",
+                "-f", "best[height<=1080]/bestvideo[height<=1080]+bestaudio/best",
                 watch_url
             ]
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
@@ -767,17 +769,17 @@ def resolve_youtube_url(clean_id_or_url, watch_url=None):
                 try:
                     info = json.loads(res.stdout.strip().splitlines()[0])
                     ua = info.get("http_headers", {}).get("User-Agent", "")
-                    req_formats = info.get("requested_formats") or []
-                    if req_formats:
-                        v_url = req_formats[0].get("url", "")
-                        a_url = req_formats[1].get("url", "") if len(req_formats) > 1 else None
-                        if v_url:
-                            return (v_url, a_url, ua)
                     direct_url = info.get("url", "")
+                    req_formats = info.get("requested_formats") or []
                     if direct_url:
                         if clean_id and not clean_id.startswith("http"):
                             database.save_cached_trailer_stream(clean_id, direct_url, ua)
                         return (direct_url, None, ua)
+                    elif req_formats:
+                        v_url = req_formats[0].get("url", "")
+                        a_url = req_formats[1].get("url", "") if len(req_formats) > 1 else None
+                        if v_url:
+                            return (v_url, a_url, ua)
                 except Exception as e:
                     print(f"[Trailer] yt-dlp JSON parse error: {e}")
         except Exception as e:
