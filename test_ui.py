@@ -14,6 +14,7 @@ def on_activate(app):
     print(f"Series tab button visible: {win.anime_inactive_btn_series.get_visible()}")
     sys.exit(0)
 
-app = Adw.Application(application_id="io.github.fastrizwaan.PopcornBox.Test")
-app.connect("activate", on_activate)
-app.run(None)
+if __name__ == "__main__":
+    app = Adw.Application(application_id="io.github.fastrizwaan.PopcornBox.Test")
+    app.connect("activate", on_activate)
+    app.run(None)

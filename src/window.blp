@@ -208,27 +208,12 @@ template $CineWindow: Adw.ApplicationWindow {
                   }
 
                 [start]
-                DropDown library_sort_dropdown {
+                ToggleButton filter_toggle_btn {
+                  icon-name: "filter-symbolic";
+                  tooltip-text: _("Filter");
                   valign: center;
-                  enable-search: true;
-                  tooltip-text: _("Catalog or Filter");
                   visible: false;
-                }
-
-                [start]
-                DropDown library_genre_dropdown {
-                  valign: center;
-                  enable-search: true;
-                  tooltip-text: _("Context Filter");
-                  visible: false;
-                }
-
-                [start]
-                CheckButton library_unique_check {
-                  label: _("Unique");
-                  valign: center;
-                  tooltip-text: _("Combined view: show all unique cards with no sections and no duplicates");
-                  visible: false;
+                  styles ["flat"]
                 }
 
                 [title]

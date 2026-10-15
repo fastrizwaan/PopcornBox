@@ -74,8 +74,11 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.language_dropdown = Gtk.DropDown()
         self.win.unique_check = Gtk.CheckButton()
         self.win.library_unique_check = Gtk.CheckButton()
+        self.win.filter_toggle_btn = Gtk.ToggleButton()
 
         self.win._syncing_discover_toolbar = False
+        self.win._syncing_unique_check = False
+        self.win.lookup_action = MagicMock(return_value=None)
         self.win.current_genre = None
         self.win.current_year = None
         self.win.current_language = None
@@ -84,6 +87,9 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._current_discover_addon = None
 
         self.win._cancel_all_background_fetching = MagicMock()
+        self.win._cancel_unique_background = MagicMock()
+        self.win._cancel_discover_background = MagicMock()
+        self.win._apply_sort_to_current_catalog = MagicMock()
         self.win._refresh_content = MagicMock()
         self.win._refresh_unique_combined_view = MagicMock()
         self.win._refresh_discover_page = MagicMock()
@@ -105,6 +111,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._on_discover_year_changed = lambda dd, p: CineWindow._on_discover_year_changed(self.win, dd, p)
         self.win._on_discover_language_changed = lambda dd, p: CineWindow._on_discover_language_changed(self.win, dd, p)
         self.win._on_discover_unique_toggled = lambda b: CineWindow._on_discover_unique_toggled(self.win, b)
+        self.win._on_unique_toggled = lambda b: CineWindow._on_unique_toggled(self.win, b)
         self.win._get_current_discover_filter_dict = lambda: CineWindow._get_current_discover_filter_dict(self.win)
         self.win._on_discover_filter_changed = lambda: CineWindow._on_discover_filter_changed(self.win)
         self.win._is_unique_mode_active = lambda: CineWindow._is_unique_mode_active(self.win)
@@ -123,7 +130,12 @@ class TestDiscoverToolbar(unittest.TestCase):
                 pass
         if hasattr(self.win, "_discover_active_pool") and self.win._discover_active_pool:
             try:
-                self.win._discover_active_pool.shutdown(wait=False, cancel_futures=True)
+                self.win._discover_active_pool.shutdown(wait=True, cancel_futures=True)
+            except Exception:
+                pass
+        if hasattr(self.win, "_unique_active_pool") and self.win._unique_active_pool:
+            try:
+                self.win._unique_active_pool.shutdown(wait=True, cancel_futures=True)
             except Exception:
                 pass
         if database._cache_conn is not None:
@@ -466,8 +478,10 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertEqual(rows[0]["catalog_id"], "year")
         self.assertEqual(rows[1]["catalog_id"], "top")
 
-    def test_populate_discover_row_slot_titles_with_genre_and_year(self):
+    @patch("src.movie_widget.MovieWidget")
+    def test_populate_discover_row_slot_titles_with_genre_and_year(self, mock_mw):
         """_populate_discover_row_slot should append both genre and year cleanly to row_title."""
+        mock_mw.return_value = Gtk.Box()
         self.win.current_genre = "Horror"
         self.win.current_year = "2026"
         self.win._on_movie_clicked = MagicMock()
@@ -698,6 +712,102 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertNotIn("2026", items)
         self.assertNotIn("2025", items)
         self.assertNotIn("2024", items)
+
+
+    def test_discover_unique_toggled_enables_and_disables_unique_view(self):
+        """Toggling unique_check in discover view must smoothly enable and disable unique mode."""
+        self.win.category_btn_stack.set_visible_child_name("discover")
+        self.win.library_stack.set_visible_child_name("discover")
+        self.win.unique_check.set_active(False)
+
+        # Enable unique
+        self.win.unique_check.set_active(True)
+        self.win._on_discover_unique_toggled(self.win.unique_check)
+        self.assertEqual(self.win.library_stack.get_visible_child_name(), "unique")
+        self.win._refresh_unique_combined_view.assert_called_once()
+
+        # Disable unique
+        self.win.unique_check.set_active(False)
+        self.win._on_discover_unique_toggled(self.win.unique_check)
+        self.assertEqual(self.win.library_stack.get_visible_child_name(), "discover")
+        self.win._refresh_discover_page.assert_called_once()
+
+    def test_category_tab_disabling_unique_restores_content_view(self):
+        """When in movies/series/anime tab, disabling unique returns to content view."""
+        self.win.category_btn_stack.set_visible_child_name("movies")
+        self.win.library_stack.set_visible_child_name("unique")
+        self.win.unique_check.set_active(False)
+
+        self.win._on_unique_toggled(self.win.unique_check)
+        self.assertEqual(self.win.library_stack.get_visible_child_name(), "content")
+        self.win._apply_sort_to_current_catalog.assert_called_once()
+        self.win._refresh_content.assert_called_once()
+
+    def test_window_ui_headerbar_has_filter_toggle_and_no_dropdowns(self):
+        """window.ui must contain filter_toggle_btn with filter-symbolic and remove library dropdowns."""
+        import xml.etree.ElementTree as ET
+        tree = ET.parse("src/window.ui")
+        root = tree.getroot()
+
+        all_ids = {el.get("id") for el in root.iter() if el.get("id")}
+        self.assertIn("filter_toggle_btn", all_ids)
+        self.assertNotIn("library_sort_dropdown", all_ids)
+        self.assertNotIn("library_genre_dropdown", all_ids)
+        self.assertNotIn("library_unique_check", all_ids)
+
+        # Verify filter_toggle_btn properties
+        btn = root.find(".//object[@id='filter_toggle_btn']")
+        self.assertIsNotNone(btn)
+        icon_prop = btn.find("./property[@name='icon-name']")
+        self.assertIsNotNone(icon_prop)
+        self.assertEqual(icon_prop.text, "filter-symbolic")
+
+    def test_filter_toggle_btn_revealer_sync(self):
+        """Toggling filter_toggle_btn updates discover_options_revealer and vice-versa."""
+        revealer = self.win.discover_options_revealer
+        btn = self.win.filter_toggle_btn
+
+        def on_filter_toggle_toggled(b):
+            is_active = b.get_active()
+            if revealer.get_reveal_child() != is_active:
+                revealer.set_reveal_child(is_active)
+        btn.connect("toggled", on_filter_toggle_toggled)
+
+        def on_revealer_notify(r, pspec):
+            is_rev = r.get_reveal_child()
+            if btn.get_active() != is_rev:
+                btn.set_active(is_rev)
+        revealer.connect("notify::reveal-child", on_revealer_notify)
+
+        # Button toggled on -> reveals toolbar
+        btn.set_active(True)
+        self.assertTrue(revealer.get_reveal_child())
+
+        # Button toggled off -> hides toolbar
+        btn.set_active(False)
+        self.assertFalse(revealer.get_reveal_child())
+
+        # Revealer updated -> syncs button
+        revealer.set_reveal_child(True)
+        self.assertTrue(btn.get_active())
+
+    def test_filter_toggle_btn_tab_switching_visibility(self):
+        """Filter toggle button must be hidden for home & discover, and visible for movies, series, anime."""
+        btn = self.win.filter_toggle_btn
+
+        # Test visibility rules on different tabs
+        for tab_name, should_be_visible in [
+            ("home", False),
+            ("discover", False),
+            ("movies", True),
+            ("series", True),
+            ("anime", True),
+        ]:
+            if tab_name in ("home", "discover"):
+                btn.set_visible(False)
+            else:
+                btn.set_visible(True)
+            self.assertEqual(btn.get_visible(), should_be_visible, f"Tab {tab_name} visibility mismatch")
 
 
 if __name__ == "__main__":

@@ -306,27 +306,14 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                       </object>
                                     </child>
                                     <child type="start">
-                                      <object class="GtkDropDown" id="library_sort_dropdown">
+                                      <object class="GtkToggleButton" id="filter_toggle_btn">
+                                        <property name="icon-name">filter-symbolic</property>
+                                        <property name="tooltip-text" translatable="yes">Filter</property>
                                         <property name="valign">3</property>
-                                        <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Catalog or Filter</property>
                                         <property name="visible">false</property>
-                                      </object>
-                                    </child>
-                                    <child type="start">
-                                      <object class="GtkDropDown" id="library_genre_dropdown">
-                                        <property name="valign">3</property>
-                                        <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Context Filter</property>
-                                        <property name="visible">false</property>
-                                      </object>
-                                    </child>
-                                    <child type="start">
-                                      <object class="GtkCheckButton" id="library_unique_check">
-                                        <property name="label" translatable="yes">Unique</property>
-                                        <property name="valign">3</property>
-                                        <property name="tooltip-text" translatable="yes">Combined view: show all unique cards with no sections and no duplicates</property>
-                                        <property name="visible">false</property>
+                                        <style>
+                                          <class name="flat"/>
+                                        </style>
                                       </object>
                                     </child>
                                     <child type="title">

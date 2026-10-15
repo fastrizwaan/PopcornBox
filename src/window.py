@@ -3472,9 +3472,7 @@ class CineWindow(Adw.ApplicationWindow):
     year_dropdown: Gtk.DropDown = Gtk.Template.Child()
     language_dropdown: Gtk.DropDown = Gtk.Template.Child()
     unique_check: Gtk.CheckButton = Gtk.Template.Child()
-    library_genre_dropdown: Gtk.DropDown = Gtk.Template.Child()
-    library_sort_dropdown: Gtk.DropDown = Gtk.Template.Child()
-    library_unique_check: Gtk.CheckButton = Gtk.Template.Child()
+    filter_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
     unique_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
     unique_flowbox: Gtk.FlowBox = Gtk.Template.Child()
     search_catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
@@ -3589,6 +3587,9 @@ class CineWindow(Adw.ApplicationWindow):
         debug_log("CineWindow.__init__ BEGIN")
         super().__init__(**kwargs)
         debug_log("CineWindow.__init__ super().__init__ DONE (GTK template bound)")
+        self.library_sort_dropdown = None
+        self.library_genre_dropdown = None
+        self.library_unique_check = None
         self.app: Adw.Application = cast(Adw.Application, kwargs.get("application"))
         self.app_mpris: MPRIS = self.app.mpris  # type: ignore
 
@@ -6228,6 +6229,25 @@ class CineWindow(Adw.ApplicationWindow):
         from . import database
         database.register_genre_listener(self._on_database_genres_updated)
 
+        def on_filter_toggle_toggled(button):
+            is_active = button.get_active()
+            if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
+                if self.discover_options_revealer.get_reveal_child() != is_active:
+                    self.discover_options_revealer.set_reveal_child(is_active)
+        if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn is not None:
+            self.filter_toggle_btn.connect("toggled", on_filter_toggle_toggled)
+
+        def on_discover_revealer_notify(revealer, pspec):
+            is_revealed = revealer.get_reveal_child()
+            if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn is not None:
+                if self.filter_toggle_btn.get_active() != is_revealed:
+                    self.filter_toggle_btn.set_active(is_revealed)
+            if hasattr(self, "discover_filter_toggle_btn") and self.discover_filter_toggle_btn is not None:
+                if self.discover_filter_toggle_btn.get_active() != is_revealed:
+                    self.discover_filter_toggle_btn.set_active(is_revealed)
+        if hasattr(self, "discover_options_revealer") and self.discover_options_revealer is not None:
+            self.discover_options_revealer.connect("notify::reveal-child", on_discover_revealer_notify)
+
         def on_discover_filter_toggled(button, pspec):
             is_active = button.get_active()
             self.discover_options_revealer.set_reveal_child(is_active)
@@ -6236,12 +6256,17 @@ class CineWindow(Adw.ApplicationWindow):
 
         def on_back_to_discover_clicked(button):
             if self._is_unique_mode_active() is True:
-                self.library_unique_check.set_active(False)
+                if hasattr(self, "unique_check") and self.unique_check:
+                    self.unique_check.set_active(False)
+                if hasattr(self, "library_unique_check") and self.library_unique_check:
+                    self.library_unique_check.set_active(False)
             self.discover_back_box.set_visible(False)
             self.library_stack.set_visible_child_name("discover")
             self.discover_options_revealer.set_reveal_child(False)
-            if hasattr(self, "discover_filter_toggle_btn"):
+            if hasattr(self, "discover_filter_toggle_btn") and self.discover_filter_toggle_btn:
                 self.discover_filter_toggle_btn.set_active(False)
+            if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn:
+                self.filter_toggle_btn.set_active(False)
             filter_type = getattr(self, "_current_discover_type", "all")
             filter_addon = getattr(self, "_current_discover_addon", None)
             self._sync_library_genre_dropdown_selection(self.current_genre)
@@ -6258,6 +6283,9 @@ class CineWindow(Adw.ApplicationWindow):
             self.category_btn_stack.set_visible_child_name("home")
             if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
                 self.discover_options_revealer.set_reveal_child(False)
+            if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn:
+                self.filter_toggle_btn.set_visible(False)
+                self.filter_toggle_btn.set_active(False)
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
                 self.library_sort_dropdown.set_visible(False)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
@@ -6280,6 +6308,9 @@ class CineWindow(Adw.ApplicationWindow):
         def on_switch_discover(action, parameter):
             self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("discover")
+            if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn:
+                self.filter_toggle_btn.set_visible(False)
+                self.filter_toggle_btn.set_active(False)
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
                 self.library_sort_dropdown.set_visible(False)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
@@ -6308,12 +6339,14 @@ class CineWindow(Adw.ApplicationWindow):
             self._cancel_all_background_fetching()
             m_type = parameter.get_string()
             self.category_btn_stack.set_visible_child_name("discover")
+            if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn:
+                self.filter_toggle_btn.set_visible(m_type in ("movie", "series", "anime"))
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
-                self.library_sort_dropdown.set_visible(True)
+                self.library_sort_dropdown.set_visible(False)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
-                self.library_genre_dropdown.set_visible(True)
+                self.library_genre_dropdown.set_visible(False)
             if hasattr(self, "library_unique_check") and self.library_unique_check:
-                self.library_unique_check.set_visible(True)
+                self.library_unique_check.set_visible(False)
             self.discover_back_box.set_visible(False)
             self._current_discover_type = m_type
             self.current_media_type = m_type if m_type != "all" else "movie"
@@ -6454,12 +6487,15 @@ class CineWindow(Adw.ApplicationWindow):
             self.category_btn_stack.set_visible_child_name("movies")
             if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
                 self.discover_options_revealer.set_reveal_child(False)
+            if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn:
+                self.filter_toggle_btn.set_visible(True)
+                self.filter_toggle_btn.set_active(False)
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
-                self.library_sort_dropdown.set_visible(True)
+                self.library_sort_dropdown.set_visible(False)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
-                self.library_genre_dropdown.set_visible(True)
+                self.library_genre_dropdown.set_visible(False)
             if hasattr(self, "library_unique_check") and self.library_unique_check:
-                self.library_unique_check.set_visible(True)
+                self.library_unique_check.set_visible(False)
             self.discover_back_box.set_visible(False)
             self.current_genre = None
             self.current_year = None
@@ -6468,11 +6504,16 @@ class CineWindow(Adw.ApplicationWindow):
             self.current_media_type = "movie"
             self._current_discover_addon = None
             if hasattr(self, "media_type_dropdown") and hasattr(self, "media_type_keys") and "movie" in self.media_type_keys:
-                self._syncing_dropdowns = True
+                self._syncing_discover_toolbar = True
                 try:
                     self.media_type_dropdown.set_selected(self.media_type_keys.index("movie"))
+                    self._populate_discover_catalog_dropdown("movie")
+                    self._populate_discover_section_dropdown(None, "movie")
+                    self._populate_discover_genre_dropdown(None, "movie", None)
+                    self._populate_discover_year_dropdown(None, "movie", None)
+                    self._populate_discover_language_dropdown(None, "movie", None)
                 finally:
-                    self._syncing_dropdowns = False
+                    self._syncing_discover_toolbar = False
             if getattr(self, "current_catalog", None):
                 c_mtype = self.current_catalog.get("media_type") or self.current_catalog.get("type")
                 if c_mtype and not api.is_type_match(c_mtype, "movie"):
@@ -6497,12 +6538,15 @@ class CineWindow(Adw.ApplicationWindow):
             self.category_btn_stack.set_visible_child_name("series")
             if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
                 self.discover_options_revealer.set_reveal_child(False)
+            if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn:
+                self.filter_toggle_btn.set_visible(True)
+                self.filter_toggle_btn.set_active(False)
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
-                self.library_sort_dropdown.set_visible(True)
+                self.library_sort_dropdown.set_visible(False)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
-                self.library_genre_dropdown.set_visible(True)
+                self.library_genre_dropdown.set_visible(False)
             if hasattr(self, "library_unique_check") and self.library_unique_check:
-                self.library_unique_check.set_visible(True)
+                self.library_unique_check.set_visible(False)
             self.discover_back_box.set_visible(False)
             self.current_genre = None
             self.current_year = None
@@ -6511,11 +6555,16 @@ class CineWindow(Adw.ApplicationWindow):
             self.current_media_type = "series"
             self._current_discover_addon = None
             if hasattr(self, "media_type_dropdown") and hasattr(self, "media_type_keys") and "series" in self.media_type_keys:
-                self._syncing_dropdowns = True
+                self._syncing_discover_toolbar = True
                 try:
                     self.media_type_dropdown.set_selected(self.media_type_keys.index("series"))
+                    self._populate_discover_catalog_dropdown("series")
+                    self._populate_discover_section_dropdown(None, "series")
+                    self._populate_discover_genre_dropdown(None, "series", None)
+                    self._populate_discover_year_dropdown(None, "series", None)
+                    self._populate_discover_language_dropdown(None, "series", None)
                 finally:
-                    self._syncing_dropdowns = False
+                    self._syncing_discover_toolbar = False
             if getattr(self, "current_catalog", None):
                 c_mtype = self.current_catalog.get("media_type") or self.current_catalog.get("type")
                 if c_mtype and not api.is_type_match(c_mtype, "series"):
@@ -6540,12 +6589,15 @@ class CineWindow(Adw.ApplicationWindow):
             self.category_btn_stack.set_visible_child_name("anime")
             if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
                 self.discover_options_revealer.set_reveal_child(False)
+            if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn:
+                self.filter_toggle_btn.set_visible(True)
+                self.filter_toggle_btn.set_active(False)
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
-                self.library_sort_dropdown.set_visible(True)
+                self.library_sort_dropdown.set_visible(False)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
-                self.library_genre_dropdown.set_visible(True)
+                self.library_genre_dropdown.set_visible(False)
             if hasattr(self, "library_unique_check") and self.library_unique_check:
-                self.library_unique_check.set_visible(True)
+                self.library_unique_check.set_visible(False)
             self.discover_back_box.set_visible(False)
             self.current_genre = None
             self.current_year = None
@@ -6554,11 +6606,16 @@ class CineWindow(Adw.ApplicationWindow):
             self.current_media_type = "anime"
             self._current_discover_addon = None
             if hasattr(self, "media_type_dropdown") and hasattr(self, "media_type_keys") and "anime" in self.media_type_keys:
-                self._syncing_dropdowns = True
+                self._syncing_discover_toolbar = True
                 try:
                     self.media_type_dropdown.set_selected(self.media_type_keys.index("anime"))
+                    self._populate_discover_catalog_dropdown("anime")
+                    self._populate_discover_section_dropdown(None, "anime")
+                    self._populate_discover_genre_dropdown(None, "anime", None)
+                    self._populate_discover_year_dropdown(None, "anime", None)
+                    self._populate_discover_language_dropdown(None, "anime", None)
                 finally:
-                    self._syncing_dropdowns = False
+                    self._syncing_discover_toolbar = False
             if getattr(self, "current_catalog", None):
                 c_mtype = self.current_catalog.get("media_type") or self.current_catalog.get("type")
                 if c_mtype and not api.is_type_match(c_mtype, "anime"):
@@ -7799,9 +7856,12 @@ class CineWindow(Adw.ApplicationWindow):
         self._on_discover_filter_changed()
 
     def _on_discover_unique_toggled(self, button):
-        if getattr(self, "_syncing_unique_check", False) or getattr(self, "_syncing_discover_toolbar", False):
+        if getattr(self, "_syncing_unique_check", False) is True or getattr(self, "_syncing_discover_toolbar", False) is True:
             return
-        self._on_discover_filter_changed()
+        if hasattr(self, "_on_unique_toggled"):
+            self._on_unique_toggled(button)
+        else:
+            CineWindow._on_unique_toggled(self, button)
 
     def _get_current_discover_filter_dict(self):
         t_sel = self.type_dropdown.get_selected() if hasattr(self, "type_dropdown") and self.type_dropdown else 0
@@ -8005,23 +8065,33 @@ class CineWindow(Adw.ApplicationWindow):
             self._refresh_unique_combined_view()
         else:
             self._cancel_unique_background()
-            cur_cat = getattr(self, "current_catalog", None)
-            if cur_cat and getattr(self, "_unique_was_content_page", False):
-                self._unique_was_content_page = False
-                if hasattr(self, "discover_back_box"):
-                    self.discover_back_box.set_visible(True)
-                if hasattr(self, "library_stack"):
-                    self.library_stack.set_visible_child_name("content")
-                self._refresh_content()
-            else:
+            cat_btn = self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else ""
+            if cat_btn in ("movies", "series", "anime"):
                 self._unique_was_content_page = False
                 if hasattr(self, "discover_back_box"):
                     self.discover_back_box.set_visible(False)
                 if hasattr(self, "library_stack"):
-                    self.library_stack.set_visible_child_name("discover")
-                filter_type = getattr(self, "_current_discover_type", "all")
-                filter_addon = getattr(self, "_current_discover_addon", None)
-                self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=filter_addon, force_refresh=False)
+                    self.library_stack.set_visible_child_name("content")
+                self._apply_sort_to_current_catalog()
+                self._refresh_content()
+            else:
+                cur_cat = getattr(self, "current_catalog", None)
+                if cur_cat and getattr(self, "_unique_was_content_page", False):
+                    self._unique_was_content_page = False
+                    if hasattr(self, "discover_back_box"):
+                        self.discover_back_box.set_visible(True)
+                    if hasattr(self, "library_stack"):
+                        self.library_stack.set_visible_child_name("content")
+                    self._refresh_content()
+                else:
+                    self._unique_was_content_page = False
+                    if hasattr(self, "discover_back_box"):
+                        self.discover_back_box.set_visible(False)
+                    if hasattr(self, "library_stack"):
+                        self.library_stack.set_visible_child_name("discover")
+                    filter_type = getattr(self, "_current_discover_type", "all")
+                    filter_addon = getattr(self, "_current_discover_addon", None)
+                    self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=filter_addon, force_refresh=True)
 
 
     def _on_unique_scroll(self, adj):

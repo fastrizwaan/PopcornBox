@@ -61,5 +61,6 @@
     <file alias="non-starred-symbolic.svg">../data/icons/scalable/actions/non-starred-symbolic.svg</file>
     <file alias="starred-symbolic.svg">../data/icons/scalable/actions/starred-symbolic.svg</file>
     <file alias="star-outline-rounded-symbolic.svg">../data/icons/scalable/actions/star-outline-rounded-symbolic.svg</file>
+    <file alias="filter-symbolic.svg">../data/icons/scalable/actions/filter-symbolic.svg</file>
   </gresource>
 </gresources>

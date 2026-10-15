@@ -12,4 +12,5 @@ class TestWin(Gtk.Window):
         print("hasattr:", hasattr(self, "sw"))
         print("sw:", self.sw)
         
-TestWin()
+if __name__ == "__main__":
+    TestWin()
