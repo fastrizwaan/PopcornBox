@@ -7256,21 +7256,38 @@ class CineWindow(Adw.ApplicationWindow):
                     if hasattr(self, "discover_grid_title") and hasattr(self.discover_grid_title, "set_text"):
                         self.discover_grid_title.set_text(base_title)
                     return
-            self.current_catalog["manifest_url"] = "https://anime-kitsu.strem.fun/manifest.json"
-            if cur_sort == "Featured":
-                cat_id = "kitsu-anime-top"
-                base_title = "Top Rated Anime"
-            elif getattr(self, "current_genre", None) or cur_sort == "Genre":
-                cat_id = "kitsu-anime-popular"
-                base_title = "Popular Anime"
-            elif cur_sort == "Trending":
-                cat_id = "kitsu-anime-trending"
-                base_title = "Trending Anime"
+            avail_cats = api.get_available_catalogs("anime")
+            if avail_cats:
+                matching_cat = None
+                for cat in avail_cats:
+                    cid = str(cat.get("catalog_id") or "").lower()
+                    cname = str(cat.get("catalog_name") or "").lower()
+                    if cur_sort == "Featured" and ("top" in cid or "rating" in cid or "featured" in cname or "top rated" in cname):
+                        matching_cat = cat
+                        break
+                    elif cur_sort == "Trending" and ("trend" in cid or "trend" in cname or "popular" in cid):
+                        matching_cat = cat
+                        break
+                    elif (cur_sort in ["Genre", "Popular"] or getattr(self, "current_genre", None)) and ("pop" in cid or "top" in cid or "pop" in cname):
+                        matching_cat = cat
+                        break
+                if not matching_cat:
+                    matching_cat = avail_cats[0]
+                self.current_catalog = dict(matching_cat)
             else:
-                cat_id = "kitsu-anime-popular"
-                base_title = "Popular Anime"
-            self.current_catalog["catalog_id"] = cat_id
-            self.current_catalog["display_name"] = base_title
+                self.current_catalog["manifest_url"] = "https://v3-cinemeta.strem.io/manifest.json"
+                if cur_sort == "Featured":
+                    cat_id = "imdbRating"
+                    base_title = "Featured Anime"
+                elif cur_sort in ["Recent", "Year"] or getattr(self, "current_year", None):
+                    cat_id = "year"
+                    base_title = "New Anime"
+                else:
+                    cat_id = "top"
+                    base_title = "Popular Anime"
+                self.current_catalog["catalog_id"] = cat_id
+                self.current_catalog["media_type"] = "series"
+                self.current_catalog["display_name"] = base_title
         else:
             if not self.current_catalog.get("manifest_url") or "kitsu" in str(self.current_catalog.get("manifest_url", "")).lower():
                 self.current_catalog["manifest_url"] = "https://v3-cinemeta.strem.io/manifest.json"
@@ -7423,12 +7440,15 @@ class CineWindow(Adw.ApplicationWindow):
                     if matching_cat:
                         self.current_catalog = dict(matching_cat)
                     elif target_type == "anime":
-                        self.current_catalog = {
-                            "manifest_url": "https://anime-kitsu.strem.fun/manifest.json",
-                            "catalog_id": "kitsu-anime-popular",
-                            "media_type": "anime",
-                            "display_name": "Popular Anime"
-                        }
+                        if avail_cats:
+                            self.current_catalog = dict(avail_cats[0])
+                        else:
+                            self.current_catalog = {
+                                "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+                                "catalog_id": "top",
+                                "media_type": "series",
+                                "display_name": "Popular Anime"
+                            }
                     else:
                         self.current_catalog = {
                             "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",

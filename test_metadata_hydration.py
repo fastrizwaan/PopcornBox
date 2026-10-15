@@ -270,7 +270,7 @@ class TestMetadataHydration(unittest.TestCase):
             found = False
             while time.time() - start_t < 5.0:
                 meta = database.get_cached_metadata("tt2560140", "anime")
-                if meta and meta.get("genres"):
+                if meta and meta.get("genres") and items[0].get("genres"):
                     found = True
                     break
                 time.sleep(0.05)

@@ -63,51 +63,6 @@ DEFAULT_ADDONS = [
             {"type": "series", "id": "year", "genres": ["2026","2025","2024","2023","2022","2021","2020","2019","2018","2017","2016","2015","2014","2013","2012","2011","2010","2009","2008","2007","2006","2005","2004","2003","2002","2001","2000","1999","1998","1997","1996","1995","1994","1993","1992","1991","1990","1989","1988","1987","1986","1985","1984","1983","1982","1981","1980","1979","1978","1977","1976","1975","1974","1973","1972","1971","1970","1969","1968","1967","1966","1965","1964","1963","1962","1961","1960"], "extra": [{"name": "genre", "options": ["2026","2025","2024","2023","2022","2021","2020","2019","2018","2017","2016","2015","2014","2013","2012","2011","2010","2009","2008","2007","2006","2005","2004","2003","2002","2001","2000","1999","1998","1997","1996","1995","1994","1993","1992","1991","1990","1989","1988","1987","1986","1985","1984","1983","1982","1981","1980","1979","1978","1977","1976","1975","1974","1973","1972","1971","1970","1969","1968","1967","1966","1965","1964","1963","1962","1961","1960"]}, {"name": "skip"}], "name": "New"},
             {"type": "series", "id": "imdbRating", "genres": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western","Reality-TV","Talk-Show","Game-Show"], "extra": [{"name": "genre", "options": ["Action","Adventure","Animation","Biography","Comedy","Crime","Documentary","Drama","Family","Fantasy","History","Horror","Mystery","Romance","Sci-Fi","Sport","Thriller","War","Western","Reality-TV","Talk-Show","Game-Show"]}, {"name": "skip"}], "name": "Featured"}
         ]
-    },
-    {
-        "id": "anime-kitsu",
-        "name": "Anime Kitsu",
-        "version": "1.0.0",
-        "description": "Provides anime catalogs from Kitsu.",
-        "manifest_url": "https://anime-kitsu.strem.fun/manifest.json",
-        "enabled": True,
-        "resources": ["catalog", "meta"],
-        "types": ["anime", "series", "movie"],
-        "idPrefixes": ["kitsu:"],
-        "catalogs": [
-            {
-                "type": "anime",
-                "id": "kitsu-anime-trending",
-                "name": "Trending",
-                "genres": ["Action","Adventure","Cars","Comedy","Dementia","Demons","Drama","Ecchi","Fantasy","Game","Harem","Historical","Horror","Josei","Kids","Magic","Martial Arts","Mecha","Military","Music","Mystery","Parody","Police","Psychological","Romance","Samurai","School","Sci-Fi","Seinen","Shoujo","Shounen","Slice of Life","Space","Sports","Super Power","Supernatural","Thriller","Vampire"],
-                "extra": [{"name": "genre", "options": ["Action","Adventure","Cars","Comedy","Dementia","Demons","Drama","Ecchi","Fantasy","Game","Harem","Historical","Horror","Josei","Kids","Magic","Martial Arts","Mecha","Military","Music","Mystery","Parody","Police","Psychological","Romance","Samurai","School","Sci-Fi","Seinen","Shoujo","Shounen","Slice of Life","Space","Sports","Super Power","Supernatural","Thriller","Vampire"]}, {"name": "search"}, {"name": "skip"}]
-            },
-            {
-                "type": "anime",
-                "id": "kitsu-anime-top",
-                "name": "Top Rated",
-                "genres": ["Action","Adventure","Cars","Comedy","Dementia","Demons","Drama","Ecchi","Fantasy","Game","Harem","Historical","Horror","Josei","Kids","Magic","Martial Arts","Mecha","Military","Music","Mystery","Parody","Police","Psychological","Romance","Samurai","School","Sci-Fi","Seinen","Shoujo","Shounen","Slice of Life","Space","Sports","Super Power","Supernatural","Thriller","Vampire"],
-                "extra": [{"name": "genre", "options": ["Action","Adventure","Cars","Comedy","Dementia","Demons","Drama","Ecchi","Fantasy","Game","Harem","Historical","Horror","Josei","Kids","Magic","Martial Arts","Mecha","Military","Music","Mystery","Parody","Police","Psychological","Romance","Samurai","School","Sci-Fi","Seinen","Shoujo","Shounen","Slice of Life","Space","Sports","Super Power","Supernatural","Thriller","Vampire"]}, {"name": "skip"}]
-            }
-        ]
-    },
-    {
-        "id": "local.iptv-org",
-        "name": "IPTV Org TV Channels",
-        "version": "1.0.0",
-        "description": "Free worldwide live TV channels.",
-        "manifest_url": "https://iptv-org.github.io/manifest.json",
-        "enabled": True,
-        "resources": ["catalog", "meta", "stream"],
-        "types": ["tv", "channel", "tvchannel"],
-        "idPrefixes": ["iptv:"],
-        "catalogs": [
-            {"type": "tv", "id": "US", "name": "USA TV Channels"},
-            {"type": "tv", "id": "UK", "name": "UK TV Channels"},
-            {"type": "tv", "id": "IN", "name": "India TV Channels"},
-            {"type": "tv", "id": "CA", "name": "Canada TV Channels"},
-            {"type": "tv", "id": "ALL", "name": "All World Channels"}
-        ]
     }
 ]
 
@@ -151,10 +106,33 @@ def _read_db():
             if "hide_adult_content" not in data["settings"]:
                 data["settings"]["hide_adult_content"] = True
             if "addons" not in data:
-                data["addons"] = DEFAULT_ADDONS
+                data["addons"] = list(DEFAULT_ADDONS)
             else:
+                # Remove unbundled default addons (Anime Kitsu and IPTV Org)
+                unbundled_ids = {"anime-kitsu", "local.iptv-org"}
+                initial_count = len(data["addons"])
+                data["addons"] = [
+                    a for a in data["addons"]
+                    if a.get("id") not in unbundled_ids
+                    and "anime-kitsu.strem.fun" not in str(a.get("manifest_url", "")).lower()
+                    and "iptv-org.github.io" not in str(a.get("manifest_url", "")).lower()
+                ]
+                migrated = (len(data["addons"]) != initial_count)
+                if migrated:
+                    removed_defs = set(data.get("settings", {}).get("removed_default_addons", []))
+                    removed_defs.update(unbundled_ids)
+                    data.setdefault("settings", {})["removed_default_addons"] = list(removed_defs)
+                    try:
+                        with _cache_db_lock:
+                            conn = _get_cache_db()
+                            c = conn.cursor()
+                            c.execute("DELETE FROM addon_catalog_cache WHERE manifest_url LIKE '%anime-kitsu%' OR manifest_url LIKE '%iptv-org%'")
+                            c.execute("DELETE FROM catalog_cache WHERE catalog_url LIKE '%anime-kitsu%' OR catalog_url LIKE '%iptv-org%'")
+                            conn.commit()
+                    except Exception:
+                        pass
+
                 # Ensure default/bundled addons are present in the user database unless intentionally removed
-                migrated = False
                 removed_defaults = set(data.get("settings", {}).get("removed_default_addons", []))
                 for default_addon in DEFAULT_ADDONS:
                     if default_addon.get("id") in removed_defaults:
