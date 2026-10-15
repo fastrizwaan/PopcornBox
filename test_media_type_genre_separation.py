@@ -46,9 +46,10 @@ class TestMediaTypeGenreSeparation(unittest.TestCase):
 
         database.CONFIG_DIR = Path(self.temp_dir.name)
         database.DB_FILE = database.CONFIG_DIR / "data.json"
+        database.reset_json_cache()
         database._cache_conn = None
         database._cache_db_initialized = False
-        api.invalidate_catalogs_cache()
+        api.reset_addon_health_cache()
 
     def tearDown(self):
         if database._cache_conn is not None:
@@ -61,8 +62,9 @@ class TestMediaTypeGenreSeparation(unittest.TestCase):
         database.CONFIG_DIR = self.orig_config_dir
         database.BASE_DIR = self.orig_base_dir
         database.DB_FILE = self.orig_db_file
+        database.reset_json_cache()
         self.temp_dir.cleanup()
-        api.invalidate_catalogs_cache()
+        api.reset_addon_health_cache()
 
     def test_is_type_match_strict_groups(self):
         """Test that movie and series type matching are strictly separated."""

@@ -1911,45 +1911,56 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
     return items
 
 def get_stored_years(media_type=None):
-    """Return distinct 4-digit release years stored in item_genres."""
+    """Return distinct 4-digit release years stored in item_genres (not exceeding current year)."""
     years = set()
     try:
+        import datetime
+        current_year = datetime.datetime.now().year
         with _cache_db_lock:
             conn = _get_cache_db()
             cursor = conn.cursor()
-            query = "SELECT DISTINCT year FROM item_genres WHERE year IS NOT NULL AND length(year) = 4 AND year GLOB '[1-2][0-9][0-9][0-9]'"
-            params = ()
+            query = "SELECT DISTINCT year FROM item_genres WHERE year IS NOT NULL AND length(year) = 4 AND year GLOB '[1-2][0-9][0-9][0-9]' AND CAST(year AS INTEGER) <= ?"
+            params = [current_year]
             if media_type and media_type not in ("all", "discover"):
                 query += " AND media_type = ?"
-                params = (str(media_type),)
-            cursor.execute(query, params)
+                params.append(str(media_type))
+            cursor.execute(query, tuple(params))
             for row in cursor.fetchall():
                 if row and row[0]:
                     y = row[0].strip()
-                    if y.isdigit() and len(y) == 4:
+                    if y.isdigit() and len(y) == 4 and int(y) <= current_year:
                         years.add(y)
     except Exception as e:
         print(f"Error reading stored years: {e}")
     return sorted(list(years), reverse=True)
 
-def get_available_years(media_type=None):
-    """Return distinct release years (stored + recent years) in descending order."""
-    mt = (media_type or "all").lower()
-    stored_years = set(get_stored_years(media_type=None if mt in ("all", "discover") else mt))
-    import datetime
-    current_year = datetime.datetime.now().year
-    for y in range(current_year, 2014, -1):
-        stored_years.add(str(y))
-    return sorted(list(stored_years), reverse=True)
-
 _DROPDOWN_CACHE_LOCK = threading.Lock()
 _GENRES_CACHE = {}
 _SORT_OPTIONS_CACHE = {}
+_YEARS_CACHE = {}
 
 def invalidate_dropdown_caches():
     with _DROPDOWN_CACHE_LOCK:
         _GENRES_CACHE.clear()
         _SORT_OPTIONS_CACHE.clear()
+        _YEARS_CACHE.clear()
+
+def get_available_years(media_type=None):
+    """Return distinct release years (stored + recent years) in descending order, capped at current year."""
+    mt = (media_type or "all").lower()
+    with _DROPDOWN_CACHE_LOCK:
+        if mt in _YEARS_CACHE:
+            return list(_YEARS_CACHE[mt])
+    import datetime
+    current_year = datetime.datetime.now().year
+    stored_years = set(get_stored_years(media_type=None if mt in ("all", "discover") else mt))
+    stored_years = {y for y in stored_years if y.isdigit() and int(y) <= current_year}
+    for y in range(current_year, 2014, -1):
+        stored_years.add(str(y))
+    res = sorted(list(stored_years), reverse=True)
+    with _DROPDOWN_CACHE_LOCK:
+        _YEARS_CACHE[mt] = list(res)
+    return res
 
 def get_available_sort_options(media_type=None):
     """Return options for the Sort/Year dropdown: Popular, Featured, Recent, followed by years."""
@@ -2155,19 +2166,25 @@ def get_cached_catalog(cache_key, max_age_hours=24):
         return None
     now = time.time()
     # 1. Fast in-memory check
+    found_data = None
     with _MEM_CATALOG_LOCK:
         if cache_key in _MEM_CATALOG_CACHE:
             data, ts = _MEM_CATALOG_CACHE[cache_key]
             if (now - ts) / 3600 < max_age_hours:
-                if is_adult_content_hidden():
-                    from . import api
-                    return [it for it in data if not api.is_adult_item(it)]
-                return data
+                found_data = data
             else:
                 del _MEM_CATALOG_CACHE[cache_key]
 
+    if found_data is not None:
+        if is_adult_content_hidden():
+            from . import api
+            return [it for it in found_data if not api.is_adult_item(it)]
+        return found_data
+
     # 2. SQLite cache check
     try:
+        raw_json = None
+        updated_at = None
         with _cache_db_lock:
             conn = _get_cache_db()
             cursor = conn.cursor()
@@ -2176,17 +2193,20 @@ def get_cached_catalog(cache_key, max_age_hours=24):
             if row and row[0]:
                 updated_at = row[1]
                 if (now - updated_at) / 3600 < max_age_hours:
-                    data = json.loads(row[0])
-                    if not data:
-                        return None
-                    with _MEM_CATALOG_LOCK:
-                        if len(_MEM_CATALOG_CACHE) > 500:
-                            _MEM_CATALOG_CACHE.clear()
-                        _MEM_CATALOG_CACHE[cache_key] = (data, updated_at)
-                    if is_adult_content_hidden():
-                        from . import api
-                        return [it for it in data if not api.is_adult_item(it)]
-                    return data
+                    raw_json = row[0]
+
+        if raw_json:
+            data = json.loads(raw_json)
+            if not data:
+                return None
+            with _MEM_CATALOG_LOCK:
+                if len(_MEM_CATALOG_CACHE) > 500:
+                    _MEM_CATALOG_CACHE.clear()
+                _MEM_CATALOG_CACHE[cache_key] = (data, updated_at)
+            if is_adult_content_hidden():
+                from . import api
+                return [it for it in data if not api.is_adult_item(it)]
+            return data
     except Exception as e:
         print(f"Error reading catalog cache: {e}")
     return None

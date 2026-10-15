@@ -466,6 +466,66 @@ class TestUniqueCombinedView(unittest.TestCase):
             # _on_unique_scroll should have been called to fill the viewport
             win._on_unique_scroll.assert_called_with(mock_adj)
 
+    def test_deliver_unique_slices_shows_empty_language_label(self):
+        win = MagicMock()
+        win.unique_request_id = 1
+        win.is_fetching_unique = True
+        win.current_language = "Hindi"
+        win.unique_flowbox = Gtk.FlowBox()
+
+        CineWindow._deliver_unique_slices_to_ui(win, [], req_id=1, has_more=False)
+        self.assertFalse(win.has_more_unique)
+        self.assertFalse(win.is_fetching_unique)
+        first_child = win.unique_flowbox.get_first_child()
+        self.assertIsNotNone(first_child)
+        box = first_child.get_child() if hasattr(first_child, "get_child") else first_child
+        lbl = box.get_first_child()
+        self.assertIsNotNone(lbl)
+        self.assertEqual(lbl.get_label(), "No items found for this language.")
+
+    def test_unique_skips_unsupported_language_catalogs_without_network(self):
+        import threading
+        win = MagicMock()
+        win.unique_request_id = 1
+        win.is_fetching_unique = False
+        win.has_more_unique = True
+        win.current_language = "Hindi"
+        win.current_genre = None
+        win.current_year = None
+        win._unique_abort_event = None
+        win._unique_lock = threading.Lock()
+        win.unique_seen_ids = set()
+        win.unique_seen_keys = set()
+        win.unique_page_per_catalog = {}
+        win.unique_exhausted_catalogs = set()
+        win.unique_truly_empty_catalogs = set()
+        win.unique_productive_catalogs = []
+        win.unique_empty_streak = {}
+        win.unique_catalog_idx = 0
+        win.unique_flowbox = Gtk.FlowBox()
+
+        cinemeta_cat = {
+            "addon_name": "Cinemeta",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+            "catalog_id": "top",
+            "catalog_name": "Popular",
+            "media_type": "movie",
+            "genres": ["Action", "Comedy", "Drama"]
+        }
+        win.unique_catalogs = [cinemeta_cat]
+        win.unique_catalogs_by_key = {
+            ("https://v3-cinemeta.strem.io/manifest.json", "top", "movie"): cinemeta_cat
+        }
+
+        with patch("src.api.fetch_items") as mock_fetch, \
+             patch("src.database.get_cached_catalog", return_value=None):
+            CineWindow._load_next_unique_batch(win)
+            import time
+            time.sleep(0.15)
+
+            mock_fetch.assert_not_called()
+            self.assertIn(("https://v3-cinemeta.strem.io/manifest.json", "top", "movie"), win.unique_exhausted_catalogs)
+
 
 if __name__ == "__main__":
     unittest.main()

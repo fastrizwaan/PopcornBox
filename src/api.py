@@ -807,6 +807,18 @@ def reset_addon_session_status(manifest_url=None):
 _IN_MEMORY_ADDON_HEALTH = {}
 _IN_MEMORY_HEALTH_INIT = False
 
+def reset_addon_health_cache():
+    """Reset in-memory addon health and status cache."""
+    global _IN_MEMORY_HEALTH_INIT
+    with _ADDON_ONLINE_LOCK:
+        _IN_MEMORY_ADDON_HEALTH.clear()
+        _IN_MEMORY_HEALTH_INIT = False
+        _ADDON_ONLINE_STATUS.clear()
+        _ADDON_SESSION_BLOCKED.clear()
+        _ADDON_SESSION_FAILURES.clear()
+    invalidate_catalogs_cache()
+
+
 def _init_in_memory_addon_health():
     global _IN_MEMORY_ADDON_HEALTH, _IN_MEMORY_HEALTH_INIT
     try:

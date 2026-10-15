@@ -95,7 +95,7 @@ class TestGenreDropdownDatabase(unittest.TestCase):
             "id": "tt1234567",
             "title": "Cosmic Adventure",
             "genres": ["Sci-Fi", "Animation", "Cyberpunk", "Space Opera", "Hindi"],
-            "year": "2028",
+            "year": "2024",
             "type": "movie"
         }
         database.save_cached_metadata("tt1234567", "movie", mock_details)
@@ -111,7 +111,7 @@ class TestGenreDropdownDatabase(unittest.TestCase):
         self.assertNotIn("Space Opera", stored)
 
         stored_years = database.get_stored_years("movie")
-        self.assertIn("2028", stored_years)
+        self.assertIn("2024", stored_years)
 
         available_genres = database.get_available_genres("movie")
         self.assertIn("Sci-Fi", available_genres)
@@ -119,10 +119,15 @@ class TestGenreDropdownDatabase(unittest.TestCase):
         self.assertNotIn("Hindi", available_genres)
         self.assertIn("Hindi", database.get_available_languages())
         self.assertNotIn("Cyberpunk", available_genres)
-        self.assertNotIn("2028", available_genres)
+        self.assertNotIn("2024", available_genres)
 
         sort_options = database.get_available_sort_options("movie")
-        self.assertIn("2028", sort_options)
+        self.assertIn("2024", sort_options)
+
+        # Future years must be excluded
+        database.save_cached_metadata("tt9999999", "movie", {"id": "tt9999999", "title": "Future Movie", "genres": ["Sci-Fi"], "year": "2028", "type": "movie"})
+        self.assertNotIn("2028", database.get_stored_years("movie"))
+        self.assertNotIn("2028", database.get_available_years("movie"))
 
         database.unregister_genre_listener(on_genre_update)
 

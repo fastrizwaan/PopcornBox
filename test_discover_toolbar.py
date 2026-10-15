@@ -35,6 +35,20 @@ from src import api, database
 
 class TestDiscoverToolbar(unittest.TestCase):
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.orig_config_dir = database.CONFIG_DIR
+        self.orig_base_dir = database.BASE_DIR
+        self.orig_db_file = database.DB_FILE
+        self.orig_cache_conn = database._cache_conn
+        self.orig_cache_initialized = database._cache_db_initialized
+
+        database.CONFIG_DIR = Path(self.temp_dir.name)
+        database.DB_FILE = database.CONFIG_DIR / "data.json"
+        database.reset_json_cache()
+        database._cache_conn = None
+        database._cache_db_initialized = False
+        api.reset_addon_health_cache()
+
         self.win = MagicMock()
         self.win.category_btn_stack = Gtk.Stack()
         for name in ("home", "movies", "series", "anime", "discover"):
@@ -49,6 +63,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.discover_grid_title = Gtk.Label()
         self.win.content_flowbox = Gtk.FlowBox()
         self.win.unique_flowbox = Gtk.FlowBox()
+        self.win._content_auto_fill_count = 0
 
         # Toolbar controls
         self.win.type_dropdown = Gtk.DropDown()
@@ -92,7 +107,38 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._on_discover_unique_toggled = lambda b: CineWindow._on_discover_unique_toggled(self.win, b)
         self.win._get_current_discover_filter_dict = lambda: CineWindow._get_current_discover_filter_dict(self.win)
         self.win._on_discover_filter_changed = lambda: CineWindow._on_discover_filter_changed(self.win)
+        self.win._is_unique_mode_active = lambda: CineWindow._is_unique_mode_active(self.win)
         self.win.reload_catalog_grid = lambda f=None: CineWindow.reload_catalog_grid(self.win, f)
+
+    def tearDown(self):
+        if hasattr(self.win, "_content_abort_event") and self.win._content_abort_event:
+            try:
+                self.win._content_abort_event.set()
+            except Exception:
+                pass
+        if hasattr(self.win, "_discover_abort_event") and self.win._discover_abort_event:
+            try:
+                self.win._discover_abort_event.set()
+            except Exception:
+                pass
+        if hasattr(self.win, "_discover_active_pool") and self.win._discover_active_pool:
+            try:
+                self.win._discover_active_pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+        if database._cache_conn is not None:
+            try:
+                database._cache_conn.close()
+            except Exception:
+                pass
+        database._cache_conn = self.orig_cache_conn
+        database._cache_db_initialized = self.orig_cache_initialized
+        database.CONFIG_DIR = self.orig_config_dir
+        database.BASE_DIR = self.orig_base_dir
+        database.DB_FILE = self.orig_db_file
+        database.reset_json_cache()
+        self.temp_dir.cleanup()
+        api.reset_addon_health_cache()
 
     def test_initial_toolbar_population(self):
         """Toolbar should initialize with 'All Types', 'All Catalogs', 'All Sections', 'All Genres', 'All Years', 'All Languages'."""
@@ -492,6 +538,168 @@ class TestDiscoverToolbar(unittest.TestCase):
         for r in rows:
             self.assertEqual(r["media_type"], "movie")
 
+    def test_reload_catalog_grid_preserves_unique_when_toggled_from_header(self):
+        """When library_unique_check is active, reload_catalog_grid must preserve unique mode and sync unique_check."""
+        self.win.library_unique_check.set_active(True)
+        self.win.unique_check.set_active(False)
+
+        filters = {
+            "type": "all",
+            "catalog_id": None,
+            "section": None,
+            "genre": None,
+            "year": None,
+            "language": "Hindi",
+            "addon_url": "https://v3-cinemeta.strem.io/manifest.json",
+        }
+        self.win.reload_catalog_grid(filters)
+        self.assertTrue(self.win.unique_check.get_active())
+        self.assertEqual(self.win.library_stack.get_visible_child_name(), "unique")
+        self.win._refresh_unique_combined_view.assert_called_once()
+
+    def test_discover_fast_skips_unsupported_language_catalog(self):
+        """_fetch_single_row in discover mode skips catalogs that do not support selected language without fetching from network."""
+        self.win.current_language = "Hindi"
+        self.win.current_genre = None
+        self.win.current_year = None
+        self.win._discover_abort_event = None
+        self.win.discover_request_id = 1
+        self.win._discover_is_loading_rows = False
+        self.win._discover_next_row_index = 0
+        self.win._discover_views = {}
+        self.win._get_discover_view_key = MagicMock(return_value="test_key")
+
+        row = {
+            "title": "Popular - Movies",
+            "media_type": "movie",
+            "catalog_id": "top",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+            "addon_name": "Cinemeta",
+            "genres": ["Action", "Comedy", "Drama"]
+        }
+        self.win._discover_catalog_list = [row]
+        self.win.discover_box = Gtk.Box()
+
+        with patch("src.api.fetch_items") as mock_fetch, \
+             patch("src.database.get_cached_catalog", return_value=None):
+            CineWindow._load_next_discover_batch(self.win, req_id=1, batch_size=1)
+            import time
+            time.sleep(0.15)
+            mock_fetch.assert_not_called()
+
+    def test_empty_discover_catalog_list_displays_empty_language_label(self):
+        """When discover page has 0 catalogs matching language filter, it immediately renders language empty label."""
+        self.win.discover_request_id = 0
+        self.win._discover_abort_event = None
+        self.win._discover_active_pool = None
+        self.win._discover_views = {}
+        self.win.current_language = "Hindi"
+        self.win.current_genre = None
+        self.win.current_year = None
+        self.win.discover_scrolled = Gtk.ScrolledWindow()
+        self.win._current_discover_type = "all"
+        self.win._current_discover_addon = "https://v3-cinemeta.strem.io/manifest.json"
+        self.win._get_discover_view_key = MagicMock(return_value="test_empty_key")
+        self.win._get_discover_catalog_list = MagicMock(return_value=[])
+
+        CineWindow._refresh_discover_page(self.win, filter_media_type="all", filter_addon_url="https://v3-cinemeta.strem.io/manifest.json")
+        box = self.win.discover_box
+        self.assertIsNotNone(box)
+        empty_box = box.get_first_child()
+        self.assertIsNotNone(empty_box)
+        lbl = empty_box.get_first_child()
+        self.assertIsNotNone(lbl)
+        self.assertEqual(lbl.get_label(), "No items found for this language.")
+
+
+    def test_fetch_content_page_for_year_catalog_fetches_both_movies_and_series(self):
+        """When section is 'New' (catalog_id='year') and type is 'all', _fetch_content_page fetches both movies and series."""
+        self.win.current_catalog = {
+            "catalog_id": "year",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+            "display_name": "New"
+        }
+        self.win._current_discover_type = "all"
+        self.win.current_year = None
+        self.win.current_genre = None
+        self.win.current_language = None
+        self.win.current_sort = "Popular"
+        self.win.has_more_content = True
+        self.win.is_fetching_content = False
+        self.win.content_seen_ids = set()
+        self.win.content_flowbox = Gtk.FlowBox()
+        self.win._schedule_deferred_menu_build = MagicMock()
+        self.win._on_content_scroll = MagicMock()
+
+        fetched_types = []
+        def fake_fetch_items(media_type, **kwargs):
+            fetched_types.append(media_type)
+            return [{"id": f"tt_{media_type}_1", "name": f"Item {media_type}", "type": media_type}]
+
+        with patch("src.api.fetch_items", side_effect=fake_fetch_items), \
+             patch("src.database.get_cached_catalog", return_value=None):
+            CineWindow._fetch_content_page(self.win)
+            # Give background worker thread a moment to finish
+            import time
+            time.sleep(0.1)
+
+        self.assertIn("movie", fetched_types)
+        self.assertIn("series", fetched_types)
+
+    def test_on_content_scroll_caps_unfilled_viewport_auto_fills(self):
+        """When viewport has no scrollbar (upper <= page_size + 50), auto-fills are capped at 3."""
+        self.win.is_fetching_content = False
+        self.win.has_more_content = True
+        self.win.current_catalog = {"catalog_id": "top"}
+        self.win._fetch_content_page = MagicMock()
+        self.win.library_stack.get_visible_child_name = MagicMock(return_value="content")
+        self.win._content_auto_fill_count = 0
+
+        adj = MagicMock()
+        adj.get_value.return_value = 0
+        adj.get_page_size.return_value = 1000
+        adj.get_upper.return_value = 800  # unfilled
+
+        # Call 1 -> count becomes 1, fetch called
+        CineWindow._on_content_scroll(self.win, adj)
+        self.assertEqual(self.win._fetch_content_page.call_count, 1)
+
+        # Call 2 -> count becomes 2, fetch called
+        CineWindow._on_content_scroll(self.win, adj)
+        self.assertEqual(self.win._fetch_content_page.call_count, 2)
+
+        # Call 3 -> count becomes 3, fetch called
+        CineWindow._on_content_scroll(self.win, adj)
+        self.assertEqual(self.win._fetch_content_page.call_count, 3)
+
+        # Call 4 -> capped, fetch NOT called
+        CineWindow._on_content_scroll(self.win, adj)
+        self.assertEqual(self.win._fetch_content_page.call_count, 3)
+
+    def test_genre_dropdown_excludes_years_for_year_catalog(self):
+        """When Cinemeta 'New' (catalog_id='year') is active, genre dropdown must NOT contain release years."""
+        addon = {
+            "name": "Cinemeta",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+            "catalogs": [
+                {
+                    "type": "movie",
+                    "id": "year",
+                    "name": "New",
+                    "genres": ["2026", "2025", "2024", "2023", "Action", "Drama"],
+                    "extra": [{"name": "genre", "options": ["2026", "2025", "2024", "2023", "Action", "Drama"]}]
+                }
+            ]
+        }
+        CineWindow._populate_discover_genre_dropdown(self.win, addon, "all", "year")
+        model = self.win.genre_dropdown.get_model()
+        items = [model.get_string(i) for i in range(model.get_n_items())]
+        self.assertIn("All Genres", items)
+        self.assertNotIn("2026", items)
+        self.assertNotIn("2025", items)
+        self.assertNotIn("2024", items)
+
 
 if __name__ == "__main__":
     unittest.main()
+

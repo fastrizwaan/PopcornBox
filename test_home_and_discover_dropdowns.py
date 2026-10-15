@@ -35,6 +35,20 @@ from src import tmdb_helper, api, database
 
 class TestHomeAndDiscoverDropdowns(unittest.TestCase):
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.orig_config_dir = database.CONFIG_DIR
+        self.orig_base_dir = database.BASE_DIR
+        self.orig_db_file = database.DB_FILE
+        self.orig_cache_conn = database._cache_conn
+        self.orig_cache_initialized = database._cache_db_initialized
+
+        database.CONFIG_DIR = Path(self.temp_dir.name)
+        database.DB_FILE = database.CONFIG_DIR / "data.json"
+        database.reset_json_cache()
+        database._cache_conn = None
+        database._cache_db_initialized = False
+        api.reset_addon_health_cache()
+
         self.win = MagicMock()
         self.win.category_btn_stack = Gtk.Stack()
         self.win.library_stack = Gtk.Stack()
@@ -52,14 +66,32 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         self.win.current_genre = None
         self.win.current_media_type = "movie"
         self.win._current_discover_type = "all"
+        self.win._current_discover_addon = None
         self.win.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json", "display_name": "Popular Movies"}
+        self.win._content_auto_fill_count = 0
         self.win._is_unique_mode_active = MagicMock(return_value=False)
         self.win._cancel_all_background_fetching = MagicMock()
         self.win._refresh_content = MagicMock()
         self.win._refresh_unique_combined_view = MagicMock()
         self.win._refresh_discover_page = MagicMock()
+        self.win._get_discover_view_key = lambda: CineWindow._get_discover_view_key(self.win)
         self.win._update_genre_dropdown = lambda media_type=None: CineWindow._update_genre_dropdown(self.win, media_type)
         self.win._apply_sort_to_current_catalog = lambda: CineWindow._apply_sort_to_current_catalog(self.win)
+
+    def tearDown(self):
+        if database._cache_conn is not None:
+            try:
+                database._cache_conn.close()
+            except Exception:
+                pass
+        database._cache_conn = self.orig_cache_conn
+        database._cache_db_initialized = self.orig_cache_initialized
+        database.CONFIG_DIR = self.orig_config_dir
+        database.BASE_DIR = self.orig_base_dir
+        database.DB_FILE = self.orig_db_file
+        database.reset_json_cache()
+        self.temp_dir.cleanup()
+        api.reset_addon_health_cache()
 
     def test_dropdown_1_options_contain_primary_filters(self):
         """Dropdown 1 should contain Popular, Recent, Featured, Trending, Year, Language, Genre."""
@@ -420,7 +452,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
     def test_discover_cache_hit_does_not_fetch_rows(self):
         """Test that switching back to a cached discover view does not trigger network fetches."""
         self.win._discover_views = {}
-        view_key = "all|all|all|all|Popular"
+        view_key = CineWindow._get_discover_view_key(self.win)
         cached_box = MagicMock()
         self.win._discover_views[view_key] = {
             "box": cached_box,
