@@ -7991,21 +7991,16 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _on_database_genres_updated(self):
         """Called when new metadata/genres are saved to SQLite database."""
+        # Debounce to avoid rebuilding dropdowns on every single card hydration
+        if getattr(self, "_genre_update_timer", None) is not None:
+            return
+
         def do_update():
+            self._genre_update_timer = None
             self._update_genre_dropdown()
-            cur_type = self._get_current_discover_type() if hasattr(self, "_get_current_discover_type") else "all"
-            if hasattr(self, "genre_dropdown") and self.genre_dropdown and hasattr(self, "_populate_discover_genre_dropdown"):
-                cur_g = self.genre_dropdown.get_selected_item().get_string() if self.genre_dropdown.get_selected_item() else None
-                self._populate_discover_genre_dropdown(None, cur_type, None)
-                if hasattr(self, "_restore_dropdown_selection"):
-                    self._restore_dropdown_selection(self.genre_dropdown, getattr(self, "_discover_genre_items", []), cur_g)
-            if hasattr(self, "year_dropdown") and self.year_dropdown and hasattr(self, "_populate_discover_year_dropdown"):
-                cur_y = self.year_dropdown.get_selected_item().get_string() if self.year_dropdown.get_selected_item() else None
-                self._populate_discover_year_dropdown(None, cur_type, None)
-                if hasattr(self, "_restore_dropdown_selection"):
-                    self._restore_dropdown_selection(self.year_dropdown, getattr(self, "_discover_year_items", []), cur_y)
             return False
-        GLib.idle_add(do_update)
+
+        self._genre_update_timer = GLib.timeout_add(3000, do_update)
 
     def _is_unique_mode_active(self):
         for btn_name in ("unique_check", "library_unique_check"):

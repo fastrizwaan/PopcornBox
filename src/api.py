@@ -831,7 +831,7 @@ ADULT_GENRES_TAGS = {
 }
 
 ADULT_RATINGS = {
-    "18", "18+", "R18", "R-18", "R18+", "NC-17", "XXX", "XX", "X", "TV-MA",
+    "18", "18+", "R18", "R-18", "R18+", "NC-17", "XXX", "XX", "X",
     "RX", "AV", "ADULT", "PORN", "R21", "OVER 18", "A", "AO", "FSK 18", "18A",
     "UNRATED (ADULT)", "NOT RATED (ADULT)", "RESTRICTED 18"
 }
@@ -2410,6 +2410,13 @@ def _run_metadata_hydration_worker():
                         item_dict["genres"] = list(cached["genres"])
                     if not item_dict.get("year") and cached.get("year"):
                         item_dict["year"] = str(cached["year"])
+                    cb = item_dict.get("_on_hydrated")
+                    if callable(cb):
+                        try:
+                            from gi.repository import GLib
+                            GLib.idle_add(cb, item_dict.get("title"), item_dict.get("year"), item_dict.get("medium_cover_image") or item_dict.get("poster"))
+                        except Exception:
+                            pass
                 continue
 
             # 2. Check provider cooldown to avoid hitting a rate-limited host

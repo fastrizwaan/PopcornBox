@@ -559,15 +559,11 @@ class MovieWidget(Gtk.Box):
 
     def _apply_resolved_meta(self, title, year, poster_url, is_adult=False):
         try:
-            from . import database, api
-            if is_adult or (database.is_adult_content_hidden() and api.is_adult_item(self.movie_data)):
-                self.set_visible(False)
-                return
             if title and title != "Unknown" and (not self.movie_data.get("title") or self.movie_data.get("title") == "Unknown"):
                 self.movie_data["title"] = title
                 if hasattr(self, "title_label") and self.title_label:
                     self.title_label.set_label(title)
-            if year and not self.movie_data.get("year"):
+            if year and (not self.movie_data.get("year") or self.movie_data.get("year") != str(year)):
                 self.movie_data["year"] = str(year)
                 if hasattr(self, "year_label") and self.year_label:
                     self.year_label.set_label(str(year))
@@ -576,9 +572,11 @@ class MovieWidget(Gtk.Box):
                     self.year_label.set_halign(Gtk.Align.START)
                     self.year_label.add_css_class("pt-card-year")
                     self.append(self.year_label)
-            if poster_url:
+            if poster_url and (not self.movie_data.get("medium_cover_image") or not self.movie_data.get("poster")):
                 self.movie_data["medium_cover_image"] = poster_url
                 self.movie_data["poster"] = poster_url
+                if hasattr(self, "poster_image") and self.poster_image:
+                    load_image_into_picture(poster_url, self.poster_image, width=130, height=195)
 
             cat_name = self.movie_data.get("catalog_name")
             addon_name = self.movie_data.get("addon_name")
