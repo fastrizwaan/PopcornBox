@@ -809,6 +809,40 @@ class TestDiscoverToolbar(unittest.TestCase):
                 btn.set_visible(True)
             self.assertEqual(btn.get_visible(), should_be_visible, f"Tab {tab_name} visibility mismatch")
 
+    def test_type_dropdown_always_contains_all_types_even_after_addon_update(self):
+        """Verify type_dropdown always includes 'All Types' at index 0 and retains it across addon updates."""
+        self.win._init_discover_toolbar()
+
+        # 1. Initial state
+        t_model = self.win.type_dropdown.get_model()
+        self.assertEqual(t_model.get_string(0), "All Types")
+        self.assertEqual(self.win.media_type_keys[0], "all")
+        self.assertEqual(self.win.media_type_labels[0], "All Types")
+        self.assertEqual(self.win._get_current_discover_type(), "all")
+
+        # 2. Simulate addon reload / media types update
+        CineWindow._update_supported_media_types(self.win)
+        t_model = self.win.type_dropdown.get_model()
+        self.assertEqual(t_model.get_string(0), "All Types")
+        self.assertEqual(t_model.get_string(1), "Movies")
+        self.assertEqual(t_model.get_string(2), "Series")
+        self.assertEqual(self.win.media_type_keys[0], "all")
+        self.assertEqual(self.win.media_type_keys[1], "movie")
+        self.assertEqual(self.win.media_type_keys[2], "series")
+
+        # 3. Select 'Movies' (index 1) and verify key retrieval
+        self.win.type_dropdown.set_selected(1)
+        self.assertEqual(self.win._get_current_discover_type(), "movie")
+
+        # 4. Trigger another update and verify 'movie' selection is preserved
+        CineWindow._update_supported_media_types(self.win)
+        self.assertEqual(self.win.type_dropdown.get_selected(), 1)
+        self.assertEqual(self.win._get_current_discover_type(), "movie")
+
+        # 5. Switch back to 'All Types'
+        self.win.type_dropdown.set_selected(0)
+        self.assertEqual(self.win._get_current_discover_type(), "all")
+
 
 if __name__ == "__main__":
     unittest.main()

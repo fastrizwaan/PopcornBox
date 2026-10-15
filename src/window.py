@@ -6218,7 +6218,10 @@ class CineWindow(Adw.ApplicationWindow):
             if self.search_entry.get_text().strip():
                 self._on_search_changed(self.search_entry)
         self.search_catalog_dropdown.connect("notify::selected", on_search_catalog_changed)
-        
+
+        # Backward compatibility alias
+        self.media_type_dropdown = getattr(self, "type_dropdown", None)
+
         # Build dynamic media types based on Stremio addons
         self._update_supported_media_types()
         
@@ -6379,11 +6382,27 @@ class CineWindow(Adw.ApplicationWindow):
             self._current_discover_type = m_type
             self.current_media_type = m_type if m_type != "all" else "movie"
             self._current_discover_addon = None
+            if hasattr(self, "media_type_keys") and m_type in self.media_type_keys:
+                dd = getattr(self, "type_dropdown", None) or getattr(self, "media_type_dropdown", None)
+                if dd and hasattr(dd, "set_selected"):
+                    self._syncing_discover_toolbar = True
+                    try:
+                        dd.set_selected(self.media_type_keys.index(m_type))
+                        self._populate_discover_catalog_dropdown(m_type)
+                        self._populate_discover_section_dropdown(None, m_type)
+                        self._populate_discover_genre_dropdown(None, m_type, None)
+                        self._populate_discover_year_dropdown(None, m_type, None)
+                        self._populate_discover_language_dropdown(None, m_type, None)
+                    finally:
+                        self._syncing_discover_toolbar = False
             self._update_sort_dropdown(m_type)
             self._update_genre_dropdown(m_type)
             if self._is_unique_mode_active() is True:
                 self.library_stack.set_visible_child_name("unique")
                 self._refresh_unique_combined_view()
+            elif m_type == "all":
+                self.library_stack.set_visible_child_name("discover")
+                self._refresh_discover_page(filter_media_type="all")
             else:
                 self.library_stack.set_visible_child_name("content")
                 self._apply_sort_to_current_catalog()
@@ -7481,53 +7500,7 @@ class CineWindow(Adw.ApplicationWindow):
         return "all"
 
     def _populate_discover_type_dropdown(self):
-        from . import api
-        all_addons = api.database.get_addons()
-        types_found = set()
-        for addon in all_addons:
-            if not addon.get("enabled", True): continue
-            if not api.has_catalog_resource(addon) and not api.has_stream_resource(addon) and not api.has_meta_resource(addon):
-                continue
-            for t in addon.get("types", []):
-                if t: types_found.add(str(t).lower())
-            for cat in api.get_addon_catalogs(addon, cache_only=True):
-                if cat.get("type"):
-                    types_found.add(str(cat.get("type")).lower())
-
-        type_items = [
-            ("All Types", "all"),
-            ("Movies", "movie"),
-            ("Series", "series"),
-        ]
-        known_mappings = [
-            (["tv", "channel", "tvchannel"], "tv", "TV Channels"),
-            (["anime"], "anime", "Anime"),
-            (["music", "radio"], "music", "Radio / Music"),
-            (["live"], "live", "Live Streams"),
-        ]
-        added_keys = {"all", "movie", "series"}
-        for check_list, key_name, label_name in known_mappings:
-            if any(t in types_found for t in check_list):
-                if key_name not in added_keys:
-                    type_items.append((label_name, key_name))
-                    added_keys.add(key_name)
-
-        for t in sorted(types_found):
-            if t not in added_keys and t not in ["movie", "movies", "series", "tv", "channel", "tvchannel", "anime", "music", "radio", "live"]:
-                type_items.append((t.title(), t))
-                added_keys.add(t)
-
-        self._discover_type_items = type_items
-        self.media_type_keys = [it[1] for it in type_items]
-        self.media_type_labels = [it[0] for it in type_items]
-
-        if hasattr(self, "type_dropdown") and self.type_dropdown:
-            cur_sel = self.type_dropdown.get_selected()
-            self.type_dropdown.set_model(Gtk.StringList.new([it[0] for it in type_items]))
-            if 0 <= cur_sel < len(type_items):
-                self.type_dropdown.set_selected(cur_sel)
-            else:
-                self.type_dropdown.set_selected(0)
+        CineWindow._update_supported_media_types(self)
 
     def _populate_discover_catalog_dropdown(self, chosen_type):
         from . import api
@@ -9190,6 +9163,7 @@ class CineWindow(Adw.ApplicationWindow):
         if not isinstance(preserved_genre, str):
             preserved_genre = None
         self._syncing_dropdowns = True
+        self._syncing_discover_toolbar = True
         try:
             self.current_media_type = media_type
             self.current_genre = preserved_genre
@@ -9244,6 +9218,7 @@ class CineWindow(Adw.ApplicationWindow):
             logger.error(f"Error opening catalog grid: {e}")
         finally:
             self._syncing_dropdowns = False
+            self._syncing_discover_toolbar = False
 
         self._sync_library_genre_dropdown_selection(self.current_genre)
         self._sync_library_sort_dropdown_selection(getattr(self, "current_sort", "Popular"))
@@ -10576,6 +10551,8 @@ class CineWindow(Adw.ApplicationWindow):
         
         # 3. Media types (Movies, Series, TV Channels, Anime, ...)
         for key, label in zip(getattr(self, "media_type_keys", []), getattr(self, "media_type_labels", [])):
+            if key == "all":
+                continue
             item = Gio.MenuItem.new(label, None)
             item.set_action_and_target_value("win.select-discover-type", GLib.Variant("s", key))
             menu.append_item(item)
@@ -12404,9 +12381,12 @@ class CineWindow(Adw.ApplicationWindow):
             if btn and hasattr(btn, "set_visible"):
                 btn.set_visible(self.anime_supported)
 
-        # Build dynamic media types based on Stremio addons
-        media_type_labels = ["Movies", "Series"]
-        media_type_keys = ["movie", "series"]
+        # Build dynamic media types based on Stremio addons, always including "All Types" as the primary filter
+        type_items = [
+            ("All Types", "all"),
+            ("Movies", "movie"),
+            ("Series", "series"),
+        ]
 
         known_mappings = [
             (["tv", "channel", "tvchannel"], "tv", "TV Channels"),
@@ -12415,30 +12395,54 @@ class CineWindow(Adw.ApplicationWindow):
             (["live"], "live", "Live Streams"),
         ]
 
-        added_keys = set(media_type_keys)
+        added_keys = {"all", "movie", "series"}
 
         for check_list, key_name, label_name in known_mappings:
             if any(t in supported_types for t in check_list):
                 if key_name not in added_keys:
-                    media_type_labels.append(label_name)
-                    media_type_keys.append(key_name)
+                    type_items.append((label_name, key_name))
                     added_keys.add(key_name)
 
         for t in sorted(supported_types):
             if t not in added_keys and t not in ["movie", "movies", "series", "tv", "channel", "tvchannel", "anime", "music", "radio", "live"]:
-                media_type_labels.append(t.title())
-                media_type_keys.append(t)
+                type_items.append((t.title(), t))
                 added_keys.add(t)
 
-        self.media_type_keys = media_type_keys
-        self.media_type_labels = media_type_labels
-        if hasattr(self, "media_type_dropdown") and hasattr(self.media_type_dropdown, "get_selected"):
-            cur_sel = self.media_type_dropdown.get_selected()
-            self.media_type_dropdown.set_model(Gtk.StringList.new(media_type_labels))
-            if cur_sel < len(media_type_labels):
-                self.media_type_dropdown.set_selected(cur_sel)
-            else:
-                self.media_type_dropdown.set_selected(0)
+        dropdowns = []
+        if getattr(self, "type_dropdown", None):
+            dropdowns.append(self.type_dropdown)
+        if getattr(self, "media_type_dropdown", None) and self.media_type_dropdown not in dropdowns:
+            dropdowns.append(self.media_type_dropdown)
+
+        prev_key = None
+        old_items = getattr(self, "_discover_type_items", None)
+        active_dd = dropdowns[0] if dropdowns else None
+        if old_items and active_dd and hasattr(active_dd, "get_selected"):
+            sel = active_dd.get_selected()
+            if isinstance(sel, int) and 0 <= sel < len(old_items):
+                prev_key = old_items[sel][1]
+
+        target_idx = 0
+        if prev_key:
+            for idx, item in enumerate(type_items):
+                if item[1] == prev_key:
+                    target_idx = idx
+                    break
+
+        self._discover_type_items = type_items
+        self.media_type_keys = [it[1] for it in type_items]
+        self.media_type_labels = [it[0] for it in type_items]
+
+        sync_prev = getattr(self, "_syncing_discover_toolbar", False)
+        self._syncing_discover_toolbar = True
+        try:
+            for dd in dropdowns:
+                if hasattr(dd, "set_model"):
+                    dd.set_model(Gtk.StringList.new([it[0] for it in type_items]))
+                    if hasattr(dd, "set_selected"):
+                        dd.set_selected(target_idx)
+        finally:
+            self._syncing_discover_toolbar = sync_prev
 
     def _update_catalog_dropdown(self):
         from . import api
@@ -12563,6 +12567,9 @@ class CineWindow(Adw.ApplicationWindow):
         # 3. Update dropdowns
         self._update_search_catalog_dropdown()
         self._update_catalog_dropdown()
+        if hasattr(self, "_populate_discover_catalog_dropdown"):
+            cur_t = self._get_current_discover_type() if hasattr(self, "_get_current_discover_type") else "all"
+            self._populate_discover_catalog_dropdown(cur_t)
         if hasattr(self, "_update_addon_catalog_dropdown"):
             self._update_addon_catalog_dropdown()
 
