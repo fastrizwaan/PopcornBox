@@ -538,12 +538,21 @@ class MovieWidget(Gtk.Box):
         tooltip_lines = [title_text]
         if year_str:
             tooltip_lines.append(f"({year_str})")
+        genres = movie_data.get("genres")
+        if genres and isinstance(genres, list):
+            tooltip_lines.append(" • ".join(str(g) for g in genres[:3]))
+        desc = movie_data.get("description") or movie_data.get("overview")
+        if desc and desc not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD"):
+            clean_desc = desc.strip().replace("\r", " ").replace("\n", " ")
+            if len(clean_desc) > 180:
+                clean_desc = clean_desc[:177] + "..."
+            tooltip_lines.append(f"\n{clean_desc}")
         if addon_name and cat_name:
-            tooltip_lines.append(f"Catalog: {addon_name} · {cat_name}")
+            tooltip_lines.append(f"\nCatalog: {addon_name} · {cat_name}")
         elif addon_name:
-            tooltip_lines.append(f"Addon: {addon_name}")
+            tooltip_lines.append(f"\nAddon: {addon_name}")
         elif cat_name:
-            tooltip_lines.append(f"Catalog: {cat_name}")
+            tooltip_lines.append(f"\nCatalog: {cat_name}")
         self.set_tooltip_text("\n".join(tooltip_lines))
 
         # Wire live hydration update callback so card updates in real time when background hydrator finishes
@@ -584,12 +593,21 @@ class MovieWidget(Gtk.Box):
             y_val = self.movie_data.get("year")
             if y_val:
                 t_lines.append(f"({y_val})")
+            genres = self.movie_data.get("genres")
+            if genres and isinstance(genres, list):
+                t_lines.append(" • ".join(str(g) for g in genres[:3]))
+            desc = self.movie_data.get("description") or self.movie_data.get("overview")
+            if desc and desc not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD"):
+                clean_desc = desc.strip().replace("\r", " ").replace("\n", " ")
+                if len(clean_desc) > 180:
+                    clean_desc = clean_desc[:177] + "..."
+                t_lines.append(f"\n{clean_desc}")
             if addon_name and cat_name:
-                t_lines.append(f"Catalog: {addon_name} · {cat_name}")
+                t_lines.append(f"\nCatalog: {addon_name} · {cat_name}")
             elif addon_name:
-                t_lines.append(f"Addon: {addon_name}")
+                t_lines.append(f"\nAddon: {addon_name}")
             elif cat_name:
-                t_lines.append(f"Catalog: {cat_name}")
+                t_lines.append(f"\nCatalog: {cat_name}")
             self.set_tooltip_text("\n".join(t_lines))
         except Exception:
             pass

@@ -2404,12 +2404,25 @@ def _run_metadata_hydration_worker():
         try:
             # 1. Fast check if already cached in SQLite (another thread or previous view populated it)
             cached = database.get_cached_metadata(item_id, m_type)
-            if cached and cached.get("genres") and cached.get("year"):
+            if cached and (cached.get("genres") or cached.get("description") or cached.get("year")):
                 if item_dict is not None and isinstance(item_dict, dict):
                     if not item_dict.get("genres") and cached.get("genres"):
                         item_dict["genres"] = list(cached["genres"])
                     if not item_dict.get("year") and cached.get("year"):
                         item_dict["year"] = str(cached["year"])
+                    desc = cached.get("description") or cached.get("overview")
+                    if desc and not item_dict.get("description"):
+                        item_dict["description"] = desc
+                    if not item_dict.get("imdbRating") and cached.get("imdbRating"):
+                        item_dict["imdbRating"] = str(cached["imdbRating"])
+                    if not item_dict.get("runtime") and cached.get("runtime"):
+                        item_dict["runtime"] = str(cached["runtime"])
+                    if not item_dict.get("background") and cached.get("background"):
+                        item_dict["background"] = cached["background"]
+                    if not item_dict.get("cast") and cached.get("cast"):
+                        item_dict["cast"] = list(cached["cast"])
+                    if not item_dict.get("videos") and cached.get("videos"):
+                        item_dict["videos"] = cached["videos"]
                     cb = item_dict.get("_on_hydrated")
                     if callable(cb):
                         try:
@@ -2462,19 +2475,38 @@ def _run_metadata_hydration_worker():
 
                 # Save into SQLite metadata_cache and item_genres
                 database.save_cached_metadata(item_id, m_type, meta_dict)
+                orig_id = item_dict.get("id") if item_dict else None
+                if orig_id and str(orig_id) != str(item_id):
+                    database.save_cached_metadata(orig_id, m_type, meta_dict)
                 print(f"[METADATA-HYDRATE] Cinemeta fetched: '{title_str}' ({item_id}) -> Year: {clean_year_val}, Genres: {genres_list} (Saved to SQLite)")
 
                 # In-memory hydration of live card
                 if item_dict is not None and isinstance(item_dict, dict):
                     if genres_list and not item_dict.get("genres"):
                         item_dict["genres"] = list(genres_list)
-                    if clean_year_val and not item_dict.get("year"):
-                        item_dict["year"] = str(clean_year_val)
+                    clean_yr = clean_year_val or meta_dict.get("year")
+                    if clean_yr and not item_dict.get("year"):
+                        item_dict["year"] = str(clean_yr)
                     if meta_dict.get("name") and (not item_dict.get("title") or item_dict.get("title") == "Unknown"):
                         item_dict["title"] = meta_dict["name"]
                     if meta_dict.get("poster") and not item_dict.get("medium_cover_image"):
                         item_dict["medium_cover_image"] = meta_dict["poster"]
                         item_dict["poster"] = meta_dict["poster"]
+                    desc = meta_dict.get("description") or meta_dict.get("overview")
+                    if desc and not item_dict.get("description"):
+                        item_dict["description"] = desc
+                    if not item_dict.get("imdbRating") and meta_dict.get("imdbRating"):
+                        item_dict["imdbRating"] = str(meta_dict["imdbRating"])
+                    if not item_dict.get("runtime") and meta_dict.get("runtime"):
+                        item_dict["runtime"] = str(meta_dict["runtime"])
+                    if not item_dict.get("background") and meta_dict.get("background"):
+                        item_dict["background"] = meta_dict["background"]
+                    if not item_dict.get("cast") and meta_dict.get("cast"):
+                        item_dict["cast"] = list(meta_dict["cast"])
+                    if not item_dict.get("videos") and meta_dict.get("videos"):
+                        item_dict["videos"] = meta_dict["videos"]
+                    if not item_dict.get("trailer") and meta_dict.get("trailer"):
+                        item_dict["trailer"] = meta_dict["trailer"]
 
                     cb = item_dict.get("_on_hydrated")
                     if callable(cb):
@@ -2519,6 +2551,7 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
         is_missing_genres = not m.get("genres")
         is_missing_year = not m.get("year")
         is_missing_cover = not m.get("medium_cover_image") and not m.get("poster")
+        is_missing_desc = not m.get("description") and not m.get("overview")
 
         candidates = [str(m_id)]
         if m.get("imdb_id") and str(m["imdb_id"]) not in candidates:
@@ -2527,7 +2560,7 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
             if str(aid) not in candidates:
                 candidates.append(str(aid))
 
-        if is_missing_title or is_missing_genres or is_missing_year or is_missing_cover:
+        if is_missing_title or is_missing_genres or is_missing_year or is_missing_cover or is_missing_desc:
             c_meta = None
             for cid in candidates:
                 c_meta = database.get_cached_metadata(cid, m_type)
@@ -2535,11 +2568,13 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     break
             if c_meta and isinstance(c_meta, dict):
                 item_hydrated = False
-                if is_missing_title and c_meta.get("title") and c_meta.get("title") != "Unknown":
-                    m["title"] = c_meta.get("title") or c_meta.get("name", "")
-                    is_missing_title = False
-                    updated = True
-                    item_hydrated = True
+                if is_missing_title and (c_meta.get("title") or c_meta.get("name")):
+                    t_val = c_meta.get("title") or c_meta.get("name", "")
+                    if t_val and t_val != "Unknown":
+                        m["title"] = t_val
+                        is_missing_title = False
+                        updated = True
+                        item_hydrated = True
                 if is_missing_cover:
                     cov = c_meta.get("medium_cover_image") or c_meta.get("poster")
                     if cov:
@@ -2558,6 +2593,26 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     is_missing_year = False
                     updated = True
                     item_hydrated = True
+                desc = c_meta.get("description") or c_meta.get("overview")
+                if desc and not m.get("description"):
+                    m["description"] = desc
+                    updated = True
+                    item_hydrated = True
+                if not m.get("imdbRating") and c_meta.get("imdbRating"):
+                    m["imdbRating"] = str(c_meta["imdbRating"])
+                    updated = True
+                if not m.get("runtime") and c_meta.get("runtime"):
+                    m["runtime"] = str(c_meta["runtime"])
+                    updated = True
+                if not m.get("background") and c_meta.get("background"):
+                    m["background"] = c_meta["background"]
+                    updated = True
+                if not m.get("cast") and c_meta.get("cast"):
+                    m["cast"] = list(c_meta["cast"])
+                    updated = True
+                if not m.get("videos") and c_meta.get("videos"):
+                    m["videos"] = c_meta["videos"]
+                    updated = True
                 if c_meta.get("adult") or c_meta.get("isAdult"):
                     m["adult"] = True
                 if item_hydrated:
@@ -2611,6 +2666,14 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     m_item["poster"] = meta_dict["poster"]
                 if not m_item.get("year") and meta_dict.get("year"):
                     m_item["year"] = str(meta_dict["year"])
+                if meta_dict.get("description") and not m_item.get("description"):
+                    m_item["description"] = meta_dict["description"]
+                if meta_dict.get("imdbRating") and not m_item.get("imdbRating"):
+                    m_item["imdbRating"] = str(meta_dict["imdbRating"])
+                if meta_dict.get("runtime") and not m_item.get("runtime"):
+                    m_item["runtime"] = str(meta_dict["runtime"])
+                if meta_dict.get("background") and not m_item.get("background"):
+                    m_item["background"] = meta_dict["background"]
                 if meta_dict.get("adult") or meta_dict.get("isAdult"):
                     m_item["adult"] = True
                 if meta_dict.get("certification"):
@@ -2626,6 +2689,14 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     m_item["poster"] = det["medium_cover_image"]
                 if not m_item.get("year") and det.get("year"):
                     m_item["year"] = str(det["year"])
+                if det.get("description") and not m_item.get("description"):
+                    m_item["description"] = det["description"]
+                if det.get("imdbRating") and not m_item.get("imdbRating"):
+                    m_item["imdbRating"] = str(det["imdbRating"])
+                if det.get("runtime") and not m_item.get("runtime"):
+                    m_item["runtime"] = str(det["runtime"])
+                if det.get("background") and not m_item.get("background"):
+                    m_item["background"] = det["background"]
                 if det.get("adult") or det.get("isAdult"):
                     m_item["adult"] = True
                 if det.get("certification"):
@@ -2651,6 +2722,14 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     cached_rec["poster"] = m_item["medium_cover_image"]
                 if m_item.get("year"):
                     cached_rec["year"] = m_item["year"]
+                if m_item.get("description"):
+                    cached_rec["description"] = m_item["description"]
+                if m_item.get("imdbRating"):
+                    cached_rec["imdbRating"] = m_item["imdbRating"]
+                if m_item.get("runtime"):
+                    cached_rec["runtime"] = m_item["runtime"]
+                if m_item.get("background"):
+                    cached_rec["background"] = m_item["background"]
                 if m_item.get("adult"):
                     cached_rec["adult"] = True
                 if m_item.get("certification"):
@@ -2671,7 +2750,7 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
 def is_valid_meta(res):
     if not res or not isinstance(res, dict):
         return False
-    title = str(res.get("title", "")).strip()
+    title = str(res.get("title") or res.get("name") or "").strip()
     if not title:
         return False
     lower_title = title.lower()

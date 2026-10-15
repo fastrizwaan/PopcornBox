@@ -823,9 +823,15 @@ class MovieDetailsPage(Gtk.Overlay):
 
         # Initial Metadata Loading
         self.update_continue_btn()
-        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("imdb_id") or self.movie_stub.get("id")
-        primary_id = item_id[0] if isinstance(item_id, list) else item_id
-        cached_details = database.get_cached_metadata(primary_id)
+        candidate_ids = []
+        if self.movie_stub.get("imdb_id"):
+            candidate_ids.append(self.movie_stub["imdb_id"])
+        if self.movie_stub.get("id"):
+            candidate_ids.append(self.movie_stub["id"])
+        for aid in (self.movie_stub.get("alias_ids") or []):
+            if aid not in candidate_ids:
+                candidate_ids.append(aid)
+        cached_details = database.get_cached_metadata(candidate_ids, self.media_type) if candidate_ids else None
         from . import api
 
         def is_complete_meta(d):
@@ -835,7 +841,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 return False
             if d.get("videos"):
                 return True
-            has_substantive = bool(d.get("runtime") or d.get("genre") or d.get("genres") or d.get("cast"))
+            has_substantive = bool(d.get("description") or d.get("overview") or d.get("runtime") or d.get("genre") or d.get("genres") or d.get("cast"))
             return has_substantive
 
         is_complete = is_complete_meta(cached_details) or bool(self.movie_stub.get("videos"))
@@ -847,6 +853,10 @@ class MovieDetailsPage(Gtk.Overlay):
             for k, v in cached_details.items():
                 if v and (k != "description" or v not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD")):
                     initial_meta[k] = v
+        desc = initial_meta.get("description") or initial_meta.get("overview")
+        if desc:
+            initial_meta["description"] = desc
+            initial_meta["overview"] = desc
 
         self.build_ui(initial_meta)
         self.load_details_async(force_refresh=not is_complete)
@@ -1394,7 +1404,15 @@ class MovieDetailsPage(Gtk.Overlay):
             return False
 
     def load_details_async(self, force_refresh=False):
-        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("imdb_id") or self.movie_stub.get("id")
+        candidate_ids = []
+        if self.movie_stub.get("imdb_id"):
+            candidate_ids.append(self.movie_stub["imdb_id"])
+        if self.movie_stub.get("id"):
+            candidate_ids.append(self.movie_stub["id"])
+        for aid in (self.movie_stub.get("alias_ids") or []):
+            if aid not in candidate_ids:
+                candidate_ids.append(aid)
+        item_id = candidate_ids if len(candidate_ids) > 1 else (candidate_ids[0] if candidate_ids else self.movie_stub.get("id"))
         existing_poster = self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster")
         self._details_fetch_id += 1
         fetch_id = self._details_fetch_id

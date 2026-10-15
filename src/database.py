@@ -1697,6 +1697,12 @@ def extract_clean_year(val_or_dict):
 def get_cached_metadata(item_id, media_type=None):
     if not item_id:
         return None
+    if isinstance(item_id, (list, tuple, set)):
+        for single_id in item_id:
+            res = get_cached_metadata(single_id, media_type)
+            if res:
+                return res
+        return None
     try:
         with _cache_db_lock:
             conn = _get_cache_db()
@@ -1727,12 +1733,24 @@ def save_cached_metadata(item_id, media_type, details):
             conn = _get_cache_db()
             cursor = conn.cursor()
             now = time.time()
+            if isinstance(details, dict):
+                if details.get("name") and not details.get("title"):
+                    details["title"] = details["name"]
+                if details.get("title") and not details.get("name"):
+                    details["name"] = details["title"]
+                if details.get("poster") and not details.get("medium_cover_image"):
+                    details["medium_cover_image"] = details["poster"]
+                if details.get("medium_cover_image") and not details.get("poster"):
+                    details["poster"] = details["medium_cover_image"]
+                clean_yr = extract_clean_year(details)
+                if clean_yr and not details.get("year"):
+                    details["year"] = clean_yr
             data_json = json.dumps(details)
             cursor.execute(
                 "INSERT OR REPLACE INTO metadata_cache (id, media_type, data, updated_at) VALUES (?, ?, ?, ?)",
                 (str(item_id), str(media_type or "movie"), data_json, now)
             )
-            imdb_id = details.get("imdb_id")
+            imdb_id = details.get("imdb_id") if isinstance(details, dict) else None
             if imdb_id and str(imdb_id) != str(item_id):
                 cursor.execute(
                     "INSERT OR REPLACE INTO metadata_cache (id, media_type, data, updated_at) VALUES (?, ?, ?, ?)",
@@ -2539,6 +2557,20 @@ def save_cached_catalog(cache_key, items):
                                             clean_yr = d_yr
                                             it["year"] = clean_yr
                                             item_enriched = True
+                                    desc = d.get("description") or d.get("overview")
+                                    if desc and not it.get("description"):
+                                        it["description"] = desc
+                                        item_enriched = True
+                                    if not it.get("imdbRating") and d.get("imdbRating"):
+                                        it["imdbRating"] = str(d["imdbRating"])
+                                    if not it.get("runtime") and d.get("runtime"):
+                                        it["runtime"] = str(d["runtime"])
+                                    if not it.get("background") and d.get("background"):
+                                        it["background"] = d["background"]
+                                    if not it.get("cast") and d.get("cast"):
+                                        it["cast"] = list(d["cast"])
+                                    if not it.get("videos") and d.get("videos"):
+                                        it["videos"] = d["videos"]
                                     if item_enriched:
                                         enriched_count += 1
                                     break

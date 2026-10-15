@@ -272,5 +272,74 @@ class TestMetadataHydration(unittest.TestCase):
             self.assertEqual(items[0].get("genres"), ["Animation", "Action", "Adventure"])
             self.assertEqual(items[0].get("year"), "2013")
 
+    def test_cinemeta_name_poster_and_description_hydration(self):
+        """Cinemeta metadata with name, poster, description, imdbRating, runtime is enriched onto item_dict."""
+        mock_cinemeta_res = {
+            "meta": {
+                "id": "tt1375666",
+                "name": "Inception",
+                "genres": ["Action", "Sci-Fi"],
+                "year": "2010",
+                "poster": "https://example.com/inception.jpg",
+                "description": "A thief who steals corporate secrets through the use of dream-sharing technology.",
+                "imdbRating": "8.8",
+                "runtime": "148 min",
+                "cast": ["Leonardo DiCaprio", "Joseph Gordon-Levitt"]
+            }
+        }
+        while not api._HYDRATION_QUEUE.empty():
+            try:
+                api._HYDRATION_QUEUE.get_nowait()
+            except Exception:
+                break
+
+        with patch("src.api._get_cached_request", return_value=mock_cinemeta_res):
+            bare_item = {
+                "id": "tt1375666",
+                "title": "Inception",
+                "genres": [],
+                "year": "",
+                "type": "movie"
+            }
+            api.queue_metadata_hydration("tt1375666", "movie", item_dict=bare_item)
+
+            start_t = time.time()
+            found = False
+            while time.time() - start_t < 3.0:
+                meta = database.get_cached_metadata("tt1375666", "movie")
+                if meta and meta.get("description"):
+                    found = True
+                    break
+                time.sleep(0.05)
+
+            self.assertTrue(found)
+            self.assertIn("dream-sharing technology", bare_item.get("description", ""))
+            self.assertEqual(bare_item.get("imdbRating"), "8.8")
+            self.assertEqual(bare_item.get("runtime"), "148 min")
+            self.assertEqual(bare_item.get("cast"), ["Leonardo DiCaprio", "Joseph Gordon-Levitt"])
+
+    def test_is_valid_meta_with_name_key(self):
+        """is_valid_meta accepts raw metadata where title is specified via 'name'."""
+        self.assertTrue(api.is_valid_meta({"name": "The Dark Knight", "description": "Batman fights Joker"}))
+        self.assertTrue(api.is_valid_meta({"title": "The Dark Knight", "description": "Batman fights Joker"}))
+        self.assertFalse(api.is_valid_meta({"description": "No title or name"}))
+        self.assertFalse(api.is_valid_meta({"name": "Error getting meta"}))
+
+    def test_get_cached_metadata_with_candidate_list(self):
+        """get_cached_metadata finds metadata when given a list/tuple of candidate IDs."""
+        details = {
+            "id": "tt0133093",
+            "name": "The Matrix",
+            "genres": ["Action", "Sci-Fi"],
+            "year": "1999",
+            "description": "Neo discovers the simulation."
+        }
+        database.save_cached_metadata("tt0133093", "movie", details)
+
+        res = database.get_cached_metadata(["kitsu:9999", "tt0133093", "tmdb:603"], "movie")
+        self.assertIsNotNone(res)
+        self.assertEqual(res.get("title"), "The Matrix")
+        self.assertEqual(res.get("description"), "Neo discovers the simulation.")
+
 if __name__ == "__main__":
     unittest.main()
