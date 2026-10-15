@@ -53,10 +53,9 @@ DEFAULT_TIMEOUT = 8.0
 
 _SSL_CONTEXT = None
 try:
-    _ctx = ssl.create_default_context()
-    _ctx.check_hostname = False
-    _ctx.verify_mode = ssl.CERT_NONE
-    _SSL_CONTEXT = _ctx
+    # This context carries account credentials and sync tokens. Verify the
+    # service certificate and hostname to prevent credential interception.
+    _SSL_CONTEXT = ssl.create_default_context()
 except Exception:
     _SSL_CONTEXT = None
 
@@ -91,13 +90,24 @@ def unregister_sync_listener(callback):
 
 
 def _notify_sync_listeners(success, summary):
-    """Notify all registered listeners on GLib idle thread if available, or direct."""
+    """Notify all registered listeners marshalled onto the GLib main loop when available."""
     with _listeners_lock:
         callbacks = list(_sync_listeners)
 
     for cb in callbacks:
+        _dispatch_to_main(cb, success, summary)
+
+
+def _dispatch_to_main(cb, *args):
+    """Run a callback on the GTK main thread; fall back to direct call in tests."""
+    try:
+        import gi
+        gi.require_version("GLib", "2.0")
+        from gi.repository import GLib
+        GLib.idle_add(cb, *args)
+    except Exception:
         try:
-            cb(success, summary)
+            cb(*args)
         except Exception as e:
             logger.warning(f"Error notifying sync listener: {e}")
 
@@ -130,6 +140,11 @@ def _post_json(url, payload, timeout=DEFAULT_TIMEOUT):
                     err_msg = err_detail
         except Exception:
             pass
+        finally:
+            try:
+                e.close()
+            except Exception:
+                pass
         raise StremioSyncError(err_msg) from e
     except urllib.error.URLError as e:
         raise StremioSyncError(f"Network error: {e.reason}") from e
@@ -291,7 +306,8 @@ def remote_to_continue_watching_item(remote_item, existing_local=None):
     if last_w <= 0.0:
         last_w = time.time()
 
-    # Stremio stores timeOffset and duration in milliseconds, PopcornBox uses seconds
+    # Stremio officially stores ms, but some clients write seconds; tolerate
+    # both (heuristic pinned by test_stremio_sync fixtures).
     raw_pos = float(state.get("timeOffset") or 0.0)
     raw_dur = float(state.get("duration") or 0.0)
     if raw_dur > 10000 or raw_pos > 10000:
@@ -422,7 +438,10 @@ def local_to_stremio_library_item(item, is_favorite=False, in_continue_watching=
         "state": state,
         "_mtime": iso_time,
         "temp": not is_favorite,
-        "removed": not is_favorite,
+        # Never push a deletion tombstone as a side effect of a progress save:
+        # removed=True makes peer clients drop the item entirely, wiping it
+        # from other devices' libraries. temp=True already un-lists the item.
+        "removed": False,
     }
 
 
@@ -486,7 +505,10 @@ def sync_library(force=False):
         local_history_list = database.get_history()
         local_history_by_id = {str(h.get("id") or h.get("imdb_id") or ""): h for h in local_history_list if (h.get("id") or h.get("imdb_id"))}
 
-        user_dismissed_cw = set(database.get_setting("user_dismissed_continue_watching", [])) | set(database.get_setting("removed_continue_watching", []))
+        # Dismissal IDs are persisted at the database root, not in settings.
+        # Read through the database helper so older settings-based values are
+        # also honored during remote merges.
+        user_dismissed_cw = database.get_continue_watching_dismissals()
         user_removed_favs = set(database.get_setting("removed_favorite_ids", []))
         user_removed_history = set(database.get_setting("removed_history_ids", []))
 
@@ -496,12 +518,22 @@ def sync_library(force=False):
         # Check remote items
         for rid, r_item in remote_by_id.items():
             if r_item.get("_deleted") is True:
+                # Remote hard-deletes must propagate, otherwise the local copy
+                # survives and Step 3 pushes it back, resurrecting the item
+                # remotely in a permanent sync loop.
+                if rid in local_fav_ids:
+                    database.remove_favorite(rid, sync_to_remote=False)
+                    local_fav_ids.discard(rid)
+                if any(str(c.get("id") or c.get("imdb_id") or "") == rid for c in local_cw_by_id.values()):
+                    database.remove_continue_watching(rid, blacklist=False, user_action=False, sync_to_remote=False)
+                    local_cw_by_id.pop(rid, None)
                 continue
 
             r_state = r_item.get("state") or {}
             r_ts = iso_to_epoch(r_state.get("lastWatched") or r_item.get("_mtime"))
 
-            # Stremio stores timeOffset and duration in milliseconds
+            # Stremio officially stores ms, but some clients write seconds;
+            # tolerate both (heuristic pinned by test_stremio_sync fixtures).
             raw_pos = float(r_state.get("timeOffset") or 0.0)
             raw_dur = float(r_state.get("duration") or 0.0)
             if raw_dur > 10000 or raw_pos > 10000:
@@ -541,8 +573,15 @@ def sync_library(force=False):
                     database.remove_favorite(rid, sync_to_remote=False)
                     local_fav_ids.discard(rid)
 
-            # 3. Merge Playback History
-            if r_ts > 0 and rid not in user_removed_history:
+            # 3. Merge Playback History. Require actual watch evidence: a
+            # never-played library favorite carries only an _mtime, and
+            # importing it would displace real history (capped at 100).
+            has_watch_evidence = (
+                pos > 0
+                or r_state.get("timesWatched", 0)
+                or r_state.get("flaggedWatching") == 1
+            )
+            if r_ts > 0 and has_watch_evidence and rid not in user_removed_history:
                 local_h = local_history_by_id.get(rid)
                 local_h_ts = float(local_h.get("last_watched", 0.0)) if local_h else 0.0
                 if not local_h or r_ts > local_h_ts:
@@ -566,6 +605,11 @@ def sync_library(force=False):
         # Step 3: Local -> Remote (Push changes)
         changes_to_push = []
 
+        # Re-read favorites right before pushing: Step 2 performed many
+        # individually-locked DB writes, so the snapshot taken above can be
+        # stale and would push a just-added favorite as non-library.
+        fresh_fav_ids = {str(f.get("id") or f.get("imdb_id") or "") for f in database.get_favorites() if (f.get("id") or f.get("imdb_id"))}
+
         # Push newer or missing local CW items
         fresh_local_cw = database.get_continue_watching()
         for l_cw in fresh_local_cw:
@@ -586,7 +630,7 @@ def sync_library(force=False):
             if should_push:
                 stremio_item = local_to_stremio_library_item(
                     l_cw,
-                    is_favorite=(lid in local_fav_ids),
+                    is_favorite=(lid in fresh_fav_ids),
                     in_continue_watching=True,
                 )
                 if stremio_item:
@@ -1049,6 +1093,11 @@ def scrobble_playback(item):
         last_t, last_pos = _last_scrobbles.get(key, (0, -999))
         if (now - last_t < 4.0) and abs(pos - last_pos) < 2.0:
             return
+        # Bound the debounce table: one entry per item:season:episode grows
+        # unbounded across a long session.
+        if len(_last_scrobbles) > 500:
+            for stale_key in list(_last_scrobbles.keys())[:200]:
+                _last_scrobbles.pop(stale_key, None)
         _last_scrobbles[key] = (now, pos)
 
     is_fav = database.is_favorite(item_id)
@@ -1070,6 +1119,6 @@ def scrobble_playback(item):
             _post_json(DATASTORE_PUT_URL, payload, timeout=5.0)
             logger.debug(f"Scrobbled '{key}' to Stremio at {pos:.1f}s")
         except Exception as e:
-            logger.debug(f"Failed to scrobble playback to Stremio: {e}")
+            logger.warning(f"Failed to scrobble playback to Stremio: {e}")
 
     threading.Thread(target=_push_worker, daemon=True, name="StremioScrobbleWorker").start()

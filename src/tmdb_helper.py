@@ -2,6 +2,7 @@ import re
 import urllib.parse
 import json
 import base64
+import threading
 import concurrent.futures
 from . import database
 
@@ -12,21 +13,38 @@ def _get_cached_request(*args, **kwargs):
 
 DEFAULT_TMDB_API_KEY = "68e094699525b18a70bab2f86b1fa706"
 
+_TMDB_API_KEY_CACHE = {"key": None, "expires": 0.0}
+_TMDB_API_KEY_LOCK = threading.Lock()
+
+_RESOLVER_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=6)
+import atexit
+atexit.register(_RESOLVER_EXECUTOR.shutdown, wait=False, cancel_futures=True)
+
 def get_tmdb_api_key():
     import os
+    import time as _time
     env_key = os.environ.get("TMDB_API_KEY")
     if env_key:
         return env_key
-    try:
-        for addon in database.get_addons():
-            m_url = addon.get("manifest_url", "")
-            if "tmdb" in m_url.lower():
-                match = re.search(r'/([a-fA-F0-9]{32})/', m_url)
-                if match:
-                    return match.group(1)
-    except Exception:
-        pass
-    return DEFAULT_TMDB_API_KEY
+    # Called by nearly every fetch helper; the addon list only changes when
+    # the user edits addons, so a short TTL cache avoids a DB scan + regex
+    # on every metadata request.
+    now = _time.time()
+    with _TMDB_API_KEY_LOCK:
+        if _TMDB_API_KEY_CACHE["key"] and now < _TMDB_API_KEY_CACHE["expires"]:
+            return _TMDB_API_KEY_CACHE["key"]
+        try:
+            for addon in database.get_addons():
+                m_url = addon.get("manifest_url", "")
+                if "tmdb" in m_url.lower():
+                    match = re.search(r'/([a-fA-F0-9]{32})/', m_url)
+                    if match:
+                        _TMDB_API_KEY_CACHE["key"] = match.group(1)
+                        _TMDB_API_KEY_CACHE["expires"] = now + 60
+                        return match.group(1)
+        except Exception:
+            pass
+        return DEFAULT_TMDB_API_KEY
 
 def resolve_to_imdb_id(imdb_id, media_type, title=None):
     """
@@ -239,25 +257,24 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
                     pass
         return res
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        f1 = executor.submit(task_imdb)
-        f2 = executor.submit(task_dsf)
-        f3 = executor.submit(task_tt)
+    f1 = _RESOLVER_EXECUTOR.submit(task_imdb)
+    f2 = _RESOLVER_EXECUTOR.submit(task_dsf)
+    f3 = _RESOLVER_EXECUTOR.submit(task_tt)
 
-        for f in [f1, f2, f3]:
-            try:
-                for r in f.result(timeout=1.5):
-                    if r: ids.add(str(r))
-            except Exception:
-                pass
+    for f in [f1, f2, f3]:
+        try:
+            for r in f.result(timeout=1.5):
+                if r: ids.add(str(r))
+        except Exception:
+            pass
 
-        if needs_tmdb and not any(str(i).startswith("tmdb:") for i in ids):
-            f4 = executor.submit(task_tmdb, list(ids))
-            try:
-                for r in f4.result(timeout=1.5):
-                    if r: ids.add(str(r))
-            except Exception:
-                pass
+    if needs_tmdb and not any(str(i).startswith("tmdb:") for i in ids):
+        f4 = _RESOLVER_EXECUTOR.submit(task_tmdb, list(ids))
+        try:
+            for r in f4.result(timeout=1.5):
+                if r: ids.add(str(r))
+        except Exception:
+            pass
 
     result_list = []
     if isinstance(item_id, list):
@@ -821,8 +838,11 @@ def fetch_collection_details(cid, title=None, poster=None):
 
     resolved_ids = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(parts), 5) or 1) as executor:
-        for idx, i_id in executor.map(resolve_part, enumerate(parts)):
-            resolved_ids[idx] = i_id
+        try:
+            for idx, i_id in executor.map(resolve_part, enumerate(parts), timeout=10.0):
+                resolved_ids[idx] = i_id
+        except Exception as e:
+            logger.debug(f"Timeout or error resolving parts: {e}")
 
     videos = []
     genre_names = set()
@@ -1094,18 +1114,17 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
     # Videos / Episodes for Series
     episodes = []
     if c_type == "tv" and data.get("seasons"):
-        for s in data.get("seasons", []):
-            s_num = s.get("season_number")
-            if s_num is None or s_num < 1:
-                continue
-            # Fetch season episodes
+        season_numbers = [s.get("season_number") for s in data.get("seasons", [])
+                          if s.get("season_number") is not None and s.get("season_number") >= 1]
+        def _fetch_season_episodes(s_num):
             try:
                 s_url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{s_num}?api_key={api_key}"
                 s_data = _get_cached_request(s_url, max_age_hours=168)
+                out = []
                 if s_data and s_data.get("episodes"):
                     for ep in s_data["episodes"]:
                         ep_num = ep.get("episode_number")
-                        episodes.append({
+                        out.append({
                             "id": f"{imdb_id}:{s_num}:{ep_num}",
                             "title": ep.get("name") or f"Episode {ep_num}",
                             "name": ep.get("name") or f"Episode {ep_num}",
@@ -1115,8 +1134,17 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
                             "released": ep.get("air_date") or "",
                             "thumbnail": f"https://image.tmdb.org/t/p/w500{ep.get('still_path')}" if ep.get("still_path") else ""
                         })
+                return s_num, out
             except Exception:
-                pass
+                return s_num, []
+
+        if season_numbers:
+            # Seasons are independent requests; fetch them concurrently instead
+            # of one TMDB round-trip per season on the UI thread.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(season_numbers), 6)) as ex:
+                results = list(ex.map(_fetch_season_episodes, season_numbers))
+            for _s_num, eps in results:
+                episodes.extend(eps)
 
     return {
         "id": imdb_id,

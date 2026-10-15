@@ -251,6 +251,61 @@ class TestStremioSync(unittest.TestCase):
         self.assertTrue(database.is_favorite("tt0816692"))
 
     @patch("src.stremio_sync._post_json")
+    def test_sync_does_not_restore_a_locally_dismissed_continue_watching_item(self, mock_post):
+        from src import stremio_sync, database
+
+        database.set_setting("stremio_auth_key", "test_auth_key")
+        database.set_setting("stremio_sync_enabled", True)
+        item = {
+            "id": "tt7654321",
+            "title": "Dismissed Remote Show",
+            "type": "series",
+            "season": 1,
+            "episode": 2,
+            "position": 600.0,
+            "duration": 2400.0,
+            "progress": 0.25,
+            "last_watched": int(time.time()) - 20,
+        }
+        database.save_continue_watching(item, sync_to_remote=False)
+        database.remove_continue_watching("tt7654321", blacklist=True, user_action=True, sync_to_remote=False)
+
+        remote_item = {
+            "_id": "tt7654321",
+            "name": "Dismissed Remote Show",
+            "type": "series",
+            "state": {
+                "timeOffset": 600000,
+                "duration": 2400000,
+                "video_id": "tt7654321:1:2",
+                "lastWatched": stremio_sync.epoch_to_iso(time.time()),
+                "flaggedWatching": 1,
+            },
+            "_mtime": stremio_sync.epoch_to_iso(time.time()),
+            "temp": True,
+        }
+        put_payloads = []
+
+        def fake_post(url, payload, timeout=8.0):
+            if "datastoreGet" in url:
+                return {"result": [remote_item]}
+            if "datastorePut" in url:
+                put_payloads.append(payload)
+                return {"result": {"success": True}}
+            return {}
+
+        mock_post.side_effect = fake_post
+        summary = stremio_sync.sync_library()
+
+        self.assertEqual(summary["status"], "success")
+        self.assertEqual(summary["pulled_cw"], 0)
+        self.assertEqual(database.get_continue_watching(), [])
+        pushed = [item for payload in put_payloads for item in payload["changes"]]
+        self.assertEqual(len(pushed), 1)
+        self.assertEqual(pushed[0]["state"]["timeOffset"], 0)
+        self.assertEqual(pushed[0]["state"]["flaggedWatching"], 0)
+
+    @patch("src.stremio_sync._post_json")
     def test_scrobble_playback(self, mock_post):
         from src import stremio_sync, database
 

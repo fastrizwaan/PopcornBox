@@ -83,10 +83,11 @@ try:
         LAST_PLAYLIST_FILE,
     ]:
         if not os.path.exists(file):
-            open(file, "w").close()
+            with open(file, "w"):
+                pass
 
     if os.path.exists(OLD_PL_FILE):
-        shutil.move(OLD_PL_FILE, PLAYLIST_DIR)
+        shutil.move(OLD_PL_FILE, LAST_PLAYLIST_FILE if not os.path.isdir(PLAYLIST_DIR) else os.path.join(PLAYLIST_DIR, os.path.basename(OLD_PL_FILE)))
 except Exception as e:
     logger.error(f"Error creating files/folders: {e}", exc_info=True)
 
@@ -104,8 +105,8 @@ def get_has_host_permission():
                 if line.startswith("filesystems="):
                     perms = line.split("=")[-1].strip().split(";")
                     return "host" in perms
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Could not read /.flatpak-info: {e}")
 
     return False
 
@@ -196,7 +197,10 @@ def open_uri(uri, parent=None):
 
 def idle_add_once(function, *args, **kwargs) -> int:
     def wrapper():
-        function(*args, **kwargs)
+        try:
+            function(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in idle_add_once callback: {e}", exc_info=True)
         return GLib.SOURCE_REMOVE
 
     return GLib.idle_add(wrapper)
@@ -204,7 +208,10 @@ def idle_add_once(function, *args, **kwargs) -> int:
 
 def timeout_add_once(interval: int, function, *args, **kwargs) -> int:
     def wrapper():
-        function(*args, **kwargs)
+        try:
+            function(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in timeout_add_once callback: {e}", exc_info=True)
         return GLib.SOURCE_REMOVE
 
     return GLib.timeout_add(interval, wrapper)
@@ -212,27 +219,36 @@ def timeout_add_once(interval: int, function, *args, **kwargs) -> int:
 
 def timeout_add_seconds_once(interval: int, function, *args, **kwargs) -> int:
     def wrapper():
-        function(*args, **kwargs)
+        try:
+            function(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in timeout_add_seconds_once callback: {e}", exc_info=True)
         return GLib.SOURCE_REMOVE
 
     return GLib.timeout_add_seconds(interval, wrapper)
 
 
 def get_gpu_vendor(libgl):
-    if not display:
+    dsp = display or Gdk.Display.get_default()
+    if not dsp:
         return None
     try:
-        if seat := display.get_default_seat():
+        if seat := dsp.get_default_seat():
             context = seat.get_display().create_gl_context()
             context.realize()
             context.make_current()
+            try:
+                glGetString = libgl.glGetString
+                glGetString.restype = ctypes.c_char_p
+                glGetString.argtypes = [ctypes.c_uint]
 
-            glGetString = libgl.glGetString
-            glGetString.restype = ctypes.c_char_p
-            glGetString.argtypes = [ctypes.c_uint]
-
-            # GL_VENDOR is 0x1F00
-            return glGetString(0x1F00).decode("utf-8").lower()
+                # GL_VENDOR is 0x1F00
+                return glGetString(0x1F00).decode("utf-8").lower()
+            finally:
+                try:
+                    Gdk.GLContext.clear_current()
+                except Exception:
+                    pass
     except Exception as e:
         logger.error(f"get_gpu_vendor error: {e}", exc_info=True)
         return None
@@ -240,25 +256,28 @@ def get_gpu_vendor(libgl):
 
 def get_display_param():
     param = {}
+    dsp = display or Gdk.Display.get_default()
+    if not dsp:
+        return param
 
     # see https://gist.github.com/omnp/6ac3385e2b3f6cab987d84e6477e636a
 
-    def get_pointer(display):
+    def get_pointer(d):
         ctypes.pythonapi.PyCapsule_GetPointer.restype = ctypes.c_void_p
         ctypes.pythonapi.PyCapsule_GetPointer.argtypes = (ctypes.py_object,)
-        return ctypes.pythonapi.PyCapsule_GetPointer(display.__gpointer__, None)
+        return ctypes.pythonapi.PyCapsule_GetPointer(d.__gpointer__, None)
 
     try:
-        if isinstance(display, GdkWayland.WaylandDisplay):
+        if isinstance(dsp, GdkWayland.WaylandDisplay):
             gtk.gdk_wayland_display_get_wl_display.restype = ctypes.c_void_p
             gtk.gdk_wayland_display_get_wl_display.argtypes = [ctypes.c_void_p]
-            ptr = gtk.gdk_wayland_display_get_wl_display(get_pointer(display))
+            ptr = gtk.gdk_wayland_display_get_wl_display(get_pointer(dsp))
             if ptr:
                 param["wl_display"] = ptr
-        elif isinstance(display, GdkX11.X11Display):
+        elif isinstance(dsp, GdkX11.X11Display):
             gtk.gdk_x11_display_get_xdisplay.restype = ctypes.c_void_p
             gtk.gdk_x11_display_get_xdisplay.argtypes = [ctypes.c_void_p]
-            ptr = gtk.gdk_x11_display_get_xdisplay(get_pointer(display))
+            ptr = gtk.gdk_x11_display_get_xdisplay(get_pointer(dsp))
             if ptr:
                 param["x11_display"] = ptr
     except Exception as e:
@@ -268,7 +287,7 @@ def get_display_param():
 
 
 def format_time(seconds):
-    if not seconds:
+    if seconds is None or seconds <= 0:
         return "0:00"
 
     seconds = int(seconds)

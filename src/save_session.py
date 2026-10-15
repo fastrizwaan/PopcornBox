@@ -28,23 +28,26 @@ def save_last_playlist_file(win_mpv):
 
     try:
         win_mpv.write_watch_later_config()
-        with open(LAST_PLAYLIST_FILE, "w", encoding="utf-8") as f:
-            if win_mpv.idle_active:
-                f.write("")
-                return
+        import tempfile
+        playlist_dir = os.path.dirname(LAST_PLAYLIST_FILE)
+        with tempfile.NamedTemporaryFile("w", dir=playlist_dir, delete=False, encoding="utf-8", suffix=".tmp") as f:
+            if not win_mpv.idle_active:
+                f.write("#EXTM3U\n")
+                for item in win_mpv.playlist:
+                    path = item.get("filename")
+                    if not path:
+                        continue
+                    name_with_ext = os.path.basename(path)
+                    file_title = os.path.splitext(name_with_ext)[0]
+                    title = file_title
 
-            f.write("#EXTM3U\n")
-            for item in win_mpv.playlist:
-                path = item.get("filename")
-                name_with_ext = os.path.basename(path)
-                file_title = os.path.splitext(name_with_ext)[0]
-                title = file_title
+                    if not is_local_path(path):
+                        title = item.get("title") or file_title
 
-                if not is_local_path(path):
-                    title = item.get("title") or file_title
-
-                f.write(f"#EXTINF:{-1},{title}\n")
-                f.write(f"{path}\n")
+                    f.write(f"#EXTINF:{-1},{title}\n")
+                    f.write(f"{path}\n")
+            tmp_name = f.name
+        os.replace(tmp_name, LAST_PLAYLIST_FILE)
 
     except Exception as e:
         logger.error(f"Error saving last playlist file: {e}", exc_info=True)
@@ -64,7 +67,13 @@ def restore_last_playlist(window, app, win_mpv):
 
         window.start_page.set_sensitive(False)
         window._show_toast(_("Restoring Session…"), force_dismiss=True)
-        idle_add_once(win_mpv.loadfile, LAST_PLAYLIST_FILE, "replace")
+        def _do_restore():
+            try:
+                win_mpv.loadfile(LAST_PLAYLIST_FILE, "replace")
+            except Exception as err:
+                logger.error(f"Error loading playlist: {err}", exc_info=True)
+                window.start_page.set_sensitive(True)
+        idle_add_once(_do_restore)
     except Exception as e:
         logger.error(f"Error restoring last playlist file: {e}", exc_info=True)
 

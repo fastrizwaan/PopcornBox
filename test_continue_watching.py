@@ -18,12 +18,14 @@ class TestContinueWatching(unittest.TestCase):
         self.patcher2.start()
         
         from src import database
+        database.close_cache_db()
         database._json_cache_valid = False
         database._json_cache = None
 
     def tearDown(self):
         from src import database
         database.reset_json_cache()
+        database.close_cache_db()
         self.patcher1.stop()
         self.patcher2.stop()
         self.temp_dir.cleanup()
@@ -122,9 +124,38 @@ class TestContinueWatching(unittest.TestCase):
         database.remove_continue_watching("tt12345", blacklist=True, user_action=True)
         self.assertEqual(len(database.get_continue_watching()), 0)
 
+        # A fresh database read, like an app restart, must preserve the dismissal.
+        database.reset_json_cache()
+        self.assertEqual(len(database.get_continue_watching()), 0)
+        self.assertIsNone(database.get_continue_watching_item("tt12345"))
+
         # Watching again should clear dismissal
         database.save_continue_watching(ep)
         self.assertEqual(len(database.get_continue_watching()), 1)
+
+    def test_user_dismissal_blocks_history_auto_heal_after_reload(self):
+        from src import database
+
+        item = {"id": "tt98765", "title": "Dismissed Show", "type": "series", "season": 1, "episode": 3}
+        database.save_continue_watching(item)
+        database.add_history({"id": "tt98765", "title": "Dismissed Show", "type": "series"}, sync_to_remote=False)
+        database.set_setting("last_s_tt98765", 1)
+        database.set_setting("last_ep_tt98765_1", 3)
+        database.remove_continue_watching("tt98765", blacklist=True, user_action=True, sync_to_remote=False)
+
+        database.reset_json_cache()
+        self.assertEqual(database.get_continue_watching(), [])
+        self.assertIsNone(database.get_continue_watching_item("tt98765"))
+
+    def test_remove_continue_watching_matches_alias_ids(self):
+        from src import database
+
+        item = {"id": "tmdb:123", "imdb_id": "tt12345", "alias_ids": ["tt12345", "tmdb:123"], "title": "Alias Movie"}
+        database.save_continue_watching(item)
+        database.remove_continue_watching("tt12345", blacklist=True, user_action=True, sync_to_remote=False)
+
+        self.assertEqual(database.get_continue_watching(), [])
+        self.assertTrue({"tt12345", "tmdb:123"}.issubset(database.get_continue_watching_dismissals()))
 
 if __name__ == "__main__":
     unittest.main()

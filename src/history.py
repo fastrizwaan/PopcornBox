@@ -84,6 +84,8 @@ class HistoryDialog(Adw.Dialog):
                         entry = json.loads(line)
                         file_path = entry.get("path")
                         timestamp = entry.get("time")
+                        if not isinstance(timestamp, (int, float)):
+                            continue
 
                         dt_object = datetime.datetime.fromtimestamp(timestamp)
                         day_key = dt_object.strftime("%Y-%m-%d")
@@ -91,7 +93,7 @@ class HistoryDialog(Adw.Dialog):
                         dedup_key = (day_key, file_path)
                         unique_entries.pop(dedup_key, None)
                         unique_entries[dedup_key] = entry
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, ValueError, TypeError):
                         pass
 
             ordered_entries = list(unique_entries.values())
@@ -160,9 +162,13 @@ class HistoryDialog(Adw.Dialog):
                 self._load_all_group.set_visible(False)
             else:
                 try:
-                    with open(self._hist_path, "w", encoding="utf-8") as f:
+                    import tempfile
+                    hist_dir = os.path.dirname(self._hist_path)
+                    with tempfile.NamedTemporaryFile("w", dir=hist_dir, delete=False, encoding="utf-8", suffix=".tmp") as tmp:
                         for item in reversed(ordered_entries):
-                            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+                            tmp.write(json.dumps(item, ensure_ascii=False) + "\n")
+                        tmp_name = tmp.name
+                    os.replace(tmp_name, self._hist_path)
                 except Exception as e:
                     logger.error(f"Failed to save history file: {e}")
                     idle_add_once(self._show_toast, f"{repr(e)}")
@@ -178,7 +184,7 @@ class HistoryDialog(Adw.Dialog):
 
             if not load_all and len(ordered_entries) > 100:
                 self.history_prefs_page.add(self._load_all_group)
-                self._load_btn.props.label += f" (+{len(ordered_entries) - 100})"  # type: ignore
+                self._load_btn.props.label = _("Load All") + f" (+{len(ordered_entries) - 100})"  # type: ignore
 
         else:
             self.clear_btn.set_sensitive(False)
@@ -278,8 +284,12 @@ class HistoryDialog(Adw.Dialog):
                     except json.JSONDecodeError:
                         pass
 
-            with open(self._hist_path, "w", encoding="utf-8") as f:
-                f.writelines(updated_lines)
+            import tempfile
+            hist_dir = os.path.dirname(self._hist_path)
+            with tempfile.NamedTemporaryFile("w", dir=hist_dir, delete=False, encoding="utf-8", suffix=".tmp") as tmp:
+                tmp.writelines(updated_lines)
+                tmp_name = tmp.name
+            os.replace(tmp_name, self._hist_path)
 
             idx = row.get_index()
 
@@ -331,12 +341,12 @@ class HistoryDialog(Adw.Dialog):
                     try:
                         with open(self._hist_path, "w"):
                             pass
+                        self._populate_history()
                     except Exception as e:
                         logger.error(
                             f"Failed to clear history file: {e}", exc_info=True
                         )
                         self._show_toast(f"{repr(e)}")
-                    self._populate_history()
 
         dialog.connect("response", on_response)
         dialog.present(self)

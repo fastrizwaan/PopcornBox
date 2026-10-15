@@ -18,6 +18,7 @@ from . import api
 
 # Global state for the streaming engines
 _engines = {}
+_launching_engines = set()
 _streaming_hash = None
 _engines_lock = threading.Lock()
 
@@ -350,6 +351,11 @@ def download_magnet_background(magnet_link, file_index=None, item_id=None, media
                 if hasattr(engine, 'prefetch_additional_file'):
                     engine.prefetch_additional_file(file_index)
             return
+        # Reserve the hash before starting a worker. Concurrent resume requests
+        # otherwise create independent sessions writing into the same directory.
+        if info_hash in _launching_engines:
+            return
+        _launching_engines.add(info_hash)
             
     def launch():
         try:
@@ -375,8 +381,16 @@ def download_magnet_background(magnet_link, file_index=None, item_id=None, media
                 
         except Exception as e:
             print(f"Error launching background download: {e}")
+        finally:
+            with _engines_lock:
+                _launching_engines.discard(info_hash)
 
-    threading.Thread(target=launch, daemon=True).start()
+    try:
+        threading.Thread(target=launch, daemon=True).start()
+    except Exception:
+        with _engines_lock:
+            _launching_engines.discard(info_hash)
+        raise
 
 def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=None, item_id=None, media_type=None, season=None, episode=None, is_download=False):
     global _streaming_hash
@@ -391,7 +405,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
     def launch_player_only(engine):
         if progress_callback: GLib.idle_add(progress_callback, {"status": "Launching media player..."})
         if not engine or not engine.is_alive():
-            if progress_callback: GLib.idle_add(lambda: progress_callback({"status": "Engine died. Retrying...", "closed": True}))
+            if progress_callback: GLib.idle_add(progress_callback, {"status": "Engine died. Retrying...", "closed": True})
             return
             
         # Remove any bandwidth limits when moving to foreground
@@ -617,6 +631,11 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                     stats = engine.stats()
                     if progress_callback: GLib.idle_add(progress_callback, stats)
                         
+                if getattr(engine, "error", None):
+                    if progress_callback:
+                        GLib.idle_add(progress_callback, engine.stats())
+                    return
+
                 with _engines_lock:
                     if _engines.get(info_hash) != engine or not engine.is_alive(): return
                 if _streaming_hash != info_hash: return
@@ -780,38 +799,38 @@ def play_trailer(youtube_id, progress_callback=None):
     else:
         if progress_callback:
             from gi.repository import GLib
-            GLib.idle_add(lambda: progress_callback({"status": "Trailer unavailable", "closed": True}))
+            GLib.idle_add(progress_callback, {"status": "Trailer unavailable", "closed": True})
         return None
 
     def launch():
         from gi.repository import GLib
 
         if progress_callback:
-            GLib.idle_add(lambda: progress_callback({"status": "Resolving trailer..."}))
+            GLib.idle_add(progress_callback, {"status": "Resolving trailer..."})
 
         video_url, audio_url, ua = resolve_youtube_url(clean_id, watch_url)
         if video_url:
             if progress_callback:
-                GLib.idle_add(lambda: progress_callback({
+                GLib.idle_add(progress_callback, {
                     "status": "Playing Trailer!",
                     "url": video_url,
                     "audio_url": audio_url,
                     "user_agent": ua,
                     "is_trailer": True,
                     "is_direct": True
-                }))
+                })
             return
 
         # Fallback to watch URL directly
         if progress_callback:
-            GLib.idle_add(lambda: progress_callback({
+            GLib.idle_add(progress_callback, {
                 "status": "Loading trailer in player...",
                 "url": watch_url,
                 "audio_url": None,
                 "user_agent": "",
                 "is_trailer": True,
                 "is_direct": False
-            }))
+            })
 
     threading.Thread(target=launch, daemon=True).start()
     return None

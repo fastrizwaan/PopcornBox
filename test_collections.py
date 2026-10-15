@@ -51,20 +51,13 @@ class TestCollections(unittest.TestCase):
         self.patcher2.start()
         
         from src import database
+        database.close_cache_db()
         database._json_cache_valid = False
         database._json_cache = None
-        database._cache_conn = None
-        database._cache_db_initialized = False
 
     def tearDown(self):
         from src import database
-        if database._cache_conn:
-            try:
-                database._cache_conn.close()
-            except Exception:
-                pass
-            database._cache_conn = None
-            database._cache_db_initialized = False
+        database.close_cache_db()
         self.patcher1.stop()
         self.patcher2.stop()
         self.temp_dir.cleanup()

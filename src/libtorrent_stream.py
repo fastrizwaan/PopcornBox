@@ -110,6 +110,8 @@ class TorrentStreamEngine:
             try:
                 self.httpd.shutdown()
                 self.httpd.server_close()
+                if self.http_thread and self.http_thread is not threading.current_thread():
+                    self.http_thread.join(timeout=1)
             except Exception:
                 pass
         if self.session:
@@ -390,7 +392,13 @@ class TorrentStreamEngine:
                 self.end_headers()
                 self.wfile.write(payload)
 
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        class StreamHTTPServer(ThreadingHTTPServer):
+            # Player range requests may wait for torrent pieces. They must not
+            # make engine shutdown wait for the full range timeout.
+            daemon_threads = True
+            block_on_close = False
+
+        self.httpd = StreamHTTPServer(("127.0.0.1", 0), Handler)
         port = self.httpd.server_address[1]
         self.stream_url = f"http://127.0.0.1:{port}"
         self.http_thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -454,6 +462,10 @@ class TorrentStreamEngine:
                 time.sleep(0.25)
         except Exception as exc:
             self.error = exc
+            # Wake both the player monitor and any HTTP request waiting for
+            # metadata so failures are reported immediately instead of timing
+            # out after 120 seconds.
+            self.ready_event.set()
  
     def _background_prefetcher(self):
         """Forces strict sequential downloading of the first 50MB by sliding a tiny priority window."""
@@ -923,8 +935,16 @@ class TorrentStreamEngine:
             if self.error:
                 request.send_error(500, str(self.error))
                 return
-            if not self.ready_event.wait(120):
-                request.send_error(503, "Torrent metadata is not ready")
+            ready_deadline = time.monotonic() + 120
+            while not self.ready_event.wait(0.25):
+                if self.stopped.is_set():
+                    request.send_error(503, "Torrent engine stopped")
+                    return
+                if time.monotonic() >= ready_deadline:
+                    request.send_error(503, "Torrent metadata is not ready")
+                    return
+            if self.error:
+                request.send_error(500, str(self.error))
                 return
 
             # Bump generation: any older _write_range thread will see the

@@ -406,9 +406,8 @@ class MPRIS:
                     new_shuffle = value.get_boolean()
                     p._shuffle = new_shuffle
                     win = self._app.props.active_window
-                    if win:
-                        btn = win.shuffle_toggle_btn  # type: ignore
-                        btn.props.active = new_shuffle
+                    if win and hasattr(win, "shuffle_toggle_btn"):
+                        idle_add_once(setattr, win.shuffle_toggle_btn.props, "active", new_shuffle)
                     self._emit_props_changed(
                         {"Shuffle": GLib.Variant("b", new_shuffle)}
                     )

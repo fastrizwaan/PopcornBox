@@ -4,9 +4,11 @@ import json
 import threading
 from unittest.mock import patch, MagicMock
 import urllib.error
+import ssl
 
 from src import api
 from src import database
+from src import stremio_sync
 
 class TestProviderProtection(unittest.TestCase):
     def setUp(self):
@@ -16,6 +18,41 @@ class TestProviderProtection(unittest.TestCase):
 
     def tearDown(self):
         api.clear_provider_cooldown()
+
+    def test_api_tls_context_verifies_certificates_and_hostnames(self):
+        context = api._create_ssl_context()
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(stremio_sync._SSL_CONTEXT.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(stremio_sync._SSL_CONTEXT.check_hostname)
+
+    def test_cached_request_coalesces_concurrent_misses(self):
+        barrier = threading.Barrier(3)
+        results = []
+        calls = []
+
+        def fetch_once(url, **kwargs):
+            calls.append(url)
+            time.sleep(0.1)
+            return {"ok": True}
+
+        def request():
+            barrier.wait()
+            results.append(api._get_cached_request("https://single-flight.test/resource"))
+
+        with patch.object(api, "_get_cached_request_uncollapsed", side_effect=fetch_once):
+            threads = [threading.Thread(target=request) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            for thread in threads:
+                thread.join(timeout=2)
+
+        self.assertEqual(calls, ["https://single-flight.test/resource"])
+        self.assertEqual(results, [{"ok": True}, {"ok": True}])
+
+    def test_provider_host_lock_registry_is_bounded(self):
+        self.assertEqual(len(api._PROVIDER_LOCK_STRIPES), 128)
 
     def test_check_stream_rate_limit_warning_hydra(self):
         """Verifies detection of Hydra Torrents and other provider rate-limit/ban notice streams."""

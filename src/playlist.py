@@ -100,9 +100,9 @@ class Playlist(Adw.Dialog):
             query_txt = self.search_entry.props.text.strip()
             query = remove_diacritics(query_txt).lower()
 
-            path = obj.item.get("filename")
-            name_with_ext = os.path.basename(path)
-            file_title = os.path.splitext(name_with_ext)[0]
+            path = obj.item.get("filename") or ""
+            name_with_ext = os.path.basename(path) if path else ""
+            file_title = os.path.splitext(name_with_ext)[0] if name_with_ext else ""
             file_title = GLib.markup_escape_text(file_title)
             title = obj.item.get("title") or obj.title or file_title
             title = remove_diacritics(title).lower()
@@ -234,9 +234,9 @@ class Playlist(Adw.Dialog):
         obj = list_item.get_item()
 
         def set_item(item):
-            path = item.get("filename")
-            name_with_ext = os.path.basename(path)
-            parent_dir = os.path.basename(os.path.dirname(path))
+            path = item.get("filename") or ""
+            name_with_ext = os.path.basename(path) if path else ""
+            parent_dir = os.path.basename(os.path.dirname(path)) if path else ""
             dir = parent_dir if parent_dir else path
 
             icon_name = "cine-applications-multimedia-symbolic"

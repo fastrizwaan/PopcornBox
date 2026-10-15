@@ -30,6 +30,11 @@ _image_pool = ThreadPoolExecutor(max_workers=10)
 _disk_pool = ThreadPoolExecutor(max_workers=6)
 _meta_fallback_pool = ThreadPoolExecutor(max_workers=8)
 
+import atexit
+atexit.register(_image_pool.shutdown, wait=False, cancel_futures=True)
+atexit.register(_disk_pool.shutdown, wait=False, cancel_futures=True)
+atexit.register(_meta_fallback_pool.shutdown, wait=False, cancel_futures=True)
+
 import threading
 _MEMORY_PIXBUF_CACHE = {}
 _MEMORY_PIXBUF_LOCK = threading.Lock()
@@ -109,7 +114,7 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
     with _MEMORY_PIXBUF_LOCK:
         cached_pixbuf = _MEMORY_PIXBUF_CACHE.get(mem_key)
     if cached_pixbuf:
-        _apply_pixbuf(picture_widget, cached_pixbuf, url)
+        GLib.idle_add(_apply_pixbuf, picture_widget, cached_pixbuf, url)
         return
 
     url_hash = hashlib.md5(url.encode()).hexdigest()
@@ -231,8 +236,8 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                         pixbuf = pixbuf.scale_simple(new_w, new_h, GdkPixbuf.InterpType.BILINEAR)
 
                 with _MEMORY_PIXBUF_LOCK:
-                    if len(_MEMORY_PIXBUF_CACHE) > _MAX_MEMORY_PIXBUFS:
-                        _MEMORY_PIXBUF_CACHE.clear()
+                    while len(_MEMORY_PIXBUF_CACHE) >= _MAX_MEMORY_PIXBUFS:
+                        _MEMORY_PIXBUF_CACHE.pop(next(iter(_MEMORY_PIXBUF_CACHE)), None)
                     _MEMORY_PIXBUF_CACHE[mem_key] = pixbuf
 
                 if is_priority or is_image_generation_active(task_gen):

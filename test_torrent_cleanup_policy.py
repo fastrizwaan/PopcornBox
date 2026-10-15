@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock
 import tempfile
 import os
 import shutil
+import threading
 
 from src import player
 from src import database
@@ -16,6 +17,7 @@ class TestTorrentCleanupPolicy(unittest.TestCase):
         # Reset player state
         with player._engines_lock:
             player._engines.clear()
+            player._launching_engines.clear()
             player._streaming_hash = None
 
     def tearDown(self):
@@ -23,7 +25,34 @@ class TestTorrentCleanupPolicy(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
         with player._engines_lock:
             player._engines.clear()
+            player._launching_engines.clear()
             player._streaming_hash = None
+
+    @patch("src.player.threading.Thread")
+    def test_background_download_only_launches_one_engine_per_hash(self, mock_thread):
+        """Rapid duplicate resume requests must share one in-flight engine start."""
+        magnet = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567"
+        with patch("src.libtorrent_stream.info_hash_from_magnet", return_value="0123456789abcdef0123456789abcdef01234567"):
+            player.download_magnet_background(magnet)
+            player.download_magnet_background(magnet)
+
+        mock_thread.assert_called_once()
+        with player._engines_lock:
+            self.assertIn("0123456789abcdef0123456789abcdef01234567", player._launching_engines)
+
+    def test_metadata_worker_wakes_waiters_after_failure(self):
+        from src.libtorrent_stream import TorrentStreamEngine
+
+        engine = object.__new__(TorrentStreamEngine)
+        engine.stopped = threading.Event()
+        engine.ready_event = threading.Event()
+        engine.error = None
+        engine._status = MagicMock(side_effect=RuntimeError("metadata status failed"))
+
+        engine._metadata_worker()
+
+        self.assertIsInstance(engine.error, RuntimeError)
+        self.assertTrue(engine.ready_event.is_set())
 
     @patch("src.database.remove_download")
     @patch("src.database.set_download_finished")

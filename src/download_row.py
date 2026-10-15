@@ -130,12 +130,16 @@ class DownloadItemRow(Gtk.Box):
         
     def on_destroy(self, widget=None):
         self.is_active = False
-        if hasattr(self, 'poll_id'):
-            GLib.source_remove(self.poll_id)
-            del self.poll_id
+        poll_id = getattr(self, 'poll_id', None)
+        if poll_id is not None:
+            self.poll_id = None
+            try:
+                GLib.source_remove(poll_id)
+            except Exception:
+                pass
             
     def update_status(self):
-        if not self.is_active:
+        if not self.is_active or not self.get_parent():
             return False
             
         suffix = ""
@@ -229,7 +233,8 @@ class DownloadItemRow(Gtk.Box):
         def progress_callback(stats):
             url = stats.get("url")
             if url and hasattr(window, '_play_stream'):
-                window._play_stream(
+                GLib.idle_add(
+                    window._play_stream,
                     url,
                     title,
                     item_id=self.download.get("item_id"),
@@ -241,7 +246,7 @@ class DownloadItemRow(Gtk.Box):
             elif isinstance(stats, dict) and hasattr(window, 'format_stream_stats'):
                 text = window.format_stream_stats(stats)
                 if hasattr(window, 'update_player_loading'):
-                    window.update_player_loading(text)
+                    GLib.idle_add(window.update_player_loading, text)
                 
         player.play_magnet(
             self.magnet, 
@@ -281,6 +286,9 @@ class DownloadItemRow(Gtk.Box):
             except Exception:
                 pass
         
+        # Stop polling before removal
+        self.on_destroy()
+
         # Remove from ListBox
         parent = self.get_parent()
         if parent:
@@ -291,7 +299,6 @@ class DownloadItemRow(Gtk.Box):
                     grandparent.remove(parent)
             else:
                 parent.remove(self)
-        self.on_destroy(self)
 
     def on_source_clicked(self, item_id, media_type):
         if hasattr(self, 'popover'): self.popover.popdown()

@@ -15,15 +15,16 @@ from . import database
 from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids, TMDB_GENRES, fetch_tmdb_standalone_metadata
 import concurrent.futures
 import threading
+import queue
 import contextlib
 import re
 
 def _create_ssl_context():
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
+        # Keep the platform CA store and hostname verification enabled. Add-on
+        # URLs are user supplied, so accepting arbitrary certificates would
+        # allow a network attacker to replace metadata and stream responses.
+        return ssl.create_default_context()
     except Exception:
         return None
 
@@ -90,6 +91,57 @@ else:
 CACHE_DIR = os.path.join(BASE_DIR, 'api')
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# Disk cache eviction: search URLs are unique per query, so cache files grow
+# without bound across sessions unless pruned. Prune at most once per hour.
+_DISK_CACHE_MAX_BYTES = 256 * 1024 * 1024
+_DISK_CACHE_MAX_AGE = 7 * 24 * 3600
+_DISK_CACHE_PRUNE_LOCK = threading.Lock()
+_DISK_CACHE_LAST_PRUNE = 0.0
+
+def _prune_disk_cache_if_needed(now=None):
+    global _DISK_CACHE_LAST_PRUNE
+    now = time.time() if now is None else now
+    if not _DISK_CACHE_PRUNE_LOCK.acquire(blocking=False):
+        return
+    try:
+        if now - _DISK_CACHE_LAST_PRUNE < 3600:
+            return
+        _DISK_CACHE_LAST_PRUNE = now
+        try:
+            entries = []
+            total = 0
+            for name in os.listdir(CACHE_DIR):
+                path = os.path.join(CACHE_DIR, name)
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                if not os.path.isfile(path):
+                    continue
+                total += st.st_size
+                if now - st.st_mtime > _DISK_CACHE_MAX_AGE:
+                    try:
+                        os.remove(path)
+                        total -= st.st_size
+                    except OSError:
+                        pass
+                    continue
+                entries.append((st.st_mtime, st.st_size, path))
+            if total > _DISK_CACHE_MAX_BYTES:
+                entries.sort()
+                for mtime, size, path in entries:
+                    if total <= _DISK_CACHE_MAX_BYTES:
+                        break
+                    try:
+                        os.remove(path)
+                        total -= size
+                    except OSError:
+                        break
+        except Exception as e:
+            logging.debug(f"Disk cache prune failed: {e}")
+    finally:
+        _DISK_CACHE_PRUNE_LOCK.release()
+
 _MEM_CACHE = {}
 _MEM_CACHE_LOCK = threading.Lock()
 _MEM_CACHE_MAX_ITEMS = 1000
@@ -100,17 +152,42 @@ _OFFLINE_HOSTS_LOCK = threading.Lock()
 _OFFLINE_HOST_COOLDOWN = 60 # 1 minute circuit breaker for offline addons
 _OFFLINE_HOST_MAX_FAILS = 2 # Trip breaker only after consecutive failures
 
+def _remember_bounded_host_state(mapping, host, value, limit=512):
+    """Update an insertion-ordered host map while bounding retained entries."""
+    mapping.pop(host, None)
+    mapping[host] = value
+    while len(mapping) > limit:
+        mapping.pop(next(iter(mapping)))
+
 # ---------------------------------------------------------------------------
 # Provider Protection System (Rate Limiting, Cooldowns, & Concurrency Control)
 # ---------------------------------------------------------------------------
 _PROVIDER_PROTECTION_LOCK = threading.RLock()
-_PROVIDER_HOST_LOCKS = {}             # host -> threading.Lock()
+_PROVIDER_LOCK_STRIPES = tuple(threading.Lock() for _ in range(128))
 _PROVIDER_LAST_REQUEST_TIME = {}      # host -> float (timestamp)
 _PROVIDER_COOLDOWNS = {}              # host -> float (cooldown expiry timestamp)
 _PROVIDER_COOLDOWN_REASONS = {}       # host -> str
+_PROVIDER_STATE_LAST_PRUNE = 0.0
 _STREAM_URL_CACHE = {}                # url -> (data, expiry_timestamp)
 _STREAM_URL_CACHE_LOCK = threading.Lock()
 _STREAM_URL_CACHE_TTL = 900           # 15 minutes cache for identical stream URLs
+_REQUEST_INFLIGHT = {}
+_REQUEST_INFLIGHT_LOCK = threading.Lock()
+
+def _prune_provider_state_locked(now):
+    """Discard expired per-host timestamps and cooldowns periodically."""
+    global _PROVIDER_STATE_LAST_PRUNE
+    if now - _PROVIDER_STATE_LAST_PRUNE < 60:
+        return
+    _PROVIDER_STATE_LAST_PRUNE = now
+    if len(_PROVIDER_LAST_REQUEST_TIME) > 256:
+        stale_hosts = [host for host, ts in _PROVIDER_LAST_REQUEST_TIME.items() if now - ts > 3600]
+        for host in stale_hosts:
+            _PROVIDER_LAST_REQUEST_TIME.pop(host, None)
+    expired_hosts = [host for host, expiry in _PROVIDER_COOLDOWNS.items() if expiry <= now]
+    for host in expired_hosts:
+        _PROVIDER_COOLDOWNS.pop(host, None)
+        _PROVIDER_COOLDOWN_REASONS.pop(host, None)
 
 def _get_provider_host(url_or_manifest):
     if not url_or_manifest:
@@ -149,6 +226,7 @@ def set_provider_cooldown(url_or_manifest, duration_seconds=300, reason="Rate li
     if not host:
         return
     with _PROVIDER_PROTECTION_LOCK:
+        _prune_provider_state_locked(time.time())
         duration = max(10, int(duration_seconds))
         _PROVIDER_COOLDOWNS[host] = time.time() + duration
         _PROVIDER_COOLDOWN_REASONS[host] = str(reason)
@@ -229,11 +307,11 @@ def _save_cached_stream_url(url, streams, ttl=_STREAM_URL_CACHE_TTL):
     with _STREAM_URL_CACHE_LOCK:
         if len(_STREAM_URL_CACHE) > 500:
             now = time.time()
-            expired = [k for k, v in _STREAM_URL_CACHE.items() if v[1] <= now]
+            expired = [k for k, v in list(_STREAM_URL_CACHE.items()) if v[1] <= now]
             for k in expired:
                 del _STREAM_URL_CACHE[k]
-            if len(_STREAM_URL_CACHE) > 500:
-                _STREAM_URL_CACHE.clear()
+            while len(_STREAM_URL_CACHE) > 400:
+                _STREAM_URL_CACHE.pop(next(iter(_STREAM_URL_CACHE)), None)
         _STREAM_URL_CACHE[url] = (streams, time.time() + ttl)
 
 @contextlib.contextmanager
@@ -249,9 +327,11 @@ def _acquire_provider_slot(host, min_interval=0.4, timeout=8.0, abort_event=None
         return
 
     with _PROVIDER_PROTECTION_LOCK:
-        if host not in _PROVIDER_HOST_LOCKS:
-            _PROVIDER_HOST_LOCKS[host] = threading.Lock()
-        lock = _PROVIDER_HOST_LOCKS[host]
+        now = time.time()
+        _prune_provider_state_locked(now)
+        # A fixed stripe set bounds memory use while preserving per-host
+        # serialization. Rare hash collisions only serialize unrelated hosts.
+        lock = _PROVIDER_LOCK_STRIPES[hash(host) % len(_PROVIDER_LOCK_STRIPES)]
 
     start_wait = time.time()
     acquired = False
@@ -270,6 +350,7 @@ def _acquire_provider_slot(host, min_interval=0.4, timeout=8.0, abort_event=None
         yield False
         return
 
+    did_request = False
     try:
         if abort_event and abort_event.is_set():
             yield False
@@ -294,10 +375,14 @@ def _acquire_provider_slot(host, min_interval=0.4, timeout=8.0, abort_event=None
         with _PROVIDER_PROTECTION_LOCK:
             _PROVIDER_LAST_REQUEST_TIME[host] = time.time()
 
+        did_request = True
         yield True
     finally:
-        with _PROVIDER_PROTECTION_LOCK:
-            _PROVIDER_LAST_REQUEST_TIME[host] = time.time()
+        # Only stamp the spacing timestamp when a request was actually made;
+        # aborted/cooldown paths must not delay the next real request.
+        if did_request:
+            with _PROVIDER_PROTECTION_LOCK:
+                _PROVIDER_LAST_REQUEST_TIME[host] = time.time()
         lock.release()
 
 def _request_addon_streams(addon, url, timeout=8, abort_event=None):
@@ -331,6 +416,12 @@ def _request_addon_streams(addon, url, timeout=8, abort_event=None):
     with _acquire_provider_slot(host, min_interval=0.4, timeout=timeout, abort_event=abort_event) as acquired:
         if not acquired:
             return []
+
+        # Re-check the cache once inside the slot: another thread may have
+        # completed the identical request while this one waited for the slot.
+        cached_streams = _get_cached_stream_url(url)
+        if cached_streams is not None:
+            return cached_streams
 
         try:
             req = urllib.request.Request(
@@ -410,7 +501,7 @@ def _request_addon_streams(addon, url, timeout=8, abort_event=None):
             return []
 
 
-def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0):
+def _get_cached_request_uncollapsed(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0):
     if not url:
         return None
     now = time.time()
@@ -432,7 +523,7 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
     # 2. Check if disk cache exists and is fresh
     if os.path.exists(cache_file):
         age_hours = (now - os.path.getmtime(cache_file)) / 3600
-        if age_hours < max_age_hours:
+        if max_age_hours is None or age_hours < max_age_hours:
             try:
                 with open(cache_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -444,8 +535,8 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
                         data = None
                     if data is not None:
                         with _MEM_CACHE_LOCK:
-                            if len(_MEM_CACHE) > _MEM_CACHE_MAX_ITEMS:
-                                _MEM_CACHE.clear()
+                            while len(_MEM_CACHE) >= _MEM_CACHE_MAX_ITEMS:
+                                _MEM_CACHE.pop(next(iter(_MEM_CACHE)), None)
                             _MEM_CACHE[url] = (data, now)
                         return data
             except Exception as e:
@@ -462,17 +553,27 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
         pass
 
     if parsed_host:
+        last_fail = None
         with _OFFLINE_HOSTS_LOCK:
+            if len(_OFFLINE_HOSTS) > 128:
+                expired_hosts = [h for h, failed_at in _OFFLINE_HOSTS.items()
+                                 if now - failed_at >= _OFFLINE_HOST_COOLDOWN]
+                for expired_host in expired_hosts:
+                    _OFFLINE_HOSTS.pop(expired_host, None)
+                    _OFFLINE_HOST_FAIL_COUNT.pop(expired_host, None)
             last_fail = _OFFLINE_HOSTS.get(parsed_host)
-            if last_fail and (now - last_fail < _OFFLINE_HOST_COOLDOWN):
-                if os.path.exists(cache_file):
-                    try:
-                        with open(cache_file, 'r', encoding='utf-8') as f:
-                            return json.load(f)
-                    except Exception:
-                        pass
-                return None
-        
+        in_cooldown = last_fail is not None and (now - last_fail < _OFFLINE_HOST_COOLDOWN)
+        if in_cooldown:
+            # Read the cache outside the lock: file I/O must not stall every
+            # other host's request behind this one.
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+                except Exception:
+                    pass
+            return None
+
     # 3. Fetch from network
     try:
         req = urllib.request.Request(url, headers=headers)
@@ -492,12 +593,13 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
 
         # Save to memory cache
         with _MEM_CACHE_LOCK:
-            if len(_MEM_CACHE) > _MEM_CACHE_MAX_ITEMS:
-                _MEM_CACHE.clear()
+            while len(_MEM_CACHE) >= _MEM_CACHE_MAX_ITEMS:
+                _MEM_CACHE.pop(next(iter(_MEM_CACHE)), None)
             _MEM_CACHE[url] = (data, now)
 
         # Save to disk cache atomically (temp file + rename)
         try:
+            _prune_disk_cache_if_needed(now)
             temp_file = f"{cache_file}.{os.getpid()}.{threading.get_ident()}.tmp"
             with open(temp_file, 'w', encoding='utf-8') as f:
                 f.write(data_str)
@@ -513,12 +615,15 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
         if parsed_host and e.code in [500, 502, 503, 504]:
             with _OFFLINE_HOSTS_LOCK:
                 cnt = _OFFLINE_HOST_FAIL_COUNT.get(parsed_host, 0) + 1
-                _OFFLINE_HOST_FAIL_COUNT[parsed_host] = cnt
+                _remember_bounded_host_state(_OFFLINE_HOST_FAIL_COUNT, parsed_host, cnt)
                 if cnt >= _OFFLINE_HOST_MAX_FAILS:
-                    _OFFLINE_HOSTS[parsed_host] = time.time()
+                    _remember_bounded_host_state(_OFFLINE_HOSTS, parsed_host, time.time())
         logging.debug(f"HTTP Error {e.code} fetching from {url}")
         try:
-            e.close()
+            if hasattr(e, "close"):
+                e.close()
+            if hasattr(e, "fp") and e.fp:
+                e.fp.close()
         except Exception:
             pass
     except urllib.error.URLError as e:
@@ -527,11 +632,11 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
             with _OFFLINE_HOSTS_LOCK:
                 if is_timeout:
                     cnt = _OFFLINE_HOST_FAIL_COUNT.get(parsed_host, 0) + 1
-                    _OFFLINE_HOST_FAIL_COUNT[parsed_host] = cnt
+                    _remember_bounded_host_state(_OFFLINE_HOST_FAIL_COUNT, parsed_host, cnt)
                     if cnt >= _OFFLINE_HOST_MAX_FAILS:
-                        _OFFLINE_HOSTS[parsed_host] = time.time()
+                        _remember_bounded_host_state(_OFFLINE_HOSTS, parsed_host, time.time())
                 else:
-                    _OFFLINE_HOSTS[parsed_host] = time.time()
+                    _remember_bounded_host_state(_OFFLINE_HOSTS, parsed_host, time.time())
         logging.debug(f"URL/SSL Error fetching from {url}: {e.reason}")
     except json.JSONDecodeError as e:
         logging.debug(f"JSON decode error from {url}: {e}")
@@ -539,22 +644,69 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
         if parsed_host:
             with _OFFLINE_HOSTS_LOCK:
                 cnt = _OFFLINE_HOST_FAIL_COUNT.get(parsed_host, 0) + 1
-                _OFFLINE_HOST_FAIL_COUNT[parsed_host] = cnt
+                _remember_bounded_host_state(_OFFLINE_HOST_FAIL_COUNT, parsed_host, cnt)
                 if cnt >= _OFFLINE_HOST_MAX_FAILS:
-                    _OFFLINE_HOSTS[parsed_host] = time.time()
+                    _remember_bounded_host_state(_OFFLINE_HOSTS, parsed_host, time.time())
         logging.debug(f"Error fetching items from {url}: {e}")
         
-    # Return stale cache if network fails
+    # Return stale cache if network fails. Do not put it into _MEM_CACHE:
+    # the data may be arbitrarily old, and stamping it with `now` would make
+    # every later caller treat it as fresh for a full max_age_hours window.
     if os.path.exists(cache_file):
         try:
             with open(cache_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                with _MEM_CACHE_LOCK:
-                    _MEM_CACHE[url] = (data, now)
-                return data
+                return json.load(f)
         except Exception as e:
             logging.debug(f"Failed to read stale cache: {e}")
     return None
+
+
+def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0):
+    """Fetch a URL once when concurrent callers miss the same cache entry."""
+    if not url or cache_only:
+        return _get_cached_request_uncollapsed(
+            url, max_age_hours=max_age_hours, headers=headers,
+            cache_only=cache_only, timeout=timeout,
+        )
+
+    now = time.time()
+    with _MEM_CACHE_LOCK:
+        cached = _MEM_CACHE.get(url)
+        if cached and (max_age_hours is None or now - cached[1] < max_age_hours * 3600):
+            return cached[0]
+
+    with _REQUEST_INFLIGHT_LOCK:
+        pending = _REQUEST_INFLIGHT.get(url)
+        is_owner = pending is None
+        if is_owner:
+            pending = {"event": threading.Event(), "result": None}
+            _REQUEST_INFLIGHT[url] = pending
+
+    if not is_owner:
+        if not pending["event"].wait(max(0.1, timeout) + 1.0):
+            # The owner can outlive timeout+1 because urlopen's timeout bounds
+            # individual socket ops, not total time. Re-check the cache before
+            # reporting a miss so the caller does not issue a duplicate fetch.
+            with _MEM_CACHE_LOCK:
+                cached = _MEM_CACHE.get(url)
+            if cached and (max_age_hours is None or time.time() - cached[1] < max_age_hours * 3600):
+                return cached[0]
+            return None
+        return pending["result"]
+
+    result = None
+    try:
+        result = _get_cached_request_uncollapsed(
+            url, max_age_hours=max_age_hours, headers=headers,
+            cache_only=False, timeout=timeout,
+        )
+        return result
+    finally:
+        with _REQUEST_INFLIGHT_LOCK:
+            pending["result"] = result
+            if _REQUEST_INFLIGHT.get(url) is pending:
+                del _REQUEST_INFLIGHT[url]
+            pending["event"].set()
 
 def fetch_genre_counts(media_type="movie"):
     return {}
@@ -1073,7 +1225,7 @@ def fetch_addon_directory_catalog(catalog_url, cache_only=False):
                     'Accept': 'application/json'
                 }
                 req = urllib.request.Request(catalog_url, headers=headers)
-                with urllib.request.urlopen(req, timeout=8.0) as resp:
+                with urllib.request.urlopen(req, timeout=8.0, context=_SSL_CONTEXT) as resp:
                     data = json.loads(resp.read().decode('utf-8'))
             except Exception:
                 pass
@@ -1112,7 +1264,7 @@ def fetch_addon_directory_catalog(catalog_url, cache_only=False):
             })
         return results
     except Exception as e:
-        logger.error(f"Error fetching addon directory catalog {catalog_url}: {e}")
+        logging.error(f"Error fetching addon directory catalog {catalog_url}: {e}")
         return []
 
 
@@ -2189,50 +2341,175 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
 
     return []
 
-def hydrate_missing_catalog_items(items, media_type="movie"):
-    """Batch-hydrates any catalog items missing titles/posters using metadata_cache and fast background fetch."""
-    if not items:
+# --- Polite Background Metadata Hydration Queue ---
+_HYDRATION_QUEUE = queue.Queue(maxsize=300)
+_HYDRATION_SEEN = set()
+_HYDRATION_LOCK = threading.Lock()
+_HYDRATION_THREAD = None
+
+def queue_metadata_hydration(item_id, media_type="movie", item_dict=None):
+    """Queue an item for polite, rate-limited background metadata hydration from Cinemeta."""
+    if not item_id or not str(item_id).startswith("tt"):
         return False
-    missing_titles = [m for m in items if (not m.get("title") or m.get("title") == "Unknown") and m.get("id")]
-    if not missing_titles:
-        if database.is_adult_content_hidden():
-            adult_items = [m for m in items if is_adult_item(m)]
-            for am in adult_items:
-                try:
-                    items.remove(am)
-                except ValueError:
-                    pass
+    global _HYDRATION_THREAD
+    iid = str(item_id).strip()
+    m_type = str(media_type or "movie").strip().lower()
+    key = (iid, m_type)
+    with _HYDRATION_LOCK:
+        if key in _HYDRATION_SEEN:
+            return False
+        if len(_HYDRATION_SEEN) >= 2000:
+            _HYDRATION_SEEN.clear()
+        _HYDRATION_SEEN.add(key)
+        if _HYDRATION_QUEUE.full():
+            try:
+                _HYDRATION_QUEUE.get_nowait()
+            except Exception:
+                pass
+        _HYDRATION_QUEUE.put((iid, m_type, item_dict))
+        if _HYDRATION_THREAD is None or not _HYDRATION_THREAD.is_alive():
+            _HYDRATION_THREAD = threading.Thread(target=_run_metadata_hydration_worker, daemon=True, name="MetadataHydrator")
+            _HYDRATION_THREAD.start()
+    return True
+
+def _run_metadata_hydration_worker():
+    """Background daemon worker that hydrates metadata politely at <=2.5 req/sec."""
+    while True:
+        try:
+            item_id, m_type, item_dict = _HYDRATION_QUEUE.get(timeout=30)
+        except (queue.Empty, Exception):
+            break
+
+        try:
+            # 1. Fast check if already cached in SQLite (another thread or previous view populated it)
+            cached = database.get_cached_metadata(item_id, m_type)
+            if cached and cached.get("genres") and cached.get("year"):
+                if item_dict is not None and isinstance(item_dict, dict):
+                    if not item_dict.get("genres") and cached.get("genres"):
+                        item_dict["genres"] = list(cached["genres"])
+                    if not item_dict.get("year") and cached.get("year"):
+                        item_dict["year"] = str(cached["year"])
+                continue
+
+            # 2. Check provider cooldown to avoid hitting a rate-limited host
+            if is_provider_in_cooldown("v3-cinemeta.strem.io") or is_provider_in_cooldown("cinemeta.strem.io"):
+                time.sleep(5)
+                continue
+
+            # 3. Polite rate-limiting: 350ms delay between calls = ~2.8 requests/second max
+            time.sleep(0.35)
+
+            # 4. Fetch metadata from Cinemeta (keep forever)
+            c_url = f"https://v3-cinemeta.strem.io/meta/{m_type}/{item_id}.json"
+            meta_res = _get_cached_request(c_url, max_age_hours=None, timeout=3.0)
+            if not meta_res or not isinstance(meta_res.get("meta"), dict):
+                alt_url = f"https://cinemeta-live.strem.io/meta/{m_type}/{item_id}.json"
+                meta_res = _get_cached_request(alt_url, max_age_hours=None, timeout=3.0)
+
+            if meta_res and isinstance(meta_res.get("meta"), dict):
+                meta_dict = meta_res["meta"]
+                # Save into SQLite metadata_cache and item_genres
+                database.save_cached_metadata(item_id, m_type, meta_dict)
+
+                title_str = meta_dict.get("name") or meta_dict.get("title") or item_id
+                genres_list = meta_dict.get("genres", [])
+                year_val = meta_dict.get("year", "")
+                print(f"[METADATA-HYDRATE] Cinemeta fetched: '{title_str}' ({item_id}) -> Year: {year_val}, Genres: {genres_list} (Saved to SQLite)")
+
+                # In-memory hydration of live card
+                if item_dict is not None and isinstance(item_dict, dict):
+                    if meta_dict.get("genres") and not item_dict.get("genres"):
+                        item_dict["genres"] = list(meta_dict["genres"])
+                    if meta_dict.get("year") and not item_dict.get("year"):
+                        item_dict["year"] = str(meta_dict["year"])
+                    if meta_dict.get("name") and (not item_dict.get("title") or item_dict.get("title") == "Unknown"):
+                        item_dict["title"] = meta_dict["name"]
+                    if meta_dict.get("poster") and not item_dict.get("medium_cover_image"):
+                        item_dict["medium_cover_image"] = meta_dict["poster"]
+                        item_dict["poster"] = meta_dict["poster"]
+        except Exception as e:
+            logger.debug(f"Metadata hydration error for {item_id}: {e}")
+        finally:
+            try:
+                _HYDRATION_QUEUE.task_done()
+            except Exception:
+                pass
+
+def hydrate_missing_catalog_items(items, media_type="movie"):
+    """Batch-hydrates any catalog items missing titles/posters/genres/year using metadata_cache and background hydrator."""
+    if not items:
         return False
 
     updated = False
-    still_missing = []
+    missing_titles = []
+    missing_metadata = []
+    local_hydrated_count = 0
 
-    # 0. Immediate local DB cache pass (sub-millisecond SQLite WAL lookup)
-    for m in missing_titles:
-        m_id = m.get("id")
+    # 0. Immediate local DB cache pass (sub-millisecond SQLite WAL lookup) for ALL items
+    for m in items:
+        if not isinstance(m, dict):
+            continue
+        m_id = m.get("id") or m.get("imdb_id")
+        if not m_id:
+            continue
         m_type = m.get("type") or media_type
-        c_meta = database.get_cached_metadata(m_id, m_type)
-        if c_meta and c_meta.get("title") and c_meta.get("title") != "Unknown":
-            m["title"] = c_meta.get("title") or c_meta.get("name", "")
-            if not m.get("medium_cover_image"):
-                m["medium_cover_image"] = c_meta.get("medium_cover_image") or c_meta.get("poster", "")
-                m["poster"] = m["medium_cover_image"]
-            if not m.get("year") and c_meta.get("year"):
-                m["year"] = str(c_meta.get("year", ""))
-            if c_meta.get("adult") or c_meta.get("isAdult"):
-                m["adult"] = True
-            updated = True
-        else:
-            still_missing.append(m)
 
+        is_missing_title = (not m.get("title") or m.get("title") == "Unknown")
+        is_missing_genres = not m.get("genres")
+        is_missing_year = not m.get("year")
+        is_missing_cover = not m.get("medium_cover_image") and not m.get("poster")
+
+        if is_missing_title or is_missing_genres or is_missing_year or is_missing_cover:
+            c_meta = database.get_cached_metadata(m_id, m_type)
+            if c_meta and isinstance(c_meta, dict):
+                item_hydrated = False
+                if is_missing_title and c_meta.get("title") and c_meta.get("title") != "Unknown":
+                    m["title"] = c_meta.get("title") or c_meta.get("name", "")
+                    is_missing_title = False
+                    updated = True
+                    item_hydrated = True
+                if is_missing_cover:
+                    cov = c_meta.get("medium_cover_image") or c_meta.get("poster")
+                    if cov:
+                        m["medium_cover_image"] = cov
+                        m["poster"] = cov
+                        updated = True
+                        item_hydrated = True
+                if is_missing_genres and c_meta.get("genres"):
+                    m["genres"] = list(c_meta["genres"])
+                    is_missing_genres = False
+                    updated = True
+                    item_hydrated = True
+                if is_missing_year and c_meta.get("year"):
+                    m["year"] = str(c_meta["year"])
+                    is_missing_year = False
+                    updated = True
+                    item_hydrated = True
+                if c_meta.get("adult") or c_meta.get("isAdult"):
+                    m["adult"] = True
+                if item_hydrated:
+                    local_hydrated_count += 1
+
+        if is_missing_title:
+            missing_titles.append(m)
+        elif (is_missing_genres or is_missing_year) and str(m_id).startswith("tt"):
+            missing_metadata.append(m)
+
+    if local_hydrated_count > 0:
+        print(f"[METADATA-HYDRATE] Local SQLite cache hit: hydrated {local_hydrated_count} items with genres/year (0ms, 0 network)")
+
+    # Queue any items that still lack genres or year to polite background hydrator
+    if missing_metadata:
+        print(f"[METADATA-HYDRATE] Queued {len(missing_metadata)} items for background Cinemeta hydration (queue: {_HYDRATION_QUEUE.qsize() + len(missing_metadata)})")
+        for m in missing_metadata:
+            m_id = m.get("id") or m.get("imdb_id")
+            m_type = m.get("type") or media_type
+            queue_metadata_hydration(m_id, m_type, item_dict=m)
+
+    still_missing = missing_titles
     if not still_missing:
         if database.is_adult_content_hidden():
-            adult_items = [m for m in items if is_adult_item(m)]
-            for am in adult_items:
-                try:
-                    items.remove(am)
-                except ValueError:
-                    pass
+            items[:] = [m for m in items if not is_adult_item(m)]
         return updated
 
     import concurrent.futures
@@ -2240,13 +2517,13 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
         m_id = m_item.get("id")
         m_type = m_item.get("type") or media_type
 
-        # 1. Try Cinemeta direct URL (~20-40ms)
+        # 1. Try Cinemeta direct URL (~20-40ms, keep forever)
         if str(m_id).startswith("tt"):
             c_url = f"https://v3-cinemeta.strem.io/meta/{m_type}/{m_id}.json"
-            cm = _get_cached_request(c_url, max_age_hours=168, timeout=1.5)
+            cm = _get_cached_request(c_url, max_age_hours=None, timeout=1.5)
             if not cm:
                 alt_url = f"https://cinemeta-live.strem.io/meta/{m_type}/{m_id}.json"
-                cm = _get_cached_request(alt_url, max_age_hours=168, timeout=1.5)
+                cm = _get_cached_request(alt_url, max_age_hours=None, timeout=1.5)
             if cm and isinstance(cm.get("meta"), dict):
                 meta_dict = cm["meta"]
                 if meta_dict.get("name"):
@@ -2309,12 +2586,7 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
         list(ex.map(_hydrate_single_item, still_missing))
 
     if database.is_adult_content_hidden():
-        adult_items = [m for m in items if is_adult_item(m)]
-        for am in adult_items:
-            try:
-                items.remove(am)
-            except ValueError:
-                pass
+        items[:] = [m for m in items if not is_adult_item(m)]
 
     return True
 
@@ -2508,6 +2780,11 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
                                     p_url = item["i"]["imageUrl"]
                                     p_url = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX400_.jpg', p_url)
                                     return p_url, p_url
+                except urllib.error.HTTPError as e:
+                    try:
+                        e.close()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
                 return None, None
@@ -2757,10 +3034,10 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         if not base_url.endswith("/"): base_url += "/"
         
         meta_url = f"{base_url}meta/{matched_type}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
-        data = _get_cached_request(meta_url, max_age_hours=168)
+        data = _get_cached_request(meta_url, max_age_hours=None)
         if not data and "v3-cinemeta.strem.io" in meta_url:
             alt_url = meta_url.replace("v3-cinemeta.strem.io", "cinemeta-live.strem.io")
-            data = _get_cached_request(alt_url, max_age_hours=168)
+            data = _get_cached_request(alt_url, max_age_hours=None)
         
         if data and data.get("meta"):
             cm = data["meta"]
@@ -3950,21 +4227,28 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
     all_streams = []
     num_workers = min(len(stremio_addons), 20)
     if num_workers > 0:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            future_to_addon = {executor.submit(fetch_from_addon, addon): addon for addon in stremio_addons}
-                
+        # Explicit executor: a `with` block would call shutdown(wait=True) on
+        # exit and block until every slow addon finishes, defeating the
+        # as_completed timeout below.
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
+        future_to_addon = {executor.submit(fetch_from_addon, addon): addon for addon in stremio_addons}
+
+        try:
             try:
                 for future in concurrent.futures.as_completed(future_to_addon, timeout=15):
                     try:
                         addon_name, streams = future.result()
                         if streams:
                             for s in streams:
+                                s = dict(s) if isinstance(s, dict) else s
                                 s["addon_name"] = addon_name
                                 all_streams.append(s)
                     except Exception as e:
                         print(f"Error in addon future: {e}")
             except concurrent.futures.TimeoutError:
                 print("Timeout fetching streams from some addons")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
             
     valid_streams = process_raw_streams(all_streams, season=season, episode=episode)
     if valid_streams:
@@ -4020,6 +4304,11 @@ def _ping_stream_url(stream):
                 if resp.status < 400:
                     stream["is_working"] = True
                     return stream
+        except urllib.error.HTTPError as e:
+            try:
+                e.close()
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -4029,6 +4318,11 @@ def _ping_stream_url(stream):
                 if resp.status < 400:
                     stream["is_working"] = True
                     return stream
+        except urllib.error.HTTPError as e:
+            try:
+                e.close()
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -4222,51 +4516,46 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             }
             all_raw_streams.append(raw)
 
-    final_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title)
+    final_streams = None
 
     import concurrent.futures
     num_workers = min(len(all_stream_addons), 8) if all_stream_addons else 1
     if num_workers > 0 and all_stream_addons:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            future_to_addon = {}
-            queried_addon_urls = set()
-            
+        # Explicit executor: the `with` form waits for every worker on exit,
+        # which nullifies the 12s wait() timeout handled inside the loop.
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
+        future_to_addon = {}
+        queried_addon_urls = set()
+
+        try:
             # Submit immediately for any addon that directly supports initial imdb_id
             for addon in all_stream_addons:
                 m_url = addon.get("manifest_url", "")
                 if has_stream_resource(addon, media_type=actual_media, item_id=imdb_id):
                     future_to_addon[executor.submit(fetch_from_addon, addon, imdb_id)] = (addon, imdb_id)
                     queried_addon_urls.add(m_url)
-                
+
             # Fire off ID resolution in the background
             def resolve_and_submit():
                 from .tmdb_helper import resolve_all_provider_ids
                 ids_to_fetch = resolve_all_provider_ids(imdb_id, media_type, title)
                 return [i for i in ids_to_fetch if i != imdb_id]
-                
+
             resolve_future = executor.submit(resolve_and_submit)
-            
+
             futures = set(future_to_addon.keys())
             futures.add(resolve_future)
-            
+
             while futures:
                 if abort_event and abort_event.is_set():
-                    try:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                    except Exception:
-                        pass
                     return []
                 done, futures = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED, timeout=12)
                 if abort_event and abort_event.is_set():
-                    try:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                    except Exception:
-                        pass
                     return []
                 if not done:
                     print("Timeout fetching streams")
                     break
-                    
+
                 for future in done:
                     if future == resolve_future:
                         try:
@@ -4298,6 +4587,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                 for s in streams:
                                     if check_stream_rate_limit_warning(s):
                                         continue
+                                    s = dict(s) if isinstance(s, dict) else s
                                     s["addon_name"] = addon_name
                                     all_raw_streams.append(s)
                                 if callback:
@@ -4305,6 +4595,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                     callback(current_parsed, is_cached=False, is_complete=False)
                         except Exception as e:
                             print(f"Error in addon future: {e}")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     final_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title)
 
@@ -4592,6 +4884,13 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
                             pass
                     data = json.loads(raw_data.decode('utf-8'))
                     return data.get("subtitles", [])
+            except urllib.error.HTTPError as e:
+                try:
+                    e.close()
+                except Exception:
+                    pass
+                logging.debug(f"HTTP error {e.code} fetching subtitles from {sub_url}")
+                return []
             except Exception as e:
                 logging.debug(f"Error fetching subtitles from {sub_url}: {e}")
                 return []
@@ -4713,6 +5012,12 @@ def search_subtitles_online(query="", imdb_id=None, media_type="movie", season=N
                         if stype == "series":
                             actual_media = "series"
                         break
+            except urllib.error.HTTPError as e:
+                try:
+                    e.close()
+                except Exception:
+                    pass
+                logging.debug(f"Cinemeta subtitle search HTTP error: {e}")
             except Exception as e:
                 logging.debug(f"Cinemeta subtitle search error: {e}")
 
@@ -4769,6 +5074,13 @@ def search_subtitles_online(query="", imdb_id=None, media_type="movie", season=N
                     if isinstance(it, dict):
                         it["_source"] = source_name
                 return items
+        except urllib.error.HTTPError as e:
+            try:
+                e.close()
+            except Exception:
+                pass
+            logging.debug(f"HTTP error {e.code} fetching subtitles from {sub_url}")
+            return []
         except Exception as e:
             logging.debug(f"Error fetching subtitles from {sub_url}: {e}")
             return []
@@ -4848,8 +5160,20 @@ def download_subtitle(sub_url, filename):
                     data = zlib.decompress(data)
                 except Exception:
                     pass
-            with open(file_path, 'wb') as f:
-                f.write(data)
+            # Write via temp file + rename so a crash never leaves a partial
+            # .srt that a later playback would load as a valid subtitle.
+            temp_path = f"{file_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+            try:
+                with open(temp_path, 'wb') as f:
+                    f.write(data)
+                os.replace(temp_path, file_path)
+            except Exception:
+                try:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                except Exception:
+                    pass
+                raise
         return file_path
     except urllib.error.HTTPError as e:
         logging.debug(f"HTTP Error {e.code} downloading subtitle")
@@ -4872,9 +5196,20 @@ def download_subtitle_to_path(sub_url, file_path):
     
     try:
         req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-        with urllib.request.urlopen(req, timeout=10) as response:
-            with open(file_path, 'wb') as f:
-                f.write(response.read())
+        with urllib.request.urlopen(req, timeout=10, context=_SSL_CONTEXT) as response:
+            payload = response.read()
+        temp_path = f"{file_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        try:
+            with open(temp_path, 'wb') as f:
+                f.write(payload)
+            os.replace(temp_path, file_path)
+        except Exception:
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass
+            raise
         return file_path
     except urllib.error.HTTPError as e:
         print(f"HTTP Error {e.code} downloading subtitle")

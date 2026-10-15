@@ -4180,33 +4180,37 @@ class CineWindow(Adw.ApplicationWindow):
     def _hide_ui(self, *args):
         try:
             self.hide_timeout_id = 0
-            controls_hover = self.motion_controls.props.contains_pointer
-            header_hover = self.motion_header.props.contains_pointer
+            controls_motion = getattr(self, "motion_controls", None)
+            controls_hover = bool(controls_motion and getattr(controls_motion, "props", None) and controls_motion.props.contains_pointer)
+            header_motion = getattr(self, "motion_header", None)
+            header_hover = bool(header_motion and getattr(header_motion, "props", None) and header_motion.props.contains_pointer)
 
             active_or_hover = (
-                self.mpv.idle_active
+                getattr(getattr(self, "mpv", None), "idle_active", False)
                 or header_hover
                 or controls_hover
-                or self.primary_menu_btn.props.active
-                or self.options_menu_btn.props.active
-                or self.volume_menu_btn.props.active
-                or self.subtitles_menu_btn.props.active
-                or self.audio_tracks_menu_btn.props.active
-                or self.video_tracks_menu_btn.props.active
-                or self.chapters_menu_btn.props.active
+                or bool(getattr(getattr(self, "primary_menu_btn", None), "props", None) and self.primary_menu_btn.props.active)
+                or bool(getattr(getattr(self, "options_menu_btn", None), "props", None) and self.options_menu_btn.props.active)
+                or bool(getattr(getattr(self, "volume_menu_btn", None), "props", None) and self.volume_menu_btn.props.active)
+                or bool(getattr(getattr(self, "subtitles_menu_btn", None), "props", None) and self.subtitles_menu_btn.props.active)
+                or bool(getattr(getattr(self, "audio_tracks_menu_btn", None), "props", None) and self.audio_tracks_menu_btn.props.active)
+                or bool(getattr(getattr(self, "video_tracks_menu_btn", None), "props", None) and self.video_tracks_menu_btn.props.active)
+                or bool(getattr(getattr(self, "chapters_menu_btn", None), "props", None) and self.chapters_menu_btn.props.active)
                 or getattr(self, "is_loading_stream", False)
             )
             if not active_or_hover:
-                self.revealer_ui.set_reveal_child(False)
-                self.time_popover.popdown()
+                if hasattr(self, "revealer_ui"):
+                    self.revealer_ui.set_reveal_child(False)
+                if hasattr(self, "time_popover"):
+                    self.time_popover.popdown()
 
             if (
-                (self.is_fs or not self.mpv["cursor-autohide-fs-only"])
+                (self.is_fs or not getattr(self, "mpv", None) or not self.mpv["cursor-autohide-fs-only"])
                 and not active_or_hover
-                and not self.props.dialogs
+                and not getattr(self.props, "dialogs", None)
             ):
                 self.set_cursor_from_name("none")
-        except mpv.ShutdownError:
+        except (mpv.ShutdownError, AttributeError, Exception):
             return
 
     def _on_mouse_motion(self, _controller, x, y):
@@ -5507,9 +5511,12 @@ class CineWindow(Adw.ApplicationWindow):
         return True
 
     def _is_hovering(self):
-        controls_hover = self.motion_controls.props.contains_pointer
-        header_hover = self.motion_header.props.contains_pointer
-        separator_hover = self.motion_controls_separator.props.contains_pointer
+        controls_motion = getattr(self, "motion_controls", None)
+        controls_hover = bool(controls_motion and getattr(controls_motion, "props", None) and controls_motion.props.contains_pointer)
+        header_motion = getattr(self, "motion_header", None)
+        header_hover = bool(header_motion and getattr(header_motion, "props", None) and header_motion.props.contains_pointer)
+        sep_motion = getattr(self, "motion_controls_separator", None)
+        separator_hover = bool(sep_motion and getattr(sep_motion, "props", None) and sep_motion.props.contains_pointer)
         hovering = (controls_hover or header_hover) and not separator_hover
         return hovering
 
@@ -7586,7 +7593,7 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _populate_discover_genre_dropdown(self, addon, chosen_type, active_cat=None):
         from . import database
-        if addon is None:
+        if addon is None or self._is_unique_mode_active():
             genres = database.get_available_genres(chosen_type)
             self._discover_genre_items = ["All Genres"] + genres
             if hasattr(self, "genre_dropdown") and self.genre_dropdown:
@@ -7646,7 +7653,7 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _populate_discover_year_dropdown(self, addon, chosen_type, active_cat=None):
         from . import database
-        if addon is None:
+        if addon is None or self._is_unique_mode_active():
             years = database.get_available_years(chosen_type)
             self._discover_year_items = ["All Years"] + years
             if hasattr(self, "year_dropdown") and self.year_dropdown:

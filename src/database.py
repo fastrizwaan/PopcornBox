@@ -4,7 +4,9 @@ import sys
 import threading
 import sqlite3
 import time
+import logging
 import re
+import atexit
 from pathlib import Path
 
 _db_lock = threading.RLock()
@@ -113,8 +115,20 @@ def _ensure_db():
     if not CONFIG_DIR.exists():
         CONFIG_DIR.mkdir(parents=True)
     if not DB_FILE.exists():
-        with open(DB_FILE, "w") as f:
-            json.dump({"favorites": [], "watched": [], "history": [], "continue_watching": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}, f, indent=4)
+        # Atomic initial creation: a crash mid-write must not leave a truncated
+        # data.json that would latch the corruption path on next start.
+        temp_file = DB_FILE.with_name(f"data.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            with open(temp_file, "w") as f:
+                json.dump({"favorites": [], "watched": [], "history": [], "continue_watching": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}, f, indent=4)
+            temp_file.replace(DB_FILE)
+        except Exception:
+            try:
+                if temp_file.exists():
+                    temp_file.unlink()
+            except Exception:
+                pass
+            raise
 
 def _read_db():
     global _db_corrupted, _json_cache, _json_cache_valid
@@ -239,6 +253,12 @@ def _read_db():
                     if aname:
                         seen_addon_names.add(aname)
                     unique_addons.append(a)
+                if len(unique_addons) != len(data["addons"]):
+                    data["addons"] = unique_addons
+                    migrated = True
+                else:
+                    data["addons"] = unique_addons
+
                 # Ensure all addons have valid types, resources, catalogs conforming to Stremio spec
                 for a in data.get("addons", []):
                     if not isinstance(a.get("catalogs"), list):
@@ -266,15 +286,37 @@ def _read_db():
             _json_cache = data
             _json_cache_valid = True
             return data
+        except json.JSONDecodeError as e:
+            logging.error(f"Database file is corrupted: {e}. Attempting recovery from backup or defaults.")
+            try:
+                bak = DB_FILE.with_suffix(".corrupt.bak")
+                if DB_FILE.exists():
+                    DB_FILE.rename(bak)
+            except Exception:
+                pass
+            _ensure_db()
+            try:
+                with open(DB_FILE, "r") as f:
+                    _json_cache = json.load(f)
+                    _json_cache_valid = True
+                    return _json_cache
+            except Exception:
+                pass
+            return {"favorites": [], "watched": [], "history": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}
         except Exception as e:
-            print(f"Failed to read database: {e}. Refusing future writes to prevent corruption.")
-            _db_corrupted = True
+            # Transient I/O problems (permissions, disk full, FUSE hiccups) must
+            # not permanently disable writes for the whole session; only real
+            # corruption latches _db_corrupted above.
+            logging.warning(f"Transient database read failure: {e}")
             return {"favorites": [], "watched": [], "history": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}
 
 def reset_json_cache():
     global _json_cache, _json_cache_valid
-    _json_cache = None
-    _json_cache_valid = False
+    # Synchronize with readers/writers: _read_db checks _json_cache_valid and
+    # returns _json_cache under _db_lock, so invalidation must hold it too.
+    with _db_lock:
+        _json_cache = None
+        _json_cache_valid = False
 
 def _write_db(data):
     global _json_cache, _json_cache_valid
@@ -291,6 +333,11 @@ def _write_db(data):
         try:
             with open(temp_file, "w") as f:
                 json.dump(data, f, indent=4)
+                # Flush to disk before the rename: without fsync a crash can
+                # persist the rename while the contents are still unwritten,
+                # leaving a truncated data.json behind.
+                f.flush()
+                os.fsync(f.fileno())
             temp_file.replace(DB_FILE)
             # Update in-memory cache with the data we just wrote
             _json_cache = data
@@ -303,7 +350,7 @@ def _write_db(data):
             except Exception:
                 pass
             _json_cache_valid = False
-            print(f"Error writing database: {e}")
+            logging.error(f"Error writing database: {e}")
             return False
 
 # --- Favorites ---
@@ -328,28 +375,36 @@ def add_favorite(item, sync_to_remote=True):
             from . import stremio_sync
             if stremio_sync.is_sync_enabled():
                 stremio_sync.sync_in_background()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(f"Failed to trigger remote sync: {e}")
 
 def remove_favorite(item_id, sync_to_remote=True):
+    # IDs arrive as str or int depending on the addon; normalize before
+    # comparing so numeric-ID entries are actually removed.
+    item_id = str(item_id)
     with _db_lock:
         db = _read_db()
-        db["favorites"] = [f for f in db.get("favorites", []) if f.get("id") != item_id and f.get("imdb_id") != item_id]
+        db["favorites"] = [f for f in db.get("favorites", []) if str(f.get("id")) != item_id and str(f.get("imdb_id")) != item_id]
         settings = db.setdefault("settings", {})
-        removed_favs = set(settings.get("removed_favorite_ids", []))
-        removed_favs.add(str(item_id))
-        settings["removed_favorite_ids"] = list(removed_favs)[-200:]
+        # Keep tombstones in removal order (oldest first) so trimming to the
+        # cap evicts the oldest, not a random entry.
+        removed_favs = [str(v) for v in settings.get("removed_favorite_ids", []) if v]
+        if item_id in removed_favs:
+            removed_favs.remove(item_id)
+        removed_favs.append(item_id)
+        settings["removed_favorite_ids"] = removed_favs[-200:]
         _write_db(db)
     if sync_to_remote and not _is_testing():
         try:
             from . import stremio_sync
             if stremio_sync.is_sync_enabled():
                 stremio_sync.sync_in_background()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(f"Failed to trigger remote sync: {e}")
 
 def is_favorite(item_id):
-    return any(f.get("id") == item_id or f.get("imdb_id") == item_id for f in _read_db().get("favorites", []))
+    item_id = str(item_id)
+    return any(str(f.get("id")) == item_id or str(f.get("imdb_id")) == item_id for f in _read_db().get("favorites", []))
 
 # --- Watched ---
 
@@ -361,19 +416,21 @@ def add_watched(item):
         db = _read_db()
         watched = db.setdefault("watched", [])
         item_id = item.get("id") or item.get("imdb_id")
-        watched = [w for w in watched if w.get("id") != item_id and w.get("imdb_id") != item_id]
+        watched = [w for w in watched if str(w.get("id")) != str(item_id) and str(w.get("imdb_id")) != str(item_id)]
         watched.insert(0, item)
         db["watched"] = watched
         _write_db(db)
 
 def remove_watched(item_id):
+    item_id = str(item_id)
     with _db_lock:
         db = _read_db()
-        db["watched"] = [f for f in db.get("watched", []) if f.get("id") != item_id and f.get("imdb_id") != item_id]
+        db["watched"] = [f for f in db.get("watched", []) if str(f.get("id")) != item_id and str(f.get("imdb_id")) != item_id]
         _write_db(db)
 
 def is_watched(item_id):
-    return any(f.get("id") == item_id or f.get("imdb_id") == item_id for f in _read_db().get("watched", []))
+    item_id = str(item_id)
+    return any(str(f.get("id")) == item_id or str(f.get("imdb_id")) == item_id for f in _read_db().get("watched", []))
 
 # --- History ---
 
@@ -390,7 +447,7 @@ def add_history(item, sync_to_remote=True):
             import time as _t
             item["last_watched"] = int(_t.time())
         # Remove existing entry if present (so it moves to the top)
-        history = [h for h in history if h.get("id") != item_id and h.get("imdb_id") != item_id]
+        history = [h for h in history if str(h.get("id")) != str(item_id) and str(h.get("imdb_id")) != str(item_id)]
         history.insert(0, item)
         settings = db.setdefault("settings", {})
         removed_hist = set(settings.get("removed_history_ids", []))
@@ -405,8 +462,8 @@ def add_history(item, sync_to_remote=True):
             from . import stremio_sync
             if stremio_sync.is_sync_enabled():
                 stremio_sync.scrobble_playback(item)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(f"Failed to scrobble playback: {e}")
 
 def clear_history():
     with _db_lock:
@@ -431,44 +488,87 @@ def add_history_batch(items, sync_to_remote=True):
         _write_db(db)
 
 def remove_history(item_id, sync_to_remote=True):
+    item_id = str(item_id)
     with _db_lock:
         db = _read_db()
-        db["history"] = [h for h in db.get("history", []) if h.get("id") != item_id and h.get("imdb_id") != item_id]
+        db["history"] = [h for h in db.get("history", []) if str(h.get("id")) != item_id and str(h.get("imdb_id")) != item_id]
         settings = db.setdefault("settings", {})
-        removed_hist = set(settings.get("removed_history_ids", []))
-        removed_hist.add(str(item_id))
-        settings["removed_history_ids"] = list(removed_hist)[-200:]
+        removed_hist = [str(v) for v in settings.get("removed_history_ids", []) if v]
+        if item_id in removed_hist:
+            removed_hist.remove(item_id)
+        removed_hist.append(item_id)
+        settings["removed_history_ids"] = removed_hist[-200:]
         _write_db(db)
 
 # --- Continue Watching ---
 
+def _continue_watching_item_ids(item):
+    """Return the string IDs that identify a Continue Watching item."""
+    if not isinstance(item, dict):
+        return set()
+    ids = {str(value) for value in (item.get("id"), item.get("imdb_id")) if value}
+    aliases = item.get("alias_ids")
+    if isinstance(aliases, (list, tuple, set)):
+        ids.update(str(value) for value in aliases if value)
+    return ids
+
+
+def _user_dismissed_continue_watching_ids(db=None):
+    """Read dismissals from canonical DB fields and older settings locations."""
+    db = db if isinstance(db, dict) else _read_db()
+    settings = db.get("settings", {})
+    ids = set()
+    root_values = db.get("user_dismissed_continue_watching", [])
+    settings_values = settings.get("user_dismissed_continue_watching", [])
+    for values in (root_values, settings_values):
+        if not isinstance(values, (list, tuple, set)):
+            continue
+        for value in values:
+            if value:
+                ids.add(str(value))
+    return ids
+
+
+def get_continue_watching_dismissals():
+    """Return IDs suppressed from Continue Watching, including legacy tombstones."""
+    db = _read_db()
+    ids = _user_dismissed_continue_watching_ids(db)
+    ids.update(str(value) for value in db.get("removed_continue_watching", []) if value)
+    ids.update(str(value) for value in db.get("settings", {}).get("removed_continue_watching", []) if value)
+    return ids
+
+
 def get_continue_watching():
     """Return list of in-progress and played items ordered by last_watched descending."""
-    db = _read_db()
-    cw_items = list(db.get("continue_watching", []))
-    user_dismissed = set(db.get("user_dismissed_continue_watching", []))
+    with _db_lock:
+        db = _read_db()
+        cw_items = list(db.get("continue_watching", []))
+        user_dismissed = _user_dismissed_continue_watching_ids(db)
+        history_items = list(db.get("history", []))
+        settings_snapshot = dict(db.get("settings", {}))
     
     seen_ids = set()
     valid_cw = []
     for item in cw_items:
+        item_ids = _continue_watching_item_ids(item)
         i_id = item.get("id") or item.get("imdb_id")
-        if i_id and str(i_id) not in seen_ids and str(i_id) not in user_dismissed:
-            seen_ids.add(str(i_id))
+        if i_id and not item_ids.intersection(seen_ids) and not item_ids.intersection(user_dismissed):
+            seen_ids.update(item_ids)
             valid_cw.append(item)
 
     # Auto-heal: If any series in history has saved in-progress episode progress
     # and is not in valid_cw, include it so it is never lost
-    history_items = db.get("history", [])
     now = time.time()
     healed_items = []
     import re
     for idx, h in enumerate(history_items):
         h_id = h.get("id") or h.get("imdb_id")
-        if not h_id or str(h_id) in seen_ids or str(h_id) in user_dismissed:
+        history_ids = _continue_watching_item_ids(h)
+        if not h_id or history_ids.intersection(seen_ids) or history_ids.intersection(user_dismissed):
             continue
         if h.get("type") in ["series", "anime", "tv"]:
-            s_val = db.get("settings", {}).get(f"last_s_{h_id}", 1) or 1
-            e_val = db.get("settings", {}).get(f"last_ep_{h_id}_{s_val}", None)
+            s_val = settings_snapshot.get(f"last_s_{h_id}", 1) or 1
+            e_val = settings_snapshot.get(f"last_ep_{h_id}_{s_val}", None)
             if e_val is None:
                 if db.get("settings", {}).get(f"working_stream_{h_id}_{s_val}_1"):
                     e_val = 1
@@ -492,13 +592,20 @@ def get_continue_watching():
         with _db_lock:
             db_curr = _read_db()
             curr_cw = db_curr.setdefault("continue_watching", [])
-            rem_list = set(db_curr.get("removed_continue_watching", []))
+            rem_list = db_curr.get("removed_continue_watching", [])
+            # Re-validate dismissals against the fresh snapshot: the user may
+            # have dismissed a healed series between the first read and now.
+            curr_dismissed = _user_dismissed_continue_watching_ids(db_curr)
+            rem_list_ids = set(str(v) for v in rem_list if v)
             for hi in healed_items:
                 hi_id = str(hi.get("id") or hi.get("imdb_id"))
-                rem_list.discard(hi_id)
+                hi_ids = _continue_watching_item_ids(hi)
+                if hi_ids.intersection(curr_dismissed):
+                    continue
+                rem_list_ids.discard(hi_id)
                 if not any(str(c.get("id") or c.get("imdb_id")) == hi_id for c in curr_cw):
                     curr_cw.insert(0, hi)
-            db_curr["removed_continue_watching"] = list(rem_list)
+            db_curr["removed_continue_watching"] = [str(v) for v in rem_list if str(v) in rem_list_ids]
             db_curr["continue_watching"] = curr_cw[:100]
             _write_db(db_curr)
 
@@ -510,9 +617,14 @@ def get_continue_watching_item(item_id):
         return None
     db = _read_db()
     cw_items = list(db.get("continue_watching", []))
+    user_dismissed = _user_dismissed_continue_watching_ids(db)
     ids_to_match = [str(x) for x in item_id if x] if isinstance(item_id, (list, set, tuple)) else [str(item_id)]
+    if set(ids_to_match).intersection(user_dismissed):
+        return None
             
     for item in cw_items:
+        if _continue_watching_item_ids(item).intersection(user_dismissed):
+            continue
         i_id = item.get("id") or item.get("imdb_id")
         i_aliases = [str(i_id)] if i_id else []
         if isinstance(item.get("alias_ids"), list):
@@ -522,6 +634,8 @@ def get_continue_watching_item(item_id):
             
     # Check history auto-heal on demand
     for h in db.get("history", []):
+        if _continue_watching_item_ids(h).intersection(user_dismissed):
+            continue
         h_id = h.get("id") or h.get("imdb_id")
         if h_id and any(str(h_id) == str(m) for m in ids_to_match) and h.get("type") in ["series", "anime", "tv"]:
             s_val = db.get("settings", {}).get(f"last_s_{h_id}", 1) or 1
@@ -550,26 +664,34 @@ def save_continue_watching(item, sync_to_remote=True):
     item_id = item.get("id") or item.get("imdb_id")
     if not item_id:
         return
+    updated_item = None
     with _db_lock:
         db = _read_db()
         cw = db.setdefault("continue_watching", [])
         
-        ids_to_match = [str(item_id)]
-        if isinstance(item.get("alias_ids"), list):
-            ids_to_match.extend([str(x) for x in item["alias_ids"] if x])
-        if item.get("id"):
-            ids_to_match.append(str(item["id"]))
-        if item.get("imdb_id"):
-            ids_to_match.append(str(item["imdb_id"]))
+        ids_to_match = _continue_watching_item_ids(item)
+
+        # A remote sync can overlap a local card dismissal. Do not let an
+        # already-running pull recreate the dismissed item; a local playback
+        # save (sync_to_remote=True) is the explicit way to resume it.
+        if not sync_to_remote and set(ids_to_match).intersection(_user_dismissed_continue_watching_ids(db)):
+            return
 
         # Remove any matching IDs from removed_continue_watching and user_dismissed_continue_watching
-        removed_set = set(db.get("removed_continue_watching", []))
-        user_dismissed = set(db.get("user_dismissed_continue_watching", []))
+        removed_set = set(str(value) for value in db.get("removed_continue_watching", []) if value)
+        user_dismissed = _user_dismissed_continue_watching_ids(db)
         for mid in ids_to_match:
             removed_set.discard(mid)
             user_dismissed.discard(mid)
         db["removed_continue_watching"] = list(removed_set)
         db["user_dismissed_continue_watching"] = list(user_dismissed)
+        settings = db.get("settings", {})
+        legacy_removed = settings.get("removed_continue_watching", [])
+        if isinstance(legacy_removed, (list, tuple, set)):
+            settings["removed_continue_watching"] = [str(value) for value in legacy_removed if str(value) not in ids_to_match]
+        legacy_dismissed = settings.get("user_dismissed_continue_watching", [])
+        if isinstance(legacy_dismissed, (list, tuple, set)):
+            settings["user_dismissed_continue_watching"] = [str(value) for value in legacy_dismissed if str(value) not in ids_to_match]
 
         existing = None
         new_cw = []
@@ -635,7 +757,7 @@ def save_continue_watching(item, sync_to_remote=True):
         db["continue_watching"] = new_cw[:100]
         _write_db(db)
 
-    if sync_to_remote and not _is_testing():
+    if updated_item and sync_to_remote and not _is_testing():
         try:
             from . import stremio_sync
             stremio_sync.scrobble_playback(updated_item)
@@ -649,26 +771,32 @@ def remove_continue_watching(item_id, blacklist=True, user_action=False, sync_to
     with _db_lock:
         db = _read_db()
         cw = db.get("continue_watching", [])
-        db["continue_watching"] = [
-            e for e in cw 
-            if e.get("id") != item_id and e.get("imdb_id") != item_id
-        ]
+        item_id = str(item_id)
+        matching = [e for e in cw if item_id in _continue_watching_item_ids(e)]
+        db["continue_watching"] = [e for e in cw if item_id not in _continue_watching_item_ids(e)]
+        dismissed_ids = {item_id}
+        for entry in matching:
+            dismissed_ids.update(_continue_watching_item_ids(entry))
         if blacklist:
-            removed_set = set(db.get("removed_continue_watching", []))
-            removed_set.add(str(item_id))
-            db["removed_continue_watching"] = list(removed_set)[-200:]
+            removed_list = [str(value) for value in db.get("removed_continue_watching", []) if value]
+            for mid in dismissed_ids:
+                if mid not in removed_list:
+                    removed_list.append(mid)
+            db["removed_continue_watching"] = removed_list[-200:]
         if user_action:
-            user_dismissed = set(db.get("user_dismissed_continue_watching", []))
-            user_dismissed.add(str(item_id))
-            db["user_dismissed_continue_watching"] = list(user_dismissed)[-200:]
+            user_dismissed = list(_user_dismissed_continue_watching_ids(db))
+            for mid in dismissed_ids:
+                if mid not in user_dismissed:
+                    user_dismissed.append(mid)
+            db["user_dismissed_continue_watching"] = user_dismissed[-200:]
         _write_db(db)
     if sync_to_remote and not _is_testing():
         try:
             from . import stremio_sync
             if stremio_sync.is_sync_enabled():
                 stremio_sync.sync_in_background()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(f"Failed to trigger remote sync: {e}")
 
 # --- Downloads ---
 
@@ -788,6 +916,12 @@ def update_addon_health(url, online=True, latency_ms=0, error=None):
         db = _read_db()
         settings = db.setdefault("settings", {})
         health = settings.setdefault("addon_health", {})
+        cutoff = time.time() - 7 * 86400
+        expired = [k for k, v in list(health.items()) if isinstance(v, dict) and v.get("last_checked", 0) < cutoff]
+        for k in expired:
+            health.pop(k, None)
+        while len(health) > 200:
+            health.pop(next(iter(health)), None)
         health[str(url)] = {
             "online": bool(online),
             "last_checked": time.time(),
@@ -805,6 +939,12 @@ def set_all_addons_health(health_dict):
         settings = db.setdefault("settings", {})
         health = settings.setdefault("addon_health", {})
         health.update(health_dict)
+        cutoff = time.time() - 7 * 86400
+        expired = [k for k, v in list(health.items()) if isinstance(v, dict) and v.get("last_checked", 0) < cutoff]
+        for k in expired:
+            health.pop(k, None)
+        while len(health) > 200:
+            health.pop(next(iter(health)), None)
         _write_db(db)
 
 def _normalize_stream_for_storage(stream):
@@ -865,11 +1005,10 @@ def save_torrent_files(info_hash, files):
             }
             for i, f in enumerate(files)
         ]
+        tf_cache.pop(str(info_hash).lower(), None)
         tf_cache[str(info_hash).lower()] = clean_files
-        if len(tf_cache) > 200:
-            oldest = list(tf_cache.keys())[:50]
-            for k in oldest:
-                del tf_cache[k]
+        while len(tf_cache) > 200:
+            tf_cache.pop(next(iter(tf_cache)), None)
         _write_db(db)
 
 def get_torrent_files(info_hash):
@@ -1014,10 +1153,15 @@ _PROGRESS_FLUSH_INTERVAL = 10  # seconds
 def save_progress(key, position):
     """Buffer progress in memory, flush to disk at most every 10 seconds."""
     global _progress_last_flush
+    should_flush = False
     with _db_lock:
         _progress_buffer[key] = position
+        while len(_progress_buffer) > 1000:
+            _progress_buffer.pop(next(iter(_progress_buffer)), None)
         now = time.time()
-        should_flush = now - _progress_last_flush >= _PROGRESS_FLUSH_INTERVAL
+        if now - _progress_last_flush >= _PROGRESS_FLUSH_INTERVAL:
+            _progress_last_flush = now
+            should_flush = True
     if should_flush:
         flush_progress()
 
@@ -1151,12 +1295,19 @@ def remove_addon(addon_id=None, manifest_url=None, sync_to_remote=True):
         settings["removed_default_addons"] = list(removed_defaults)
 
         # Track user removed addons so remote sync doesn't resurrect them
-        user_removed_ids = set(settings.get("removed_addon_ids", []))
-        user_removed_urls = set(settings.get("removed_addon_urls", []))
-        user_removed_ids.update(removed_ids)
-        user_removed_urls.update(removed_urls)
-        settings["removed_addon_ids"] = list(user_removed_ids)[-200:]
-        settings["removed_addon_urls"] = list(user_removed_urls)[-200:]
+        # (keep removal order so trimming evicts the oldest tombstone)
+        user_removed_ids = [str(v) for v in settings.get("removed_addon_ids", []) if v]
+        user_removed_urls = [str(v) for v in settings.get("removed_addon_urls", []) if v]
+        for rid in removed_ids:
+            rid = str(rid)
+            if rid not in user_removed_ids:
+                user_removed_ids.append(rid)
+        for rurl in removed_urls:
+            rurl = str(rurl)
+            if rurl not in user_removed_urls:
+                user_removed_urls.append(rurl)
+        settings["removed_addon_ids"] = user_removed_ids[-200:]
+        settings["removed_addon_urls"] = user_removed_urls[-200:]
         
         _write_db(db)
     
@@ -1259,74 +1410,78 @@ def _get_cache_db():
     global _cache_conn, _cache_db_initialized
     if _cache_conn is not None and _cache_db_initialized:
         return _cache_conn
-    _ensure_db()
-    db_path = CONFIG_DIR / "cache.db"
-    _cache_conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    _cache_conn.execute("PRAGMA journal_mode=WAL;")
-    _cache_conn.execute("""
-        CREATE TABLE IF NOT EXISTS metadata_cache (
-            id TEXT PRIMARY KEY,
-            media_type TEXT,
-            data TEXT,
-            updated_at REAL
-        )
-    """)
-    _cache_conn.execute("""
-        CREATE TABLE IF NOT EXISTS stream_cache (
-            cache_key TEXT PRIMARY KEY,
-            data TEXT,
-            updated_at REAL
-        )
-    """)
-    # Migration: Purge any contaminated rate-limit / banned messages from cache
-    try:
-        _cache_conn.execute("DELETE FROM stream_cache WHERE data LIKE '%ratelimit%' OR data LIKE '%Aguarde 5 Minutos%' OR data LIKE '%(Banned)%'")
-        _cache_conn.commit()
-    except Exception:
-        pass
-    _cache_conn.execute("""
-        CREATE TABLE IF NOT EXISTS trailer_stream_cache (
-            youtube_id TEXT PRIMARY KEY,
-            stream_url TEXT,
-            user_agent TEXT DEFAULT '',
-            updated_at REAL
-        )
-    """)
-    # Migration: add user_agent column if missing
-    try:
-        _cache_conn.execute("ALTER TABLE trailer_stream_cache ADD COLUMN user_agent TEXT DEFAULT ''")
-    except Exception:
-        pass
-    _cache_conn.execute("""
-        CREATE TABLE IF NOT EXISTS subtitle_cache (
-            cache_key TEXT PRIMARY KEY,
-            data TEXT,
-            updated_at REAL
-        )
-    """)
-    _cache_conn.execute("""
-        CREATE TABLE IF NOT EXISTS catalog_cache (
-            cache_key TEXT PRIMARY KEY,
-            data TEXT,
-            updated_at REAL
-        )
-    """)
-    _cache_conn.execute("""
-        CREATE TABLE IF NOT EXISTS item_genres (
-            item_id TEXT,
-            media_type TEXT,
-            genre TEXT,
-            year TEXT,
-            PRIMARY KEY (item_id, genre)
-        )
-    """)
-    try:
-        _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_type ON item_genres(media_type, genre)")
-        _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_genre ON item_genres(genre)")
-        _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_year ON item_genres(year)")
-        _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_metadata_year ON metadata_cache(json_extract(data, '$.year'))")
-    except Exception:
-        pass
+    with _cache_db_lock:
+        if _cache_conn is not None and _cache_db_initialized:
+            return _cache_conn
+        _ensure_db()
+        db_path = CONFIG_DIR / "cache.db"
+        _cache_conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        _cache_conn.execute("PRAGMA journal_mode=WAL;")
+        _cache_conn.execute("""
+            CREATE TABLE IF NOT EXISTS metadata_cache (
+                id TEXT PRIMARY KEY,
+                media_type TEXT,
+                data TEXT,
+                updated_at REAL
+            )
+        """)
+        _cache_conn.execute("""
+            CREATE TABLE IF NOT EXISTS stream_cache (
+                cache_key TEXT PRIMARY KEY,
+                data TEXT,
+                updated_at REAL
+            )
+        """)
+        # Migration: Purge any contaminated rate-limit / banned messages from cache
+        try:
+            _cache_conn.execute("DELETE FROM stream_cache WHERE data LIKE '%ratelimit%' OR data LIKE '%Aguarde 5 Minutos%' OR data LIKE '%(Banned)%'")
+            _cache_conn.commit()
+        except Exception:
+            pass
+        _cache_conn.execute("""
+            CREATE TABLE IF NOT EXISTS trailer_stream_cache (
+                youtube_id TEXT PRIMARY KEY,
+                stream_url TEXT,
+                user_agent TEXT DEFAULT '',
+                updated_at REAL
+            )
+        """)
+        # Migration: add user_agent column if missing
+        try:
+            _cache_conn.execute("ALTER TABLE trailer_stream_cache ADD COLUMN user_agent TEXT DEFAULT ''")
+        except Exception:
+            pass
+        _cache_conn.execute("""
+            CREATE TABLE IF NOT EXISTS subtitle_cache (
+                cache_key TEXT PRIMARY KEY,
+                data TEXT,
+                updated_at REAL
+            )
+        """)
+        _cache_conn.execute("""
+            CREATE TABLE IF NOT EXISTS catalog_cache (
+                cache_key TEXT PRIMARY KEY,
+                data TEXT,
+                updated_at REAL
+            )
+        """)
+        _cache_conn.execute("""
+            CREATE TABLE IF NOT EXISTS item_genres (
+                item_id TEXT,
+                media_type TEXT,
+                genre TEXT,
+                year TEXT,
+                PRIMARY KEY (item_id, genre)
+            )
+        """)
+        try:
+            _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_type ON item_genres(media_type, genre)")
+            _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_genre ON item_genres(genre)")
+            _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_genre_nocase ON item_genres(genre COLLATE NOCASE, media_type)")
+            _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_genres_year ON item_genres(year)")
+            _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_metadata_year ON metadata_cache(json_extract(data, '$.year'))")
+        except Exception:
+            pass
 
     # Migration: Backfill item_genres from metadata_cache if empty
     try:
@@ -1459,20 +1614,39 @@ def _get_cache_db():
     _cache_db_initialized = True
     return _cache_conn
 
+def close_cache_db():
+    """Cleanly close persistent SQLite cache database connection."""
+    global _cache_conn, _cache_db_initialized
+    with _cache_db_lock:
+        if _cache_conn is not None:
+            try:
+                _cache_conn.close()
+            except Exception:
+                pass
+            _cache_conn = None
+            _cache_db_initialized = False
+
+atexit.register(close_cache_db)
+
 _genre_listeners = []
+_genre_listeners_lock = threading.Lock()
 
 def register_genre_listener(callback):
     """Register a callback to be notified when new genres are added to the database."""
-    if callback not in _genre_listeners:
-        _genre_listeners.append(callback)
+    with _genre_listeners_lock:
+        if callback not in _genre_listeners:
+            _genre_listeners.append(callback)
 
 def unregister_genre_listener(callback):
     """Unregister a genre update callback."""
-    if callback in _genre_listeners:
-        _genre_listeners.remove(callback)
+    with _genre_listeners_lock:
+        if callback in _genre_listeners:
+            _genre_listeners.remove(callback)
 
 def _notify_genre_listeners():
-    for cb in list(_genre_listeners):
+    with _genre_listeners_lock:
+        callbacks = list(_genre_listeners)
+    for cb in callbacks:
         try:
             cb()
         except Exception as e:
@@ -1775,7 +1949,7 @@ def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None,
                 SELECT m.data
                 FROM item_genres ig
                 JOIN metadata_cache m ON ig.item_id = m.id
-                WHERE lower(ig.genre) = lower(?)
+                WHERE ig.genre = ? COLLATE NOCASE
             """
             params = [genre.strip()]
             if media_type and media_type not in ("all", "discover"):
@@ -2200,8 +2374,8 @@ def get_cached_catalog(cache_key, max_age_hours=24):
             if not data:
                 return None
             with _MEM_CATALOG_LOCK:
-                if len(_MEM_CATALOG_CACHE) > 500:
-                    _MEM_CATALOG_CACHE.clear()
+                while len(_MEM_CATALOG_CACHE) >= 500:
+                    _MEM_CATALOG_CACHE.pop(next(iter(_MEM_CATALOG_CACHE)), None)
                 _MEM_CATALOG_CACHE[cache_key] = (data, updated_at)
             if is_adult_content_hidden():
                 from . import api
@@ -2219,8 +2393,8 @@ def save_cached_catalog(cache_key, items):
         items = [it for it in items if not api.is_adult_item(it)]
     now = time.time()
     with _MEM_CATALOG_LOCK:
-        if len(_MEM_CATALOG_CACHE) > 500:
-            _MEM_CATALOG_CACHE.clear()
+        while len(_MEM_CATALOG_CACHE) >= 500:
+            _MEM_CATALOG_CACHE.pop(next(iter(_MEM_CATALOG_CACHE)), None)
         _MEM_CATALOG_CACHE[cache_key] = (items, now)
 
     try:
@@ -2235,6 +2409,7 @@ def save_cached_catalog(cache_key, items):
             try:
                 meta_batch = []
                 genre_batch = []
+                enriched_count = 0
                 for it in items:
                     if not isinstance(it, dict):
                         continue
@@ -2246,6 +2421,30 @@ def save_cached_catalog(cache_key, items):
                     genres = it.get("genres") or []
                     if isinstance(genres, str):
                         genres = [genres]
+
+                    # If this catalog item lacks genres or year, check if metadata_cache already has rich data
+                    if not genres or not yr:
+                        try:
+                            cur = cursor.execute("SELECT data FROM metadata_cache WHERE id = ?", (str(iid),))
+                            row = cur.fetchone()
+                            if row and row[0]:
+                                d = json.loads(row[0])
+                                item_enriched = False
+                                if not genres and d.get("genres"):
+                                    genres = d["genres"]
+                                    if isinstance(genres, str):
+                                        genres = [genres]
+                                    it["genres"] = genres
+                                    item_enriched = True
+                                if not yr and d.get("year"):
+                                    yr = str(d["year"])
+                                    it["year"] = yr
+                                    item_enriched = True
+                                if item_enriched:
+                                    enriched_count += 1
+                        except Exception:
+                            pass
+
                     meta_batch.append((str(iid), str(mtype), json.dumps(it), now))
                     for g in genres:
                         norm = normalize_imdb_genre(str(g).strip(), media_type=mtype)
@@ -2255,6 +2454,10 @@ def save_cached_catalog(cache_key, items):
                     cursor.executemany("INSERT OR IGNORE INTO metadata_cache VALUES (?, ?, ?, ?)", meta_batch)
                 if genre_batch:
                     cursor.executemany("INSERT OR IGNORE INTO item_genres VALUES (?, ?, ?, ?)", genre_batch)
+                    invalidate_dropdown_caches()
+                    _notify_genre_listeners()
+                if enriched_count > 0:
+                    print(f"[METADATA-HYDRATE] Enriched {enriched_count} items from metadata_cache for catalog '{cache_key}'")
             except Exception:
                 pass
             conn.commit()
