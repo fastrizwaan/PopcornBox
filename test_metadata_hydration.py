@@ -49,6 +49,14 @@ class TestMetadataHydration(unittest.TestCase):
         database._json_cache_valid = False
         database._json_cache = None
 
+        with api._HYDRATION_LOCK:
+            api._HYDRATION_SEEN.clear()
+        while not api._HYDRATION_QUEUE.empty():
+            try:
+                api._HYDRATION_QUEUE.get_nowait()
+            except Exception:
+                break
+
     def tearDown(self):
         database.close_cache_db()
         self.patcher1.stop()
@@ -340,6 +348,67 @@ class TestMetadataHydration(unittest.TestCase):
         self.assertIsNotNone(res)
         self.assertEqual(res.get("title"), "The Matrix")
         self.assertEqual(res.get("description"), "Neo discovers the simulation.")
+
+    def test_fetch_items_retains_catalog_description_and_rating(self):
+        """fetch_items retains description, rating, runtime, and cast returned in catalog metas."""
+        mock_catalog_data = {
+            "metas": [
+                {
+                    "id": "tt22084616",
+                    "name": "Spider-Man: Brand New Day",
+                    "year": "2026",
+                    "poster": "https://example.com/spiderman.jpg",
+                    "description": "Peter Parker lives alone as a full-time Spider-Man.",
+                    "imdbRating": "8.0",
+                    "runtime": "145 min",
+                    "cast": ["Tom Holland", "Zendaya"],
+                    "genres": ["Action", "Adventure"]
+                }
+            ]
+        }
+        with patch("src.api._get_cached_request", return_value=mock_catalog_data):
+            items = api.fetch_items(catalog_url="https://v3-cinemeta.strem.io/manifest.json", catalog_id="imdbRating")
+            self.assertEqual(len(items), 1)
+            item = items[0]
+            self.assertEqual(item.get("description"), "Peter Parker lives alone as a full-time Spider-Man.")
+            self.assertEqual(item.get("imdbRating"), "8.0")
+            self.assertEqual(item.get("runtime"), "145 min")
+            self.assertEqual(item.get("cast"), ["Tom Holland", "Zendaya"])
+
+            # Verify it was also saved into local metadata_cache
+            cached = database.get_cached_metadata("tt22084616")
+            self.assertIsNotNone(cached)
+            self.assertEqual(cached.get("description"), "Peter Parker lives alone as a full-time Spider-Man.")
+            self.assertEqual(cached.get("imdbRating"), "8.0")
+
+    def test_fetch_movie_details_refreshes_incomplete_cached_stub(self):
+        """fetch_movie_details does not short-circuit on cached stubs lacking a substantive synopsis."""
+        incomplete_stub = {
+            "id": "tt22084616",
+            "title": "Spider-Man: Brand New Day",
+            "year": "2026",
+            "genres": ["Action", "Adventure"]
+            # Notice: no description, runtime, or cast
+        }
+        database.save_cached_metadata("tt22084616", "movie", incomplete_stub)
+
+        full_meta = {
+            "meta": {
+                "id": "tt22084616",
+                "name": "Spider-Man: Brand New Day",
+                "year": "2026",
+                "poster": "https://example.com/spiderman.jpg",
+                "description": "Full synopsis from Cinemeta.",
+                "imdbRating": "8.0",
+                "runtime": "145 min",
+                "genres": ["Action", "Adventure"]
+            }
+        }
+        with patch("src.api._get_cached_request", return_value=full_meta):
+            det = api.fetch_movie_details("tt22084616", "movie", use_cache=True)
+            self.assertIsNotNone(det)
+            self.assertEqual(det.get("description"), "Full synopsis from Cinemeta.")
+            self.assertEqual(det.get("runtime"), "145 min")
 
 if __name__ == "__main__":
     unittest.main()

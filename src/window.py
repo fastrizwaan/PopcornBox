@@ -839,10 +839,13 @@ class MovieDetailsPage(Gtk.Overlay):
                 return False
             if not api.is_valid_meta(d):
                 return False
-            if d.get("videos"):
-                return True
-            has_substantive = bool(d.get("description") or d.get("overview") or d.get("runtime") or d.get("genre") or d.get("genres") or d.get("cast"))
-            return has_substantive
+            desc = d.get("description") or d.get("overview")
+            has_real_desc = bool(desc) and desc not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD")
+            if not has_real_desc:
+                return False
+            if self.media_type in ["series", "anime", "tv"] and not d.get("videos"):
+                return False
+            return True
 
         is_complete = is_complete_meta(cached_details) or bool(self.movie_stub.get("videos"))
 

@@ -2098,6 +2098,14 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                         poster_url = m.get("poster") or m.get("medium_cover_image") or m.get("logo") or m.get("banner") or m.get("background") or m.get("icon") or m.get("thumbnail") or ""
                         if poster_url and poster_url.startswith("//"):
                             poster_url = "https:" + poster_url
+                        item_desc = m.get("description") or m.get("overview") or ""
+                        item_rating = str(m.get("imdbRating") or m.get("rating") or m.get("vote_average") or "")
+                        item_runtime = str(m.get("runtime") or "")
+                        item_bg = m.get("background") or m.get("backdrop") or ""
+                        item_cast = list(m.get("cast") or [])
+                        item_videos = m.get("videos") or []
+                        item_trailer = m.get("trailer")
+
                         item_obj = {
                             "id": imdb_id,
                             "alias_ids": [imdb_id],
@@ -2106,11 +2114,30 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                             "medium_cover_image": poster_url,
                             "poster": poster_url,
                             "type": m.get("type") or media_type,
+                            "genres": m.get("genres") or [],
                             "addon_name": cur_addon_name,
                             "catalog_name": "Search",
                             "catalog_id": target_catalog_id or "search",
                             "manifest_url": cur_manifest_url
                         }
+                        if item_desc:
+                            item_obj["description"] = item_desc
+                            item_obj["overview"] = item_desc
+                        if item_rating:
+                            item_obj["imdbRating"] = item_rating
+                        if item_runtime:
+                            item_obj["runtime"] = item_runtime
+                        if item_bg:
+                            item_obj["background"] = item_bg
+                        if item_cast:
+                            item_obj["cast"] = item_cast
+                        if item_videos:
+                            item_obj["videos"] = item_videos
+                        if item_trailer:
+                            item_obj["trailer"] = item_trailer
+
+                        if item_desc and imdb_id:
+                            database.save_cached_metadata(imdb_id, item_obj["type"], item_obj)
                         seen_titles.setdefault(title_lower, []).append(item_obj)
                         items.append(item_obj)
                         new_batch.append(item_obj)
@@ -2338,7 +2365,15 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 item_cat_name = m.get("catalog_name") or found_catalog_name
                 item_addon_name = m.get("addon_name") or found_addon_name
 
-                movies.append({
+                item_desc = m.get("description") or m.get("overview") or ""
+                item_rating = str(m.get("imdbRating") or m.get("rating") or m.get("vote_average") or "")
+                item_runtime = str(m.get("runtime") or "")
+                item_bg = m.get("background") or m.get("backdrop") or ""
+                item_cast = list(m.get("cast") or [])
+                item_videos = m.get("videos") or []
+                item_trailer = m.get("trailer")
+
+                item_dict = {
                     "id": imdb_id,
                     "alias_ids": alias_ids,
                     "title": title,
@@ -2351,7 +2386,27 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     "catalog_name": item_cat_name,
                     "catalog_id": catalog_id,
                     "manifest_url": catalog_url
-                })
+                }
+                if item_desc:
+                    item_dict["description"] = item_desc
+                    item_dict["overview"] = item_desc
+                if item_rating:
+                    item_dict["imdbRating"] = item_rating
+                if item_runtime:
+                    item_dict["runtime"] = item_runtime
+                if item_bg:
+                    item_dict["background"] = item_bg
+                if item_cast:
+                    item_dict["cast"] = item_cast
+                if item_videos:
+                    item_dict["videos"] = item_videos
+                if item_trailer:
+                    item_dict["trailer"] = item_trailer
+
+                if item_desc and imdb_id:
+                    database.save_cached_metadata(imdb_id, item_type, item_dict)
+
+                movies.append(item_dict)
             if genre and genre != "All" and str(catalog_id) not in ("year", "years", "acc85513", "tmdb.year"):
                 movies = filter_items_by_genre(movies, genre, media_type=media_type)
             hydrate_missing_catalog_items(movies, media_type=media_type)
@@ -3101,15 +3156,19 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
     cached = database.get_cached_metadata(imdb_id) if imdb_id else None
     if use_cache and cached and is_valid_meta(cached):
-        if not cached.get("language") and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
-            cached = enrich_metadata_with_language_and_genres(cached, imdb_id, media_type, title)
-            database.save_cached_metadata(imdb_id, media_type, cached)
-        if poster and not cached.get("medium_cover_image"):
-            cached["medium_cover_image"] = poster
-            database.save_cached_metadata(imdb_id, media_type, cached)
-        elif poster and cached.get("medium_cover_image"):
-            cached["medium_cover_image"] = poster
-        return cached
+        desc = cached.get("description") or cached.get("overview")
+        has_real_desc = bool(desc) and desc not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD")
+        has_videos = bool(cached.get("videos")) if media_type in ["series", "anime", "tv"] else True
+        if has_real_desc and has_videos:
+            if not cached.get("language") and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
+                cached = enrich_metadata_with_language_and_genres(cached, imdb_id, media_type, title)
+                database.save_cached_metadata(imdb_id, media_type, cached)
+            if poster and not cached.get("medium_cover_image"):
+                cached["medium_cover_image"] = poster
+                database.save_cached_metadata(imdb_id, media_type, cached)
+            elif poster and cached.get("medium_cover_image"):
+                cached["medium_cover_image"] = poster
+            return cached
 
     if media_type in ["tv", "channel", "tvchannel"]:
         for addon in database.get_addons():
