@@ -7993,6 +7993,17 @@ class CineWindow(Adw.ApplicationWindow):
         """Called when new metadata/genres are saved to SQLite database."""
         def do_update():
             self._update_genre_dropdown()
+            cur_type = self._get_current_discover_type() if hasattr(self, "_get_current_discover_type") else "all"
+            if hasattr(self, "genre_dropdown") and self.genre_dropdown and hasattr(self, "_populate_discover_genre_dropdown"):
+                cur_g = self.genre_dropdown.get_selected_item().get_string() if self.genre_dropdown.get_selected_item() else None
+                self._populate_discover_genre_dropdown(None, cur_type, None)
+                if hasattr(self, "_restore_dropdown_selection"):
+                    self._restore_dropdown_selection(self.genre_dropdown, getattr(self, "_discover_genre_items", []), cur_g)
+            if hasattr(self, "year_dropdown") and self.year_dropdown and hasattr(self, "_populate_discover_year_dropdown"):
+                cur_y = self.year_dropdown.get_selected_item().get_string() if self.year_dropdown.get_selected_item() else None
+                self._populate_discover_year_dropdown(None, cur_type, None)
+                if hasattr(self, "_restore_dropdown_selection"):
+                    self._restore_dropdown_selection(self.year_dropdown, getattr(self, "_discover_year_items", []), cur_y)
             return False
         GLib.idle_add(do_update)
 
@@ -8470,8 +8481,15 @@ class CineWindow(Adw.ApplicationWindow):
                         if cur_lang:
                             addon_name = cat_info.get("addon_name", "")
                             cat_name = cat_info.get("catalog_name") or cat_info.get("name") or c_id or ""
+                            cat_extra = cat_info.get("extra") or []
+                            lang_opts = None
+                            for ex in cat_extra:
+                                if isinstance(ex, dict) and ex.get("name") in ("language", "lang") and ex.get("options"):
+                                    lang_opts = ex["options"]
+                                    break
                             cat_supports_lang = (
                                 api.catalog_supports_genre(cat_info, cur_lang)
+                                or (lang_opts and any(cur_lang.lower() == str(opt).lower() or database.get_language_code(cur_lang) == str(opt).lower() for opt in lang_opts))
                                 or cur_lang.lower() in addon_name.lower()
                                 or cur_lang.lower() in str(cat_name).lower()
                                 or cur_lang.lower() in str(c_id).lower()
@@ -9472,11 +9490,24 @@ class CineWindow(Adw.ApplicationWindow):
                 if not api.is_catalog_browsable(cat):
                     continue
 
-                if cur_genre and not filter_addon_url and not api.catalog_supports_genre(cat, cur_genre):
-                    continue
+                if cur_genre and not filter_addon_url:
+                    cat_genres = cat.get("genres") or []
+                    cat_extra = cat.get("extra") or []
+                    has_restricted = bool(cat_genres) or any(
+                        isinstance(ex, dict) and ex.get("name") == "genre" and ex.get("options")
+                        for ex in cat_extra
+                    )
+                    if has_restricted and not api.catalog_supports_genre(cat, cur_genre):
+                        continue
 
                 if cur_lang and not filter_addon_url:
-                    if not (api.catalog_supports_genre(cat, cur_lang) or cur_lang.lower() in addon_name.lower() or cur_lang.lower() in str(cat.get('name', '')).lower() or cur_lang.lower() in str(cat.get('id', '')).lower()):
+                    cat_extra = cat.get("extra") or []
+                    lang_opts = None
+                    for ex in cat_extra:
+                        if isinstance(ex, dict) and ex.get("name") in ("language", "lang") and ex.get("options"):
+                            lang_opts = ex["options"]
+                            break
+                    if lang_opts and not any(cur_lang.lower() == str(opt).lower() or database.get_language_code(cur_lang) == str(opt).lower() for opt in lang_opts):
                         continue
 
                 # Check media type filter if specified

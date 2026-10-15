@@ -546,6 +546,17 @@ class MovieWidget(Gtk.Box):
             tooltip_lines.append(f"Catalog: {cat_name}")
         self.set_tooltip_text("\n".join(tooltip_lines))
 
+        # Wire live hydration update callback so card updates in real time when background hydrator finishes
+        def _on_card_hydrated(t, y, p):
+            try:
+                self._apply_resolved_meta(t, y, p)
+            except Exception:
+                pass
+            return False
+
+        if isinstance(self.movie_data, dict):
+            self.movie_data["_on_hydrated"] = _on_card_hydrated
+
     def _apply_resolved_meta(self, title, year, poster_url, is_adult=False):
         try:
             from . import database, api

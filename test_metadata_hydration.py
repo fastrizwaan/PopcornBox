@@ -166,5 +166,111 @@ class TestMetadataHydration(unittest.TestCase):
         self.assertGreater(y_model.get_n_items(), 1)
         self.assertEqual(y_model.get_string(0), "All Years")
 
+    def test_extract_clean_year(self):
+        """extract_clean_year properly extracts 4-digit years from various formats."""
+        self.assertEqual(database.extract_clean_year("2014"), "2014")
+        self.assertEqual(database.extract_clean_year("2019–2026"), "2019")
+        self.assertEqual(database.extract_clean_year("2016–"), "2016")
+        self.assertEqual(database.extract_clean_year("2013-2023"), "2013")
+        self.assertEqual(database.extract_clean_year({"releaseInfo": "2019–2026"}), "2019")
+        self.assertEqual(database.extract_clean_year({"released": "2026-06-19T00:00:00.000Z"}), "2026")
+        self.assertEqual(database.extract_clean_year(""), "")
+        self.assertEqual(database.extract_clean_year(None), "")
+
+    def test_year_range_saved_as_clean_year(self):
+        """Saving metadata with releaseInfo or year ranges stores clean 4-digit year in SQLite item_genres."""
+        details = {
+            "id": "tt11034066",
+            "name": "Welcome to Demon School",
+            "releaseInfo": "2019–2026",
+            "genres": ["Animation", "Comedy"]
+        }
+        database.save_cached_metadata("tt11034066", "series", details)
+
+        stored_years = database.get_stored_years("series")
+        self.assertIn("2019", stored_years)
+
+        # Ensure item is retrievable by year 2019
+        by_yr = database.get_cached_items_by_year("2019", "series")
+        self.assertTrue(any(it.get("id") == "tt11034066" for it in by_yr))
+
+    def test_tmdb_fallback_when_cinemeta_has_empty_genres(self):
+        """When Cinemeta returns empty genres, worker falls back to TMDB helper."""
+        mock_cinemeta_res = {
+            "meta": {
+                "id": "tt38734636",
+                "name": "Oasis",
+                "genres": [],
+                "releaseInfo": "2026"
+            }
+        }
+        mock_tmdb_res = {
+            "language_name": "Spanish",
+            "genres": ["Crime", "Drama", "Mystery"],
+            "release_date": "2026"
+        }
+
+        with patch("src.api._get_cached_request", return_value=mock_cinemeta_res), \
+             patch("src.tmdb_helper.fetch_title_language_and_genres", return_value=mock_tmdb_res):
+            bare_item = {"id": "tt38734636", "title": "Oasis", "genres": [], "year": "", "type": "series"}
+            api.queue_metadata_hydration("tt38734636", "series", item_dict=bare_item)
+
+            start_t = time.time()
+            found = False
+            while time.time() - start_t < 2.5:
+                meta = database.get_cached_metadata("tt38734636", "series")
+                if meta and meta.get("genres") == ["Crime", "Drama", "Mystery"]:
+                    found = True
+                    break
+                time.sleep(0.05)
+
+            self.assertTrue(found)
+            self.assertEqual(bare_item.get("genres"), ["Crime", "Drama", "Mystery"])
+            self.assertEqual(bare_item.get("year"), "2026")
+
+    def test_kitsu_alias_id_queueing_and_enrichment(self):
+        """Kitsu items with id='kitsu:...' and imdb_id='tt...' are properly queued and enriched."""
+        items = [
+            {
+                "id": "kitsu:7442",
+                "imdb_id": "tt2560140",
+                "title": "Attack on Titan",
+                "genres": [],
+                "year": "",
+                "type": "anime"
+            }
+        ]
+        mock_cinemeta_res = {
+            "meta": {
+                "id": "tt2560140",
+                "name": "Attack on Titan",
+                "genres": ["Animation", "Action", "Adventure"],
+                "releaseInfo": "2013-2023"
+            }
+        }
+        while not api._HYDRATION_QUEUE.empty():
+            try:
+                api._HYDRATION_QUEUE.get_nowait()
+            except Exception:
+                break
+
+        with patch("src.api._get_cached_request", return_value=mock_cinemeta_res):
+            api.hydrate_missing_catalog_items(items, media_type="anime")
+
+            # Wait for background queue
+            start_t = time.time()
+            found = False
+            while time.time() - start_t < 5.0:
+                meta = database.get_cached_metadata("tt2560140", "anime")
+                if meta and meta.get("genres"):
+                    found = True
+                    break
+                time.sleep(0.05)
+
+            self.assertTrue(found)
+            # Item in memory should have clean year and genres
+            self.assertEqual(items[0].get("genres"), ["Animation", "Action", "Adventure"])
+            self.assertEqual(items[0].get("year"), "2013")
+
 if __name__ == "__main__":
     unittest.main()

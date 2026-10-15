@@ -338,6 +338,8 @@ def resolve_to_tmdb_id(item_id, media_type="movie", title=None):
                     return str(data["movie_results"][0]["id"])
                 elif data.get("tv_results"):
                     return str(data["tv_results"][0]["id"])
+                elif data.get("id"):
+                    return str(data["id"])
         except Exception:
             pass
 

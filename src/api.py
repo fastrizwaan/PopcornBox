@@ -1540,6 +1540,18 @@ def does_genre_match_filter(candidate_genre, target_genre):
     if cand_str == tgt:
         return True
 
+    # Language code and name mapping
+    from . import database
+    if database.is_language_genre(tgt):
+        tgt_code = database.get_language_code(tgt)
+        cand_code = database.get_language_code(cand_str)
+        if tgt_code and cand_code and tgt_code == cand_code:
+            return True
+        if tgt_code and cand_str == tgt_code:
+            return True
+        if cand_code and tgt == cand_code:
+            return True
+
     # Compound and alias mappings
     if tgt == "action":
         return "action" in cand_str
@@ -1694,22 +1706,30 @@ def filter_items_by_genre(items, genre, media_type=None):
             if media_type and media_type not in ("all", "discover"):
                 if not is_item_type_compatible(item, media_type):
                     continue
-            y = str(item.get("year") or "").strip()
-            if not y and item.get("releaseInfo"):
-                y = str(item.get("releaseInfo")).split("-")[0].strip()
-            if not y or y.startswith(g_norm):
+            y = database.extract_clean_year(item)
+            if not y:
+                item_id = item.get("id") or item.get("imdb_id")
+                if item_id:
+                    c_meta = database.get_cached_metadata(item_id, media_type or item.get("type"))
+                    if c_meta:
+                        y = database.extract_clean_year(c_meta)
+            if not y or y == g_norm:
                 filtered.append(item)
         return filtered
 
     filtered = []
+    is_lang_filter = database.is_language_genre(g_norm)
 
     for item in items:
-        # Check local DB metadata cache only if genres are not already present on the item
+        # Check local DB metadata cache only if genres are not already present on the item (or if language is needed)
         has_item_genres = bool(item.get("genres") or item.get("genre") or item.get("genre_ids"))
+        has_item_lang = bool(item.get("language"))
         cached_meta = None
         item_id = item.get("id") or item.get("imdb_id")
-        if not has_item_genres and item_id:
+        if (not has_item_genres or (is_lang_filter and not has_item_lang)) and item_id:
             cached_meta = database.get_cached_metadata(item_id, media_type or item.get("type"))
+            if not cached_meta and item.get("imdb_id") and item["imdb_id"] != item_id:
+                cached_meta = database.get_cached_metadata(item["imdb_id"], media_type or item.get("type"))
 
         # Strictly verify media type compatibility first
         if media_type and media_type != "all":
@@ -1789,6 +1809,7 @@ def filter_items_by_genre(items, genre, media_type=None):
         if itype == "anime":
             item_genres.add("anime")
             item_genres.add("animation")
+            item_genres.add("japanese")
 
         if item_genres:
             if any(does_genre_match_filter(ig, g_norm) for ig in item_genres):
@@ -2408,25 +2429,53 @@ def _run_metadata_hydration_worker():
 
             if meta_res and isinstance(meta_res.get("meta"), dict):
                 meta_dict = meta_res["meta"]
+                title_str = meta_dict.get("name") or meta_dict.get("title") or item_id
+                clean_year_val = database.extract_clean_year(meta_dict)
+                if clean_year_val and not meta_dict.get("year"):
+                    meta_dict["year"] = clean_year_val
+                genres_list = meta_dict.get("genres") or []
+
+                # Fallback to TMDB if Cinemeta has no genres or no language
+                if not genres_list or not meta_dict.get("language"):
+                    try:
+                        from . import tmdb_helper
+                        tmdb_data = tmdb_helper.fetch_title_language_and_genres(item_id, media_type=m_type, title=title_str)
+                        if tmdb_data:
+                            if not genres_list and tmdb_data.get("genres"):
+                                meta_dict["genres"] = tmdb_data["genres"]
+                                genres_list = tmdb_data["genres"]
+                            if not meta_dict.get("language") and tmdb_data.get("language_name"):
+                                meta_dict["language"] = tmdb_data["language_name"]
+                            if not clean_year_val and tmdb_data.get("release_date"):
+                                clean_year_val = database.extract_clean_year(tmdb_data["release_date"])
+                                if clean_year_val:
+                                    meta_dict["year"] = clean_year_val
+                    except Exception:
+                        pass
+
                 # Save into SQLite metadata_cache and item_genres
                 database.save_cached_metadata(item_id, m_type, meta_dict)
-
-                title_str = meta_dict.get("name") or meta_dict.get("title") or item_id
-                genres_list = meta_dict.get("genres", [])
-                year_val = meta_dict.get("year", "")
-                print(f"[METADATA-HYDRATE] Cinemeta fetched: '{title_str}' ({item_id}) -> Year: {year_val}, Genres: {genres_list} (Saved to SQLite)")
+                print(f"[METADATA-HYDRATE] Cinemeta fetched: '{title_str}' ({item_id}) -> Year: {clean_year_val}, Genres: {genres_list} (Saved to SQLite)")
 
                 # In-memory hydration of live card
                 if item_dict is not None and isinstance(item_dict, dict):
-                    if meta_dict.get("genres") and not item_dict.get("genres"):
-                        item_dict["genres"] = list(meta_dict["genres"])
-                    if meta_dict.get("year") and not item_dict.get("year"):
-                        item_dict["year"] = str(meta_dict["year"])
+                    if genres_list and not item_dict.get("genres"):
+                        item_dict["genres"] = list(genres_list)
+                    if clean_year_val and not item_dict.get("year"):
+                        item_dict["year"] = str(clean_year_val)
                     if meta_dict.get("name") and (not item_dict.get("title") or item_dict.get("title") == "Unknown"):
                         item_dict["title"] = meta_dict["name"]
                     if meta_dict.get("poster") and not item_dict.get("medium_cover_image"):
                         item_dict["medium_cover_image"] = meta_dict["poster"]
                         item_dict["poster"] = meta_dict["poster"]
+
+                    cb = item_dict.get("_on_hydrated")
+                    if callable(cb):
+                        try:
+                            from gi.repository import GLib
+                            GLib.idle_add(cb, item_dict.get("title"), item_dict.get("year"), item_dict.get("medium_cover_image") or item_dict.get("poster"))
+                        except Exception:
+                            pass
         except Exception as e:
             logger.debug(f"Metadata hydration error for {item_id}: {e}")
         finally:
@@ -2454,13 +2503,29 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
             continue
         m_type = m.get("type") or media_type
 
+        # Ensure clean year is extracted from releaseInfo / released
+        clean_yr = database.extract_clean_year(m)
+        if clean_yr and not m.get("year"):
+            m["year"] = clean_yr
+
         is_missing_title = (not m.get("title") or m.get("title") == "Unknown")
         is_missing_genres = not m.get("genres")
         is_missing_year = not m.get("year")
         is_missing_cover = not m.get("medium_cover_image") and not m.get("poster")
 
+        candidates = [str(m_id)]
+        if m.get("imdb_id") and str(m["imdb_id"]) not in candidates:
+            candidates.append(str(m["imdb_id"]))
+        for aid in (m.get("alias_ids") or []):
+            if str(aid) not in candidates:
+                candidates.append(str(aid))
+
         if is_missing_title or is_missing_genres or is_missing_year or is_missing_cover:
-            c_meta = database.get_cached_metadata(m_id, m_type)
+            c_meta = None
+            for cid in candidates:
+                c_meta = database.get_cached_metadata(cid, m_type)
+                if c_meta and isinstance(c_meta, dict):
+                    break
             if c_meta and isinstance(c_meta, dict):
                 item_hydrated = False
                 if is_missing_title and c_meta.get("title") and c_meta.get("title") != "Unknown":
@@ -2480,8 +2545,9 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     is_missing_genres = False
                     updated = True
                     item_hydrated = True
-                if is_missing_year and c_meta.get("year"):
-                    m["year"] = str(c_meta["year"])
+                c_yr = database.extract_clean_year(c_meta)
+                if is_missing_year and c_yr:
+                    m["year"] = str(c_yr)
                     is_missing_year = False
                     updated = True
                     item_hydrated = True
@@ -2490,10 +2556,16 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                 if item_hydrated:
                     local_hydrated_count += 1
 
+        tt_id = None
+        for cid in candidates:
+            if str(cid).startswith("tt"):
+                tt_id = str(cid)
+                break
+
         if is_missing_title:
             missing_titles.append(m)
-        elif (is_missing_genres or is_missing_year) and str(m_id).startswith("tt"):
-            missing_metadata.append(m)
+        elif (is_missing_genres or is_missing_year) and tt_id:
+            missing_metadata.append((m, tt_id))
 
     if local_hydrated_count > 0:
         print(f"[METADATA-HYDRATE] Local SQLite cache hit: hydrated {local_hydrated_count} items with genres/year (0ms, 0 network)")
@@ -2501,10 +2573,9 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
     # Queue any items that still lack genres or year to polite background hydrator
     if missing_metadata:
         print(f"[METADATA-HYDRATE] Queued {len(missing_metadata)} items for background Cinemeta hydration (queue: {_HYDRATION_QUEUE.qsize() + len(missing_metadata)})")
-        for m in missing_metadata:
-            m_id = m.get("id") or m.get("imdb_id")
-            m_type = m.get("type") or media_type
-            queue_metadata_hydration(m_id, m_type, item_dict=m)
+        for m_item, tt_id in missing_metadata:
+            m_type = m_item.get("type") or media_type
+            queue_metadata_hydration(tt_id, m_type, item_dict=m_item)
 
     still_missing = missing_titles
     if not still_missing:

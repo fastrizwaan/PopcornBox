@@ -1542,6 +1542,22 @@ def _get_cache_db():
         if not cur.fetchone():
             _cache_conn.execute("DELETE FROM catalog_cache WHERE data = '[]' OR data = '' OR data IS NULL")
             _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('clean_empty_catalog_cache_v1', '1')")
+        cur.execute("SELECT val FROM cache_meta WHERE key = 'clean_item_years_v2'")
+        if not cur.fetchone():
+            cur.execute("SELECT item_id, genre, year FROM item_genres WHERE year IS NOT NULL AND (length(year) != 4 OR year NOT GLOB '[1-2][0-9][0-9][0-9]')")
+            bad_rows = cur.fetchall()
+            for iid, g, yr in bad_rows:
+                import re
+                clean_y = ""
+                m = re.search(r'\b(19\d\d|20\d\d)\b', str(yr or ""))
+                if m:
+                    clean_y = m.group(1)
+                elif len(str(yr or "")) >= 4 and str(yr)[:4].isdigit():
+                    clean_y = str(yr)[:4]
+                if clean_y:
+                    cur.execute("UPDATE item_genres SET year = ? WHERE item_id = ? AND genre = ?", (clean_y, iid, g))
+            _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('clean_item_years_v2', '1')")
+            _cache_conn.commit()
         cur.execute("SELECT val FROM cache_meta WHERE key = 'strict_imdb_genres_v2'")
         if not cur.fetchone():
             cur.execute("SELECT DISTINCT genre FROM item_genres WHERE genre != ''")
@@ -1652,6 +1668,32 @@ def _notify_genre_listeners():
         except Exception as e:
             print(f"Error in genre listener callback: {e}")
 
+def extract_clean_year(val_or_dict):
+    """
+    Extract a canonical 4-digit year string (e.g. '2019') from a string, integer,
+    or item dictionary checking 'year', 'releaseInfo', and 'released'.
+    """
+    if not val_or_dict:
+        return ""
+    if isinstance(val_or_dict, dict):
+        y = str(val_or_dict.get("year") or "").strip()
+        if not y or not any(c.isdigit() for c in y):
+            y = str(val_or_dict.get("releaseInfo") or "").strip()
+        if not y or not any(c.isdigit() for c in y):
+            y = str(val_or_dict.get("released") or "").strip()
+    else:
+        y = str(val_or_dict).strip()
+
+    if not y:
+        return ""
+    import re
+    m = re.search(r'\b(19\d\d|20\d\d)\b', y)
+    if m:
+        return m.group(1)
+    if len(y) >= 4 and y[:4].isdigit():
+        return y[:4]
+    return ""
+
 def get_cached_metadata(item_id, media_type=None):
     if not item_id:
         return None
@@ -1661,6 +1703,12 @@ def get_cached_metadata(item_id, media_type=None):
             cursor = conn.cursor()
             cursor.execute("SELECT data FROM metadata_cache WHERE id = ?", (str(item_id),))
             row = cursor.fetchone()
+            if not row and not str(item_id).startswith("tt"):
+                cursor.execute(
+                    "SELECT data FROM metadata_cache WHERE json_extract(data, '$.imdb_id') = ? OR json_extract(data, '$.id') = ? LIMIT 1",
+                    (str(item_id), str(item_id))
+                )
+                row = cursor.fetchone()
             if row and row[0]:
                 data = json.loads(row[0])
                 if str(item_id).startswith("ctmdb."):
@@ -1678,10 +1726,18 @@ def save_cached_metadata(item_id, media_type, details):
         with _cache_db_lock:
             conn = _get_cache_db()
             cursor = conn.cursor()
+            now = time.time()
+            data_json = json.dumps(details)
             cursor.execute(
                 "INSERT OR REPLACE INTO metadata_cache (id, media_type, data, updated_at) VALUES (?, ?, ?, ?)",
-                (str(item_id), str(media_type or "movie"), json.dumps(details), time.time())
+                (str(item_id), str(media_type or "movie"), data_json, now)
             )
+            imdb_id = details.get("imdb_id")
+            if imdb_id and str(imdb_id) != str(item_id):
+                cursor.execute(
+                    "INSERT OR REPLACE INTO metadata_cache (id, media_type, data, updated_at) VALUES (?, ?, ?, ?)",
+                    (str(imdb_id), str(media_type or "movie"), data_json, now)
+                )
 
             # Extract and store genres and year into item_genres table
             from .api import is_adult_item
@@ -1693,37 +1749,68 @@ def save_cached_metadata(item_id, media_type, details):
             elif not isinstance(genres, list):
                 genres = []
 
-            year_val = str(details.get("year") or "").strip()
-            if len(year_val) > 4:
-                year_val = year_val[:4]
+            year_val = extract_clean_year(details)
 
             has_new = False
             if not is_adult:
-                for g in genres:
-                    g_str = str(g).strip()
-                    norm_g = normalize_imdb_genre(g_str, media_type=media_type)
-                    if norm_g:
+                ids_to_index = [str(item_id)]
+                if imdb_id and str(imdb_id) not in ids_to_index:
+                    ids_to_index.append(str(imdb_id))
+
+                for iid in ids_to_index:
+                    if genres:
+                        for g in genres:
+                            g_str = str(g).strip()
+                            norm_g = normalize_imdb_genre(g_str, media_type=media_type)
+                            if norm_g:
+                                cursor.execute(
+                                    """
+                                    INSERT INTO item_genres (item_id, media_type, genre, year)
+                                    VALUES (?, ?, ?, ?)
+                                    ON CONFLICT(item_id, genre) DO UPDATE SET
+                                        year = CASE WHEN excluded.year != '' THEN excluded.year ELSE item_genres.year END,
+                                        media_type = excluded.media_type
+                                    """,
+                                    (iid, str(media_type or "movie"), norm_g, year_val)
+                                )
+                                if cursor.rowcount > 0:
+                                    has_new = True
+                        # Remove empty genre placeholder if real genres now exist
+                        cursor.execute("DELETE FROM item_genres WHERE item_id = ? AND genre = ''", (iid,))
+
+                    item_lang = details.get("language")
+                    if item_lang:
+                        for l_sub in str(item_lang).split(","):
+                            l_sub = l_sub.strip()
+                            if l_sub and l_sub.lower() != "english":
+                                norm_lang = normalize_imdb_genre(l_sub, media_type=media_type)
+                                if norm_lang:
+                                    cursor.execute(
+                                        """
+                                        INSERT INTO item_genres (item_id, media_type, genre, year)
+                                        VALUES (?, ?, ?, ?)
+                                        ON CONFLICT(item_id, genre) DO UPDATE SET
+                                            year = CASE WHEN excluded.year != '' THEN excluded.year ELSE item_genres.year END,
+                                            media_type = excluded.media_type
+                                        """,
+                                        (iid, str(media_type or "movie"), norm_lang, year_val)
+                                    )
+                                    if cursor.rowcount > 0:
+                                        has_new = True
+
+                    if not genres and year_val:
                         cursor.execute(
-                            "INSERT OR IGNORE INTO item_genres (item_id, media_type, genre, year) VALUES (?, ?, ?, ?)",
-                            (str(item_id), str(media_type or "movie"), norm_g, year_val)
+                            """
+                            INSERT INTO item_genres (item_id, media_type, genre, year)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(item_id, genre) DO UPDATE SET
+                                year = CASE WHEN excluded.year != '' THEN excluded.year ELSE item_genres.year END,
+                                media_type = excluded.media_type
+                            """,
+                            (iid, str(media_type or "movie"), "", year_val)
                         )
                         if cursor.rowcount > 0:
                             has_new = True
-                item_lang = details.get("language")
-                if item_lang and str(item_lang).strip().lower() != "english":
-                    norm_lang = normalize_imdb_genre(str(item_lang).strip(), media_type=media_type)
-                    if norm_lang:
-                        cursor.execute(
-                            "INSERT OR IGNORE INTO item_genres (item_id, media_type, genre, year) VALUES (?, ?, ?, ?)",
-                            (str(item_id), str(media_type or "movie"), norm_lang, year_val)
-                        )
-                        if cursor.rowcount > 0:
-                            has_new = True
-                if not genres and year_val:
-                    cursor.execute(
-                        "INSERT OR IGNORE INTO item_genres (item_id, media_type, genre, year) VALUES (?, ?, ?, ?)",
-                        (str(item_id), str(media_type or "movie"), "", year_val)
-                    )
 
             conn.commit()
             if has_new:
@@ -2417,43 +2504,70 @@ def save_cached_catalog(cache_key, items):
                     if not iid:
                         continue
                     mtype = it.get("type") or "movie"
-                    yr = str(it.get("year") or "")
+                    clean_yr = extract_clean_year(it)
+                    if clean_yr and not it.get("year"):
+                        it["year"] = clean_yr
                     genres = it.get("genres") or []
                     if isinstance(genres, str):
                         genres = [genres]
 
                     # If this catalog item lacks genres or year, check if metadata_cache already has rich data
-                    if not genres or not yr:
+                    if not genres or not clean_yr:
                         try:
-                            cur = cursor.execute("SELECT data FROM metadata_cache WHERE id = ?", (str(iid),))
-                            row = cur.fetchone()
-                            if row and row[0]:
-                                d = json.loads(row[0])
-                                item_enriched = False
-                                if not genres and d.get("genres"):
-                                    genres = d["genres"]
-                                    if isinstance(genres, str):
-                                        genres = [genres]
-                                    it["genres"] = genres
-                                    item_enriched = True
-                                if not yr and d.get("year"):
-                                    yr = str(d["year"])
-                                    it["year"] = yr
-                                    item_enriched = True
-                                if item_enriched:
-                                    enriched_count += 1
+                            candidates = [str(iid)]
+                            if it.get("imdb_id") and str(it["imdb_id"]) not in candidates:
+                                candidates.append(str(it["imdb_id"]))
+                            for aid in (it.get("alias_ids") or []):
+                                if str(aid) not in candidates:
+                                    candidates.append(str(aid))
+
+                            for cid in candidates:
+                                cur = cursor.execute("SELECT data FROM metadata_cache WHERE id = ?", (cid,))
+                                row = cur.fetchone()
+                                if row and row[0]:
+                                    d = json.loads(row[0])
+                                    item_enriched = False
+                                    if not genres and d.get("genres"):
+                                        genres = d["genres"]
+                                        if isinstance(genres, str):
+                                            genres = [genres]
+                                        it["genres"] = genres
+                                        item_enriched = True
+                                    if not clean_yr:
+                                        d_yr = extract_clean_year(d)
+                                        if d_yr:
+                                            clean_yr = d_yr
+                                            it["year"] = clean_yr
+                                            item_enriched = True
+                                    if item_enriched:
+                                        enriched_count += 1
+                                    break
                         except Exception:
                             pass
 
-                    meta_batch.append((str(iid), str(mtype), json.dumps(it), now))
-                    for g in genres:
-                        norm = normalize_imdb_genre(str(g).strip(), media_type=mtype)
-                        if norm:
-                            genre_batch.append((str(iid), str(mtype), norm, yr))
+                    ids_to_batch = [str(iid)]
+                    if it.get("imdb_id") and str(it["imdb_id"]) not in ids_to_batch:
+                        ids_to_batch.append(str(it["imdb_id"]))
+
+                    for bid in ids_to_batch:
+                        meta_batch.append((bid, str(mtype), json.dumps(it), now))
+                        for g in genres:
+                            norm = normalize_imdb_genre(str(g).strip(), media_type=mtype)
+                            if norm:
+                                genre_batch.append((bid, str(mtype), norm, clean_yr))
+                        if not genres and clean_yr:
+                            genre_batch.append((bid, str(mtype), "", clean_yr))
+
                 if meta_batch:
                     cursor.executemany("INSERT OR IGNORE INTO metadata_cache VALUES (?, ?, ?, ?)", meta_batch)
                 if genre_batch:
-                    cursor.executemany("INSERT OR IGNORE INTO item_genres VALUES (?, ?, ?, ?)", genre_batch)
+                    cursor.executemany("""
+                        INSERT INTO item_genres (item_id, media_type, genre, year)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(item_id, genre) DO UPDATE SET
+                            year = CASE WHEN excluded.year != '' THEN excluded.year ELSE item_genres.year END,
+                            media_type = excluded.media_type
+                    """, genre_batch)
                     invalidate_dropdown_caches()
                     _notify_genre_listeners()
                 if enriched_count > 0:

@@ -260,21 +260,19 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
 
     def test_tmdb_standalone_metadata_enrichment(self):
         """Verify fetch_tmdb_standalone_metadata fallback returns valid metadata structure."""
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = b'''{
-                "id": 550,
-                "title": "Fight Club",
-                "overview": "An insomniac office worker...",
-                "poster_path": "/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg",
-                "backdrop_path": "/hZkgoQYus5vegHoetLkCJzb17zJ.jpg",
-                "vote_average": 8.433,
-                "release_date": "1999-10-15",
-                "runtime": 139,
-                "genres": [{"id": 18, "name": "Drama"}, {"id": 53, "name": "Thriller"}]
-            }'''
-            mock_urlopen.return_value.__enter__.return_value = mock_resp
-            
+        mock_data = {
+            "id": 550,
+            "title": "Fight Club",
+            "overview": "An insomniac office worker...",
+            "poster_path": "/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg",
+            "backdrop_path": "/hZkgoQYus5vegHoetLkCJzb17zJ.jpg",
+            "vote_average": 8.433,
+            "release_date": "1999-10-15",
+            "runtime": 139,
+            "genres": [{"id": 18, "name": "Drama"}, {"id": 53, "name": "Thriller"}]
+        }
+        with patch("src.tmdb_helper.resolve_to_tmdb_id", return_value="550"), \
+             patch("src.tmdb_helper._get_cached_request", return_value=mock_data):
             meta = tmdb_helper.fetch_tmdb_standalone_metadata("tt0137523", "movie", "Fight Club")
             self.assertIsNotNone(meta)
             self.assertEqual(meta["title"], "Fight Club")
