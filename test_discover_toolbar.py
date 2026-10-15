@@ -843,6 +843,72 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.type_dropdown.set_selected(0)
         self.assertEqual(self.win._get_current_discover_type(), "all")
 
+    def test_get_discover_catalog_list_skips_unsupported_genre_catalogs(self):
+        """Verify that catalogs not supporting the selected genre (e.g. TV channels/sports) are excluded."""
+        self.win.current_genre = "Family"
+        self.win.current_year = None
+        self.win.current_language = None
+        self.win.current_sort = "Popular"
+        self.win._discover_catalog_list_cache = {}
+
+        mock_cinemeta = {
+            "name": "Cinemeta",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+            "enabled": True,
+            "catalogs": [
+                {
+                    "id": "top",
+                    "name": "Popular",
+                    "type": "movie",
+                    "genres": ["Action", "Family", "Comedy"]
+                },
+                {
+                    "id": "year",
+                    "name": "New",
+                    "type": "movie",
+                    "genres": ["2026", "2025"]
+                }
+            ]
+        }
+        mock_plavio = {
+            "name": "PlavioHD",
+            "manifest_url": "https://plaviohd.edon.workers.dev/manifest.json",
+            "enabled": True,
+            "catalogs": [
+                {
+                    "id": "plaviohd-live",
+                    "name": "Live Now",
+                    "type": "tv",
+                    "extra": []
+                },
+                {
+                    "id": "plaviohd-sports",
+                    "name": "Sports",
+                    "type": "tv",
+                    "extra": []
+                }
+            ]
+        }
+
+        all_cats = mock_cinemeta["catalogs"] + mock_plavio["catalogs"]
+
+        def mock_get_addon_cats(addon, cache_only=False):
+            if addon.get("name") == "Cinemeta":
+                return mock_cinemeta["catalogs"]
+            return mock_plavio["catalogs"]
+
+        with patch("src.database.get_addons", return_value=[mock_cinemeta, mock_plavio]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.is_catalog_provider", return_value=True), \
+             patch("src.api.get_addon_catalogs", side_effect=mock_get_addon_cats), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+
+        # Only cinemeta 'top' supports Family. 'year' and PlavioHD TV channels must be excluded.
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["catalog_id"], "top")
+        self.assertEqual(rows[0]["addon_name"], "Cinemeta")
+
 
 if __name__ == "__main__":
     unittest.main()

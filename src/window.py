@@ -8510,15 +8510,8 @@ class CineWindow(Adw.ApplicationWindow):
                             if not cat_supports_lang:
                                 return (key, page, [], 0)
 
-                        if cur_genre:
-                            cat_genres = cat_info.get("genres") or []
-                            cat_extra = cat_info.get("extra") or []
-                            has_restricted = bool(cat_genres) or any(
-                                isinstance(ex, dict) and ex.get("name") == "genre" and ex.get("options")
-                                for ex in cat_extra
-                            )
-                            if has_restricted and not api.catalog_supports_genre(cat_info, cur_genre):
-                                return (key, page, [], 0)
+                        if cur_genre and not api.catalog_supports_genre(cat_info, cur_genre):
+                            return (key, page, [], 0)
 
                         fetch_genre = cur_genre
                         if not cur_genre and cur_lang:
@@ -8819,33 +8812,26 @@ class CineWindow(Adw.ApplicationWindow):
                         GLib.idle_add(apply_unsupported_lang)
                         return
 
-                if genre:
-                    cat_genres = catalog.get("genres") or []
-                    cat_extra = catalog.get("extra") or []
-                    has_restricted = bool(cat_genres) or any(
-                        isinstance(ex, dict) and ex.get("name") == "genre" and ex.get("options")
-                        for ex in cat_extra
-                    )
-                    if has_restricted and not api.catalog_supports_genre(catalog, genre):
-                        debug_log(f"content: skipping catalog '{cat_id}' — genre '{genre}' not supported")
-                        def apply_unsupported_genre():
-                            if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
-                                return False
-                            self.is_fetching_content = False
-                            self.has_more_content = False
-                            if not (hasattr(self, "content_flowbox") and self.content_flowbox.get_first_child()):
-                                empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-                                empty_box.set_valign(Gtk.Align.CENTER)
-                                empty_box.set_halign(Gtk.Align.CENTER)
-                                empty_box.set_margin_top(60)
-                                empty_box.add_css_class("dim-label")
-                                empty_lbl = Gtk.Label(label=_("No items found for this genre."))
-                                empty_lbl.add_css_class("title-3")
-                                empty_box.append(empty_lbl)
-                                self.content_flowbox.append(empty_box)
+                if genre and not api.catalog_supports_genre(catalog, genre):
+                    debug_log(f"content: skipping catalog '{cat_id}' — genre '{genre}' not supported")
+                    def apply_unsupported_genre():
+                        if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
                             return False
-                        GLib.idle_add(apply_unsupported_genre)
-                        return
+                        self.is_fetching_content = False
+                        self.has_more_content = False
+                        if not (hasattr(self, "content_flowbox") and self.content_flowbox.get_first_child()):
+                            empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                            empty_box.set_valign(Gtk.Align.CENTER)
+                            empty_box.set_halign(Gtk.Align.CENTER)
+                            empty_box.set_margin_top(60)
+                            empty_box.add_css_class("dim-label")
+                            empty_lbl = Gtk.Label(label=_("No items found for this genre."))
+                            empty_lbl.add_css_class("title-3")
+                            empty_box.append(empty_lbl)
+                            self.content_flowbox.append(empty_box)
+                        return False
+                    GLib.idle_add(apply_unsupported_genre)
+                    return
 
                 if cur_sort_val == "Year" or (cat_id == "year" and not genre):
                     fetch_genre = str(year) if year and str(year) not in ("All Years", "All", _("All Years")) else ""
@@ -9505,15 +9491,8 @@ class CineWindow(Adw.ApplicationWindow):
                 if not api.is_catalog_browsable(cat):
                     continue
 
-                if cur_genre and not filter_addon_url:
-                    cat_genres = cat.get("genres") or []
-                    cat_extra = cat.get("extra") or []
-                    has_restricted = bool(cat_genres) or any(
-                        isinstance(ex, dict) and ex.get("name") == "genre" and ex.get("options")
-                        for ex in cat_extra
-                    )
-                    if has_restricted and not api.catalog_supports_genre(cat, cur_genre):
-                        continue
+                if cur_genre and not filter_addon_url and not api.catalog_supports_genre(cat, cur_genre):
+                    continue
 
                 if cur_lang and not filter_addon_url:
                     cat_extra = cat.get("extra") or []
@@ -10093,16 +10072,9 @@ class CineWindow(Adw.ApplicationWindow):
                             debug_log(f"discover row SKIPPED: '{row_title}' — language '{current_l}' not supported")
                             return (row_info, [])
 
-                    if current_g:
-                        cat_genres = row_info.get("genres") or []
-                        cat_extra = row_info.get("extra") or []
-                        has_restricted = bool(cat_genres) or any(
-                            isinstance(ex, dict) and ex.get("name") == "genre" and ex.get("options")
-                            for ex in cat_extra
-                        )
-                        if has_restricted and not api.catalog_supports_genre(row_info, current_g):
-                            debug_log(f"discover row SKIPPED: '{row_title}' — genre '{current_g}' not supported")
-                            return (row_info, [])
+                    if current_g and not api.catalog_supports_genre(row_info, current_g):
+                        debug_log(f"discover row SKIPPED: '{row_title}' — genre '{current_g}' not supported")
+                        return (row_info, [])
 
                     fetch_genre = current_g
                     if not current_g and current_l:
