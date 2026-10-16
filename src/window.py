@@ -7908,9 +7908,56 @@ class CineWindow(Adw.ApplicationWindow):
             self.section_dropdown.set_model(Gtk.StringList.new([it["display_name"] for it in items]))
             self.section_dropdown.set_selected(0)
             self.section_dropdown.set_sensitive(len(items) > 1)
+            self.section_dropdown.set_visible(len(items) > 1)
+
+    def _is_audio_or_live_tv_discover_context(self, addon, chosen_type, active_cat=None):
+        normalized_type = str(chosen_type or "all").strip().lower()
+        if normalized_type in ("tv", "channel", "channels", "tvchannel", "live", "music", "radio"):
+            return True
+        if isinstance(active_cat, dict):
+            active_type = str(active_cat.get("type") or "").strip().lower()
+            if active_type in ("tv", "channel", "channels", "tvchannel", "live", "music", "radio", "podcast"):
+                return True
+        if normalized_type != "all" or not addon:
+            return False
+
+        from . import api
+        catalogs = api.get_addon_catalogs(addon, cache_only=True) or addon.get("catalogs", [])
+        catalogs = [c for c in catalogs if isinstance(c, dict) and api.is_catalog_browsable(c)]
+        if not catalogs:
+            return False
+
+        addon_name = addon.get("name") or ""
+        audio_types = {"music", "radio", "podcast"}
+        live_tv_types = {"tv", "channel", "channels", "tvchannel", "live"}
+        for catalog in catalogs:
+            catalog_type = str(catalog.get("type") or "").strip().lower()
+            if catalog_type in audio_types or catalog_type in live_tv_types:
+                continue
+            if api.is_catalog_type_match(catalog, "tv", addon_name):
+                continue
+            return False
+        return True
+
+    def _set_discover_filter_dropdowns_visible(self, visible):
+        for attr in ("genre_dropdown", "year_dropdown", "language_dropdown"):
+            dropdown = getattr(self, attr, None)
+            if dropdown is not None:
+                if not visible:
+                    dropdown.set_sensitive(False)
+                dropdown.set_visible(visible and dropdown.get_sensitive())
 
     def _populate_discover_genre_dropdown(self, addon, chosen_type, active_cat=None):
         from . import database
+        if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat):
+            self._set_discover_filter_dropdowns_visible(False)
+            self._discover_genre_items = ["All Genres"]
+            if getattr(self, "genre_dropdown", None):
+                self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
+                self.genre_dropdown.set_selected(0)
+                self.genre_dropdown.set_sensitive(False)
+                self.genre_dropdown.set_visible(False)
+            return
         if addon is None or self._is_unique_mode_active():
             genres = database.get_available_genres(chosen_type)
             self._discover_genre_items = ["All Genres"] + genres
@@ -7918,6 +7965,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
                 self.genre_dropdown.set_selected(0)
                 self.genre_dropdown.set_sensitive(True)
+                self.genre_dropdown.set_visible(True)
             return
 
         cats = [active_cat] if active_cat else [s.get("cat") for s in getattr(self, "_discover_section_items", []) if s.get("cat")]
@@ -7962,15 +8010,26 @@ class CineWindow(Adw.ApplicationWindow):
                 self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
                 self.genre_dropdown.set_selected(0)
                 self.genre_dropdown.set_sensitive(False)
+                self.genre_dropdown.set_visible(False)
             else:
                 genres_to_use = declared_genres if declared_genres else database.get_available_genres(chosen_type)
                 self._discover_genre_items = ["All Genres"] + genres_to_use
                 self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
                 self.genre_dropdown.set_selected(0)
                 self.genre_dropdown.set_sensitive(True)
+                self.genre_dropdown.set_visible(True)
 
     def _populate_discover_year_dropdown(self, addon, chosen_type, active_cat=None):
         from . import database
+        if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat):
+            self._set_discover_filter_dropdowns_visible(False)
+            self._discover_year_items = ["All Years"]
+            if getattr(self, "year_dropdown", None):
+                self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
+                self.year_dropdown.set_selected(0)
+                self.year_dropdown.set_sensitive(False)
+                self.year_dropdown.set_visible(False)
+            return
         if addon is None or self._is_unique_mode_active():
             years = database.get_available_years(chosen_type)
             self._discover_year_items = ["All Years"] + years
@@ -7978,6 +8037,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
                 self.year_dropdown.set_selected(0)
                 self.year_dropdown.set_sensitive(True)
+                self.year_dropdown.set_visible(True)
             return
 
         cats = [active_cat] if active_cat else [s.get("cat") for s in getattr(self, "_discover_section_items", []) if s.get("cat")]
@@ -8010,14 +8070,25 @@ class CineWindow(Adw.ApplicationWindow):
                 self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
                 self.year_dropdown.set_selected(0)
                 self.year_dropdown.set_sensitive(True)
+                self.year_dropdown.set_visible(True)
             else:
                 self._discover_year_items = ["All Years"]
                 self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
                 self.year_dropdown.set_selected(0)
                 self.year_dropdown.set_sensitive(False)
+                self.year_dropdown.set_visible(False)
 
     def _populate_discover_language_dropdown(self, addon, chosen_type, active_cat=None):
         from . import database
+        if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat):
+            self._set_discover_filter_dropdowns_visible(False)
+            self._discover_language_items = ["All Languages"]
+            if getattr(self, "language_dropdown", None):
+                self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
+                self.language_dropdown.set_selected(0)
+                self.language_dropdown.set_sensitive(False)
+                self.language_dropdown.set_visible(False)
+            return
         if addon is None or self._is_unique_mode_active():
             langs = database.get_available_languages()
             self._discover_language_items = ["All Languages"] + langs
@@ -8025,6 +8096,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
                 self.language_dropdown.set_selected(0)
                 self.language_dropdown.set_sensitive(True)
+                self.language_dropdown.set_visible(True)
             return
 
         cats = [active_cat] if active_cat else [s.get("cat") for s in getattr(self, "_discover_section_items", []) if s.get("cat")]
@@ -8072,11 +8144,13 @@ class CineWindow(Adw.ApplicationWindow):
                 self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
                 self.language_dropdown.set_selected(0)
                 self.language_dropdown.set_sensitive(True)
+                self.language_dropdown.set_visible(True)
             else:
                 self._discover_language_items = ["All Languages"] + database.get_available_languages()
                 self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
                 self.language_dropdown.set_selected(0)
                 self.language_dropdown.set_sensitive(False)
+                self.language_dropdown.set_visible(False)
 
     def _restore_dropdown_selection(self, dropdown, items, target_str):
         if not dropdown or not target_str or not items:
@@ -8183,6 +8257,14 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_discover_unique_toggled(self, button):
         if getattr(self, "_syncing_unique_check", False) is True or getattr(self, "_syncing_discover_toolbar", False) is True:
             return
+        filters = self._get_current_discover_filter_dict()
+        if button.get_active() and filters.get("catalog_id") and filters.get("addon_url"):
+            self._unique_section_scope = {
+                "catalog_id": filters["catalog_id"],
+                "manifest_url": filters["addon_url"],
+            }
+        else:
+            self._unique_section_scope = None
         if hasattr(self, "_on_unique_toggled"):
             self._on_unique_toggled(button)
         else:
@@ -8254,6 +8336,14 @@ class CineWindow(Adw.ApplicationWindow):
         else:
             unique_only = self._is_unique_mode_active()
         addon_url = filters.get("addon_url")
+
+        if unique_only and catalog_id and addon_url:
+            self._unique_section_scope = {
+                "catalog_id": catalog_id,
+                "manifest_url": addon_url,
+            }
+        elif unique_only:
+            self._unique_section_scope = None
 
         # With "All Types" selected, a specific section still has its own
         # concrete media type. Preserve it for fetching (notably Plavio's TV
@@ -8575,7 +8665,19 @@ class CineWindow(Adw.ApplicationWindow):
         catalogs = list(self._get_discover_catalog_list(filter_media_type=filter_type, filter_addon_url=filter_addon))
         catalogs = [c for c in catalogs if api.is_addon_online(c.get("manifest_url", ""))]
 
-        if not catalogs and filter_addon:
+        # In Discover, Unique means remove duplicates within the selected
+        # section. Without this scope it aggregates every sibling catalog from
+        # the selected addon (for example, showing sports networks while the
+        # user selected PK & IN Channels).
+        section_scope = getattr(self, "_unique_section_scope", None)
+        if section_scope:
+            catalogs = [
+                c for c in catalogs
+                if c.get("manifest_url") == section_scope.get("manifest_url")
+                and str(c.get("catalog_id") or "") == str(section_scope.get("catalog_id") or "")
+            ]
+
+        if not catalogs and filter_addon and not section_scope:
             self._current_discover_addon = None
             catalogs = list(self._get_discover_catalog_list(filter_media_type=filter_type, filter_addon_url=None))
             catalogs = [c for c in catalogs if api.is_addon_online(c.get("manifest_url", ""))]
@@ -8844,15 +8946,13 @@ class CineWindow(Adw.ApplicationWindow):
                         genre_suffix = f":{fetch_genre}" if fetch_genre else ""
                         year_suffix = f":y{cur_year}" if cur_year else ""
                         lang_suffix = f":l{cur_lang}" if cur_lang else ""
-                        cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}:p{page}"
+                        # Unique requests fetch 50 cards, while discover-row
+                        # requests cache 20-card pages under the legacy key.
+                        # Keep the cache entries separate so Unique cannot
+                        # mistake that shorter page for the section's full set.
+                        cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}:unique50:p{page}"
 
                         cached = database.get_cached_catalog(cache_key, max_age_hours=24)
-                        if not cached and page == 1:
-                            cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}", max_age_hours=24)
-                        if not cached and page == 1 and cur_genre:
-                            base_cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{year_suffix}{lang_suffix}", max_age_hours=24)
-                            if base_cached:
-                                cached = api.filter_items_by_genre(base_cached, cur_genre, media_type=m_type)
 
                         if _is_event_set(abort_ev):
                             return None
@@ -8889,7 +8989,7 @@ class CineWindow(Adw.ApplicationWindow):
                                 catalog_url=m_url,
                                 genre=fetch_genre or "",
                                 page=page,
-                                limit=20,
+                                limit=50,
                                 timeout=2.5,
                                 is_cancelled=(lambda: _is_event_set(abort_ev))
                             )
