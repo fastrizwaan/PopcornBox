@@ -62,7 +62,7 @@ class TorrentStreamEngine:
         self.stopped = threading.Event()
         self.error = None
         self.target = None
-        self.last_priority_window = []
+        self.last_priority_window = set()
         self._stream_gen = 0  # incremented on each new /stream request
 
         # Cached upload/download totals loaded from DB at start; updated by monitor
@@ -622,10 +622,12 @@ class TorrentStreamEngine:
     def _additional_file_prefetcher(self, target_dict):
         """Forces strict sequential downloading of the first 50MB and last 2MB for an additional file."""
         target_size = target_dict["size"]
+        piece_length = self._piece_length()
+        if target_size <= 0 or piece_length <= 0:
+            return
         
         # Prioritize last 2MB once
         if target_size > 2 * 1024 * 1024:
-            piece_length = self._piece_length()
             absolute_start = target_dict["offset"] + (target_size - 2 * 1024 * 1024)
             absolute_end = target_dict["offset"] + target_size - 1
             start_p = absolute_start // piece_length
@@ -636,8 +638,8 @@ class TorrentStreamEngine:
                 
         # Slide window for first 50MB
         front_target_size = min(50 * 1024 * 1024, target_size)
-        start_piece = target_dict["offset"] // self._piece_length()
-        end_piece = (target_dict["offset"] + front_target_size - 1) // self._piece_length()
+        start_piece = target_dict["offset"] // piece_length
+        end_piece = (target_dict["offset"] + front_target_size - 1) // piece_length
         
         upgraded = False
         
@@ -780,7 +782,9 @@ class TorrentStreamEngine:
         
         # Clear old deadlines so libtorrent doesn't stay stuck on the old seek position
         if clear_old:
-            for old_piece in self.last_priority_window:
+            with self.lock:
+                old_priority_window = tuple(self.last_priority_window)
+            for old_piece in old_priority_window:
                 if old_piece < start_piece or old_piece > end_piece:
                     try:
                         self.handle.reset_piece_deadline(old_piece)
@@ -790,7 +794,8 @@ class TorrentStreamEngine:
                         self.handle.piece_priority(old_piece, 4) # Reset to target file's base priority
                     except Exception:
                         pass
-            self.last_priority_window = []
+            with self.lock:
+                self.last_priority_window.clear()
 
         for piece in range(start_piece, end_piece + 1):
             try:
@@ -819,7 +824,8 @@ class TorrentStreamEngine:
                 pass
             selected.append(piece)
             deadline += 50
-        self.last_priority_window.extend(selected)
+        with self.lock:
+            self.last_priority_window.update(selected)
 
     def _target_downloaded(self):
         if not self.target or not self.handle:
@@ -989,26 +995,37 @@ class TorrentStreamEngine:
             print(f"serve_stream error: {e}\n{traceback.format_exc()}")
 
     def _parse_range(self, range_header, size):
+        if size <= 0:
+            return None, None, None
         if not range_header:
             return 0, size - 1, 200
         
-        # Clean up the header string
+        # This endpoint serves one contiguous range. Reject malformed and
+        # multi-range requests instead of silently returning the entire file.
         range_header = range_header.strip()
-        match = re.search(r"bytes=(\d*)-(\d*)", range_header)
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header, re.IGNORECASE)
         
         if not match:
-            return 0, size - 1, 200
+            return None, None, None
             
         start_str, end_str = match.groups()
         
         if not start_str:
-            suffix = int(end_str) if end_str else 0
+            if not end_str:
+                return None, None, None
+            try:
+                suffix = int(end_str)
+            except ValueError:
+                return None, None, None
             if suffix <= 0:
                 return None, None, None
             return max(size - suffix, 0), size - 1, 206
             
-        start = int(start_str)
-        end = int(end_str) if end_str else size - 1
+        try:
+            start = int(start_str)
+            end = int(end_str) if end_str else size - 1
+        except ValueError:
+            return None, None, None
         
         if start > end or start >= size:
             return None, None, None
@@ -1019,12 +1036,14 @@ class TorrentStreamEngine:
         path = self._target_path()
         pos = start
         chunk_size = 256 * 1024
+        next_priority_pos = start
         
         # On the initial chunk of a new range request (e.g. initial start or seek),
         # ensure at least 2MB is buffered ahead so the player demuxer doesn't immediately starve.
         if pos == start and (end - start + 1) > 2 * 1024 * 1024:
             initial_buffer_end = min(end, pos + (2 * 1024 * 1024) - 1)
             self.prioritize_range(pos, min(end, pos + (32 * 1024 * 1024) - 1), clear_old=True)
+            next_priority_pos = pos + (24 * 1024 * 1024)
             self._wait_for_range(pos, initial_buffer_end, timeout=60, gen=gen)
 
         while pos <= end and not self.stopped.is_set():
@@ -1033,7 +1052,12 @@ class TorrentStreamEngine:
                 return
 
             seek_window_end = min(end, pos + (32 * 1024 * 1024) - 1)
-            self.prioritize_range(pos, seek_window_end, clear_old=False)
+            # Extend the active window only as playback approaches its end.
+            # Updating 32 MiB of pieces for each 256 KiB write creates
+            # thousands of redundant libtorrent calls per second.
+            if pos >= next_priority_pos:
+                self.prioritize_range(pos, seek_window_end, clear_old=True)
+                next_priority_pos = pos + (24 * 1024 * 1024)
 
             chunk_end = min(end, pos + chunk_size - 1)
             if not self._wait_for_range(pos, chunk_end, timeout=60, gen=gen):

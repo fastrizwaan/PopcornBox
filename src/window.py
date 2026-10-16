@@ -307,6 +307,8 @@ class MovieDetailsPage(Gtk.Overlay):
         self.reload_btn.add_css_class("flat")
         def on_reload(btn):
             from . import database, api
+            print(f"[STREAM DEBUG] reload clicked title={self.movie_stub.get('title')!r} media_type={self.media_type!r}")
+            api.reset_addon_session_status()
             item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("imdb_id") or self.movie_stub.get("id")
             primary_id = item_id[0] if isinstance(item_id, list) else item_id
             existing = database.get_cached_metadata(primary_id)
@@ -324,8 +326,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 if saved_bg: stub["background"] = saved_bg
                 stub["id"] = primary_id
                 database.save_cached_metadata(primary_id, self.media_type, stub)
-            cache_key = api.get_stream_cache_key(primary_id, self.media_type, getattr(self, 'selected_season', None), getattr(self, 'selected_episode', None))
-            database.delete_cached_streams(cache_key)
+            # Keep the last known streams until the forced lookup succeeds. The
+            # fetch path already falls back to this cache when providers fail.
             self._ui_built = False
             self.load_details_async(force_refresh=True)
             self.fetch_torrents_async(force=True)
@@ -761,6 +763,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
         self.provider_dropdown.connect("notify::selected", on_provider_changed)
         self.stream_header_box.append(self.provider_dropdown)
+        self.update_provider_dropdown_model()
 
         # Quality Row Box (Quality Pills & Check Live Button)
         self.quality_row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1084,12 +1087,12 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.selected_episode = episode_num
                     s_val = episode_item.get("season") or getattr(self, 'selected_season', 1) or 1
                     self.selected_season = s_val
+                    self._preferred_series_season = s_val
+                    self._preferred_series_episode = episode_num
                     self.movie_stub["season"] = s_val
                     self.movie_stub["episode"] = episode_num
                     primary_id = (self.movie_stub.get("alias_ids") or [self.movie_stub.get("id") or self.movie_stub.get("imdb_id")])[0]
                     if primary_id:
-                        database.set_setting(f"last_ep_{primary_id}_{s_val}", episode_num)
-                        database.set_setting(f"last_s_{primary_id}", s_val)
                         self.remembered_working_stream = database.get_working_stream(primary_id, s_val, episode_num)
                         self.selected_torrent = self.remembered_working_stream if self.remembered_working_stream else None
                     else:
@@ -1193,7 +1196,18 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def update_provider_dropdown_model(self):
         if not hasattr(self, 'provider_dropdown'): return
+        from . import api, database
         all_addons = set()
+        try:
+            mtype = getattr(self, 'media_type', 'movie')
+            item_id = self.movie_stub.get("id") or getattr(self, "movie_details", {}).get("id")
+            for addon in database.get_addons():
+                if api.is_stream_provider(addon, media_type=mtype, item_id=item_id):
+                    name = addon.get("name")
+                    if name:
+                        all_addons.add(name)
+        except Exception:
+            pass
         for t in getattr(self, 'torrents', []):
             for a in t.get("addon_names", []):
                 if a: all_addons.add(a)
@@ -1242,7 +1256,27 @@ class MovieDetailsPage(Gtk.Overlay):
         if sel_prov_name != "All Providers":
             filtered_streams = [t for t in filtered_streams if sel_prov_name in t.get("addon_names", [])]
 
+        print(
+            f"[STREAM DEBUG] render page_id={id(self)} source_filter={source_idx} "
+            f"provider_filter={sel_prov_name!r} input_cards={len(t_list)} visible_cards={len(filtered_streams)} "
+            f"fetching={getattr(self, '_fetching_streams', False)}"
+        )
+
         if not t_list:
+            if getattr(self, '_fetching_streams', False):
+                loading_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+                loading_box.set_margin_top(40)
+                loading_box.set_halign(Gtk.Align.CENTER)
+                spinner = Gtk.Spinner(spinning=True)
+                spinner.set_size_request(28, 28)
+                loading_box.append(spinner)
+                lbl_text = getattr(self, '_stream_loading_status', None) or _("Searching streams...")
+                loading_lbl = Gtk.Label(label=lbl_text)
+                loading_lbl.add_css_class("dim-label")
+                loading_box.append(loading_lbl)
+                self.streams_list_box.append(loading_box)
+                return
+
             no_s_lbl = Gtk.Label(label=_("No streams available"))
             no_s_lbl.add_css_class("dim-label")
             no_s_lbl.set_margin_top(16)
@@ -1466,7 +1500,19 @@ class MovieDetailsPage(Gtk.Overlay):
                         else:
                             self._start_fast_trailer_fetch(item_id, fetch_id, fast_abort)
                         # Step 3: Automatically fetch/revalidate streams for active movie or series episode
-                        self.fetch_torrents_async(force=True)
+                        if self.media_type not in ["series", "anime", "tv"] or self.sidebar_stack.get_visible_child_name() == "streams" or getattr(self, '_user_navigated_to_streams', False):
+                            print(
+                                f"[STREAM DEBUG] details refresh triggers stream lookup media={self.media_type!r} "
+                                f"sidebar={self.sidebar_stack.get_visible_child_name()!r} "
+                                f"user_navigated={getattr(self, '_user_navigated_to_streams', False)}"
+                            )
+                            self.fetch_torrents_async(force=False)
+                        else:
+                            print(
+                                f"[STREAM DEBUG] details refresh does not trigger stream lookup media={self.media_type!r} "
+                                f"sidebar={self.sidebar_stack.get_visible_child_name()!r} "
+                                f"user_navigated={getattr(self, '_user_navigated_to_streams', False)}"
+                            )
                     return False
                 GLib.idle_add(apply_details)
 
@@ -1636,7 +1682,11 @@ class MovieDetailsPage(Gtk.Overlay):
         if not cw_item and primary_id and self.media_type in ["series", "anime", "tv"]:
             saved_s = getattr(self, "selected_season", None) or database.get_setting(f"last_s_{primary_id}", 1) or 1
             saved_ep = getattr(self, "selected_episode", None) or database.get_setting(f"last_ep_{primary_id}_{saved_s}", None)
-            if saved_ep is not None or database.get_working_stream(primary_id, saved_s, 1):
+            # Older builds wrote last_s/last_ep when the user only changed a
+            # dropdown. Do not turn that selection into a Continue Watching
+            # record unless a stream was saved for the exact episode.
+            playback_stream = database.get_working_stream(primary_id, saved_s, saved_ep) if saved_ep is not None else None
+            if saved_ep is not None and playback_stream:
                 ep_val = saved_ep if saved_ep is not None else 1
                 det = details or getattr(self, "movie_details", {}) or {}
                 cov = det.get("medium_cover_image") or self.movie_stub.get("medium_cover_image") or det.get("poster") or self.movie_stub.get("poster")
@@ -1658,6 +1708,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     "stream_title": f"{base_t} (S{saved_s:02d}E{ep_val:02d})",
                     "last_watched": int(_time.time()),
                 }
+                cw_item["selected_torrent"] = playback_stream
                 database.save_continue_watching(cw_item)
                 if hasattr(self, "window") and self.window and hasattr(self.window, "_update_continue_watching_section"):
                     self.window._update_continue_watching_section()
@@ -2044,6 +2095,45 @@ class MovieDetailsPage(Gtk.Overlay):
             self._ignore_dropdown_changes = False
             item_id = self.movie_stub.get("id")
             from . import database
+
+            # Restore only a real playback position. `last_s_*` and
+            # `last_ep_*` were historically updated by dropdown changes, so
+            # those settings alone cannot distinguish playback from browsing.
+            resume_ids = list(dict.fromkeys(
+                str(value) for value in (
+                    list(self.movie_stub.get("alias_ids") or [])
+                    + [self.movie_stub.get("imdb_id"), item_id]
+                ) if value
+            ))
+            resume_item = database.get_continue_watching_item(resume_ids)
+            if resume_item:
+                resume_season = resume_item.get("season")
+                resume_episode = resume_item.get("episode")
+                resume_position = float(resume_item.get("position") or 0)
+                resume_has_stream = bool(
+                    resume_item.get("stream_url") or resume_item.get("magnet")
+                    or resume_item.get("stream_queue") or resume_item.get("selected_torrent")
+                )
+                resume_has_working_stream = bool(
+                    resume_season is not None and resume_episode is not None
+                    and any(
+                        database.get_working_stream(alias, resume_season, resume_episode)
+                        for alias in resume_ids
+                    )
+                )
+                if resume_season is not None and resume_episode is not None and (
+                    resume_position > 0 or resume_has_stream or resume_has_working_stream
+                ):
+                    self.selected_season = resume_season
+                    self.selected_episode = resume_episode
+                    self._preferred_series_season = resume_season
+                    self._preferred_series_episode = resume_episode
+                    print(f"[SERIES DEBUG] restoring playback position S{resume_season}E{resume_episode} for {resume_ids[0] if resume_ids else item_id}")
+                else:
+                    print(f"[SERIES DEBUG] ignoring Continue Watching entry without playback evidence for {resume_ids[0] if resume_ids else item_id}")
+            if not hasattr(self, "_preferred_series_season"):
+                self._preferred_series_season = 1
+                self._preferred_series_episode = None
             
             def on_episode_changed(dropdown, *args):
                 if getattr(self, '_ignore_dropdown_changes', False): return
@@ -2055,10 +2145,10 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.movie_stub["episode"] = self.selected_episode
                     s_val = getattr(self, 'selected_season', 1)
                     self.movie_stub["season"] = s_val
+                    if not getattr(self, "_building_series_dropdowns", False):
+                        self._preferred_series_season = s_val
+                        self._preferred_series_episode = self.selected_episode
                     primary_id = (self.movie_stub.get("alias_ids") or [self.movie_stub.get("id") or self.movie_stub.get("imdb_id")])[0]
-                    if primary_id and getattr(self, 'selected_season', None) is not None and self.selected_episode is not None:
-                        database.set_setting(f"last_ep_{primary_id}_{self.selected_season}", self.selected_episode)
-                        database.set_setting(f"last_s_{primary_id}", self.selected_season)
                     self.remembered_working_stream = database.get_working_stream(primary_id, getattr(self, 'selected_season', None), self.selected_episode)
                     if self.remembered_working_stream:
                         self.selected_torrent = self.remembered_working_stream
@@ -2075,7 +2165,7 @@ class MovieDetailsPage(Gtk.Overlay):
                         self.stream_ep_title_label.set_visible(True)
                     self.update_continue_btn()
                     self.render_episodes_list()
-                    self.fetch_torrents_async(force=True)
+                    self.fetch_torrents_async(force=False)
                 
             self._on_episode_dropdown_changed = on_episode_changed
             self._ep_dropdown_hid = self.episode_dropdown.connect("notify::selected", on_episode_changed)
@@ -2086,10 +2176,11 @@ class MovieDetailsPage(Gtk.Overlay):
                 if idx == Gtk.INVALID_LIST_POSITION: return
                 if idx >= len(self.seasons): return
                 s = self.seasons[idx]
+                if not getattr(self, "_building_series_dropdowns", False):
+                    self._preferred_series_season = s
+                    self._preferred_series_episode = None
                 self.selected_season = s
                 self.movie_stub["season"] = s
-                if item_id:
-                    database.set_setting(f"last_s_{item_id}", s)
                 eps = [v for v in self.videos if v.get("season", 1) == s]
                 if self.is_channel:
                     unique_eps = []
@@ -2130,16 +2221,27 @@ class MovieDetailsPage(Gtk.Overlay):
                     if self.is_channel:
                         default_ep_idx = 0
                     else:
-                        curr_ep = getattr(self, "selected_episode", None)
+                        preferred_ep = (
+                            getattr(self, "_preferred_series_episode", None)
+                            if getattr(self, "_preferred_series_season", None) == s
+                            else None
+                        )
+                        curr_ep = preferred_ep if preferred_ep is not None else getattr(self, "selected_episode", None)
                         if curr_ep is not None and curr_ep in ep_nums:
                             saved_ep = curr_ep
                         else:
-                            saved_ep = (database.get_setting(f"last_ep_{item_id}_{s}", None) if item_id else None) or self.movie_stub.get("episode")
+                            saved_ep = None
 
                         if saved_ep in ep_nums:
                             default_ep_idx = ep_nums.index(saved_ep)
                         else:
                             default_ep_idx = ep_nums.index(1) if 1 in ep_nums else 0
+
+                    chosen_ep = ep_nums[default_ep_idx] if default_ep_idx < len(ep_nums) else None
+                    print(
+                        f"[SERIES DEBUG] episode selection season={s} available={ep_nums!r} "
+                        f"resume_episode={self.selected_episode!r} chosen={chosen_ep!r}"
+                    )
                         
                     if default_ep_idx < len(ep_strings):
                         self.episode_dropdown.set_selected(default_ep_idx)
@@ -2155,24 +2257,32 @@ class MovieDetailsPage(Gtk.Overlay):
                         self.selected_video = unique_eps[default_ep_idx]
                     self.update_continue_btn()
                     self.render_episodes_list()
-                    self.fetch_torrents_async(force=True)
+                    self.fetch_torrents_async(force=False)
                 
             self._season_dropdown_hid = self.season_dropdown.connect("notify::selected", on_season_changed)
             
             if self.seasons:
-                curr_s = getattr(self, "selected_season", None)
+                curr_s = getattr(self, "_preferred_series_season", None)
                 if curr_s is not None and curr_s in self.seasons:
                     saved_s = curr_s
                 else:
-                    saved_s = (database.get_setting(f"last_s_{item_id}", None) if item_id else None) or self.movie_stub.get("season")
+                    saved_s = None
                 if saved_s in self.seasons:
                     default_s_idx = self.seasons.index(saved_s)
                 else:
                     default_s_idx = self.seasons.index(1) if 1 in self.seasons else 0
+                print(
+                    f"[SERIES DEBUG] season selection available={self.seasons!r} "
+                    f"resume_season={curr_s!r} chosen={self.seasons[default_s_idx]!r}"
+                )
                 self._ignore_dropdown_changes = True
                 self.season_dropdown.set_selected(default_s_idx)
                 self._ignore_dropdown_changes = False
-                on_season_changed(self.season_dropdown)
+                self._building_series_dropdowns = True
+                try:
+                    on_season_changed(self.season_dropdown)
+                finally:
+                    self._building_series_dropdowns = False
         elif self.media_type in ["series", "anime", "tv"]:
             self.sidebar_stack.set_visible_child_name("episodes")
             self.stream_back_btn.set_visible(False)
@@ -2193,7 +2303,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.season_nav_box.set_visible(False)
             if hasattr(self, 'row2_box'):
                 self.row2_box.set_visible(False)
-            self.fetch_torrents_async(force=True)
+            self.fetch_torrents_async(force=False)
 
     def _build_person_card(self, member, role_text=""):
         from .movie_widget import load_image_into_picture
@@ -2412,6 +2522,11 @@ class MovieDetailsPage(Gtk.Overlay):
         
         details_id = getattr(self, "movie_details", {}).get("id") if hasattr(self, "movie_details") and self.movie_details else None
         item_id = video_id or (details_id if (details_id and str(details_id).startswith("tt")) else None) or self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
+        # Alias IDs are useful for metadata resolution, but the stream endpoint
+        # expects one provider ID. `get_torrents_streamed` normalizes too, while
+        # doing this here keeps request keys and UI diagnostics unambiguous.
+        if isinstance(item_id, (list, tuple)):
+            item_id = next((candidate for candidate in item_id if candidate), None)
         
         req_media_type = self.media_type
         if video_id and str(video_id).startswith("tt") and self.media_type not in ["series", "anime"]:
@@ -2420,29 +2535,56 @@ class MovieDetailsPage(Gtk.Overlay):
         sel_season = getattr(self, 'selected_season', None) if req_media_type in ["series", "anime", "tv"] else None
         sel_episode = getattr(self, 'selected_episode', None) if req_media_type in ["series", "anime", "tv"] else None
 
+        print(
+            f"[STREAM DEBUG] UI fetch requested page_id={id(self)} id={item_id!r} media={req_media_type!r} "
+            f"season={sel_season!r} episode={sel_episode!r} force={force}"
+        )
+
         # Guard: For episodic content, do not query streams until season and episode are resolved
         if req_media_type in ["series", "anime", "tv"] and (sel_season is None or sel_episode is None):
+            print("[STREAM DEBUG] UI fetch skipped: series season/episode is not resolved")
+            # Invalidate the previous episode's worker before returning. Otherwise
+            # its callback can still populate streams for an episode that is no
+            # longer selected (or leave the loading state stuck on screen).
+            self._fetch_gen = getattr(self, '_fetch_gen', 0) + 1
+            if getattr(self, 'stream_abort_event', None):
+                self.stream_abort_event.set()
+            self._fetching_streams = False
+            self.torrents = []
+            self.current_t_list = []
+            self.render_streams_list()
             return
 
-        fetch_key = f"{item_id}_{sel_season}_{sel_episode}"
+        key_item_id = item_id[0] if isinstance(item_id, (list, tuple)) and item_id else item_id
+        fetch_key = f"{key_item_id}_{sel_season}_{sel_episode}"
         if not force and getattr(self, '_last_fetch_key', None) == fetch_key:
-            return
+            # Coalesce duplicate UI triggers while a request is active or has
+            # already produced streams. Let a completed empty lookup retry
+            # when metadata is refreshed; that often arrives after a transient
+            # provider timeout from the initial stub-based request.
+            if getattr(self, '_fetching_streams', False) or getattr(self, 'torrents', None):
+                print(
+                    f"[STREAM DEBUG] UI fetch coalesced key={fetch_key!r} "
+                    f"already_fetching={getattr(self, '_fetching_streams', False)} cards={len(getattr(self, 'torrents', []) or [])}"
+                )
+                return
         self._last_fetch_key = fetch_key
 
+        self._fetching_streams = True
+        self._stream_loading_status = "Searching streams..."
         if hasattr(self, 'progress_label') and self.progress_label:
             self.progress_label.set_text("Loading streams...")
         
         while child := self.quality_button_box.get_first_child():
             self.quality_button_box.remove(child)
 
-        if hasattr(self, 'streams_list_box') and self.streams_list_box:
-            while child := self.streams_list_box.get_first_child():
-                self.streams_list_box.remove(child)
         self.current_t_list = []
         self.torrents = []
+        self.render_streams_list()
 
         self._fetch_gen = getattr(self, '_fetch_gen', 0) + 1
         current_gen = self._fetch_gen
+        print(f"[STREAM DEBUG] UI fetch started generation={current_gen} key={fetch_key!r}")
         series_title = self.movie_stub.get("title") or self.movie_stub.get("name")
         ep_title = (selected_video.get("title") if selected_video else None) or (selected_video.get("name") if selected_video else None)
         target_title = series_title or ep_title
@@ -2461,16 +2603,23 @@ class MovieDetailsPage(Gtk.Overlay):
                 return False
             torrents, is_cached, is_complete = latest_batch[0]
             if not self._is_current_details_page() or getattr(self, '_fetch_gen', 0) != current_gen:
+                print(f"[STREAM DEBUG] UI batch ignored generation={current_gen}: page changed or request became stale")
                 return False
 
-            if hasattr(self, 'progress_label') and self.progress_label:
-                if is_complete:
+            if is_complete:
+                self._fetching_streams = False
+                if hasattr(self, 'progress_label') and self.progress_label:
                     if not torrents: self.progress_label.set_text("No streams available.")
                     else: self.progress_label.set_text("")
-                elif is_cached:
+            elif is_cached:
+                if hasattr(self, 'progress_label') and self.progress_label:
                     self.progress_label.set_text("Loaded cached streams... (Updating)")
 
             self.torrents = torrents or []
+            print(
+                f"[STREAM DEBUG] UI batch applied generation={current_gen} cards={len(self.torrents)} "
+                f"cached={is_cached} complete={is_complete}"
+            )
             self.update_quality_dropdown()
             self.update_continue_btn()
 
@@ -2521,7 +2670,15 @@ class MovieDetailsPage(Gtk.Overlay):
 
         def on_stream_batch(torrents, is_cached=False, is_complete=False):
             if not self._is_current_details_page() or getattr(self, '_fetch_gen', 0) != current_gen:
+                print(
+                    f"[STREAM DEBUG] UI callback dropped generation={current_gen} "
+                    f"current_generation={getattr(self, '_fetch_gen', 0)} page_current={self._is_current_details_page()}"
+                )
                 return
+            print(
+                f"[STREAM DEBUG] UI callback received generation={current_gen} cards={len(torrents or [])} "
+                f"cached={is_cached} complete={is_complete}"
+            )
             latest_batch[0] = (torrents, is_cached, is_complete)
             if is_complete or is_cached:
                 if batch_timer[0]:
@@ -2545,8 +2702,10 @@ class MovieDetailsPage(Gtk.Overlay):
         def fetch():
             try:
                 if current_abort_event and current_abort_event.is_set():
+                    print(f"[STREAM DEBUG] worker not started generation={current_gen}: already cancelled")
                     return
                 from . import api
+                print(f"[STREAM DEBUG] worker calling API generation={current_gen} id={item_id!r}")
                 api.get_torrents_streamed(
                     item_id,
                     req_media_type,
@@ -2558,12 +2717,16 @@ class MovieDetailsPage(Gtk.Overlay):
                     ep_title=ep_title,
                     force_refresh=force
                 )
+                print(f"[STREAM DEBUG] worker API returned generation={current_gen}")
             except RuntimeError as e:
                 if "shutdown" in str(e).lower() or "interpreter" in str(e).lower():
                     return
                 raise
             except Exception as e:
+                print(f"[STREAM DEBUG] worker failed generation={current_gen}: {type(e).__name__}: {e}")
                 debug_log(f"Stream fetch error: {e}")
+                if not current_abort_event.is_set():
+                    GLib.idle_add(on_stream_batch, [], False, True)
         threading.Thread(target=fetch, daemon=True).start()
 
     def update_quality_dropdown(self):
@@ -11184,7 +11347,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._current_playing_item.get("type") in ["channel", "channels"]
                 or str(self._current_playing_item.get("id", "")).startswith("yt_id:")
                 or str(self._current_playing_item.get("imdb_id", "")).startswith("yt_id:")
-                or self._current_playing_item.get("is_trailer") is False
+                or self._current_playing_item.get("is_channel") is True
             ))
         )
         is_youtube_raw_url = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower()) and ("googlevideo.com" not in url.lower())
@@ -11357,9 +11520,19 @@ class CineWindow(Adw.ApplicationWindow):
 
             try:
                 self.mpv["demuxer-lavf-o"] = "probesize=2000000,analyzeduration=2000000"
-                self.mpv["demuxer-readahead-secs"] = 30
-                self.mpv["demuxer-max-bytes"] = 150 * 1024 * 1024
-                self.mpv["demuxer-max-back-bytes"] = 50 * 1024 * 1024
+                is_live_hls_channel = is_channel_context and str(url).split("?", 1)[0].lower().endswith(".m3u8")
+                if is_live_hls_channel:
+                    # Live HLS playlists refresh continuously and benefit from
+                    # a short jitter buffer; a VOD sized cache wastes memory
+                    # and can leave a long stale read-ahead window on channel
+                    # changes.
+                    self.mpv["demuxer-readahead-secs"] = 10
+                    self.mpv["demuxer-max-bytes"] = 64 * 1024 * 1024
+                    self.mpv["demuxer-max-back-bytes"] = 16 * 1024 * 1024
+                else:
+                    self.mpv["demuxer-readahead-secs"] = 30
+                    self.mpv["demuxer-max-bytes"] = 150 * 1024 * 1024
+                    self.mpv["demuxer-max-back-bytes"] = 50 * 1024 * 1024
                 self.mpv["cache"] = "yes"
                 self.mpv["cache-pause"] = "yes"
                 self.mpv["cache-pause-wait"] = 1.0

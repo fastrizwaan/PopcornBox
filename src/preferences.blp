@@ -189,6 +189,31 @@ template $Preferences: Adw.Dialog {
 			}
 
 			Adw.PreferencesGroup {
+				title: _("Stream Providers");
+				description: _("Control how long stream providers can take to respond and how often transient failures are retried");
+
+				Adw.SpinRow stream_provider_timeout_row {
+					title: _("Provider Request Timeout");
+					subtitle: _("Seconds to wait for each provider response");
+					adjustment: Adjustment {
+						lower: 5;
+						upper: 30;
+						step-increment: 1;
+					};
+				}
+
+				Adw.SpinRow stream_provider_retries_row {
+					title: _("Retry Transient Failures");
+					subtitle: _("Retries per provider for timeouts and temporary server errors");
+					adjustment: Adjustment {
+						lower: 0;
+						upper: 2;
+						step-increment: 1;
+					};
+				}
+			}
+
+			Adw.PreferencesGroup {
 				title: _("Navigation Buttons");
 
 				Adw.SwitchRow show_movies_button_row {

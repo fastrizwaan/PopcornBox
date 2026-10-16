@@ -653,10 +653,14 @@ def get_continue_watching():
         if h.get("type") in ["series", "anime", "tv"]:
             s_val = settings_snapshot.get(f"last_s_{h_id}", 1) or 1
             e_val = settings_snapshot.get(f"last_ep_{h_id}_{s_val}", None)
-            if e_val is None:
-                if db.get("settings", {}).get(f"working_stream_{h_id}_{s_val}_1"):
-                    e_val = 1
-            if e_val is not None:
+            # Legacy last-season/episode settings were also written by merely
+            # changing the details-page dropdown. Treat them as resume history
+            # only when playback saved a working stream for that exact episode.
+            has_playback_evidence = bool(
+                e_val is not None
+                and settings_snapshot.get(f"working_stream_{h_id}_{s_val}_{e_val}")
+            )
+            if has_playback_evidence:
                 seen_ids.add(str(h_id))
                 item_copy = dict(h)
                 item_copy["season"] = s_val
@@ -724,9 +728,12 @@ def get_continue_watching_item(item_id):
         if h_id and any(str(h_id) == str(m) for m in ids_to_match) and h.get("type") in ["series", "anime", "tv"]:
             s_val = db.get("settings", {}).get(f"last_s_{h_id}", 1) or 1
             e_val = db.get("settings", {}).get(f"last_ep_{h_id}_{s_val}", None)
-            if e_val is None and db.get("settings", {}).get(f"working_stream_{h_id}_{s_val}_1"):
-                e_val = 1
-            if e_val is not None:
+            settings = db.get("settings", {})
+            has_playback_evidence = bool(
+                e_val is not None
+                and settings.get(f"working_stream_{h_id}_{s_val}_{e_val}")
+            )
+            if has_playback_evidence:
                 item_copy = dict(h)
                 item_copy["season"] = s_val
                 item_copy["episode"] = e_val

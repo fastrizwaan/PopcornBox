@@ -234,6 +234,8 @@ class Preferences(Adw.Dialog):
     show_movies_button_row: Adw.SwitchRow = Gtk.Template.Child()
     show_series_button_row: Adw.SwitchRow = Gtk.Template.Child()
     show_anime_button_row: Adw.SwitchRow = Gtk.Template.Child()
+    stream_provider_timeout_row: Adw.SpinRow = Gtk.Template.Child()
+    stream_provider_retries_row: Adw.SpinRow = Gtk.Template.Child()
     stremio_account_row: Adw.ActionRow = Gtk.Template.Child()
     stremio_login_btn: Gtk.Button = Gtk.Template.Child()
     stremio_logout_btn: Gtk.Button = Gtk.Template.Child()
@@ -322,6 +324,8 @@ class Preferences(Adw.Dialog):
             ("show-movies-button", self.show_movies_button_row, "active"),
             ("show-series-button", self.show_series_button_row, "active"),
             ("show-anime-button", self.show_anime_button_row, "active"),
+            ("stream-provider-timeout", self.stream_provider_timeout_row, "value"),
+            ("stream-provider-retries", self.stream_provider_retries_row, "value"),
         ]
 
         for key, widget, property in bindings:

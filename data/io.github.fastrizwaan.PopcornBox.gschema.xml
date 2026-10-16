@@ -58,6 +58,12 @@
 		<key name="auto-play-next" type="b">
 			<default>true</default>
 		</key>
+		<key name="stream-provider-timeout" type="d">
+			<default>20.0</default>
+		</key>
+		<key name="stream-provider-retries" type="d">
+			<default>1.0</default>
+		</key>
 		<key name="hide-adult-content" type="b">
 			<default>true</default>
 		</key>

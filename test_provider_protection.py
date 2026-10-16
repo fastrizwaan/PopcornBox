@@ -2,6 +2,7 @@ import unittest
 import time
 import json
 import threading
+import concurrent.futures
 from unittest.mock import patch, MagicMock
 import urllib.error
 import ssl
@@ -218,6 +219,55 @@ class TestProviderProtection(unittest.TestCase):
             api.get_torrents_streamed("tt1234567", media_type="movie", force_refresh=True)
             # Must only be called once, for tt1234567! Not twice!
             self.assertEqual(mock_req.call_count, 1)
+
+    def test_get_torrents_streamed_normalizes_alias_id_list(self):
+        """Stream addon URLs must use a concrete ID when the caller passes aliases."""
+        addon = {
+            "name": "Alias Provider",
+            "manifest_url": "https://alias-provider.test/manifest.json",
+            "enabled": True,
+            "resources": ["stream"],
+            "types": ["movie"],
+            "idPrefixes": ["tt"],
+        }
+        with patch("src.database.get_cached_streams", return_value=None), \
+             patch("src.database.get_addons", return_value=[addon]), \
+             patch("src.api._request_addon_streams", return_value=[] ) as request_streams, \
+             patch("src.tmdb_helper.resolve_all_provider_ids", return_value=[]):
+            api.get_torrents_streamed(["tt1234567", "tt7654321"], "movie", force_refresh=True)
+
+        self.assertEqual(request_streams.call_count, 1)
+        requested_url = request_streams.call_args.args[1]
+        self.assertIn("tt1234567", requested_url)
+        self.assertNotIn("[", requested_url)
+
+    def test_stream_fetch_wait_budget_covers_provider_slot_and_request_timeout(self):
+        """The collector must wait longer than provider-slot plus HTTP timeouts."""
+        addon = {
+            "name": "Slow Provider",
+            "manifest_url": "https://slow-provider.test/manifest.json",
+            "enabled": True,
+            "streams_enabled": True,
+            "resources": ["stream"],
+            "types": ["movie"],
+            "idPrefixes": ["tt"],
+        }
+        observed_timeouts = []
+        real_wait = concurrent.futures.wait
+
+        def capture_wait(futures, *args, **kwargs):
+            observed_timeouts.append(kwargs.get("timeout"))
+            return real_wait(futures, *args, **kwargs)
+
+        with patch("src.database.get_cached_streams", return_value=None), \
+             patch("src.database.get_addons", return_value=[addon]), \
+             patch("src.api._request_addon_streams", return_value=[]), \
+             patch("src.tmdb_helper.resolve_all_provider_ids", return_value=[]), \
+             patch("concurrent.futures.wait", side_effect=capture_wait):
+            api.get_torrents_streamed("tt1234567", "movie", force_refresh=True)
+
+        self.assertTrue(observed_timeouts)
+        self.assertGreaterEqual(observed_timeouts[0], 10)
 
 if __name__ == "__main__":
     unittest.main()

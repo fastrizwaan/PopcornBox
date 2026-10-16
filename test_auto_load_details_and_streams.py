@@ -2,6 +2,7 @@ import unittest
 import sys
 from unittest.mock import MagicMock, patch
 import time
+import threading
 
 # Mock mpv before importing GTK / window
 sys.modules["mpv"] = MagicMock()
@@ -137,6 +138,33 @@ class TestAutoLoadDetailsAndStreams(unittest.TestCase):
             self.assertEqual(args[1], "series")
             self.assertEqual(args[2], 1)
             self.assertEqual(args[3], 1)
+
+    def test_empty_stream_fetch_can_retry_and_active_duplicate_is_coalesced(self):
+        """A completed empty result is retryable, while duplicate active work is not restarted."""
+        from src.window import MovieDetailsPage
+
+        movie_stub = {"id": "tt9988776", "title": "Retryable Movie", "type": "movie"}
+        with patch("src.window.MovieDetailsPage.load_details_async"), \
+             patch("src.window.MovieDetailsPage.fetch_torrents_async"):
+            page = MovieDetailsPage(movie_stub, on_back=lambda: None)
+
+        page._last_fetch_key = "tt9988776_None_None"
+        page._fetching_streams = False
+        page.torrents = []
+        called = threading.Event()
+
+        def empty_fetch(*args, **kwargs):
+            called.set()
+            return []
+
+        with patch("src.api.get_torrents_streamed", side_effect=empty_fetch) as get_streams:
+            page.fetch_torrents_async(force=False)
+            self.assertTrue(called.wait(timeout=2))
+            self.assertEqual(get_streams.call_count, 1)
+
+            # The same key is still active, so a second UI trigger shares it.
+            page.fetch_torrents_async(force=False)
+            self.assertEqual(get_streams.call_count, 1)
 
 if __name__ == "__main__":
     unittest.main()
