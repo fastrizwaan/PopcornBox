@@ -577,7 +577,7 @@ def _get_cached_request_uncollapsed(url, max_age_hours=2, headers=None, cache_on
     with _MEM_CACHE_LOCK:
         if url in _MEM_CACHE:
             cached_data, cached_time = _MEM_CACHE[url]
-            if (now - cached_time) < (max_age_hours * 3600):
+            if max_age_hours is None or (now - cached_time) < (max_age_hours * 3600):
                 return cached_data
             else:
                 del _MEM_CACHE[url]
@@ -3298,7 +3298,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
     c_type = "series" if media_type in ["series", "anime"] else ("tv" if media_type in ["tv", "channel", "tvchannel"] else ("music" if media_type in ["music", "radio"] else "movie"))
 
-    def fetch_addon_meta(addon_orig, req_type=None):
+    def fetch_addon_meta(addon_orig, req_type=None, use_cache=True):
         addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
         target_m_type = req_type or c_type
         if not addon.get("enabled", True): return None
@@ -3354,10 +3354,11 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         if not base_url.endswith("/"): base_url += "/"
         
         meta_url = f"{base_url}meta/{matched_type}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
-        data = _get_cached_request(meta_url, max_age_hours=None)
+        meta_hours = 24 if use_cache else 0
+        data = _get_cached_request(meta_url, max_age_hours=meta_hours)
         if not data and "v3-cinemeta.strem.io" in meta_url:
             alt_url = meta_url.replace("v3-cinemeta.strem.io", "cinemeta-live.strem.io")
-            data = _get_cached_request(alt_url, max_age_hours=None)
+            data = _get_cached_request(alt_url, max_age_hours=meta_hours)
         
         if data and data.get("meta"):
             cm = data["meta"]
@@ -3446,10 +3447,10 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
     
     cinemeta_res = None
     if cinemeta_addon:
-        cinemeta_res = fetch_addon_meta(cinemeta_addon, c_type)
+        cinemeta_res = fetch_addon_meta(cinemeta_addon, c_type, use_cache=use_cache)
         if (not cinemeta_res or not is_valid_meta(cinemeta_res)) and str(imdb_id).startswith("tt"):
             alt_type = "movie" if c_type in ["series", "anime", "tv"] else "series"
-            alt_res = fetch_addon_meta(cinemeta_addon, alt_type)
+            alt_res = fetch_addon_meta(cinemeta_addon, alt_type, use_cache=use_cache)
             if alt_res and is_valid_meta(alt_res):
                 cinemeta_res = alt_res
                 media_type = alt_type
@@ -3494,7 +3495,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         import concurrent.futures
         try:
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(other_addons), 8))
-            future_to_addon = {executor.submit(fetch_addon_meta, addon): addon for addon in other_addons}
+            future_to_addon = {executor.submit(fetch_addon_meta, addon, use_cache=use_cache): addon for addon in other_addons}
         except RuntimeError:
             return cinemeta_res or {}
         best_addon_res = None
@@ -4976,13 +4977,14 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     if final_streams:
         database.save_cached_streams(cache_key, final_streams)
-    elif all_stream_addons:
+    elif all_stream_addons and not cached:
         database.delete_cached_streams(cache_key)
 
+    result_to_deliver = final_streams if final_streams else (cached or [])
     if callback:
-        callback(final_streams, is_cached=False, is_complete=True)
+        callback(result_to_deliver, is_cached=bool(not final_streams and cached), is_complete=True)
 
-    return final_streams
+    return result_to_deliver
 
 SUBTITLE_LANGUAGE_MAP = {
     "en": ["en", "eng", "english"], "eng": ["en", "eng", "english"], "english": ["en", "eng", "english"],

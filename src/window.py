@@ -862,7 +862,7 @@ class MovieDetailsPage(Gtk.Overlay):
             initial_meta["overview"] = desc
 
         self.build_ui(initial_meta)
-        self.load_details_async(force_refresh=not is_complete)
+        self.load_details_async(force_refresh=True)
 
     @property
     def is_collection(self):
@@ -1123,7 +1123,7 @@ class MovieDetailsPage(Gtk.Overlay):
                         self._user_navigated_to_streams = True
                         self.sidebar_stack.set_visible_child_name("streams")
                         self.render_episodes_list()
-                        self.fetch_torrents_async(force=False)
+                        self.fetch_torrents_async(force=True)
                 return cb
 
             btn.connect("clicked", make_ep_cb(ep, ep_num))
@@ -1457,7 +1457,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 def apply_details():
                     if fetch_id == self._details_fetch_id and self._is_current_details_page() and not _is_event_set(getattr(self, 'page_abort_event', None)):
                         # Step 1 UI build (Metadata and Images displayed)
-                        self.build_ui(details)
+                        self.build_ui(details, is_refresh=True)
                         # Step 2: Now resolve trailer YouTube URL & direct stream
                         from . import api
                         tr = api.extract_trailer_id(details) or (api.extract_trailer_id(self.movie_stub) if hasattr(self, "movie_stub") else None)
@@ -1465,6 +1465,8 @@ class MovieDetailsPage(Gtk.Overlay):
                             self._apply_trailer_url(tr, fetch_id)
                         else:
                             self._start_fast_trailer_fetch(item_id, fetch_id, fast_abort)
+                        # Step 3: Automatically fetch/revalidate streams for active movie or series episode
+                        self.fetch_torrents_async(force=True)
                     return False
                 GLib.idle_add(apply_details)
 
@@ -1782,7 +1784,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
             self._continue_btn_hid = self.continue_btn.connect("clicked", on_play_clicked)
 
-    def build_ui(self, details):
+    def build_ui(self, details, is_refresh=False):
         if not details: return
         self.movie_details = details
         if details.get("type"):
@@ -2033,7 +2035,7 @@ class MovieDetailsPage(Gtk.Overlay):
             show_seasons = not self.is_channel and (len(self.seasons) > 1 or self.media_type in ["series", "anime"])
             if hasattr(self, 'season_nav_box'):
                 self.season_nav_box.set_visible(show_seasons)
-            self.season_dropdown.set_model(Gtk.StringList.new([f"Season {s}" for s in self.seasons]))
+            self.season_dropdown.set_model(Gtk.StringList.new([("Specials" if s == 0 else f"Season {s}") for s in self.seasons]))
             self.season_dropdown.set_visible(show_seasons)
             
             self._ignore_dropdown_changes = False
@@ -2070,7 +2072,7 @@ class MovieDetailsPage(Gtk.Overlay):
                         self.stream_ep_title_label.set_visible(True)
                     self.update_continue_btn()
                     self.render_episodes_list()
-                    self.fetch_torrents_async(force=False)
+                    self.fetch_torrents_async(force=True)
                 
             self._on_episode_dropdown_changed = on_episode_changed
             self._ep_dropdown_hid = self.episode_dropdown.connect("notify::selected", on_episode_changed)
@@ -2150,6 +2152,7 @@ class MovieDetailsPage(Gtk.Overlay):
                         self.selected_video = unique_eps[default_ep_idx]
                     self.update_continue_btn()
                     self.render_episodes_list()
+                    self.fetch_torrents_async(force=True)
                 
             self._season_dropdown_hid = self.season_dropdown.connect("notify::selected", on_season_changed)
             
@@ -2167,6 +2170,19 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.season_dropdown.set_selected(default_s_idx)
                 self._ignore_dropdown_changes = False
                 on_season_changed(self.season_dropdown)
+        elif self.media_type in ["series", "anime", "tv"]:
+            self.sidebar_stack.set_visible_child_name("episodes")
+            self.stream_back_btn.set_visible(False)
+            if hasattr(self, 'season_nav_box'):
+                self.season_nav_box.set_visible(False)
+            if hasattr(self, 'row2_box'):
+                self.row2_box.set_visible(False)
+            while child := self.episodes_list_box.get_first_child():
+                self.episodes_list_box.remove(child)
+            loading_lbl = Gtk.Label(label="Loading episodes...")
+            loading_lbl.add_css_class("dim-label")
+            loading_lbl.set_margin_top(24)
+            self.episodes_list_box.append(loading_lbl)
         else:
             self.sidebar_stack.set_visible_child_name("streams")
             self.stream_back_btn.set_visible(False)
@@ -2174,7 +2190,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.season_nav_box.set_visible(False)
             if hasattr(self, 'row2_box'):
                 self.row2_box.set_visible(False)
-            self.fetch_torrents_async()
+            self.fetch_torrents_async(force=True)
 
     def _build_person_card(self, member, role_text=""):
         from .movie_widget import load_image_into_picture
@@ -2400,7 +2416,11 @@ class MovieDetailsPage(Gtk.Overlay):
 
         sel_season = getattr(self, 'selected_season', None) if req_media_type in ["series", "anime", "tv"] else None
         sel_episode = getattr(self, 'selected_episode', None) if req_media_type in ["series", "anime", "tv"] else None
-        
+
+        # Guard: For episodic content, do not query streams until season and episode are resolved
+        if req_media_type in ["series", "anime", "tv"] and (sel_season is None or sel_episode is None):
+            return
+
         fetch_key = f"{item_id}_{sel_season}_{sel_episode}"
         if not force and getattr(self, '_last_fetch_key', None) == fetch_key:
             return
