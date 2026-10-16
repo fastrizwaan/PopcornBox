@@ -6704,7 +6704,7 @@ class CineWindow(Adw.ApplicationWindow):
             m_type = parameter.get_string()
             self.category_btn_stack.set_visible_child_name("discover")
             if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn:
-                self.filter_toggle_btn.set_visible(m_type in ("movie", "series", "anime"))
+                self.filter_toggle_btn.set_visible(m_type in ("movie", "series", "anime", "movie_series"))
             if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
                 self.library_sort_dropdown.set_visible(False)
             if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
@@ -6713,7 +6713,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.library_unique_check.set_visible(False)
             self.discover_back_box.set_visible(False)
             self._current_discover_type = m_type
-            self.current_media_type = m_type if m_type != "all" else "movie"
+            self.current_media_type = m_type if m_type not in ("all", "movie_series") else "movie"
             self._current_discover_addon = None
             if hasattr(self, "media_type_keys") and m_type in self.media_type_keys:
                 dd = getattr(self, "type_dropdown", None) or getattr(self, "media_type_dropdown", None)
@@ -6733,9 +6733,9 @@ class CineWindow(Adw.ApplicationWindow):
             if self._is_unique_mode_active() is True:
                 self.library_stack.set_visible_child_name("unique")
                 self._refresh_unique_combined_view()
-            elif m_type == "all":
+            elif m_type in ("all", "movie_series"):
                 self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type="all")
+                self._refresh_discover_page(filter_media_type=m_type)
             else:
                 self.library_stack.set_visible_child_name("content")
                 self._apply_sort_to_current_catalog()
@@ -8429,8 +8429,8 @@ class CineWindow(Adw.ApplicationWindow):
                     break
         effective_media_type = (
             selected_catalog_type
-            if m_type == "all" and selected_catalog_type
-            else (m_type if m_type != "all" else "movie")
+            if m_type in ("all", "movie_series") and selected_catalog_type
+            else (m_type if m_type not in ("all", "movie_series") else "movie")
         )
 
         self._current_discover_type = m_type
@@ -10112,7 +10112,7 @@ class CineWindow(Adw.ApplicationWindow):
                         clean_name = c_id.title() if c_id else 'Catalog'
                         
                     if filter_addon_url:
-                        if filter_media_type and filter_media_type != "all":
+                        if filter_media_type and filter_media_type not in ("all", "movie_series"):
                             row_title = f'{clean_name.title()}'
                         else:
                             if type_display.lower() in clean_name.lower():
@@ -10345,7 +10345,7 @@ class CineWindow(Adw.ApplicationWindow):
         debug_log("_update_continue_watching_section START")
         cw_items = database.get_continue_watching()
         visible_card_count, card_width = self._discover_row_card_metrics()
-        display_cw_items = cw_items[:max(15, visible_card_count)]
+        display_cw_items = cw_items[:max(36, visible_card_count)]
         debug_log(f"_update_continue_watching_section DB returned {len(cw_items)} items (displaying {len(display_cw_items)})")
         
         self._start_background_continue_watching_refresh(cw_items)
@@ -10456,6 +10456,9 @@ class CineWindow(Adw.ApplicationWindow):
                 on_remove_clicked=self._on_remove_continue_watching,
                 on_play_clicked=self._on_continue_watching_clicked
             )
+            card.set_hexpand(False)
+            self._fit_discover_row_card(card)
+            card.set_visible(self._discover_result_matches_item(item))
             cw_row.append(card)
 
         page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
@@ -10569,7 +10572,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.discover_box = target_box
                 self._on_discover_results_search_changed()
                 
-                if is_home and self._current_discover_type == "all" and not self._current_discover_addon and not cur_genre and not cur_lang:
+                if is_home and self._current_discover_type in ("all", "movie_series") and not self._current_discover_addon and not cur_genre and not cur_lang:
                     self._update_continue_watching_section()
                 elif not is_home and isinstance(target_box, Gtk.Box):
                     # Ensure no continue watching widgets exist in non-home discover boxes
@@ -10600,7 +10603,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.discover_box = new_box
         
         # Continue Watching Section ONLY on Home feed when no filters are active
-        if is_home and (not filter_media_type or filter_media_type == "all") and not filter_addon_url and not cur_genre and not cur_lang:
+        if is_home and (not filter_media_type or filter_media_type in ("all", "movie_series")) and not filter_addon_url and not cur_genre and not cur_lang:
             self._update_continue_watching_section()
 
         # Setup Sequential Row Loading List
@@ -13142,6 +13145,7 @@ class CineWindow(Adw.ApplicationWindow):
         # Build dynamic media types based on Stremio addons, always including "All Types" as the primary filter
         type_items = [
             ("All Types", "all"),
+            ("Movies+Series", "movie_series"),
             ("Movies", "movie"),
             ("Series", "series"),
         ]
@@ -13153,7 +13157,7 @@ class CineWindow(Adw.ApplicationWindow):
             (["live"], "live", "Live Streams"),
         ]
 
-        added_keys = {"all", "movie", "series"}
+        added_keys = {"all", "movie_series", "movie", "series"}
 
         for check_list, key_name, label_name in known_mappings:
             if any(t in supported_types for t in check_list):
@@ -13258,7 +13262,7 @@ class CineWindow(Adw.ApplicationWindow):
                     cur_type = "all"
                     if hasattr(self, "category_btn_stack"):
                         self.category_btn_stack.set_visible_child_name("home")
-            supported_keys = getattr(self, "media_type_keys", ["all", "movie", "series"])
+            supported_keys = getattr(self, "media_type_keys", ["all", "movie_series", "movie", "series"])
             if cur_type != "all" and cur_type not in supported_keys:
                 cur_type = "all"
                 if hasattr(self, "category_btn_stack"):

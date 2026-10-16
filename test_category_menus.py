@@ -75,8 +75,8 @@ class DummyWindow:
         self.series_active_btn = MockMenuButton()
         self.anime_active_btn = MockMenuButton()
         self.anime_supported = True
-        self.media_type_keys = ["movie", "series"]
-        self.media_type_labels = ["Movies", "Series"]
+        self.media_type_keys = ["movie_series", "movie", "series"]
+        self.media_type_labels = ["Movies+Series", "Movies", "Series"]
 
     from src.window import CineWindow
     _clean_cat_name = CineWindow._clean_cat_name
@@ -203,9 +203,10 @@ class TestCategoryMenus(unittest.TestCase):
         # Structure:
         # 0: "All Types"
         # 1: "Catalog" (submenu)
-        # 2: "Movies"
-        # 3: "Series"
-        self.assertEqual(menu.get_n_items(), 4)
+        # 2: "Movies+Series"
+        # 3: "Movies"
+        # 4: "Series"
+        self.assertEqual(menu.get_n_items(), 5)
         
         # Item 0: All Types
         self.assertEqual(menu.get_item_attribute_value(0, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "All Types")
@@ -219,9 +220,10 @@ class TestCategoryMenus(unittest.TestCase):
         self.assertEqual(sub.get_n_items(), 1)
         self.assertEqual(sub.get_item_attribute_value(0, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "★ All Catalogs")
 
-        # Items 2 and 3: Media types
-        self.assertEqual(menu.get_item_attribute_value(2, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "Movies")
-        self.assertEqual(menu.get_item_attribute_value(3, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "Series")
+        # Items 2, 3 and 4: Media types
+        self.assertEqual(menu.get_item_attribute_value(2, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "Movies+Series")
+        self.assertEqual(menu.get_item_attribute_value(3, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "Movies")
+        self.assertEqual(menu.get_item_attribute_value(4, Gio.MENU_ATTRIBUTE_LABEL).get_string(), "Series")
 
     def test_discover_menu_with_catalog_addons(self):
         """Verify Discover menu with catalog addons populates the Catalog submenu with correct action/target."""
@@ -232,7 +234,7 @@ class TestCategoryMenus(unittest.TestCase):
         ]
         menu = win._build_discover_menu(catalog_addons=catalog_addons)
         self.assertIsNotNone(menu)
-        self.assertEqual(menu.get_n_items(), 4)
+        self.assertEqual(menu.get_n_items(), 5)
 
         # Inspect Catalog submenu
         sub = menu.get_item_link(1, Gio.MENU_LINK_SUBMENU)

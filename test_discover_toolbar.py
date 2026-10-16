@@ -115,6 +115,8 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._get_current_discover_filter_dict = lambda: CineWindow._get_current_discover_filter_dict(self.win)
         self.win._on_discover_filter_changed = lambda: CineWindow._on_discover_filter_changed(self.win)
         self.win._is_unique_mode_active = lambda: CineWindow._is_unique_mode_active(self.win)
+        self.win._is_audio_or_live_tv_discover_context = lambda a, ct, ac=None: CineWindow._is_audio_or_live_tv_discover_context(self.win, a, ct, ac)
+        self.win._set_discover_filter_dropdowns_visible = lambda v: CineWindow._set_discover_filter_dropdowns_visible(self.win, v)
         self.win.reload_catalog_grid = lambda f=None: CineWindow.reload_catalog_grid(self.win, f)
 
     def tearDown(self):
@@ -827,22 +829,28 @@ class TestDiscoverToolbar(unittest.TestCase):
         CineWindow._update_supported_media_types(self.win)
         t_model = self.win.type_dropdown.get_model()
         self.assertEqual(t_model.get_string(0), "All Types")
-        self.assertEqual(t_model.get_string(1), "Movies")
-        self.assertEqual(t_model.get_string(2), "Series")
+        self.assertEqual(t_model.get_string(1), "Movies+Series")
+        self.assertEqual(t_model.get_string(2), "Movies")
+        self.assertEqual(t_model.get_string(3), "Series")
         self.assertEqual(self.win.media_type_keys[0], "all")
-        self.assertEqual(self.win.media_type_keys[1], "movie")
-        self.assertEqual(self.win.media_type_keys[2], "series")
+        self.assertEqual(self.win.media_type_keys[1], "movie_series")
+        self.assertEqual(self.win.media_type_keys[2], "movie")
+        self.assertEqual(self.win.media_type_keys[3], "series")
 
-        # 3. Select 'Movies' (index 1) and verify key retrieval
+        # 3. Select 'Movies+Series' (index 1) and verify key retrieval
         self.win.type_dropdown.set_selected(1)
+        self.assertEqual(self.win._get_current_discover_type(), "movie_series")
+
+        # 4. Select 'Movies' (index 2) and verify key retrieval
+        self.win.type_dropdown.set_selected(2)
         self.assertEqual(self.win._get_current_discover_type(), "movie")
 
-        # 4. Trigger another update and verify 'movie' selection is preserved
+        # 5. Trigger another update and verify 'movie' selection is preserved
         CineWindow._update_supported_media_types(self.win)
-        self.assertEqual(self.win.type_dropdown.get_selected(), 1)
+        self.assertEqual(self.win.type_dropdown.get_selected(), 2)
         self.assertEqual(self.win._get_current_discover_type(), "movie")
 
-        # 5. Switch back to 'All Types'
+        # 6. Switch back to 'All Types'
         self.win.type_dropdown.set_selected(0)
         self.assertEqual(self.win._get_current_discover_type(), "all")
 
@@ -940,6 +948,41 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["manifest_url"], "https://online.addon/manifest.json")
         self.assertEqual(len(self.win._discover_catalog_list_cache[cache_key]), 1)
+
+    def test_get_discover_catalog_list_movies_series_filter(self):
+        """When filter_media_type is 'movie_series', only movie and series catalogs are returned."""
+        self.win._discover_catalog_list_cache = {}
+        self.win.current_sort = "Popular"
+        self.win.current_genre = None
+        self.win.current_year = None
+        self.win.current_language = None
+
+        mixed_addon = {
+            "name": "MixedAddon",
+            "manifest_url": "https://mixed.addon/manifest.json",
+            "enabled": True,
+            "catalogs": [
+                {"id": "movies_cat", "name": "Popular Movies", "type": "movie"},
+                {"id": "series_cat", "name": "Popular Series", "type": "series"},
+                {"id": "anime_cat", "name": "Popular Anime", "type": "anime"},
+                {"id": "iptv_cat", "name": "Live TV", "type": "tv"},
+                {"id": "radio_cat", "name": "Radio Stations", "type": "music"}
+            ]
+        }
+
+        with patch("src.database.get_addons", return_value=[mixed_addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.is_catalog_provider", return_value=True), \
+             patch("src.api.get_addon_catalogs", side_effect=lambda a, cache_only=False: a.get("catalogs", [])), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="movie_series", filter_addon_url=None)
+
+        # Must include only movies and series catalogs
+        self.assertEqual(len(rows), 2)
+        returned_ids = {r["catalog_id"] for r in rows}
+        self.assertEqual(returned_ids, {"movies_cat", "series_cat"})
+        for r in rows:
+            self.assertIn(r["media_type"], ("movie", "series"))
 
     def test_load_next_discover_batch_handles_failing_row_without_discarding_success(self):
         """A failure/timeout in one catalog row does not cause successful rows to be discarded."""
@@ -1054,7 +1097,7 @@ class TestDiscoverToolbar(unittest.TestCase):
             card_count += 1
             child = child.get_next_sibling()
 
-        self.assertEqual(card_count, 24)
+        self.assertEqual(card_count, 36)
 
 
 if __name__ == "__main__":

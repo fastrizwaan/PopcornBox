@@ -2369,8 +2369,11 @@ def get_stored_years(media_type=None):
             query = "SELECT DISTINCT year FROM item_genres WHERE year IS NOT NULL AND length(year) = 4 AND year GLOB '[1-2][0-9][0-9][0-9]' AND CAST(year AS INTEGER) <= ?"
             params = [current_year]
             if media_type and media_type not in ("all", "discover"):
-                query += " AND media_type = ?"
-                params.append(str(media_type))
+                if str(media_type).lower() in ("movie_series", "movies_series", "movie+series", "movies+series"):
+                    query += " AND media_type IN ('movie', 'series')"
+                else:
+                    query += " AND media_type = ?"
+                    params.append(str(media_type))
             cursor.execute(query, tuple(params))
             for row in cursor.fetchall():
                 if row and row[0]:

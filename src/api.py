@@ -851,6 +851,10 @@ def is_type_match(type1, type2):
     t2 = str(type2).lower().strip()
     if t1 == t2:
         return True
+    if t1 in ("movie_series", "movies_series", "movie+series", "movies+series"):
+        return is_type_match(t2, "movie") or is_type_match(t2, "series")
+    if t2 in ("movie_series", "movies_series", "movie+series", "movies+series"):
+        return is_type_match(t1, "movie") or is_type_match(t1, "series")
     movie_group = {"movie", "movies", "film", "films"}
     if t1 in movie_group and t2 in movie_group:
         return True
@@ -873,8 +877,10 @@ def is_catalog_type_match(cat, media_type, addon_name=""):
     """
     if not cat or not media_type or media_type in ("all", "all_types"):
         return True
-    c_type = str(cat.get("type") or "").strip().lower()
     tgt = str(media_type).strip().lower()
+    if tgt in ("movie_series", "movies_series", "movie+series", "movies+series"):
+        return is_catalog_type_match(cat, "movie", addon_name) or is_catalog_type_match(cat, "series", addon_name)
+    c_type = str(cat.get("type") or "").strip().lower()
     if is_type_match(c_type, tgt):
         return True
 
@@ -910,6 +916,21 @@ def is_item_type_compatible(item, expected_type, cached_meta=None):
         return True
 
     expected = str(expected_type).strip().lower()
+    if expected in ("movie_series", "movies_series", "movie+series", "movies+series"):
+        itype = item.get("type") or item.get("media_type")
+        if not itype and cached_meta:
+            itype = cached_meta.get("type") or cached_meta.get("media_type")
+        if not itype:
+            if item.get("seriesInfo") or item.get("seasons") or item.get("episode"):
+                itype = "series"
+        if not itype:
+            return True
+        itype = str(itype).strip().lower()
+        if itype in ("movie", "movies", "film", "films", "series", "tvshow", "tv_series", "tvshows"):
+            return True
+        if itype in ("tv", "channel", "tvchannel", "channels", "live", "music", "radio", "podcast"):
+            return False
+        return is_type_match(itype, "movie") or is_type_match(itype, "series")
     if expected in ("collections", "other", "catalog", "channels", "channel", "live", "tv", "music", "radio", "podcast"):
         return True
 
@@ -1420,6 +1441,8 @@ def addon_has_resource(addon, resource_name, media_type=None, item_id=None):
         return False
     if not addon.get("enabled", True):
         return False
+    if media_type and str(media_type).strip().lower() in ("movie_series", "movies_series", "movie+series", "movies+series"):
+        return addon_has_resource(addon, resource_name, media_type="movie", item_id=item_id) or addon_has_resource(addon, resource_name, media_type="series", item_id=item_id)
         
     manifest_url = addon.get("manifest_url", "")
     if manifest_url and not is_addon_online(manifest_url):

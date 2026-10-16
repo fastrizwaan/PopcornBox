@@ -1,8 +1,33 @@
 import unittest
 import tempfile
 import os
+import sys
+import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+sys.modules.setdefault("mpv", MagicMock())
+
+schema_temp_dir = tempfile.TemporaryDirectory()
+schema_path = Path("data/io.github.fastrizwaan.PopcornBox.gschema.xml")
+if schema_path.exists():
+    dest = Path(schema_temp_dir.name) / "io.github.fastrizwaan.PopcornBox.gschema.xml"
+    dest.write_text(schema_path.read_text())
+    subprocess.run(["glib-compile-schemas", schema_temp_dir.name], check=True)
+    os.environ["GSETTINGS_SCHEMA_DIR"] = schema_temp_dir.name
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Gio, GLib
+
+res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+if res_file.exists():
+    try:
+        res = Gio.Resource.load(str(res_file))
+        Gio.resources_register(res)
+    except Exception:
+        pass
 
 class TestContinueWatching(unittest.TestCase):
     def setUp(self):
@@ -89,7 +114,8 @@ class TestContinueWatching(unittest.TestCase):
             ],
             "settings": {
                 "last_s_tt39281887": 1,
-                "last_ep_tt39281887_1": 4
+                "last_ep_tt39281887_1": 4,
+                "working_stream_tt39281887_1_4": {"url": "http://stream.test"}
             }
         }
         database._write_db(db)
@@ -156,6 +182,57 @@ class TestContinueWatching(unittest.TestCase):
 
         self.assertEqual(database.get_continue_watching(), [])
         self.assertTrue({"tt12345", "tmdb:123"}.issubset(database.get_continue_watching_dismissals()))
+
+    def test_update_continue_watching_section_shows_more_cards(self):
+        from src import database
+        from src.window import CineWindow
+        import gi
+        gi.require_version("Gtk", "4.0")
+        from gi.repository import Gtk
+        from unittest.mock import MagicMock
+
+        # Populate 30 continue watching items
+        for i in range(30):
+            database.save_continue_watching({
+                "id": f"tt{i:07d}",
+                "title": f"Item {i}",
+                "type": "movie",
+                "last_watched": 1000 + i
+            })
+
+        win = MagicMock()
+        win.category_btn_stack.get_visible_child_name.return_value = "home"
+        target_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        win.discover_box = target_box
+        win._discover_views = {"home|all|all|all|all|all|Popular": {"box": target_box}}
+        win._discover_row_card_metrics.return_value = (15, 130)
+        win._discover_result_matches_item.return_value = True
+        win._fit_discover_row_card = MagicMock()
+        win._start_background_continue_watching_refresh = MagicMock()
+        win._cw_initial_layout_check_scheduled = True
+
+        CineWindow._update_continue_watching_section(win)
+
+        cw_scroll = None
+        c = target_box.get_first_child()
+        while c:
+            if getattr(c, "_is_cw_scroll", False):
+                cw_scroll = c
+                break
+            c = c.get_next_sibling()
+
+        self.assertIsNotNone(cw_scroll)
+        viewport = cw_scroll.get_child()
+        cw_row = viewport.get_child() if hasattr(viewport, "get_child") else viewport
+
+        card_count = 0
+        card = cw_row.get_first_child()
+        while card:
+            card_count += 1
+            card = card.get_next_sibling()
+
+        # Must display all 30 cards (up to 36 cards) rather than capping at 15
+        self.assertEqual(card_count, 30)
 
 if __name__ == "__main__":
     unittest.main()
