@@ -909,7 +909,86 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertEqual(rows[0]["catalog_id"], "top")
         self.assertEqual(rows[0]["addon_name"], "Cinemeta")
 
+    def test_get_discover_catalog_list_evicts_cache_when_addon_offline(self):
+        """When an addon goes offline for the session, cached catalog lists containing it are invalidated."""
+        self.win._discover_catalog_list_cache = {}
+        addon1 = {"manifest_url": "https://online.addon/manifest.json", "name": "Online Addon", "enabled": True, "catalogs": [{"id": "top", "name": "Top", "type": "movie"}]}
+        addon2 = {"manifest_url": "https://offline.addon/manifest.json", "name": "Offline Addon", "enabled": True, "catalogs": [{"id": "tv", "name": "TV", "type": "tv"}]}
+
+        def fake_is_online(url):
+            return url != "https://offline.addon/manifest.json"
+
+        # Prime the cache with both addons present
+        self.win.current_sort = "Popular"
+        cache_key = ("all", "", "Popular", "", "", "")
+        self.win._discover_catalog_list_cache[cache_key] = [
+            {"manifest_url": "https://online.addon/manifest.json", "catalog_id": "top", "title": "Top"},
+            {"manifest_url": "https://offline.addon/manifest.json", "catalog_id": "tv", "title": "TV"},
+        ]
+
+        with patch("src.database.get_addons", return_value=[addon1, addon2]), \
+             patch("src.api.is_addon_online", side_effect=fake_is_online), \
+             patch("src.api.is_catalog_provider", return_value=True), \
+             patch("src.api.get_addon_catalogs", side_effect=lambda a, cache_only=False: a.get("catalogs", [])), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+
+        # The cache entry containing the offline addon must have been evicted and regenerated without offline addon
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["manifest_url"], "https://online.addon/manifest.json")
+        self.assertEqual(len(self.win._discover_catalog_list_cache[cache_key]), 1)
+
+    def test_load_next_discover_batch_handles_failing_row_without_discarding_success(self):
+        """A failure/timeout in one catalog row does not cause successful rows to be discarded."""
+        self.win.discover_request_id = 10
+        self.win._discover_is_loading_rows = False
+        self.win._discover_next_row_index = 0
+        self.win._discover_views = {}
+        self.win._discover_abort_event = None
+        self.win._get_discover_view_key = MagicMock(return_value="resilience_key")
+
+        row_good = {
+            "title": "Good Catalog",
+            "media_type": "movie",
+            "catalog_id": "good",
+            "manifest_url": "https://good.addon/manifest.json",
+            "addon_name": "Good Addon",
+            "genres": []
+        }
+        row_bad = {
+            "title": "Bad Catalog",
+            "media_type": "movie",
+            "catalog_id": "bad",
+            "manifest_url": "https://bad.addon/manifest.json",
+            "addon_name": "Bad Addon",
+            "genres": []
+        }
+        self.win._discover_catalog_list = [row_good, row_bad]
+        self.win.discover_box = Gtk.Box()
+
+        good_items = [{"id": "tt1", "title": "Good Movie", "type": "movie"}]
+
+        def fake_fetch(media_type="movie", catalog_id="good", **kwargs):
+            if catalog_id == "good":
+                return good_items
+            raise TimeoutError("Simulated slow/hanging catalog")
+
+        with patch("src.api.fetch_items", side_effect=fake_fetch), \
+             patch("src.database.get_cached_catalog", return_value=None), \
+             patch("src.database.save_cached_catalog"), \
+             patch("src.api.is_addon_online", return_value=True):
+            CineWindow._load_next_discover_batch(self.win, req_id=10, batch_size=2)
+            # Pump GLib main loop briefly so idle callbacks execute
+            context = GLib.MainContext.default()
+            for _ in range(25):
+                context.iteration(False)
+
+        # Only the successful slot should remain appended with content, failed slot removed
+        self.assertEqual(self.win._discover_empty_batches, 0)
+        self.assertFalse(self.win._discover_is_loading_rows)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

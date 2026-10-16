@@ -729,7 +729,7 @@ def _get_cached_request_uncollapsed(url, max_age_hours=2, headers=None, cache_on
     return None
 
 
-def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0):
+def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0, is_cancelled=None):
     """Fetch a URL once when concurrent callers miss the same cache entry."""
     if not url or cache_only:
         return _get_cached_request_uncollapsed(
@@ -751,19 +751,24 @@ def _get_cached_request(url, max_age_hours=2, headers=None, cache_only=False, ti
             _REQUEST_INFLIGHT[url] = pending
 
     if not is_owner:
-        if not pending["event"].wait(max(0.1, timeout) + 1.0):
-            # The owner can outlive timeout+1 because urlopen's timeout bounds
-            # individual socket ops, not total time. Re-check the cache before
-            # reporting a miss so the caller does not issue a duplicate fetch.
-            with _MEM_CACHE_LOCK:
-                cached = _MEM_CACHE.get(url)
-            if cached and (max_age_hours is None or time.time() - cached[1] < max_age_hours * 3600):
-                return cached[0]
-            return None
+        wait_deadline = time.time() + max(0.1, timeout) + 1.0
+        while not pending["event"].is_set():
+            if is_cancelled and is_cancelled():
+                return None
+            remaining = wait_deadline - time.time()
+            if remaining <= 0:
+                with _MEM_CACHE_LOCK:
+                    cached = _MEM_CACHE.get(url)
+                if cached and (max_age_hours is None or time.time() - cached[1] < max_age_hours * 3600):
+                    return cached[0]
+                return None
+            pending["event"].wait(timeout=min(0.2, remaining))
         return pending["result"]
 
     result = None
     try:
+        if is_cancelled and is_cancelled():
+            return None
         result = _get_cached_request_uncollapsed(
             url, max_age_hours=max_age_hours, headers=headers,
             cache_only=False, timeout=timeout,
@@ -998,12 +1003,17 @@ def _record_addon_failure(manifest_url):
     """Record a network failure for an addon. Blocks it after threshold failures."""
     if not manifest_url or manifest_url.startswith("builtin:"):
         return
+    newly_blocked = False
     with _ADDON_ONLINE_LOCK:
         count = _ADDON_SESSION_FAILURES.get(manifest_url, 0) + 1
         _ADDON_SESSION_FAILURES[manifest_url] = count
         if count >= _ADDON_FAIL_THRESHOLD:
+            newly_blocked = manifest_url not in _ADDON_SESSION_BLOCKED
             _ADDON_SESSION_BLOCKED.add(manifest_url)
-            logging.info(f"[Addon] Blocked for this session after {count} failures: {manifest_url}")
+            if newly_blocked:
+                logging.info(f"[Addon] Blocked for this session after {count} failures: {manifest_url}")
+    if newly_blocked:
+        invalidate_catalogs_cache()
 
 def _record_addon_success(manifest_url):
     """Clear failure count on a successful addon response."""
@@ -2092,7 +2102,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 if is_cancelled and is_cancelled():
                     break
                 search_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(query)}.json"
-                data = _get_cached_request(search_url, max_age_hours=2, cache_only=cache_only, timeout=3.5)
+                fetch_kw = {"is_cancelled": is_cancelled} if is_cancelled is not None else {}
+                data = _get_cached_request(search_url, max_age_hours=2, cache_only=cache_only, timeout=3.5, **fetch_kw)
                 if data and isinstance(data.get("metas"), list):
                     addon_items.extend(data["metas"])
                     if addon_items: 
@@ -2358,9 +2369,15 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         if is_cancelled and is_cancelled():
             return []
             
-        data = _get_cached_request(url, max_age_hours=2, cache_only=cache_only, timeout=timeout)
+        fetch_kw = {"is_cancelled": is_cancelled} if is_cancelled is not None else {}
+        data = _get_cached_request(url, max_age_hours=2, cache_only=cache_only, timeout=timeout, **fetch_kw)
         if data is None or (is_cancelled and is_cancelled()):
+            if data is None and catalog_url and not (is_cancelled and is_cancelled()):
+                _record_addon_failure(catalog_url)
             return None if data is None else []
+
+        if catalog_url:
+            _record_addon_success(catalog_url)
             
         found_addon_name = ""
         found_catalog_name = str(catalog_id).title()

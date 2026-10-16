@@ -9449,8 +9449,13 @@ class CineWindow(Adw.ApplicationWindow):
         cache_key = (filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "")
         if hasattr(self, "_discover_catalog_list_cache") and cache_key in self._discover_catalog_list_cache:
             cached_res = list(self._discover_catalog_list_cache[cache_key])
-            debug_log(f"_get_discover_catalog_list CACHE HIT for {cache_key}", f"{len(cached_res)} rows")
-            return cached_res
+            from . import api
+            valid_rows = [r for r in cached_res if api.is_addon_online(r.get("manifest_url", ""))]
+            if len(valid_rows) == len(cached_res):
+                debug_log(f"_get_discover_catalog_list CACHE HIT for {cache_key}", f"{len(cached_res)} rows")
+                return cached_res
+            else:
+                self._discover_catalog_list_cache.pop(cache_key, None)
 
         debug_log(f"_get_discover_catalog_list START for {cache_key}")
         from . import database, api
@@ -9913,30 +9918,34 @@ class CineWindow(Adw.ApplicationWindow):
         
         # 1. Instant cache hit: Switch visible view immediately with zero refetch
         if not force_refresh and view_key in self._discover_views:
-            debug_log(f"_refresh_discover_page INSTANT CACHE HIT for view '{view_key}'")
             view_data = self._discover_views[view_key]
-            target_box = view_data["box"]
-            self._discover_catalog_list = view_data["catalog_list"]
-            self._discover_next_row_index = view_data["next_row_index"]
-            view_data["request_id"] = req_id
-            
-            if hasattr(self, "discover_scrolled") and self.discover_scrolled.get_child() != target_box:
-                self.discover_scrolled.set_child(target_box)
-            self.discover_box = target_box
-            
-            if is_home and self._current_discover_type == "all" and not self._current_discover_addon and not cur_genre and not cur_lang:
-                self._update_continue_watching_section()
-            elif not is_home and isinstance(target_box, Gtk.Box):
-                # Ensure no continue watching widgets exist in non-home discover boxes
-                c = target_box.get_first_child()
-                while c:
-                    nxt = c.get_next_sibling()
-                    if getattr(c, "_is_cw_header", False) or c.has_css_class("continue-watching-header") or getattr(c, "_is_cw_scroll", False) or c.has_css_class("continue-watching-scroll"):
-                        target_box.remove(c)
-                    c = nxt
+            target_box = view_data.get("box")
+            has_valid_content = bool(target_box and target_box.get_first_child() and getattr(target_box, "_has_empty_label", False) is not True)
+            if has_valid_content:
+                debug_log(f"_refresh_discover_page INSTANT CACHE HIT for view '{view_key}'")
+                self._discover_catalog_list = view_data["catalog_list"]
+                self._discover_next_row_index = view_data["next_row_index"]
+                view_data["request_id"] = req_id
                 
-            debug_log(f"_refresh_discover_page DONE (cache hit)")
-            return
+                if hasattr(self, "discover_scrolled") and self.discover_scrolled.get_child() != target_box:
+                    self.discover_scrolled.set_child(target_box)
+                self.discover_box = target_box
+                
+                if is_home and self._current_discover_type == "all" and not self._current_discover_addon and not cur_genre and not cur_lang:
+                    self._update_continue_watching_section()
+                elif not is_home and isinstance(target_box, Gtk.Box):
+                    # Ensure no continue watching widgets exist in non-home discover boxes
+                    c = target_box.get_first_child()
+                    while c:
+                        nxt = c.get_next_sibling()
+                        if getattr(c, "_is_cw_header", False) or c.has_css_class("continue-watching-header") or getattr(c, "_is_cw_scroll", False) or c.has_css_class("continue-watching-scroll"):
+                            target_box.remove(c)
+                        c = nxt
+                    
+                debug_log(f"_refresh_discover_page DONE (cache hit)")
+                return
+            else:
+                self._discover_views.pop(view_key, None)
 
         debug_log(f"_refresh_discover_page CACHE MISS for view '{view_key}', constructing new view")
         from .movie_widget import cancel_pending_image_downloads
@@ -10040,79 +10049,80 @@ class CineWindow(Adw.ApplicationWindow):
                     """Fetch a single catalog row's items. Runs in parallel."""
                     if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
                         return None
-                    m_type = row_info.get("media_type", "movie")
-                    c_id = row_info.get("catalog_id")
-                    m_url = row_info.get("manifest_url")
-                    row_title = row_info.get("title", "Catalog")
+                    try:
+                        m_type = row_info.get("media_type", "movie")
+                        c_id = row_info.get("catalog_id")
+                        m_url = row_info.get("manifest_url")
+                        row_title = row_info.get("title", "Catalog")
 
-                    if m_url and not api.is_addon_online(m_url):
-                        debug_log(f"discover row SKIPPED (addon offline for session): '{row_title}'")
-                        return None
-
-                    current_g = getattr(self, "current_genre", None)
-                    if current_g in ("All Genres", _("All Genres"), "All"):
-                        current_g = None
-                    current_y = getattr(self, "current_year", None)
-                    if current_y in ("All Years", _("All Years"), "All"):
-                        current_y = None
-                    current_l = getattr(self, "current_language", None)
-                    if current_l in ("All Languages", _("All Languages"), "All"):
-                        current_l = None
-
-                    if current_l:
-                        addon_name = row_info.get("addon_name") or ""
-                        cat_name = row_info.get("display_name") or row_info.get("name") or ""
-                        is_lang_in_name = (
-                            current_l.lower() in addon_name.lower() or
-                            current_l.lower() in str(cat_name).lower() or
-                            current_l.lower() in str(c_id).lower() or
-                            (m_url and current_l.lower() in m_url.lower())
-                        )
-                        if not is_lang_in_name and not api.catalog_supports_genre(row_info, current_l):
-                            debug_log(f"discover row SKIPPED: '{row_title}' — language '{current_l}' not supported")
+                        if m_url and not api.is_addon_online(m_url):
+                            debug_log(f"discover row SKIPPED (addon offline for session): '{row_title}'")
                             return (row_info, [])
 
-                    if current_g and not api.catalog_supports_genre(row_info, current_g):
-                        debug_log(f"discover row SKIPPED: '{row_title}' — genre '{current_g}' not supported")
-                        return (row_info, [])
+                        current_g = getattr(self, "current_genre", None)
+                        if current_g in ("All Genres", _("All Genres"), "All"):
+                            current_g = None
+                        current_y = getattr(self, "current_year", None)
+                        if current_y in ("All Years", _("All Years"), "All"):
+                            current_y = None
+                        current_l = getattr(self, "current_language", None)
+                        if current_l in ("All Languages", _("All Languages"), "All"):
+                            current_l = None
 
-                    fetch_genre = current_g
-                    if not current_g and current_l:
-                        fetch_genre = current_l
-                    elif not current_g and current_y and (c_id in ("year", "years", "acc85513", "tmdb.year") or api.catalog_supports_genre(row_info, current_y)):
-                        fetch_genre = current_y
+                        if current_l:
+                            addon_name = row_info.get("addon_name") or ""
+                            cat_name = row_info.get("display_name") or row_info.get("name") or ""
+                            is_lang_in_name = (
+                                current_l.lower() in addon_name.lower() or
+                                current_l.lower() in str(cat_name).lower() or
+                                current_l.lower() in str(c_id).lower() or
+                                (m_url and current_l.lower() in m_url.lower())
+                            )
+                            if not is_lang_in_name and not api.catalog_supports_genre(row_info, current_l):
+                                debug_log(f"discover row SKIPPED: '{row_title}' — language '{current_l}' not supported")
+                                return (row_info, [])
 
-                    genre_suffix = f":{fetch_genre}" if fetch_genre else ""
-                    year_suffix = f":y{current_y}" if current_y else ""
-                    lang_suffix = f":l{current_l}" if current_l else ""
-                    cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}"
-                    cached = database.get_cached_catalog(cache_key, max_age_hours=48)
-                    if not cached and fetch_genre:
-                        base_cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{year_suffix}{lang_suffix}", max_age_hours=48)
-                        if base_cached:
-                            cached = api.filter_items_by_genre(base_cached, fetch_genre, media_type=m_type)
-                    if _is_event_set(abort_ev):
-                        return None
-                    if cached:
-                        if api.hydrate_missing_catalog_items(cached, media_type=m_type):
-                            if not _is_event_set(abort_ev):
-                                database.save_cached_catalog(cache_key, cached)
-                        if current_g:
-                            cached = api.filter_items_by_genre(cached, current_g, media_type=m_type)
-                        elif cached and m_type:
-                            cached = [it for it in cached if api.is_item_type_compatible(it, m_type)]
-                        if cached and current_l:
-                            cached = api.filter_items_by_genre(cached, current_l, media_type=m_type)
-                        if cached and current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
-                            cached = [it for it in cached if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(current_y)]
-                        if not cached and (current_g or current_l):
-                            cached = None
+                        if current_g and not api.catalog_supports_genre(row_info, current_g):
+                            debug_log(f"discover row SKIPPED: '{row_title}' — genre '{current_g}' not supported")
+                            return (row_info, [])
+
+                        fetch_genre = current_g
+                        if not current_g and current_l:
+                            fetch_genre = current_l
+                        elif not current_g and current_y and (c_id in ("year", "years", "acc85513", "tmdb.year") or api.catalog_supports_genre(row_info, current_y)):
+                            fetch_genre = current_y
+
+                        genre_suffix = f":{fetch_genre}" if fetch_genre else ""
+                        year_suffix = f":y{current_y}" if current_y else ""
+                        lang_suffix = f":l{current_l}" if current_l else ""
+                        cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}"
+                        cached = database.get_cached_catalog(cache_key, max_age_hours=48)
+                        if not cached and fetch_genre:
+                            base_cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{year_suffix}{lang_suffix}", max_age_hours=48)
+                            if base_cached:
+                                cached = api.filter_items_by_genre(base_cached, fetch_genre, media_type=m_type)
+                        if _is_event_set(abort_ev):
+                            return None
                         if cached:
-                            debug_log(f"discover row CACHE HIT: '{row_title}'", f"{len(cached)} items")
-                            return (row_info, cached)
-                    if _is_event_set(abort_ev):
-                        return None
-                    try:
+                            if api.hydrate_missing_catalog_items(cached, media_type=m_type):
+                                if not _is_event_set(abort_ev):
+                                    database.save_cached_catalog(cache_key, cached)
+                            if current_g:
+                                cached = api.filter_items_by_genre(cached, current_g, media_type=m_type)
+                            elif cached and m_type:
+                                cached = [it for it in cached if api.is_item_type_compatible(it, m_type)]
+                            if cached and current_l:
+                                cached = api.filter_items_by_genre(cached, current_l, media_type=m_type)
+                            if cached and current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
+                                cached = [it for it in cached if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(current_y)]
+                            if not cached and (current_g or current_l):
+                                cached = None
+                            if cached:
+                                debug_log(f"discover row CACHE HIT: '{row_title}'", f"{len(cached)} items")
+                                return (row_info, cached)
+                        if _is_event_set(abort_ev):
+                            return None
+
                         debug_log(f"discover row FETCHING from API: '{row_title}' (type={m_type}, id={c_id}, genre={fetch_genre})")
                         items = api.fetch_items(
                             media_type=m_type,
@@ -10139,10 +10149,10 @@ class CineWindow(Adw.ApplicationWindow):
                         debug_log(f"discover row FETCHED from API: '{row_title}'", f"Got {len(items) if items else 0} items")
                         if items and not _is_event_set(abort_ev):
                             database.save_cached_catalog(cache_key, items)
+                        return (row_info, items)
                     except Exception as e:
-                        logger.error(f"Error fetching discover row {row_title}: {e}")
-                        items = None
-                    return (row_info, items)
+                        logger.error(f"Error fetching discover row {row_info.get('title')}: {e}")
+                        return (row_info, None)
 
                 # Fetch all rows in this batch in parallel and stream completed rows immediately
                 results = [None] * len(batch_items)
@@ -10155,7 +10165,7 @@ class CineWindow(Adw.ApplicationWindow):
                         # Executor or Python interpreter shutting down
                         return
                     try:
-                        for future in concurrent.futures.as_completed(future_to_idx, timeout=3.5):
+                        for future in concurrent.futures.as_completed(future_to_idx, timeout=5.0):
                             if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
                                 executor.shutdown(wait=False, cancel_futures=True)
                                 break
@@ -10181,32 +10191,39 @@ class CineWindow(Adw.ApplicationWindow):
                                                 target_box.remove(slot)
                                         return False
                                     GLib.idle_add(_remove_slot)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Error processing row result: {e}")
                     except concurrent.futures.TimeoutError:
-                        pass
+                        debug_log(f"discover batch timeout reached for req_id={req_id} (batch {start_idx}..{end_idx})")
                 finally:
+                    # Clean up any uncompleted slots whose futures timed out or failed
+                    for unfin_idx, r in enumerate(results):
+                        if r is None:
+                            def _clean_unfin_slot(slot_idx=unfin_idx):
+                                if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
+                                    return False
+                                if slot_idx < len(row_slots):
+                                    slot = row_slots[slot_idx]
+                                    if target_box and slot.get_parent() == target_box:
+                                        target_box.remove(slot)
+                                return False
+                            GLib.idle_add(_clean_unfin_slot)
+
                     executor.shutdown(wait=False, cancel_futures=True)
                     if getattr(self, "_discover_active_pool", None) is executor:
                         self._discover_active_pool = None
 
-                def _finish_batch():
+                rows_added_in_batch = sum(1 for r in results if r and r[1])
+
+                def _finish_batch(added_count=rows_added_in_batch):
                     if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
                         self._discover_is_loading_rows = False
                         return False
 
-                    rows_added_in_batch = 0
-                    for slot in row_slots:
-                        if target_box and slot.get_parent() == target_box:
-                            if slot.get_first_child() is None:
-                                target_box.remove(slot)
-                            else:
-                                rows_added_in_batch += 1
-
                     self._discover_is_loading_rows = False
-                    debug_log(f"discover batch finished for req_id={req_id} (added {rows_added_in_batch} rows)")
+                    debug_log(f"discover batch finished for req_id={req_id} (added {added_count} rows)")
 
-                    if rows_added_in_batch == 0:
+                    if added_count == 0:
                         self._discover_empty_batches = getattr(self, "_discover_empty_batches", 0) + 1
                     else:
                         self._discover_empty_batches = 0
@@ -10233,6 +10250,11 @@ class CineWindow(Adw.ApplicationWindow):
 
                     limit_empty = 2 if getattr(self, "current_language", None) else 4
                     if not has_content and (not more_catalogs or getattr(self, "_discover_empty_batches", 0) >= limit_empty):
+                        # Evict the empty view from _discover_views so it won't be cached as blank
+                        v_key = self._get_discover_view_key()
+                        if hasattr(self, "_discover_views") and v_key in self._discover_views:
+                            self._discover_views.pop(v_key, None)
+
                         if not getattr(target_box, "_has_empty_label", False):
                             empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
                             empty_box.set_valign(Gtk.Align.CENTER)
