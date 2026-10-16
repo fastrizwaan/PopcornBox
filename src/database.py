@@ -1311,6 +1311,13 @@ def clear_cached_catalog_for_url(manifest_url):
     if not manifest_url:
         return
     try:
+        with _MEM_CATALOG_LOCK:
+            keys_to_del = [k for k in _MEM_CATALOG_CACHE if manifest_url in str(k)]
+            for k in keys_to_del:
+                _MEM_CATALOG_CACHE.pop(k, None)
+    except Exception:
+        pass
+    try:
         with _cache_db_lock:
             conn = _get_cache_db()
             cursor = conn.cursor()
@@ -1329,43 +1336,48 @@ def clear_all_cached_streams():
     except Exception as e:
         print(f"Error clearing all cached streams: {e}")
 
-def set_addon_enabled(addon_id, enabled):
+def set_addon_enabled(addon_id, enabled, manifest_url=None):
+    target_url = manifest_url
     with _db_lock:
         db = _read_db()
         for a in db.get("addons", []):
-            if a.get("id") == addon_id:
-                a["enabled"] = enabled
-        _write_db(db)
-    clear_all_cached_streams()
-    try:
-        from . import api
-        api.invalidate_catalogs_cache()
-    except Exception:
-        pass
-
-def set_addon_catalogs_enabled(addon_id, enabled):
-    manifest_url = None
-    with _db_lock:
-        db = _read_db()
-        for a in db.get("addons", []):
-            if a.get("id") == addon_id:
-                a["catalogs_enabled"] = bool(enabled)
-                manifest_url = a.get("manifest_url")
+            if (addon_id and a.get("id") == addon_id) or (target_url and a.get("manifest_url") == target_url):
+                a["enabled"] = bool(enabled)
+                target_url = a.get("manifest_url") or target_url
                 break
         _write_db(db)
-    if manifest_url:
-        clear_cached_catalog_for_url(manifest_url)
+    clear_all_cached_streams()
+    if target_url:
+        clear_cached_catalog_for_url(target_url)
     try:
         from . import api
         api.invalidate_catalogs_cache()
     except Exception:
         pass
 
-def set_addon_streams_enabled(addon_id, enabled):
+def set_addon_catalogs_enabled(addon_id, enabled, manifest_url=None):
+    target_url = manifest_url
     with _db_lock:
         db = _read_db()
         for a in db.get("addons", []):
-            if a.get("id") == addon_id:
+            if (addon_id and a.get("id") == addon_id) or (target_url and a.get("manifest_url") == target_url):
+                a["catalogs_enabled"] = bool(enabled)
+                target_url = a.get("manifest_url") or target_url
+                break
+        _write_db(db)
+    if target_url:
+        clear_cached_catalog_for_url(target_url)
+    try:
+        from . import api
+        api.invalidate_catalogs_cache()
+    except Exception:
+        pass
+
+def set_addon_streams_enabled(addon_id, enabled, manifest_url=None):
+    with _db_lock:
+        db = _read_db()
+        for a in db.get("addons", []):
+            if (addon_id and a.get("id") == addon_id) or (manifest_url and a.get("manifest_url") == manifest_url):
                 a["streams_enabled"] = bool(enabled)
                 break
         _write_db(db)

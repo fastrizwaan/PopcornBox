@@ -6652,6 +6652,11 @@ class CineWindow(Adw.ApplicationWindow):
         action = Gio.SimpleAction.new("switch-to-anime", None)
         def on_switch_anime(action, parameter):
             from . import api
+            if not getattr(self, "anime_supported", False):
+                self.category_btn_stack.set_visible_child_name("home")
+                self.library_stack.set_visible_child_name("discover")
+                self._refresh_discover_page(filter_media_type="all")
+                return
             self._cancel_all_background_fetching()
             self.category_btn_stack.set_visible_child_name("anime")
             if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
@@ -6912,7 +6917,7 @@ class CineWindow(Adw.ApplicationWindow):
     def update_category_buttons_visibility(self):
         show_movies = settings.get_boolean("show-movies-button")
         show_series = settings.get_boolean("show-series-button")
-        show_anime = settings.get_boolean("show-anime-button")
+        show_anime = settings.get_boolean("show-anime-button") and getattr(self, "anime_supported", False)
 
         for btn in [
             getattr(self, "movies_active_btn", None),
@@ -6921,7 +6926,7 @@ class CineWindow(Adw.ApplicationWindow):
             getattr(self, "movies_inactive_btn", None),
             getattr(self, "movies_inactive_btn_anime", None),
         ]:
-            if btn:
+            if btn and hasattr(btn, "set_visible"):
                 btn.set_visible(show_movies)
 
         for btn in [
@@ -6931,7 +6936,7 @@ class CineWindow(Adw.ApplicationWindow):
             getattr(self, "series_inactive_btn", None),
             getattr(self, "series_inactive_btn_anime", None),
         ]:
-            if btn:
+            if btn and hasattr(btn, "set_visible"):
                 btn.set_visible(show_series)
 
         for btn in [
@@ -6941,23 +6946,32 @@ class CineWindow(Adw.ApplicationWindow):
             getattr(self, "anime_inactive_btn_movies", None),
             getattr(self, "anime_inactive_btn_series", None),
         ]:
-            if btn:
+            if btn and hasattr(btn, "set_visible"):
                 btn.set_visible(show_anime)
 
-        curr_cat = self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else "home"
-        if (not show_movies and curr_cat == "movies") or \
+        curr_cat = None
+        if hasattr(self, "category_btn_stack") and hasattr(self.category_btn_stack, "get_visible_child_name"):
+            try:
+                curr_cat = self.category_btn_stack.get_visible_child_name()
+            except Exception:
+                curr_cat = "home"
+        if curr_cat and ((not show_movies and curr_cat == "movies") or \
            (not show_series and curr_cat == "series") or \
-           (not show_anime and curr_cat == "anime"):
-            self.category_btn_stack.set_visible_child_name("home")
-            if hasattr(self, "library_sort_dropdown") and self.library_sort_dropdown:
+           (not show_anime and curr_cat == "anime")):
+            if hasattr(self, "category_btn_stack") and hasattr(self.category_btn_stack, "set_visible_child_name"):
+                self.category_btn_stack.set_visible_child_name("home")
+            if hasattr(self, "library_sort_dropdown") and hasattr(self.library_sort_dropdown, "set_visible"):
                 self.library_sort_dropdown.set_visible(False)
-            if hasattr(self, "library_genre_dropdown") and self.library_genre_dropdown:
+            if hasattr(self, "library_genre_dropdown") and hasattr(self.library_genre_dropdown, "set_visible"):
                 self.library_genre_dropdown.set_visible(False)
-            if hasattr(self, "library_unique_check") and self.library_unique_check:
+            if hasattr(self, "library_unique_check") and hasattr(self.library_unique_check, "set_visible"):
                 self.library_unique_check.set_visible(False)
-            self.discover_back_box.set_visible(False)
-            self.library_stack.set_visible_child_name("discover")
-            self._refresh_discover_page(filter_media_type="all")
+            if hasattr(self, "discover_back_box") and hasattr(self.discover_back_box, "set_visible"):
+                self.discover_back_box.set_visible(False)
+            if hasattr(self, "library_stack") and hasattr(self.library_stack, "set_visible_child_name"):
+                self.library_stack.set_visible_child_name("discover")
+            if hasattr(self, "_refresh_discover_page"):
+                self._refresh_discover_page(filter_media_type="all")
 
     def _sync_library_genre_dropdown_selection(self, genre):
         if not hasattr(self, "library_genre_dropdown") or self.library_genre_dropdown is None:
@@ -7227,12 +7241,20 @@ class CineWindow(Adw.ApplicationWindow):
         import datetime
         m_type = getattr(self, "current_media_type", "movie")
         if not hasattr(self, "current_catalog") or not self.current_catalog:
-            self.current_catalog = {
-                "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
-                "catalog_id": "top",
-                "media_type": m_type,
-                "display_name": "Popular Content"
-            }
+            if m_type == "anime":
+                from . import api
+                avail_anime = api.get_available_catalogs("anime")
+                if avail_anime:
+                    self.current_catalog = dict(avail_anime[0])
+                else:
+                    self.current_catalog = None
+            else:
+                self.current_catalog = {
+                    "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+                    "catalog_id": "top",
+                    "media_type": m_type,
+                    "display_name": "Popular Content"
+                }
 
         cur_sort = getattr(self, "current_sort", "Popular")
 
@@ -12426,23 +12448,24 @@ class CineWindow(Adw.ApplicationWindow):
             types_found = set()
             for addon in addons:
                 if not addon.get("enabled", True): continue
-                # Skip addons that only provide addon catalogs (e.g. stremio-addons.net)
-                if not api.has_catalog_resource(addon) and not api.has_stream_resource(addon) and not api.has_meta_resource(addon):
-                    continue
-                for t in addon.get("types", []):
-                    if t: types_found.add(str(t).lower())
+                if not addon.get("catalogs_enabled", True): continue
+                if not api.has_catalog_resource(addon): continue
                 for cat in api.get_addon_catalogs(addon, cache_only=True):
-                    if cat.get("type"):
-                        types_found.add(str(cat.get("type")).lower())
+                    if not api.is_catalog_browsable(cat): continue
+                    c_type = cat.get("type")
+                    if c_type:
+                        types_found.add(str(c_type).lower())
+                    if api.is_catalog_type_match(cat, "anime", addon.get("name")):
+                        types_found.add("anime")
+                    if api.is_catalog_type_match(cat, "tv", addon.get("name")):
+                        types_found.add("tv")
             return types_found
 
         supported_types = _get_supported_types(all_addons)
         self.anime_supported = ("anime" in supported_types)
         self.tv_supported = any(t in supported_types for t in ["tv", "channel", "tvchannel"])
-        for btn_name in ["anime_inactive_btn_movies", "anime_inactive_btn_series", "anime_inactive_btn_discover"]:
-            btn = getattr(self, btn_name, None)
-            if btn and hasattr(btn, "set_visible"):
-                btn.set_visible(self.anime_supported)
+        if hasattr(self, "update_category_buttons_visibility"):
+            self.update_category_buttons_visibility()
 
         # Build dynamic media types based on Stremio addons, always including "All Types" as the primary filter
         type_items = [
@@ -12536,17 +12559,20 @@ class CineWindow(Adw.ApplicationWindow):
         if lib_page == "content":
             curr_cat = getattr(self, "current_catalog", None)
             m_type = getattr(self, "current_media_type", "movie")
-            available = api.get_available_catalogs(m_type)
-            still_exists = any(
-                c.get("catalog_id") == curr_cat.get("catalog_id") and c.get("manifest_url") == curr_cat.get("manifest_url")
-                for c in available
-            ) if curr_cat else False
+            if m_type == "anime" and not getattr(self, "anime_supported", False):
+                still_exists = False
+            else:
+                available = api.get_available_catalogs(m_type)
+                still_exists = any(
+                    c.get("catalog_id") == curr_cat.get("catalog_id") and c.get("manifest_url") == curr_cat.get("manifest_url")
+                    for c in available
+                ) if curr_cat else False
 
             if not still_exists:
                 self.discover_back_box.set_visible(False)
                 self.library_stack.set_visible_child_name("discover")
                 if hasattr(self, "category_btn_stack"):
-                    self.category_btn_stack.set_visible_child_name("discover")
+                    self.category_btn_stack.set_visible_child_name("home")
                 self._refresh_discover_page(filter_media_type="all", force_refresh=True)
             else:
                 self._refresh_content()
@@ -12554,12 +12580,21 @@ class CineWindow(Adw.ApplicationWindow):
             cur_type = getattr(self, "_current_discover_type", "all")
             cur_addon = getattr(self, "_current_discover_addon", None)
             if cur_addon:
-                addon_exists = any(a.get("manifest_url") == cur_addon and a.get("enabled", True) for a in database.get_addons())
+                addon_exists = any(a.get("manifest_url") == cur_addon and a.get("enabled", True) and a.get("catalogs_enabled", True) for a in database.get_addons())
                 if not addon_exists:
                     cur_addon = None
                     cur_type = "all"
                     if hasattr(self, "category_btn_stack"):
-                        self.category_btn_stack.set_visible_child_name("discover")
+                        self.category_btn_stack.set_visible_child_name("home")
+            supported_keys = getattr(self, "media_type_keys", ["all", "movie", "series"])
+            if cur_type != "all" and cur_type not in supported_keys:
+                cur_type = "all"
+                if hasattr(self, "category_btn_stack"):
+                    self.category_btn_stack.set_visible_child_name("home")
+            if cur_type == "anime" and not getattr(self, "anime_supported", False):
+                cur_type = "all"
+                if hasattr(self, "category_btn_stack"):
+                    self.category_btn_stack.set_visible_child_name("home")
             self._refresh_discover_page(filter_media_type=cur_type, filter_addon_url=cur_addon, force_refresh=True)
         elif lib_page == "search_results":
             query = self.search_entry.get_text().strip() if hasattr(self, "search_entry") else ""
@@ -12615,6 +12650,7 @@ class CineWindow(Adw.ApplicationWindow):
         api.reset_addon_session_status()
         api.invalidate_catalogs_cache()
         database.clear_all_cached_streams()
+        database.clear_all_cached_catalogs()
 
         # 1. Invalidate all cached discover views & catalog lists
         if hasattr(self, "_discover_views"):
@@ -12817,6 +12853,64 @@ class CineWindow(Adw.ApplicationWindow):
             else:
                 status_label.set_label("🔴")
 
+            desc_str_orig = GLib.markup_escape_text(addon.get("description", "") or "")
+            def update_row_subtitle():
+                tags = []
+                if has_cats and not addon.get("catalogs_enabled", True):
+                    tags.append(_("Catalogs disabled"))
+                if has_streams and not addon.get("streams_enabled", True):
+                    tags.append(_("Media disabled"))
+                s = desc_str_orig
+                if tags:
+                    tag_str = " • ".join(tags)
+                    s = f"{s} ({tag_str})" if s else f"({tag_str})"
+                row.set_subtitle(s)
+
+            updating_sync = False
+            cat_toggle = None
+            stream_toggle = None
+            cat_check = None
+            stream_check = None
+
+            def on_cat_changed(active):
+                nonlocal updating_sync
+                if updating_sync:
+                    return
+                updating_sync = True
+                try:
+                    addon["catalogs_enabled"] = bool(active)
+                    if cat_toggle and cat_toggle.get_active() != active:
+                        cat_toggle.set_active(active)
+                    if cat_check and cat_check.get_active() != active:
+                        cat_check.set_active(active)
+                    update_row_subtitle()
+                finally:
+                    updating_sync = False
+                database.set_addon_catalogs_enabled(addon.get("id"), active, manifest_url=manifest_url)
+                self._on_addons_changed()
+
+            def on_stream_changed(active):
+                nonlocal updating_sync
+                if updating_sync:
+                    return
+                updating_sync = True
+                try:
+                    addon["streams_enabled"] = bool(active)
+                    if stream_toggle and stream_toggle.get_active() != active:
+                        stream_toggle.set_active(active)
+                    if stream_check and stream_check.get_active() != active:
+                        stream_check.set_active(active)
+                    update_row_subtitle()
+                finally:
+                    updating_sync = False
+                database.set_addon_streams_enabled(addon.get("id"), active, manifest_url=manifest_url)
+                self._on_addons_changed()
+
+            def on_enable_changed(active):
+                addon["enabled"] = bool(active)
+                database.set_addon_enabled(addon.get("id"), active, manifest_url=manifest_url)
+                self._on_addons_changed()
+
             box = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
 
             if has_cats and has_streams:
@@ -12824,19 +12918,19 @@ class CineWindow(Adw.ApplicationWindow):
                 cat_toggle.set_active(addon.get("catalogs_enabled", True))
                 cat_toggle.set_tooltip_text(_("Enable/disable catalogs from this addon"))
                 cat_toggle.add_css_class("flat")
-                cat_toggle.connect("toggled", lambda btn, a=addon: (database.set_addon_catalogs_enabled(a.get("id"), btn.get_active()), self._on_addons_changed()))
+                cat_toggle.connect("toggled", lambda btn: on_cat_changed(btn.get_active()))
                 box.append(cat_toggle)
 
                 stream_toggle = Gtk.ToggleButton(label=_("Media"), valign=Gtk.Align.CENTER)
                 stream_toggle.set_active(addon.get("streams_enabled", True))
                 stream_toggle.set_tooltip_text(_("Enable/disable media streams from this addon"))
                 stream_toggle.add_css_class("flat")
-                stream_toggle.connect("toggled", lambda btn, a=addon: (database.set_addon_streams_enabled(a.get("id"), btn.get_active()), self._on_addons_changed()))
+                stream_toggle.connect("toggled", lambda btn: on_stream_changed(btn.get_active()))
                 box.append(stream_toggle)
 
             enable_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
             enable_switch.set_active(addon.get("enabled", True))
-            enable_switch.connect("notify::active", lambda sw, pspec, a=addon: (database.set_addon_enabled(a.get("id"), sw.get_active()), self._on_addons_changed()))
+            enable_switch.connect("notify::active", lambda sw, pspec: on_enable_changed(sw.get_active()))
             box.append(enable_switch)
 
             menu_btn = Gtk.MenuButton(icon_name="view-more-symbolic", valign=Gtk.Align.CENTER)
@@ -12857,21 +12951,13 @@ class CineWindow(Adw.ApplicationWindow):
             if has_cats:
                 cat_check = Gtk.CheckButton(label=_("Enable Catalogs"))
                 cat_check.set_active(addon.get("catalogs_enabled", True))
-                def on_cat_toggled(btn, a=addon, pop=popover):
-                    pop.popdown()
-                    database.set_addon_catalogs_enabled(a.get("id"), btn.get_active())
-                    self._on_addons_changed()
-                cat_check.connect("toggled", on_cat_toggled)
+                cat_check.connect("toggled", lambda btn, pop=popover: (pop.popdown(), on_cat_changed(btn.get_active())))
                 popover_box.append(cat_check)
 
             if has_streams:
                 stream_check = Gtk.CheckButton(label=_("Enable Media / Streams"))
                 stream_check.set_active(addon.get("streams_enabled", True))
-                def on_stream_toggled(btn, a=addon, pop=popover):
-                    pop.popdown()
-                    database.set_addon_streams_enabled(a.get("id"), btn.get_active())
-                    self._on_addons_changed()
-                stream_check.connect("toggled", on_stream_toggled)
+                stream_check.connect("toggled", lambda btn, pop=popover: (pop.popdown(), on_stream_changed(btn.get_active())))
                 popover_box.append(stream_check)
 
             if has_cats or has_streams:
@@ -13358,6 +13444,16 @@ class CineWindow(Adw.ApplicationWindow):
                 self.main_stack.set_visible_child_name("library")
         elif main_page == "library":
             self.main_stack.set_visible_child_name("library")
+            cat_name = entry.get("category_btn", "home")
+            show_movies = settings.get_boolean("show-movies-button")
+            show_series = settings.get_boolean("show-series-button")
+            show_anime = settings.get_boolean("show-anime-button") and getattr(self, "anime_supported", False)
+            if (cat_name == "movies" and not show_movies) or \
+               (cat_name == "series" and not show_series) or \
+               (cat_name == "anime" and not show_anime):
+                cat_name = "home"
+                entry["library_page"] = "discover"
+
             lib_page = entry.get("library_page")
             if hasattr(self, "library_stack") and lib_page:
                 self.library_stack.set_visible_child_name(lib_page)
@@ -13365,9 +13461,8 @@ class CineWindow(Adw.ApplicationWindow):
                     self.library_unique_check.set_active(lib_page == "unique")
                 if lib_page == "search_results" and hasattr(self, "header_stack"):
                     self.header_stack.set_visible_child_name("search_header")
-            if hasattr(self, "category_btn_stack") and entry.get("category_btn"):
-                self.category_btn_stack.set_visible_child_name(entry["category_btn"])
-                cat_name = entry["category_btn"]
+            if hasattr(self, "category_btn_stack"):
+                self.category_btn_stack.set_visible_child_name(cat_name)
                 m_type = "movie" if cat_name == "movies" else ("series" if cat_name == "series" else ("anime" if cat_name == "anime" else "all"))
                 self._update_genre_dropdown(m_type)
                 self._update_sort_dropdown(m_type)
@@ -13622,8 +13717,10 @@ class CineWindow(Adw.ApplicationWindow):
             try:
                 self._search_pool.submit(do_search_category, "movie", "search_movies_section", "search_movies_flowbox")
                 self._search_pool.submit(do_search_category, "series", "search_series_section", "search_series_flowbox")
-                self._search_pool.submit(do_search_category, "anime", "search_anime_section", "search_anime_flowbox")
-                self._search_pool.submit(do_search_category, "tv", "search_tv_section", "search_tv_flowbox")
+                if getattr(self, "anime_supported", False):
+                    self._search_pool.submit(do_search_category, "anime", "search_anime_section", "search_anime_flowbox")
+                if getattr(self, "tv_supported", False):
+                    self._search_pool.submit(do_search_category, "tv", "search_tv_section", "search_tv_flowbox")
             except RuntimeError:
                 pass
             return False

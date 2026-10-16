@@ -347,6 +347,87 @@ class TestCategoryMenus(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["title"], "Toy Story 5")
 
+    def test_anime_button_hidden_when_anime_not_supported(self):
+        """When anime_supported is False, all anime buttons (including home inactive) must be hidden."""
+        from src.window import CineWindow
+        win = CineWindow.__new__(CineWindow)
+        win.anime_supported = False
+        
+        # Create mock buttons
+        anime_buttons = {
+            "anime_active_btn": MagicMock(),
+            "anime_inactive_btn_home": MagicMock(),
+            "anime_inactive_btn_discover": MagicMock(),
+            "anime_inactive_btn_movies": MagicMock(),
+            "anime_inactive_btn_series": MagicMock(),
+        }
+        for name, btn in anime_buttons.items():
+            setattr(win, name, btn)
+            
+        win.category_btn_stack = MagicMock()
+        win.category_btn_stack.get_visible_child_name.return_value = "home"
+        
+        CineWindow.update_category_buttons_visibility(win)
+        
+        for name, btn in anime_buttons.items():
+            btn.set_visible.assert_called_with(False)
+
+    def test_anime_button_active_stack_resets_to_home_when_unsupported(self):
+        """If user is on anime category stack and anime becomes unsupported, stack resets to home."""
+        from src.window import CineWindow
+        win = CineWindow.__new__(CineWindow)
+        win.anime_supported = False
+        win.category_btn_stack = MagicMock()
+        win.category_btn_stack.get_visible_child_name.return_value = "anime"
+        win.library_stack = MagicMock()
+        win.discover_back_box = MagicMock()
+        win._refresh_discover_page = MagicMock()
+
+        CineWindow.update_category_buttons_visibility(win)
+
+        win.category_btn_stack.set_visible_child_name.assert_called_with("home")
+        win.library_stack.set_visible_child_name.assert_called_with("discover")
+        win._refresh_discover_page.assert_called_with(filter_media_type="all")
+
+    def test_addon_catalogs_disabled_updates_supported_types(self):
+        """Disabling an addon's catalogs removes anime from supported types and hides anime button."""
+        from src.window import CineWindow
+        from src import api
+
+        anime_addon = {
+            "id": "anime.kitsu",
+            "name": "Anime Kitsu",
+            "manifest_url": "https://anime-kitsu.strem.fun/manifest.json",
+            "enabled": True,
+            "catalogs_enabled": True,
+            "resources": ["catalog"],
+            "catalogs": [
+                {"id": "kitsu-anime-trending", "name": "Trending Anime", "type": "anime"}
+            ]
+        }
+
+        win = CineWindow.__new__(CineWindow)
+        win.update_category_buttons_visibility = MagicMock()
+        win.type_dropdown = MagicMock()
+        win.media_type_dropdown = MagicMock()
+
+        # 1. When catalogs_enabled is True
+        with patch("src.database.get_addons", return_value=[anime_addon]), \
+             patch("src.api.get_addon_catalogs", return_value=anime_addon["catalogs"]), \
+             patch("src.api.is_addon_online", return_value=True):
+            CineWindow._update_supported_media_types(win)
+            self.assertTrue(win.anime_supported)
+            self.assertIn("anime", win.media_type_keys)
+
+        # 2. When catalogs_enabled is False
+        anime_addon["catalogs_enabled"] = False
+        with patch("src.database.get_addons", return_value=[anime_addon]), \
+             patch("src.api.get_addon_catalogs", return_value=[]), \
+             patch("src.api.is_addon_online", return_value=True):
+            CineWindow._update_supported_media_types(win)
+            self.assertFalse(win.anime_supported)
+            self.assertNotIn("anime", win.media_type_keys)
+
 
 if __name__ == "__main__":
     unittest.main()
