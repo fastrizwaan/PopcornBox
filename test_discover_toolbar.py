@@ -973,22 +973,89 @@ class TestDiscoverToolbar(unittest.TestCase):
                 return good_items
             raise TimeoutError("Simulated slow/hanging catalog")
 
+        self.win._discover_empty_batches = 0
+
         with patch("src.api.fetch_items", side_effect=fake_fetch), \
              patch("src.database.get_cached_catalog", return_value=None), \
              patch("src.database.save_cached_catalog"), \
              patch("src.api.is_addon_online", return_value=True):
             CineWindow._load_next_discover_batch(self.win, req_id=10, batch_size=2)
-            # Pump GLib main loop briefly so idle callbacks execute
-            context = GLib.MainContext.default()
-            for _ in range(25):
-                context.iteration(False)
+            import time
+            for _ in range(50):
+                time.sleep(0.01)
+                context = GLib.MainContext.default()
+                while context.iteration(False):
+                    pass
+                if not self.win._discover_is_loading_rows:
+                    break
 
         # Only the successful slot should remain appended with content, failed slot removed
         self.assertEqual(self.win._discover_empty_batches, 0)
         self.assertFalse(self.win._discover_is_loading_rows)
 
+    def test_get_discover_catalog_list_excludes_tv_channels_when_year_selected(self):
+        """When a release year is selected, live TV channel catalogs are excluded."""
+        self.win.current_year = "2024"
+        self.win.current_genre = None
+        self.win.current_sort = "Popular"
+        self.win._discover_catalog_list_cache = {}
+
+        cinemeta = {
+            "name": "Cinemeta",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+            "enabled": True,
+            "catalogs": [{"id": "top", "name": "Popular", "type": "movie"}]
+        }
+        plavio = {
+            "name": "PlavioHD",
+            "manifest_url": "https://plaviohd.edon.workers.dev/manifest.json",
+            "enabled": True,
+            "catalogs": [{"id": "plaviohd-live", "name": "Live Now", "type": "tv"}]
+        }
+
+        def mock_cats(addon, cache_only=False):
+            return addon.get("catalogs", [])
+
+        with patch("src.database.get_addons", return_value=[cinemeta, plavio]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.is_catalog_provider", return_value=True), \
+             patch("src.api.get_addon_catalogs", side_effect=mock_cats), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+
+        # Cinemeta movie catalog should be included, PlavioHD TV channel must be excluded
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["manifest_url"], "https://v3-cinemeta.strem.io/manifest.json")
+
+    def test_populate_discover_row_slot_caps_cards_at_24(self):
+        """A discover row must cap rendered cards at 24 to avoid flooding the GTK main thread."""
+        slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        row_info = {"title": "Huge Catalog", "media_type": "movie", "catalog_id": "huge", "manifest_url": "https://huge/manifest.json"}
+        # 100 items
+        items = [{"id": f"tt{i:07d}", "title": f"Movie {i}", "type": "movie", "medium_cover_image": "http://example.com/poster.jpg"} for i in range(100)]
+
+        with patch("src.movie_widget.load_image_into_picture"):
+            CineWindow._populate_discover_row_slot(self.win, slot, row_info, items, Gtk.Box())
+
+        # slot has 2 children: header box and scrolled window
+        sec_scroll = slot.get_first_child().get_next_sibling()
+        self.assertIsNotNone(sec_scroll)
+        viewport = sec_scroll.get_child()
+        sec_row = viewport.get_child() if hasattr(viewport, "get_child") else viewport
+        self.assertIsNotNone(sec_row)
+
+        # Count cards appended in sec_row
+        card_count = 0
+        child = sec_row.get_first_child()
+        while child:
+            card_count += 1
+            child = child.get_next_sibling()
+
+        self.assertEqual(card_count, 24)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

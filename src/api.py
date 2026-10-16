@@ -2497,6 +2497,11 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             hydrate_missing_catalog_items(movies, media_type=media_type)
             if database.is_adult_content_hidden():
                 movies = [m for m in movies if not is_adult_item(m)]
+            if movies and page_limit and page_limit > 0:
+                if not server_supports_skip:
+                    movies = movies[skip : skip + page_limit]
+                elif len(movies) > page_limit:
+                    movies = movies[:page_limit]
             return movies
         return []
 
@@ -2705,6 +2710,10 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
         for aid in (m.get("alias_ids") or []):
             if str(aid) not in candidates:
                 candidates.append(str(aid))
+
+        has_known_key = any(str(c).startswith(("tt", "tmdb:", "kitsu:", "ctmdb.")) for c in candidates)
+        if not has_known_key:
+            continue
 
         if is_missing_title or is_missing_genres or is_missing_year or is_missing_cover or is_missing_desc:
             c_meta = None

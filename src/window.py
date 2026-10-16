@@ -9499,6 +9499,15 @@ class CineWindow(Adw.ApplicationWindow):
                 if cur_genre and not filter_addon_url and not api.catalog_supports_genre(cat, cur_genre):
                     continue
 
+                if cur_year and cur_year not in ("All Years", _("All Years"), "All"):
+                    c_type_raw = str(cat.get('type') or 'movie').lower()
+                    if c_type_raw in ('tv', 'channel', 'live', 'radio'):
+                        continue
+                    cat_extra = cat.get('extra') or []
+                    year_opts = [opt for ex in cat_extra if isinstance(ex, dict) and ex.get('name') == 'year' for opt in (ex.get('options') or [])]
+                    if year_opts and not any(str(cur_year).strip() == str(y).strip() for y in year_opts):
+                        continue
+
                 if cur_lang and not filter_addon_url:
                     cat_extra = cat.get("extra") or []
                     lang_opts = None
@@ -10233,20 +10242,31 @@ class CineWindow(Adw.ApplicationWindow):
 
                     # Check if viewport still has unfilled room on initial display (bound to max auto-fills)
                     if more_catalogs:
-                        if hasattr(self, "discover_scrolled"):
+                        def _check_deferred_fill():
+                            if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
+                                return False
+                            if not hasattr(self, "discover_scrolled"):
+                                return False
                             adj = self.discover_scrolled.get_vadjustment()
                             val = adj.get_value()
                             page_size = adj.get_page_size()
                             upper = adj.get_upper()
                             auto_fill_count = getattr(self, "_discover_auto_fill_count", 0)
                             empty_batches = getattr(self, "_discover_empty_batches", 0)
+                            cur_has_content = bool(target_box and target_box.get_first_child())
                             debug_log(f"check_fill_viewport: val={val:.1f}, page_size={page_size:.1f}, upper={upper:.1f}, auto_fills={auto_fill_count}, empty_batches={empty_batches}")
                             cur_l_filter = getattr(self, "current_language", None)
-                            max_auto = 3 if not has_content else 2
-                            max_empty = 2 if cur_l_filter else (4 if not has_content else 2)
+                            max_auto = 3 if not cur_has_content else 1
+                            max_empty = 2 if cur_l_filter else (4 if not cur_has_content else 2)
                             if page_size > 0 and upper <= page_size and auto_fill_count < max_auto and empty_batches < max_empty:
                                 self._discover_auto_fill_count = auto_fill_count + 1
-                                self._load_next_discover_batch(req_id, batch_size=6)
+                                self._load_next_discover_batch(req_id, batch_size=4)
+                            return False
+
+                        if added_count == 0:
+                            _check_deferred_fill()
+                        else:
+                            GLib.timeout_add(200, _check_deferred_fill)
 
                     limit_empty = 2 if getattr(self, "current_language", None) else 4
                     if not has_content and (not more_catalogs or getattr(self, "_discover_empty_batches", 0) >= limit_empty):
@@ -10338,7 +10358,8 @@ class CineWindow(Adw.ApplicationWindow):
         sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         sec_row.add_css_class("discover-row-box")
 
-        for it in items:
+        display_items = items[:24]
+        for it in display_items:
             if database.is_adult_content_hidden() and api.is_adult_item(it):
                 continue
             if not it.get("type"):
@@ -10358,7 +10379,7 @@ class CineWindow(Adw.ApplicationWindow):
         sec_scroll.set_child(sec_row)
         slot.append(sec_header)
         slot.append(sec_scroll)
-        debug_log(f"_populate_discover_row_slot appended row: '{row_title}' ({len(items)} cards)")
+        debug_log(f"_populate_discover_row_slot appended row: '{row_title}' ({len(display_items)} cards)")
 
     def _on_discover_scroll(self, adj):
         if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "discover":

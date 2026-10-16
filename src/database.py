@@ -1687,12 +1687,6 @@ def get_cached_metadata(item_id, media_type=None):
             cursor = conn.cursor()
             cursor.execute("SELECT data FROM metadata_cache WHERE id = ?", (str(item_id),))
             row = cursor.fetchone()
-            if not row and not str(item_id).startswith("tt"):
-                cursor.execute(
-                    "SELECT data FROM metadata_cache WHERE json_extract(data, '$.imdb_id') = ? OR json_extract(data, '$.id') = ? LIMIT 1",
-                    (str(item_id), str(item_id))
-                )
-                row = cursor.fetchone()
             if row and row[0]:
                 data = json.loads(row[0])
                 if str(item_id).startswith("ctmdb."):

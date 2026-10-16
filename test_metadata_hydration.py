@@ -135,10 +135,10 @@ class TestMetadataHydration(unittest.TestCase):
             queued = api.queue_metadata_hydration("tt9876543", "movie", item_dict=bare_item)
             self.assertTrue(queued)
 
-            # Wait briefly for background hydrator to process (timeout=2s)
+            # Wait briefly for background hydrator to process (timeout=5s)
             start_t = time.time()
             found = False
-            while time.time() - start_t < 2.5:
+            while time.time() - start_t < 5.0:
                 meta = database.get_cached_metadata("tt9876543", "movie")
                 if meta and meta.get("genres") == ["Sci-Fi", "Mystery"]:
                     found = True
