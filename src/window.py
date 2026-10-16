@@ -1565,17 +1565,19 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def toggle_favorite(self, details):
         from . import database
-        item_id = details.get("id")
-        if database.is_favorite(item_id):
-            database.remove_favorite(item_id)
+        if database.is_favorite(details):
+            database.remove_favorite(details)
             self.detail_fav_btn.set_tooltip_text("Add to Favorites")
             self.detail_fav_btn.set_icon_name("non-starred-symbolic")
         else:
+            item_id = details.get("id") or details.get("imdb_id")
+            imdb_id = details.get("imdb_id") or (item_id if str(item_id).startswith("tt") else None)
             database.add_favorite({
                 "id": item_id,
-                "title": details.get("title"),
+                "imdb_id": imdb_id or item_id,
+                "title": details.get("title") or details.get("name"),
                 "year": details.get("year"),
-                "medium_cover_image": details.get("medium_cover_image"),
+                "medium_cover_image": details.get("medium_cover_image") or details.get("poster"),
                 "type": self.media_type
             })
             self.detail_fav_btn.set_tooltip_text("Remove from Favorites")
@@ -1583,17 +1585,19 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def toggle_watched(self, details):
         from . import database
-        item_id = details.get("id")
-        if database.is_watched(item_id):
-            database.remove_watched(item_id)
+        if database.is_watched(details):
+            database.remove_watched(details)
             self.detail_seen_btn.set_tooltip_text("Mark as Seen")
             self.detail_seen_btn.set_icon_name("eye-closed-symbolic")
         else:
+            item_id = details.get("id") or details.get("imdb_id")
+            imdb_id = details.get("imdb_id") or (item_id if str(item_id).startswith("tt") else None)
             database.add_watched({
                 "id": item_id,
-                "title": details.get("title"),
+                "imdb_id": imdb_id or item_id,
+                "title": details.get("title") or details.get("name"),
                 "year": details.get("year"),
-                "medium_cover_image": details.get("medium_cover_image"),
+                "medium_cover_image": details.get("medium_cover_image") or details.get("poster"),
                 "type": self.media_type
             })
             self.detail_seen_btn.set_tooltip_text("Marked as Seen")
@@ -1961,8 +1965,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if details.get("credits_data"):
             self.render_cast_and_production(details["credits_data"])
             
-        item_id = details.get("id")
-        if database.is_favorite(item_id):
+        if database.is_favorite(details):
             self.detail_fav_btn.set_icon_name("starred-symbolic")
             self.detail_fav_btn.set_tooltip_text("Remove from Favorites")
         else:
@@ -1970,7 +1973,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self.detail_fav_btn.set_tooltip_text("Add to Favorites")
         self._fav_btn_hid = self.detail_fav_btn.connect("clicked", lambda x: self.toggle_favorite(details))
 
-        if database.is_watched(item_id):
+        if database.is_watched(details):
             self.detail_seen_btn.set_icon_name("eye-open-negative-filled-symbolic")
             self.detail_seen_btn.set_tooltip_text("Marked as Seen")
         else:
@@ -9510,9 +9513,8 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _on_remove_continue_watching(self, item_data, widget):
         from . import database
-        item_id = item_data.get("id") or item_data.get("imdb_id")
-        if item_id:
-            database.remove_continue_watching(item_id, blacklist=True, user_action=True)
+        if item_data:
+            database.remove_continue_watching(item_data, blacklist=True, user_action=True)
         parent = widget.get_parent()
         if parent and isinstance(parent, Gtk.FlowBoxChild):
             flowbox = parent.get_parent()
@@ -13904,26 +13906,38 @@ class CineWindow(Adw.ApplicationWindow):
                 movies.append(i)
         
         def _on_remove_local_item(item_data, card_widget):
-            item_id = item_data.get("id") or item_data.get("imdb_id")
-            if not item_id: return
+            if not item_data: return
             if page_name == "favorites":
-                database.remove_favorite(item_id)
+                database.remove_favorite(item_data)
             elif page_name == "history":
-                database.remove_history(item_id)
+                database.remove_history(item_data)
             elif page_name == "watched":
-                database.remove_watched(item_id)
+                database.remove_watched(item_data)
             elif page_name == "continue_watching":
-                database.remove_continue_watching(item_id, blacklist=True, user_action=True)
+                database.remove_continue_watching(item_data, blacklist=True, user_action=True)
                 if hasattr(self, "_update_continue_watching_section"):
                     self._update_continue_watching_section()
                 
             parent = card_widget.get_parent()
+            flowbox = None
             if parent and isinstance(parent, Gtk.FlowBoxChild):
                 flowbox = parent.get_parent()
                 if flowbox:
                     flowbox.remove(parent)
             elif parent:
                 parent.remove(card_widget)
+
+            if flowbox and not flowbox.get_first_child():
+                prev_lbl = flowbox.get_prev_sibling()
+                if prev_lbl and isinstance(prev_lbl, Gtk.Label):
+                    container.remove(prev_lbl)
+                container.remove(flowbox)
+                if not container.get_first_child():
+                    empty_msg = _("No in-progress items to continue watching.") if page_name == "continue_watching" else (_("No watched items yet.") if page_name == "watched" else (_("No favorites yet.") if page_name == "favorites" else _("No history yet.")))
+                    empty_lbl = Gtk.Label(label=empty_msg)
+                    empty_lbl.add_css_class("dim-label")
+                    empty_lbl.set_margin_top(32)
+                    container.append(empty_lbl)
 
         def _add_section(title, data):
             if not data: return

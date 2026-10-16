@@ -2522,6 +2522,56 @@ _HYDRATION_QUEUE = queue.Queue(maxsize=300)
 _HYDRATION_SEEN = set()
 _HYDRATION_LOCK = threading.Lock()
 _HYDRATION_THREAD = None
+_HYDRATION_LISTENERS_LOCK = threading.Lock()
+_HYDRATION_LISTENERS = {}
+
+def register_hydration_listener(item_id, callback):
+    """Register a UI callback to be notified when item_id metadata hydration completes."""
+    if not item_id or not callable(callback):
+        return
+    iid = str(item_id).strip()
+    with _HYDRATION_LISTENERS_LOCK:
+        _HYDRATION_LISTENERS.setdefault(iid, []).append(callback)
+
+def unregister_hydration_listener(item_id, callback):
+    """Unregister a previously registered UI callback."""
+    if not item_id:
+        return
+    iid = str(item_id).strip()
+    with _HYDRATION_LISTENERS_LOCK:
+        listeners = _HYDRATION_LISTENERS.get(iid, [])
+        if callback in listeners:
+            try:
+                listeners.remove(callback)
+            except ValueError:
+                pass
+        if not listeners and iid in _HYDRATION_LISTENERS:
+            del _HYDRATION_LISTENERS[iid]
+
+def _notify_hydration_listeners(item_id, item_dict):
+    """Notify all listeners that hydration has completed, popping any legacy _on_hydrated function."""
+    if not item_id:
+        return
+    iid = str(item_id).strip()
+    with _HYDRATION_LISTENERS_LOCK:
+        listeners = list(_HYDRATION_LISTENERS.pop(iid, []))
+
+    if isinstance(item_dict, dict):
+        legacy_cb = item_dict.pop("_on_hydrated", None)
+        if callable(legacy_cb) and legacy_cb not in listeners:
+            listeners.append(legacy_cb)
+
+    if listeners and isinstance(item_dict, dict):
+        title = item_dict.get("title")
+        year = item_dict.get("year")
+        poster = item_dict.get("medium_cover_image") or item_dict.get("poster")
+        for cb in listeners:
+            if callable(cb):
+                try:
+                    from gi.repository import GLib
+                    GLib.idle_add(cb, title, year, poster)
+                except Exception:
+                    pass
 
 def queue_metadata_hydration(item_id, media_type="movie", item_dict=None):
     """Queue an item for polite, rate-limited background metadata hydration from Cinemeta."""
@@ -2578,13 +2628,7 @@ def _run_metadata_hydration_worker():
                         item_dict["cast"] = list(cached["cast"])
                     if not item_dict.get("videos") and cached.get("videos"):
                         item_dict["videos"] = cached["videos"]
-                    cb = item_dict.get("_on_hydrated")
-                    if callable(cb):
-                        try:
-                            from gi.repository import GLib
-                            GLib.idle_add(cb, item_dict.get("title"), item_dict.get("year"), item_dict.get("medium_cover_image") or item_dict.get("poster"))
-                        except Exception:
-                            pass
+                    _notify_hydration_listeners(item_id, item_dict)
                 continue
 
             # 2. Check provider cooldown to avoid hitting a rate-limited host
@@ -2669,13 +2713,7 @@ def _run_metadata_hydration_worker():
                     elif not item_dict.get("trailer") and meta_dict.get("trailer"):
                         item_dict["trailer"] = meta_dict["trailer"]
 
-                    cb = item_dict.get("_on_hydrated")
-                    if callable(cb):
-                        try:
-                            from gi.repository import GLib
-                            GLib.idle_add(cb, item_dict.get("title"), item_dict.get("year"), item_dict.get("medium_cover_image") or item_dict.get("poster"))
-                        except Exception:
-                            pass
+                    _notify_hydration_listeners(item_id, item_dict)
         except Exception as e:
             logger.debug(f"Metadata hydration error for {item_id}: {e}")
         finally:

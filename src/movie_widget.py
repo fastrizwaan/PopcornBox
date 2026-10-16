@@ -563,8 +563,27 @@ class MovieWidget(Gtk.Box):
                 pass
             return False
 
-        if isinstance(self.movie_data, dict):
-            self.movie_data["_on_hydrated"] = _on_card_hydrated
+        if item_id:
+            try:
+                from . import api
+                api.register_hydration_listener(item_id, _on_card_hydrated)
+                self._hydration_item_id = item_id
+                self._hydration_cb = _on_card_hydrated
+            except Exception:
+                pass
+        if isinstance(self.movie_data, dict) and "_on_hydrated" in self.movie_data:
+            self.movie_data.pop("_on_hydrated", None)
+
+    def do_unroot(self):
+        if getattr(self, "_hydration_item_id", None) and getattr(self, "_hydration_cb", None):
+            try:
+                from . import api
+                api.unregister_hydration_listener(self._hydration_item_id, self._hydration_cb)
+            except Exception:
+                pass
+            self._hydration_item_id = None
+            self._hydration_cb = None
+        Gtk.Box.do_unroot(self)
 
     def _apply_resolved_meta(self, title, year, poster_url, is_adult=False):
         try:

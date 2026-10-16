@@ -85,6 +85,61 @@ def _ensure_db():
                 pass
             raise
 
+def _sanitize_for_json(obj, depth=0):
+    """Recursively clean objects for json serialization, stripping callables and non-serializables."""
+    if depth > 30:
+        return None
+    if isinstance(obj, dict):
+        clean = {}
+        for k, v in obj.items():
+            if callable(v) or k == "_on_hydrated":
+                continue
+            clean_v = _sanitize_for_json(v, depth + 1)
+            if clean_v is not None or v is None:
+                clean[str(k)] = clean_v
+        return clean
+    elif isinstance(obj, (list, tuple, set)):
+        clean_list = []
+        for item in obj:
+            if callable(item):
+                continue
+            clean_item = _sanitize_for_json(item, depth + 1)
+            clean_list.append(clean_item)
+        return clean_list
+    elif isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    elif hasattr(obj, "__str__"):
+        return str(obj)
+    return None
+
+def _extract_all_item_ids(item_or_id):
+    """Extract all potential string identifiers (id, imdb_id, item_id, tmdb_id, aliases, base IDs)."""
+    ids = set()
+    if isinstance(item_or_id, dict):
+        for k in ("id", "imdb_id", "item_id", "tmdb_id"):
+            val = item_or_id.get(k)
+            if val is not None and str(val).strip():
+                ids.add(str(val).strip())
+        aliases = item_or_id.get("alias_ids")
+        if isinstance(aliases, (list, tuple, set)):
+            ids.update(str(x).strip() for x in aliases if x is not None and str(x).strip())
+    elif item_or_id is not None:
+        s_val = str(item_or_id).strip()
+        if s_val:
+            ids.add(s_val)
+
+    # Strip prefixes / episode parts (e.g. 'tt12345:1:2' -> 'tt12345', 'cinemeta:tt12345' -> 'tt12345')
+    base_ids = set()
+    for i in list(ids):
+        if ":" in i:
+            parts = i.split(":")
+            for part in parts:
+                if part.startswith("tt") or part.isdigit():
+                    base_ids.add(part)
+            base_ids.add(parts[0])
+    ids.update(base_ids)
+    return ids
+
 def _read_db():
     global _db_corrupted, _json_cache, _json_cache_valid
     with _db_lock:
@@ -309,8 +364,9 @@ def _write_db(data):
         unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
         temp_file = DB_FILE.with_name(f"data{unique_suffix}")
         try:
+            clean_data = _sanitize_for_json(data)
             with open(temp_file, "w") as f:
-                json.dump(data, f, indent=4)
+                json.dump(clean_data, f, indent=4, default=str)
                 # Flush to disk before the rename: without fsync a crash can
                 # persist the rename while the contents are still unwritten,
                 # leaving a truncated data.json behind.
@@ -318,7 +374,7 @@ def _write_db(data):
                 os.fsync(f.fileno())
             temp_file.replace(DB_FILE)
             # Update in-memory cache with the data we just wrote
-            _json_cache = data
+            _json_cache = clean_data
             _json_cache_valid = True
             return True
         except Exception as e:
@@ -337,15 +393,21 @@ def get_favorites():
     return _read_db().get("favorites", [])
 
 def add_favorite(item, sync_to_remote=True):
+    if not item or not isinstance(item, dict):
+        return
+    clean_item = {k: v for k, v in item.items() if not callable(v) and k != "_on_hydrated"}
+    target_ids = _extract_all_item_ids(clean_item)
+    if not target_ids:
+        return
     with _db_lock:
         db = _read_db()
-        if not any(f.get("id") == item.get("id") for f in db.get("favorites", [])):
-            db.setdefault("favorites", []).insert(0, item)
+        favs = db.setdefault("favorites", [])
+        if not any(_extract_all_item_ids(f).intersection(target_ids) for f in favs):
+            favs.insert(0, clean_item)
             settings = db.setdefault("settings", {})
             removed_favs = set(settings.get("removed_favorite_ids", []))
-            item_id = str(item.get("id") or item.get("imdb_id") or "")
-            if item_id:
-                removed_favs.discard(item_id)
+            for tid in target_ids:
+                removed_favs.discard(tid)
             settings["removed_favorite_ids"] = list(removed_favs)
             _write_db(db)
     if sync_to_remote and not _is_testing():
@@ -356,20 +418,24 @@ def add_favorite(item, sync_to_remote=True):
         except Exception as e:
             logging.warning(f"Failed to trigger remote sync: {e}")
 
-def remove_favorite(item_id, sync_to_remote=True):
-    # IDs arrive as str or int depending on the addon; normalize before
-    # comparing so numeric-ID entries are actually removed.
-    item_id = str(item_id)
+def remove_favorite(item_or_id, sync_to_remote=True):
+    target_ids = _extract_all_item_ids(item_or_id)
+    if not target_ids:
+        return
     with _db_lock:
         db = _read_db()
-        db["favorites"] = [f for f in db.get("favorites", []) if str(f.get("id")) != item_id and str(f.get("imdb_id")) != item_id]
+        db["favorites"] = [
+            f for f in db.get("favorites", [])
+            if not _extract_all_item_ids(f).intersection(target_ids)
+        ]
         settings = db.setdefault("settings", {})
         # Keep tombstones in removal order (oldest first) so trimming to the
         # cap evicts the oldest, not a random entry.
         removed_favs = [str(v) for v in settings.get("removed_favorite_ids", []) if v]
-        if item_id in removed_favs:
-            removed_favs.remove(item_id)
-        removed_favs.append(item_id)
+        for tid in target_ids:
+            if tid in removed_favs:
+                removed_favs.remove(tid)
+            removed_favs.append(tid)
         settings["removed_favorite_ids"] = removed_favs[-200:]
         _write_db(db)
     if sync_to_remote and not _is_testing():
@@ -380,9 +446,14 @@ def remove_favorite(item_id, sync_to_remote=True):
         except Exception as e:
             logging.warning(f"Failed to trigger remote sync: {e}")
 
-def is_favorite(item_id):
-    item_id = str(item_id)
-    return any(str(f.get("id")) == item_id or str(f.get("imdb_id")) == item_id for f in _read_db().get("favorites", []))
+def is_favorite(item_or_id):
+    target_ids = _extract_all_item_ids(item_or_id)
+    if not target_ids:
+        return False
+    return any(
+        bool(_extract_all_item_ids(f).intersection(target_ids))
+        for f in _read_db().get("favorites", [])
+    )
 
 # --- Watched ---
 
@@ -390,25 +461,40 @@ def get_watched():
     return _read_db().get("watched", [])
 
 def add_watched(item):
+    if not item or not isinstance(item, dict):
+        return
+    clean_item = {k: v for k, v in item.items() if not callable(v) and k != "_on_hydrated"}
+    target_ids = _extract_all_item_ids(clean_item)
+    if not target_ids:
+        return
     with _db_lock:
         db = _read_db()
         watched = db.setdefault("watched", [])
-        item_id = item.get("id") or item.get("imdb_id")
-        watched = [w for w in watched if str(w.get("id")) != str(item_id) and str(w.get("imdb_id")) != str(item_id)]
-        watched.insert(0, item)
+        watched = [w for w in watched if not _extract_all_item_ids(w).intersection(target_ids)]
+        watched.insert(0, clean_item)
         db["watched"] = watched
         _write_db(db)
 
-def remove_watched(item_id):
-    item_id = str(item_id)
+def remove_watched(item_or_id):
+    target_ids = _extract_all_item_ids(item_or_id)
+    if not target_ids:
+        return
     with _db_lock:
         db = _read_db()
-        db["watched"] = [f for f in db.get("watched", []) if str(f.get("id")) != item_id and str(f.get("imdb_id")) != item_id]
+        db["watched"] = [
+            w for w in db.get("watched", [])
+            if not _extract_all_item_ids(w).intersection(target_ids)
+        ]
         _write_db(db)
 
-def is_watched(item_id):
-    item_id = str(item_id)
-    return any(str(f.get("id")) == item_id or str(f.get("imdb_id")) == item_id for f in _read_db().get("watched", []))
+def is_watched(item_or_id):
+    target_ids = _extract_all_item_ids(item_or_id)
+    if not target_ids:
+        return False
+    return any(
+        bool(_extract_all_item_ids(w).intersection(target_ids))
+        for w in _read_db().get("watched", [])
+    )
 
 # --- History ---
 
@@ -417,20 +503,25 @@ def get_history():
 
 def add_history(item, sync_to_remote=True):
     """Add item to top of history, moving it if already present. Capped at HISTORY_LIMIT."""
+    if not item or not isinstance(item, dict):
+        return
+    clean_item = {k: v for k, v in item.items() if not callable(v) and k != "_on_hydrated"}
+    target_ids = _extract_all_item_ids(clean_item)
+    if not target_ids:
+        return
     with _db_lock:
         db = _read_db()
         history = db.setdefault("history", [])
-        item_id = item.get("id") or item.get("imdb_id")
-        if "last_watched" not in item:
+        if "last_watched" not in clean_item:
             import time as _t
-            item["last_watched"] = int(_t.time())
+            clean_item["last_watched"] = int(_t.time())
         # Remove existing entry if present (so it moves to the top)
-        history = [h for h in history if str(h.get("id")) != str(item_id) and str(h.get("imdb_id")) != str(item_id)]
-        history.insert(0, item)
+        history = [h for h in history if not _extract_all_item_ids(h).intersection(target_ids)]
+        history.insert(0, clean_item)
         settings = db.setdefault("settings", {})
         removed_hist = set(settings.get("removed_history_ids", []))
-        if item_id:
-            removed_hist.discard(str(item_id))
+        for tid in target_ids:
+            removed_hist.discard(tid)
         settings["removed_history_ids"] = list(removed_hist)
         # Enforce cap
         db["history"] = history[:HISTORY_LIMIT]
@@ -439,7 +530,7 @@ def add_history(item, sync_to_remote=True):
         try:
             from . import stremio_sync
             if stremio_sync.is_sync_enabled():
-                stremio_sync.scrobble_playback(item)
+                stremio_sync.scrobble_playback(clean_item)
         except Exception as e:
             logging.warning(f"Failed to scrobble playback: {e}")
 
@@ -453,28 +544,43 @@ def add_history_batch(items, sync_to_remote=True):
     """Add multiple items to history efficiently in a single database transaction."""
     if not items:
         return
+    clean_items = []
+    for it in items:
+        if isinstance(it, dict):
+            c_it = {k: v for k, v in it.items() if not callable(v) and k != "_on_hydrated"}
+            clean_items.append(c_it)
+    if not clean_items:
+        return
     with _db_lock:
         db = _read_db()
         history = list(db.get("history", []))
-        item_ids_to_add = {str(it.get("id") or it.get("imdb_id") or "") for it in items}
+        item_ids_to_add = set()
+        for it in clean_items:
+            item_ids_to_add.update(_extract_all_item_ids(it))
         # Filter out existing occurrences
-        history = [h for h in history if str(h.get("id") or h.get("imdb_id") or "") not in item_ids_to_add]
+        history = [h for h in history if not _extract_all_item_ids(h).intersection(item_ids_to_add)]
         # Insert new items at top, sorted by last_watched descending
-        sorted_new = sorted(items, key=lambda x: int(x.get("last_watched", 0)), reverse=True)
+        sorted_new = sorted(clean_items, key=lambda x: int(x.get("last_watched", 0)), reverse=True)
         combined = sorted_new + history
         db["history"] = combined[:HISTORY_LIMIT]
         _write_db(db)
 
-def remove_history(item_id, sync_to_remote=True):
-    item_id = str(item_id)
+def remove_history(item_or_id, sync_to_remote=True):
+    target_ids = _extract_all_item_ids(item_or_id)
+    if not target_ids:
+        return
     with _db_lock:
         db = _read_db()
-        db["history"] = [h for h in db.get("history", []) if str(h.get("id")) != item_id and str(h.get("imdb_id")) != item_id]
+        db["history"] = [
+            h for h in db.get("history", [])
+            if not _extract_all_item_ids(h).intersection(target_ids)
+        ]
         settings = db.setdefault("settings", {})
         removed_hist = [str(v) for v in settings.get("removed_history_ids", []) if v]
-        if item_id in removed_hist:
-            removed_hist.remove(item_id)
-        removed_hist.append(item_id)
+        for tid in target_ids:
+            if tid in removed_hist:
+                removed_hist.remove(tid)
+            removed_hist.append(tid)
         settings["removed_history_ids"] = removed_hist[-200:]
         _write_db(db)
 
@@ -746,13 +852,15 @@ def remove_continue_watching(item_id, blacklist=True, user_action=False, sync_to
     """Remove an item from continue_watching."""
     if not item_id:
         return
+    target_ids = _extract_all_item_ids(item_id)
+    if not target_ids:
+        return
     with _db_lock:
         db = _read_db()
         cw = db.get("continue_watching", [])
-        item_id = str(item_id)
-        matching = [e for e in cw if item_id in _continue_watching_item_ids(e)]
-        db["continue_watching"] = [e for e in cw if item_id not in _continue_watching_item_ids(e)]
-        dismissed_ids = {item_id}
+        matching = [e for e in cw if target_ids.intersection(_continue_watching_item_ids(e))]
+        db["continue_watching"] = [e for e in cw if not target_ids.intersection(_continue_watching_item_ids(e))]
+        dismissed_ids = set(target_ids)
         for entry in matching:
             dismissed_ids.update(_continue_watching_item_ids(entry))
         if blacklist:
