@@ -257,24 +257,27 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
                     pass
         return res
 
-    f1 = _RESOLVER_EXECUTOR.submit(task_imdb)
-    f2 = _RESOLVER_EXECUTOR.submit(task_dsf)
-    f3 = _RESOLVER_EXECUTOR.submit(task_tt)
+    try:
+        f1 = _RESOLVER_EXECUTOR.submit(task_imdb)
+        f2 = _RESOLVER_EXECUTOR.submit(task_dsf)
+        f3 = _RESOLVER_EXECUTOR.submit(task_tt)
 
-    for f in [f1, f2, f3]:
-        try:
-            for r in f.result(timeout=1.5):
-                if r: ids.add(str(r))
-        except Exception:
-            pass
+        for f in [f1, f2, f3]:
+            try:
+                for r in f.result(timeout=1.5):
+                    if r: ids.add(str(r))
+            except Exception:
+                pass
 
-    if needs_tmdb and not any(str(i).startswith("tmdb:") for i in ids):
-        f4 = _RESOLVER_EXECUTOR.submit(task_tmdb, list(ids))
-        try:
-            for r in f4.result(timeout=1.5):
-                if r: ids.add(str(r))
-        except Exception:
-            pass
+        if needs_tmdb and not any(str(i).startswith("tmdb:") for i in ids):
+            f4 = _RESOLVER_EXECUTOR.submit(task_tmdb, list(ids))
+            try:
+                for r in f4.result(timeout=1.5):
+                    if r: ids.add(str(r))
+            except Exception:
+                pass
+    except RuntimeError:
+        pass
 
     result_list = []
     if isinstance(item_id, list):
@@ -724,11 +727,16 @@ def fetch_company_details(entity_id, entity_type="company"):
         else:
             tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_companies={entity_id}&sort_by=popularity.desc&page=1"
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            fut_movies = executor.submit(_get_cached_request, movie_url, 168, None, False, 5.0)
-            fut_tv = executor.submit(_get_cached_request, tv_url, 168, None, False, 5.0)
-            raw_movies = fut_movies.result() or {}
-            raw_tv = fut_tv.result() or {}
+        raw_movies = {}
+        raw_tv = {}
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                fut_movies = executor.submit(_get_cached_request, movie_url, 168, None, False, 5.0)
+                fut_tv = executor.submit(_get_cached_request, tv_url, 168, None, False, 5.0)
+                raw_movies = fut_movies.result() or {}
+                raw_tv = fut_tv.result() or {}
+        except RuntimeError:
+            pass
 
         movies = []
         for item in raw_movies.get("results", []):

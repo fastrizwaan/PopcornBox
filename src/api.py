@@ -2124,8 +2124,11 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         if not addons_to_search:
             return []
 
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(addons_to_search), 8))
-        future_to_addon = {executor.submit(fetch_addon_search, addon): addon for addon in addons_to_search}
+        try:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(addons_to_search), 8))
+            future_to_addon = {executor.submit(fetch_addon_search, addon): addon for addon in addons_to_search}
+        except RuntimeError:
+            return []
         try:
             for future in concurrent.futures.as_completed(future_to_addon, timeout=7):
                 if is_cancelled and is_cancelled():
@@ -2228,8 +2231,15 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         except concurrent.futures.TimeoutError:
             for future in future_to_addon:
                 future.cancel()
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower() or "interpreter" in str(e).lower():
+                return []
+            raise
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
                     
         return items
 
@@ -3482,8 +3492,11 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         other_addons.sort(key=_addon_meta_priority)
 
         import concurrent.futures
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(other_addons), 8))
-        future_to_addon = {executor.submit(fetch_addon_meta, addon): addon for addon in other_addons}
+        try:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(other_addons), 8))
+            future_to_addon = {executor.submit(fetch_addon_meta, addon): addon for addon in other_addons}
+        except RuntimeError:
+            return cinemeta_res or {}
         best_addon_res = None
         try:
             for future in concurrent.futures.as_completed(future_to_addon, timeout=4.0):
@@ -3507,8 +3520,15 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         except concurrent.futures.TimeoutError:
             for future in future_to_addon:
                 future.cancel()
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower() or "interpreter" in str(e).lower():
+                return cinemeta_res or {}
+            raise
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
 
         if best_addon_res:
             final_res = merge_metadata(best_addon_res, cinemeta_res) if cinemeta_res else best_addon_res
@@ -4514,8 +4534,11 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
         # Explicit executor: a `with` block would call shutdown(wait=True) on
         # exit and block until every slow addon finishes, defeating the
         # as_completed timeout below.
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
-        future_to_addon = {executor.submit(fetch_from_addon, addon): addon for addon in stremio_addons}
+        try:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
+            future_to_addon = {executor.submit(fetch_from_addon, addon): addon for addon in stremio_addons}
+        except RuntimeError:
+            return []
 
         try:
             try:
@@ -4531,8 +4554,15 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
                         print(f"Error in addon future: {e}")
             except concurrent.futures.TimeoutError:
                 print("Timeout fetching streams from some addons")
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower() or "interpreter" in str(e).lower():
+                return []
+            raise
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
             
     valid_streams = process_raw_streams(all_streams, season=season, episode=episode)
     if valid_streams:
@@ -4805,15 +4835,22 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     import concurrent.futures
     num_workers = min(len(all_stream_addons), 8) if all_stream_addons else 1
     if num_workers > 0 and all_stream_addons:
-        # Explicit executor: the `with` form waits for every worker on exit,
-        # which nullifies the 12s wait() timeout handled inside the loop.
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
+        if abort_event and abort_event.is_set():
+            return []
+        try:
+            # Explicit executor: the `with` form waits for every worker on exit,
+            # which nullifies the 12s wait() timeout handled inside the loop.
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
+        except RuntimeError:
+            return []
         future_to_addon = {}
         queried_addon_urls = set()
 
         try:
             # Submit immediately for any addon that directly supports initial imdb_id
             for addon in all_stream_addons:
+                if abort_event and abort_event.is_set():
+                    return []
                 m_url = addon.get("manifest_url", "")
                 if has_stream_resource(addon, media_type=actual_media, item_id=imdb_id):
                     future_to_addon[executor.submit(fetch_from_addon, addon, imdb_id)] = (addon, imdb_id)
@@ -4825,10 +4862,14 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 ids_to_fetch = resolve_all_provider_ids(imdb_id, media_type, title)
                 return [i for i in ids_to_fetch if i != imdb_id]
 
-            resolve_future = executor.submit(resolve_and_submit)
+            if not (abort_event and abort_event.is_set()):
+                resolve_future = executor.submit(resolve_and_submit)
+            else:
+                resolve_future = None
 
             futures = set(future_to_addon.keys())
-            futures.add(resolve_future)
+            if resolve_future:
+                futures.add(resolve_future)
 
             while futures:
                 if abort_event and abort_event.is_set():
@@ -4846,6 +4887,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                             resolved_ids = future.result()
                             if resolved_ids:
                                 for addon in all_stream_addons:
+                                    if abort_event and abort_event.is_set():
+                                        return []
                                     m_url = addon.get("manifest_url", "")
                                     # Never query an addon twice for the same media item!
                                     if m_url in queried_addon_urls:
@@ -4874,13 +4917,20 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                     s = dict(s) if isinstance(s, dict) else s
                                     s["addon_name"] = addon_name
                                     all_raw_streams.append(s)
-                                if callback:
+                                if callback and not (abort_event and abort_event.is_set()):
                                     current_parsed = process_raw_streams(list(all_raw_streams), season=season, episode=episode, ep_title=ep_title)
                                     callback(current_parsed, is_cached=False, is_complete=False)
                         except Exception as e:
                             print(f"Error in addon future: {e}")
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower() or "interpreter" in str(e).lower():
+                return []
+            raise
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
 
     final_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title)
 
@@ -5179,18 +5229,22 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
                 logging.debug(f"Error fetching subtitles from {sub_url}: {e}")
                 return []
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(urls_to_try), 6)) as executor:
-            fut_to_url = {executor.submit(_fetch_sub_url, u): u for u in urls_to_try}
-            try:
-                for fut in concurrent.futures.as_completed(fut_to_url, timeout=4.0):
-                    try:
-                        items = fut.result()
-                        if items:
-                            all_subs.extend(items)
-                    except Exception:
-                        pass
-            except concurrent.futures.TimeoutError:
-                pass
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(urls_to_try), 6)) as executor:
+                fut_to_url = {executor.submit(_fetch_sub_url, u): u for u in urls_to_try}
+                try:
+                    for fut in concurrent.futures.as_completed(fut_to_url, timeout=4.0):
+                        try:
+                            items = fut.result()
+                            if items:
+                                all_subs.extend(items)
+                        except Exception:
+                            pass
+                except concurrent.futures.TimeoutError:
+                    pass
+        except RuntimeError as e:
+            if "shutdown" not in str(e).lower() and "interpreter" not in str(e).lower():
+                raise
 
     # Deduplicate subtitles by URL to prevent loading identical tracks multiple times
     seen_urls = set()
@@ -5370,18 +5424,22 @@ def search_subtitles_online(query="", imdb_id=None, media_type="movie", season=N
             return []
 
     raw_subs = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(urls_to_try), 6)) as executor:
-        fut_to_info = {executor.submit(_fetch_sub_url, s_name, u): (s_name, u) for s_name, u in urls_to_try}
-        try:
-            for fut in concurrent.futures.as_completed(fut_to_info, timeout=5.0):
-                try:
-                    items = fut.result()
-                    if items:
-                        raw_subs.extend(items)
-                except Exception:
-                    pass
-        except concurrent.futures.TimeoutError:
-            pass
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(urls_to_try), 6)) as executor:
+            fut_to_info = {executor.submit(_fetch_sub_url, s_name, u): (s_name, u) for s_name, u in urls_to_try}
+            try:
+                for fut in concurrent.futures.as_completed(fut_to_info, timeout=5.0):
+                    try:
+                        items = fut.result()
+                        if items:
+                            raw_subs.extend(items)
+                    except Exception:
+                        pass
+            except concurrent.futures.TimeoutError:
+                pass
+    except RuntimeError as e:
+        if "shutdown" not in str(e).lower() and "interpreter" not in str(e).lower():
+            raise
 
     seen_urls = set()
     results = []

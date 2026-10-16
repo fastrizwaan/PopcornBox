@@ -2513,18 +2513,27 @@ class MovieDetailsPage(Gtk.Overlay):
             GLib.timeout_add(2500, _fallback_autoplay_check)
 
         def fetch():
-            from . import api
-            api.get_torrents_streamed(
-                item_id,
-                req_media_type,
-                sel_season,
-                sel_episode,
-                callback=lambda t, is_cached=False, is_complete=False: GLib.idle_add(on_stream_batch, t, is_cached, is_complete),
-                title=target_title,
-                abort_event=current_abort_event,
-                ep_title=ep_title,
-                force_refresh=force
-            )
+            try:
+                if current_abort_event and current_abort_event.is_set():
+                    return
+                from . import api
+                api.get_torrents_streamed(
+                    item_id,
+                    req_media_type,
+                    sel_season,
+                    sel_episode,
+                    callback=lambda t, is_cached=False, is_complete=False: GLib.idle_add(on_stream_batch, t, is_cached, is_complete),
+                    title=target_title,
+                    abort_event=current_abort_event,
+                    ep_title=ep_title,
+                    force_refresh=force
+                )
+            except RuntimeError as e:
+                if "shutdown" in str(e).lower() or "interpreter" in str(e).lower():
+                    return
+                raise
+            except Exception as e:
+                debug_log(f"Stream fetch error: {e}")
         threading.Thread(target=fetch, daemon=True).start()
 
     def update_quality_dropdown(self):
@@ -8943,11 +8952,14 @@ class CineWindow(Adw.ApplicationWindow):
                                     is_cancelled=(lambda: _is_event_set(abort_ev))
                                 ) or []
 
-                            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-                                f_m = ex.submit(_fetch_sub_bg, "movie")
-                                f_s = ex.submit(_fetch_sub_bg, "series")
-                                m_items = f_m.result()
-                                s_items = f_s.result()
+                            try:
+                                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                                    f_m = ex.submit(_fetch_sub_bg, "movie")
+                                    f_s = ex.submit(_fetch_sub_bg, "series")
+                                    m_items = f_m.result()
+                                    s_items = f_s.result()
+                            except RuntimeError:
+                                return
                             fresh = []
                             max_len = max(len(m_items), len(s_items))
                             for i in range(max_len):
@@ -9010,11 +9022,14 @@ class CineWindow(Adw.ApplicationWindow):
                             is_cancelled=(lambda: _is_event_set(abort_ev))
                         ) or []
 
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-                        f_m = ex.submit(_fetch_sub, "movie")
-                        f_s = ex.submit(_fetch_sub, "series")
-                        m_items = f_m.result()
-                        s_items = f_s.result()
+                    try:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+                            f_m = ex.submit(_fetch_sub, "movie")
+                            f_s = ex.submit(_fetch_sub, "series")
+                            m_items = f_m.result()
+                            s_items = f_s.result()
+                    except RuntimeError:
+                        return
                     combined = []
                     max_len = max(len(m_items), len(s_items))
                     for i in range(max_len):

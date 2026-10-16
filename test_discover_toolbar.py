@@ -35,7 +35,7 @@ from src import api, database
 
 class TestDiscoverToolbar(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.orig_config_dir = database.CONFIG_DIR
         self.orig_base_dir = database.BASE_DIR
         self.orig_db_file = database.DB_FILE
@@ -149,7 +149,10 @@ class TestDiscoverToolbar(unittest.TestCase):
         database.BASE_DIR = self.orig_base_dir
         database.DB_FILE = self.orig_db_file
         database.reset_json_cache()
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
         api.reset_addon_health_cache()
 
     def test_initial_toolbar_population(self):

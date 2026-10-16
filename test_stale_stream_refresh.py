@@ -336,5 +336,32 @@ class TestStaleStreamRefresh(unittest.TestCase):
         self.assertIsInstance(win._current_playing_item["last_refreshed"], float)
         self.assertAlmostEqual(win._current_playing_item["last_refreshed"], time.time(), delta=5)
 
+    def test_get_torrents_streamed_handles_interpreter_shutdown(self):
+        from src import api
+        addon = {
+            "name": "Mock Streams",
+            "manifest_url": "https://mock.addon/manifest.json",
+            "resources": [{"name": "stream", "types": ["movie"], "idPrefixes": ["tt"]}]
+        }
+        with patch("src.api.get_stream_addons", return_value=[addon]), \
+             patch("src.database.get_cached_streams", return_value=None), \
+             patch("concurrent.futures.ThreadPoolExecutor") as mock_exec:
+            mock_instance = MagicMock()
+            mock_exec.return_value = mock_instance
+            mock_instance.submit.side_effect = RuntimeError("cannot schedule new futures after interpreter shutdown")
+            
+            # Should not raise RuntimeError, returns [] cleanly
+            res = api.get_torrents_streamed("tt1234567", "movie")
+            self.assertEqual(res, [])
+
+    def test_get_torrents_streamed_respects_initial_abort_event(self):
+        import threading
+        from src import api
+        abort = threading.Event()
+        abort.set()
+        res = api.get_torrents_streamed("tt1234567", "movie", abort_event=abort)
+        self.assertEqual(res, [])
+
+
 if __name__ == "__main__":
     unittest.main()
