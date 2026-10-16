@@ -181,6 +181,9 @@ class MovieDetailsPage(Gtk.Overlay):
         self.movie_stub = movie
         self.window = window
         self.media_type = movie.get("type", "movie")
+        # Keep channel identity stable as metadata refreshes may add a `videos`
+        # list to a live-TV item that was initially recognized from its card.
+        self._live_channel_identity = False
         
         item_raw_id = str(self.movie_stub.get("id", ""))
         poster_raw = str(self.movie_stub.get("medium_cover_image") or self.movie_stub.get("poster") or "")
@@ -846,7 +849,7 @@ class MovieDetailsPage(Gtk.Overlay):
             has_real_desc = bool(desc) and desc not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD")
             if not has_real_desc:
                 return False
-            if self.media_type in ["series", "anime", "tv"] and not d.get("videos"):
+            if self.media_type in ["series", "anime", "tv"] and not self.is_channel and not d.get("videos"):
                 return False
             return True
 
@@ -886,6 +889,8 @@ class MovieDetailsPage(Gtk.Overlay):
     @property
     def is_channel(self):
         mtype = str(getattr(self, "media_type", "")).lower()
+        if getattr(self, "_live_channel_identity", False):
+            return True
         if mtype in ("channel", "channels"):
             return True
         stub = getattr(self, "movie_stub", {}) or {}
@@ -896,6 +901,52 @@ class MovieDetailsPage(Gtk.Overlay):
         if isinstance(details, dict):
             det_id = str(details.get("id", ""))
             if det_id.startswith("yt_id:") or str(details.get("type", "")).lower() in ("channel", "channels"):
+                return True
+
+        # Some addon catalogs expose live events and channels as type="tv".
+        # Treat explicit live markers as channels so they do not get episodic
+        # S1:E1 labels and controls.
+        if mtype == "tv":
+            tv_items = (stub, details if isinstance(details, dict) else {})
+            for item in tv_items:
+                live_flag = item.get("is_live", item.get("live", item.get("isLive", False)))
+                status = str(item.get("status") or item.get("live_status") or "").strip().lower()
+                status = re.sub(r"^[^a-z]+", "", status)
+                title = str(item.get("title") or item.get("name") or "").strip().lower()
+                title = re.sub(r"^[^a-z0-9]+", "", title)
+                if live_flag is True or str(live_flag).lower() in ("true", "yes", "1"):
+                    return True
+                if status.startswith("live") or status in ("ongoing", "in progress"):
+                    return True
+                if title.startswith(("live:", "live -", "live |")):
+                    return True
+
+                # IPTV catalog entries are sometimes represented as ordinary
+                # `tv` metadata. Their card description/category is the stable
+                # discriminator (metadata refresh can add videos and overwrite
+                # the original catalog type).
+                descriptive_fields = (
+                    "description", "overview", "catalog", "catalog_name",
+                    "catalog_title", "category", "genre", "source",
+                    "source_name", "addon_name",
+                )
+                descriptor = " ".join(
+                    str(item.get(field) or "").strip().lower()
+                    for field in descriptive_fields
+                )
+                if re.search(r"\blive\s+(?:tv|channel|feed|stream)\b", descriptor):
+                    self._live_channel_identity = True
+                    return True
+                if re.search(r"\b(?:iptv|live\s+channels?)\b", descriptor):
+                    self._live_channel_identity = True
+                    return True
+
+            # Addon and IPTV channel catalogs commonly use `type="tv"` with
+            # provider-specific IDs and no episode metadata. Keep recognized
+            # series IDs and items with videos on the episodic path.
+            has_videos = any(isinstance(item.get("videos"), list) and item.get("videos") for item in tv_items)
+            if not has_videos and not item_id.startswith(("tt", "tmdb:", "imdb:", "tvdb:")):
+                self._live_channel_identity = True
                 return True
         return False
 
@@ -1808,6 +1859,9 @@ class MovieDetailsPage(Gtk.Overlay):
                         lbl_parts.append(f"({rem_mins}m left)")
                 self.continue_label.set_text(" ".join(lbl_parts))
                 self.continue_btn.set_tooltip_text("Continue Watching")
+            elif self.is_channel:
+                self.continue_label.set_text(_("Watch"))
+                self.continue_btn.set_tooltip_text(_("Watch Live TV"))
             else:
                 lbl_text = f"Play {v_title}" if v_title else "Play"
                 self.continue_label.set_text(lbl_text)
@@ -2283,7 +2337,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     on_season_changed(self.season_dropdown)
                 finally:
                     self._building_series_dropdowns = False
-        elif self.media_type in ["series", "anime", "tv"]:
+        elif self.media_type in ["series", "anime", "tv"] and not self.is_channel:
             self.sidebar_stack.set_visible_child_name("episodes")
             self.stream_back_btn.set_visible(False)
             if hasattr(self, 'season_nav_box'):
@@ -2532,8 +2586,8 @@ class MovieDetailsPage(Gtk.Overlay):
         if video_id and str(video_id).startswith("tt") and self.media_type not in ["series", "anime"]:
             req_media_type = "movie"
 
-        sel_season = getattr(self, 'selected_season', None) if req_media_type in ["series", "anime", "tv"] else None
-        sel_episode = getattr(self, 'selected_episode', None) if req_media_type in ["series", "anime", "tv"] else None
+        sel_season = getattr(self, 'selected_season', None) if req_media_type in ["series", "anime", "tv"] and not self.is_channel else None
+        sel_episode = getattr(self, 'selected_episode', None) if req_media_type in ["series", "anime", "tv"] and not self.is_channel else None
 
         print(
             f"[STREAM DEBUG] UI fetch requested page_id={id(self)} id={item_id!r} media={req_media_type!r} "
@@ -2541,7 +2595,7 @@ class MovieDetailsPage(Gtk.Overlay):
         )
 
         # Guard: For episodic content, do not query streams until season and episode are resolved
-        if req_media_type in ["series", "anime", "tv"] and (sel_season is None or sel_episode is None):
+        if req_media_type in ["series", "anime", "tv"] and not self.is_channel and (sel_season is None or sel_episode is None):
             print("[STREAM DEBUG] UI fetch skipped: series season/episode is not resolved")
             # Invalidate the previous episode's worker before returning. Otherwise
             # its callback can still populate streams for an episode that is no
@@ -2785,8 +2839,8 @@ class MovieDetailsPage(Gtk.Overlay):
         if sel_prov_name != "All Providers":
             filtered_torrents = [t for t in filtered_torrents if sel_prov_name in t.get("addon_names", [])]
 
-        sel_s = getattr(self, 'selected_season', None) if self.media_type in ["series", "anime", "tv"] else None
-        sel_e = getattr(self, 'selected_episode', None) if self.media_type in ["series", "anime", "tv"] else None
+        sel_s = getattr(self, 'selected_season', None) if self.media_type in ["series", "anime", "tv"] and not self.is_channel else None
+        sel_e = getattr(self, 'selected_episode', None) if self.media_type in ["series", "anime", "tv"] and not self.is_channel else None
         sel_v = getattr(self, 'selected_video', None)
         ep_t = (sel_v.get("title") or sel_v.get("name")) if isinstance(sel_v, dict) else None
 
@@ -3127,8 +3181,8 @@ class MovieDetailsPage(Gtk.Overlay):
         elif source_idx == 2:
             t_list = [t for t in t_list if not t.get('is_http')]
 
-        sel_s = getattr(self, 'selected_season', None) if self.media_type in ["series", "anime", "tv"] else None
-        sel_e = getattr(self, 'selected_episode', None) if self.media_type in ["series", "anime", "tv"] else None
+        sel_s = getattr(self, 'selected_season', None) if self.media_type in ["series", "anime", "tv"] and not self.is_channel else None
+        sel_e = getattr(self, 'selected_episode', None) if self.media_type in ["series", "anime", "tv"] and not self.is_channel else None
         sel_v = getattr(self, 'selected_video', None)
         ep_t = (sel_v.get("title") or sel_v.get("name")) if isinstance(sel_v, dict) else None
 
@@ -3233,7 +3287,7 @@ class MovieDetailsPage(Gtk.Overlay):
             database.set_setting("preferred_quality", chosen_q)
 
         media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
-        if self.media_type in ["series", "anime", "tv"] and getattr(self, "selected_season", None) is not None:
+        if self.media_type in ["series", "anime", "tv"] and not self.is_channel and getattr(self, "selected_season", None) is not None:
             try:
                 s_int = int(self.selected_season)
                 e_int = int(self.selected_episode)
@@ -3483,7 +3537,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if not magnet: return
         
         media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
-        if self.media_type in ["series", "anime", "tv"] and getattr(self, "selected_season", None) is not None:
+        if self.media_type in ["series", "anime", "tv"] and not self.is_channel and getattr(self, "selected_season", None) is not None:
             try:
                 s_int = int(self.selected_season)
                 e_int = int(self.selected_episode)
@@ -8201,8 +8255,25 @@ class CineWindow(Adw.ApplicationWindow):
             unique_only = self._is_unique_mode_active()
         addon_url = filters.get("addon_url")
 
+        # With "All Types" selected, a specific section still has its own
+        # concrete media type. Preserve it for fetching (notably Plavio's TV
+        # channel catalogs) instead of defaulting every section to movies.
+        selected_catalog_type = None
+        if catalog_id:
+            for section_info in getattr(self, "_discover_section_items", []):
+                if str(section_info.get("catalog_id") or "") == str(catalog_id):
+                    selected_cat = section_info.get("cat")
+                    if isinstance(selected_cat, dict):
+                        selected_catalog_type = selected_cat.get("type")
+                    break
+        effective_media_type = (
+            selected_catalog_type
+            if m_type == "all" and selected_catalog_type
+            else (m_type if m_type != "all" else "movie")
+        )
+
         self._current_discover_type = m_type
-        self.current_media_type = m_type if m_type != "all" else "movie"
+        self.current_media_type = effective_media_type
         self._current_discover_addon = addon_url
         self.current_genre = genre
         self.current_year = year
@@ -8226,7 +8297,7 @@ class CineWindow(Adw.ApplicationWindow):
             self.current_catalog = {
                 "manifest_url": addon_url,
                 "catalog_id": catalog_id,
-                "media_type": m_type if m_type != "all" else "movie",
+                "media_type": effective_media_type,
                 "display_name": section or catalog_id.title()
             }
             disp_title = section or catalog_id.title()
