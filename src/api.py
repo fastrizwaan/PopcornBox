@@ -891,7 +891,11 @@ def is_catalog_type_match(cat, media_type, addon_name=""):
     elif tgt == "series":
         if is_type_match(c_type, "movie"):
             return False
-        return "series" in c_type or "series" in c_name or "series" in c_id or c_id == "tv" or c_type == "tv"
+        # A catalog declared as `tv` is a live TV/channel catalog, not a TV
+        # series. Only explicit series metadata or labels belong here.
+        if is_type_match(c_type, "tv"):
+            return False
+        return "series" in c_type or "series" in c_name or "series" in c_id
     elif tgt in ("tv", "channel"):
         return is_type_match(c_type, "tv") or "tv" in c_name or "channel" in c_name or "iptv" in a_name
 
@@ -1859,20 +1863,13 @@ def filter_items_by_genre(items, genre, media_type=None):
     is_lang_filter = database.is_language_genre(g_norm)
 
     for item in items:
-        # Check local DB metadata cache only if genres are not already present on the item (or if language is needed)
+        # Prefer the catalog response first. SQLite metadata is a fallback for
+        # items whose response does not include genre/language information.
         has_item_genres = bool(item.get("genres") or item.get("genre") or item.get("genre_ids"))
         has_item_lang = bool(item.get("language"))
         cached_meta = None
         item_id = item.get("id") or item.get("imdb_id")
-        if (not has_item_genres or (is_lang_filter and not has_item_lang)) and item_id:
-            cached_meta = database.get_cached_metadata(item_id, media_type or item.get("type"))
-            if not cached_meta and item.get("imdb_id") and item["imdb_id"] != item_id:
-                cached_meta = database.get_cached_metadata(item["imdb_id"], media_type or item.get("type"))
-
-        # Strictly verify media type compatibility first
-        if media_type and media_type != "all":
-            if not is_item_type_compatible(item, media_type, cached_meta=cached_meta):
-                continue
+        metadata_checked = False
 
         # Extract and normalize all genre signals
         item_genres = set()
@@ -1926,9 +1923,16 @@ def filter_items_by_genre(items, genre, media_type=None):
             for sub in re.split(r'[,/|]+', s):
                 sub_clean = sub.strip()
                 if sub_clean:
-                    item_genres.add(sub_clean)
+                    # Normalize language names/codes separately so values
+                    # such as "en-US" compare as the canonical English label.
+                    lang_value = sub_clean.split("-", 1)[0] if "-" in sub_clean else sub_clean
+                    normalized_lang = database.normalize_imdb_genre(lang_value)
+                    if normalized_lang and database.is_language_genre(normalized_lang):
+                        item_genres.add(normalized_lang.lower())
+                    else:
+                        item_genres.add(sub_clean)
 
-        for src in (item, cached_meta):
+        for src in (item,):
             if not src or not isinstance(src, dict):
                 continue
             for k in ("genres", "genre", "genre_ids"):
@@ -1942,12 +1946,53 @@ def filter_items_by_genre(items, genre, media_type=None):
             if lang:
                 _add_genre_entry(lang)
 
+        # Consult cached metadata only when the item response cannot answer
+        # the genre/language question. This avoids one SQLite lookup for every
+        # fully described item while preserving the DB fallback.
+        if (not item_genres or (is_lang_filter and not has_item_lang)) and item_id:
+            metadata_checked = True
+            metadata_ids = [item_id]
+            seen_metadata_ids = {str(item_id)}
+            for candidate_id in [item.get("imdb_id")] + list(item.get("alias_ids") or []):
+                if candidate_id and str(candidate_id) not in seen_metadata_ids:
+                    seen_metadata_ids.add(str(candidate_id))
+                    metadata_ids.append(candidate_id)
+            cached_meta = database.get_cached_metadata(metadata_ids, media_type or item.get("type"))
+            if cached_meta and isinstance(cached_meta, dict):
+                for key in ("genres", "genre", "genre_ids", "language"):
+                    raw = cached_meta.get(key)
+                    if isinstance(raw, list):
+                        for elem in raw:
+                            _add_genre_entry(elem)
+                    elif raw is not None:
+                        _add_genre_entry(raw)
+        # Check media type after the optional metadata fallback so an item
+        # without a type does not trigger a second metadata lookup internally.
+        if media_type and media_type != "all" and not (metadata_checked and not cached_meta and not (item.get("type") or item.get("media_type"))):
+            if not is_item_type_compatible(item, media_type, cached_meta=cached_meta):
+                continue
+
         # Check if type is anime
         itype = str(item.get("type") or (cached_meta.get("type") if cached_meta else "")).strip().lower()
         if itype == "anime":
             item_genres.add("anime")
             item_genres.add("animation")
             item_genres.add("japanese")
+
+        if is_lang_filter:
+            known_languages = set()
+            for value in item_genres:
+                normalized = database.normalize_imdb_genre(value)
+                if normalized and database.is_language_genre(normalized):
+                    known_languages.add(normalized.lower())
+            # The metadata source commonly omits language for English titles.
+            # Treat that absence as English, but keep an explicit non-English
+            # language authoritative when it is present.
+            if not known_languages:
+                known_languages.add("english")
+            if any(does_genre_match_filter(language, g_norm) for language in known_languages):
+                filtered.append(item)
+            continue
 
         if item_genres:
             if any(does_genre_match_filter(ig, g_norm) for ig in item_genres):

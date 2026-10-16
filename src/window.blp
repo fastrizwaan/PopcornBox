@@ -267,29 +267,30 @@ template $CineWindow: Adw.ApplicationWindow {
               };
             }
 
-              StackPage {
-                name: "search_header";
-                child: Adw.HeaderBar search_header {
-                [start]
-                Button back_from_search_btn {
-                  icon-name: "go-previous-symbolic";
-                  tooltip-text: _("Back");
-                  action-name: "win.close-search";
-                }
-
-                [title]
-                Box search_title_box {
-                  spacing: 6;
-                  SearchEntry search_entry {
-                    placeholder-text: _("Search PopcornBox...");
-                    width-request: 400;
-                  }
-                  DropDown search_catalog_dropdown {
-                    valign: center;
-                  }
-                }
-                };
+            StackPage {
+              name: "search_header";
+              child: Adw.HeaderBar search_header {
+              [start]
+              Button back_from_search_btn {
+                icon-name: "go-previous-symbolic";
+                tooltip-text: _("Back");
+                action-name: "win.close-search";
               }
+
+              [title]
+              Box search_title_box {
+                spacing: 6;
+                SearchEntry search_entry {
+                  placeholder-text: _("Search PopcornBox...");
+                  width-request: 400;
+                }
+                DropDown search_catalog_dropdown {
+                  valign: center;
+                }
+              }
+              };
+            }
+
             }
             Revealer discover_options_revealer {
               transition-type: slide_down;
@@ -343,6 +344,29 @@ template $CineWindow: Adw.ApplicationWindow {
                   valign: center;
                   tooltip-text: _("Deduplicate media across multiple provider streams/catalogs");
                 }
+
+                ToggleButton discover_search_btn {
+                  icon-name: "filter-symbolic";
+                  valign: center;
+                  tooltip-text: _("Filter loaded results");
+                  styles ["flat", "circular"]
+                }
+              }
+            }
+
+            Box advanced_search_box {
+              orientation: horizontal;
+              spacing: 8;
+              margin-top: 6;
+              margin-bottom: 2;
+              margin-start: 12;
+              margin-end: 12;
+              halign: center;
+              visible: false;
+
+              SearchEntry discover_search_entry {
+                width-request: 220;
+                placeholder-text: _("Filter loaded results...");
               }
             }
 

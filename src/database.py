@@ -1731,6 +1731,46 @@ def _get_cache_db():
     except Exception as e:
         print(f"Error in backfill_catalog_genres migration: {e}")
 
+    # Rebuild missing genre index rows from all cached metadata. Older app
+    # versions only indexed string-valued `genres`, which missed TMDB IDs and
+    # Stremio `{id, name}` genre objects.
+    try:
+        cur = _cache_conn.cursor()
+        cur.execute("SELECT val FROM cache_meta WHERE key = 'genre_index_metadata_v2'")
+        if not cur.fetchone():
+            cur.execute("SELECT id, media_type, data FROM metadata_cache WHERE data IS NOT NULL AND data != ''")
+            genre_rows = []
+            alias_metadata_rows = []
+            for item_id, media_type, data_json in cur.fetchall():
+                try:
+                    details = json.loads(data_json)
+                except Exception:
+                    continue
+                if not isinstance(details, dict):
+                    continue
+                year = extract_clean_year(details)
+                indexed_ids = {str(item_id)}
+                for alias_id in [details.get("imdb_id")] + list(details.get("alias_ids") or []):
+                    if alias_id:
+                        indexed_ids.add(str(alias_id))
+                for alias_id in indexed_ids:
+                    if alias_id != str(item_id):
+                        alias_metadata_rows.append((alias_id, str(media_type or "movie"), data_json, time.time()))
+                for genre in _extract_metadata_genres(details, media_type):
+                    for alias_id in indexed_ids:
+                        genre_rows.append((alias_id, str(media_type or "movie"), genre, year))
+            if alias_metadata_rows:
+                _cache_conn.executemany(
+                    "INSERT OR IGNORE INTO metadata_cache (id, media_type, data, updated_at) VALUES (?, ?, ?, ?)",
+                    alias_metadata_rows,
+                )
+            if genre_rows:
+                _cache_conn.executemany("INSERT OR IGNORE INTO item_genres VALUES (?, ?, ?, ?)", genre_rows)
+            _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('genre_index_metadata_v2', '1')")
+            _cache_conn.commit()
+    except Exception as e:
+        print(f"Error rebuilding metadata genre index: {e}")
+
     _cache_conn.commit()
     _cache_db_initialized = True
     return _cache_conn
@@ -1860,11 +1900,7 @@ def save_cached_metadata(item_id, media_type, details):
             from .api import is_adult_item
             is_adult = is_adult_item(details) if details else False
 
-            genres = details.get("genres") or []
-            if isinstance(genres, str):
-                genres = [g.strip() for g in genres.split(",") if g.strip()]
-            elif not isinstance(genres, list):
-                genres = []
+            genres = _extract_metadata_genres(details, media_type)
 
             year_val = extract_clean_year(details)
 
@@ -1873,25 +1909,25 @@ def save_cached_metadata(item_id, media_type, details):
                 ids_to_index = [str(item_id)]
                 if imdb_id and str(imdb_id) not in ids_to_index:
                     ids_to_index.append(str(imdb_id))
+                for alias_id in details.get("alias_ids") or []:
+                    if alias_id and str(alias_id) not in ids_to_index:
+                        ids_to_index.append(str(alias_id))
 
                 for iid in ids_to_index:
                     if genres:
-                        for g in genres:
-                            g_str = str(g).strip()
-                            norm_g = normalize_imdb_genre(g_str, media_type=media_type)
-                            if norm_g:
-                                cursor.execute(
-                                    """
-                                    INSERT INTO item_genres (item_id, media_type, genre, year)
-                                    VALUES (?, ?, ?, ?)
-                                    ON CONFLICT(item_id, genre) DO UPDATE SET
-                                        year = CASE WHEN excluded.year != '' THEN excluded.year ELSE item_genres.year END,
-                                        media_type = excluded.media_type
-                                    """,
-                                    (iid, str(media_type or "movie"), norm_g, year_val)
-                                )
-                                if cursor.rowcount > 0:
-                                    has_new = True
+                        for norm_g in genres:
+                            cursor.execute(
+                                """
+                                INSERT INTO item_genres (item_id, media_type, genre, year)
+                                VALUES (?, ?, ?, ?)
+                                ON CONFLICT(item_id, genre) DO UPDATE SET
+                                    year = CASE WHEN excluded.year != '' THEN excluded.year ELSE item_genres.year END,
+                                    media_type = excluded.media_type
+                                """,
+                                (iid, str(media_type or "movie"), norm_g, year_val)
+                            )
+                            if cursor.rowcount > 0:
+                                has_new = True
                         # Remove empty genre placeholder if real genres now exist
                         cursor.execute("DELETE FROM item_genres WHERE item_id = ? AND genre = ''", (iid,))
 
@@ -2110,6 +2146,28 @@ def normalize_imdb_genre(g, media_type=None):
 
     return None
 
+def _extract_metadata_genres(details, media_type=None):
+    """Return canonical genre labels from common metadata and Stremio shapes."""
+    if not isinstance(details, dict):
+        return []
+    from .tmdb_helper import TMDB_GENRES
+
+    raw = details.get("genres") or details.get("genre") or details.get("genre_ids") or []
+    values = raw if isinstance(raw, list) else [raw]
+    genres = set()
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get("name") or value.get("id")
+        if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
+            value = TMDB_GENRES.get(int(value))
+        if not isinstance(value, str):
+            continue
+        for part in value.split(","):
+            normalized = normalize_imdb_genre(part.strip(), media_type=media_type)
+            if normalized:
+                genres.add(normalized)
+    return sorted(genres)
+
 def is_clean_genre(g, media_type=None):
     """Validate that genre is a strict standard IMDb genre."""
     return normalize_imdb_genre(g, media_type=media_type) is not None
@@ -2171,6 +2229,17 @@ def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None,
                 yr_str = str(year).strip()
                 query += " AND (ig.year LIKE ? OR json_extract(m.data, '$.year') LIKE ?)"
                 params.extend([f"{yr_str}%", f"{yr_str}%"])
+
+            # Deduplicate rows that point to the same underlying IMDb/TMDB
+            # item. Keep this after all WHERE predicates; placing it in the
+            # initial query string makes subsequent media/year filters invalid.
+            query += """
+                GROUP BY COALESCE(
+                    NULLIF(json_extract(m.data, '$.id'), ''),
+                    NULLIF(json_extract(m.data, '$.imdb_id'), ''),
+                    m.id
+                )
+            """
 
             if sort_mode == "Recent":
                 query += """
@@ -2352,14 +2421,45 @@ def get_available_sort_options(media_type=None):
     return opts
 
 def get_available_languages():
-    """Return distinct languages for the Language filter dropdown."""
-    return [
-        "English", "Hindi", "Spanish", "French", "German",
-        "Japanese", "Korean", "Italian", "Chinese", "Tamil",
-        "Telugu", "Malayalam", "Kannada", "Russian", "Portuguese",
-        "Arabic", "Turkish", "Dutch", "Polish", "Swedish",
-        "Thai", "Indonesian", "Vietnamese"
-    ]
+    """Return canonical languages actually present in the local metadata DB."""
+    languages = set()
+
+    def add_language(value):
+        if isinstance(value, dict):
+            value = value.get("name") or value.get("id")
+        if isinstance(value, list):
+            for part in value:
+                add_language(part)
+            return
+        if not isinstance(value, str):
+            return
+        for part in value.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            normalized = normalize_imdb_genre(part)
+            if normalized is None and "-" in part:
+                normalized = normalize_imdb_genre(part.split("-", 1)[0])
+            if normalized and is_language_genre(normalized):
+                languages.add(normalized)
+
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT genre FROM item_genres WHERE genre != ''")
+            for (genre,) in cursor.fetchall():
+                add_language(genre)
+
+            # English is intentionally not duplicated into item_genres by the
+            # metadata writer, so also read language fields from cached items.
+            cursor.execute("SELECT DISTINCT json_extract(data, '$.language') FROM metadata_cache WHERE json_valid(data)")
+            for (language,) in cursor.fetchall():
+                add_language(language)
+    except Exception as e:
+        print(f"Error reading available languages: {e}")
+
+    return sorted(languages, key=lambda language: (language.lower() != "english", language.lower()))
 
 def get_available_genres(media_type=None, include_years=False):
     """
@@ -2649,9 +2749,7 @@ def save_cached_catalog(cache_key, items):
                     clean_yr = extract_clean_year(it)
                     if clean_yr and not it.get("year"):
                         it["year"] = clean_yr
-                    genres = it.get("genres") or []
-                    if isinstance(genres, str):
-                        genres = [genres]
+                    genres = _extract_metadata_genres(it, mtype)
 
                     # If this catalog item lacks genres or year, check if metadata_cache already has rich data
                     if not genres or not clean_yr:
@@ -2669,10 +2767,9 @@ def save_cached_catalog(cache_key, items):
                                 if row and row[0]:
                                     d = json.loads(row[0])
                                     item_enriched = False
-                                    if not genres and d.get("genres"):
-                                        genres = d["genres"]
-                                        if isinstance(genres, str):
-                                            genres = [genres]
+                                    if not genres:
+                                        genres = _extract_metadata_genres(d, mtype)
+                                    if genres:
                                         it["genres"] = genres
                                         item_enriched = True
                                     if not clean_yr:
@@ -2704,13 +2801,14 @@ def save_cached_catalog(cache_key, items):
                     ids_to_batch = [str(iid)]
                     if it.get("imdb_id") and str(it["imdb_id"]) not in ids_to_batch:
                         ids_to_batch.append(str(it["imdb_id"]))
+                    for alias_id in it.get("alias_ids") or []:
+                        if alias_id and str(alias_id) not in ids_to_batch:
+                            ids_to_batch.append(str(alias_id))
 
                     for bid in ids_to_batch:
                         meta_batch.append((bid, str(mtype), json.dumps(it), now))
-                        for g in genres:
-                            norm = normalize_imdb_genre(str(g).strip(), media_type=mtype)
-                            if norm:
-                                genre_batch.append((bid, str(mtype), norm, clean_yr))
+                        for norm in genres:
+                            genre_batch.append((bid, str(mtype), norm, clean_yr))
                         if not genres and clean_yr:
                             genre_batch.append((bid, str(mtype), "", clean_yr))
 

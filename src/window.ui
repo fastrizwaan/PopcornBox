@@ -545,6 +545,35 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                     <property name="tooltip-text" translatable="yes">Deduplicate media across multiple provider streams/catalogs</property>
                                   </object>
                                 </child>
+                                <child>
+                                  <object class="GtkToggleButton" id="discover_search_btn">
+                                    <property name="icon-name">filter-symbolic</property>
+                                    <property name="valign">3</property>
+                                    <property name="tooltip-text" translatable="yes">Filter loaded results</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="circular"/>
+                                    </style>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkBox" id="advanced_search_box">
+                            <property name="orientation">0</property>
+                            <property name="spacing">8</property>
+                            <property name="margin-top">6</property>
+                            <property name="margin-bottom">2</property>
+                            <property name="margin-start">12</property>
+                            <property name="margin-end">12</property>
+                            <property name="halign">3</property>
+                            <property name="visible">false</property>
+                            <child>
+                              <object class="GtkSearchEntry" id="discover_search_entry">
+                                <property name="width-request">220</property>
+                                <property name="placeholder-text" translatable="yes">Filter loaded results...</property>
                               </object>
                             </child>
                           </object>
