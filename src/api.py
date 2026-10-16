@@ -4728,12 +4728,28 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     # Check cache immediately using the provided ID
     cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
-    cached = database.get_cached_streams(cache_key, max_age_hours=24)
+    cache_res = database.get_cached_streams(cache_key, max_age_hours=24, return_age=True)
+    if isinstance(cache_res, tuple) and len(cache_res) == 2:
+        cached, cache_age = cache_res
+    else:
+        cached, cache_age = cache_res, 0.0
+
     if cached:
         cached = [s for s in cached if not check_stream_rate_limit_warning(s)]
-    if cached and not force_refresh:
+
+    # Consider cache fresh only if recent (< 5 min) and contains no stale HTTP links
+    is_fresh = bool(
+        cached
+        and not force_refresh
+        and cache_age is not None
+        and cache_age < 300
+        and not any(database.is_stream_stale(s) for s in cached)
+    )
+
+    if is_fresh:
         if callback: callback(cached, is_cached=True, is_complete=True)
         return cached
+
     if cached and callback:
         callback(cached, is_cached=True, is_complete=False)
 
@@ -4836,8 +4852,10 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         return addon.get("name", "Unknown"), streams
 
     all_raw_streams = []
-    if cached:
+    if cached and not force_refresh:
         for c in cached:
+            if database.is_stream_stale(c):
+                continue
             # Reconstitute the raw stream structure carefully.
             raw = {
                 "infoHash": c.get("hash"),

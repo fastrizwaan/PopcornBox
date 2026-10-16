@@ -2255,9 +2255,9 @@ def get_available_genres(media_type=None, include_years=False):
         return sorted_genres, get_available_years(media_type)
     return sorted_genres
 
-def get_cached_streams(cache_key, max_age_hours=24):
+def get_cached_streams(cache_key, max_age_hours=24, return_age=False):
     if not cache_key:
-        return None
+        return (None, None) if return_age else None
     try:
         with _cache_db_lock:
             conn = _get_cache_db()
@@ -2266,12 +2266,18 @@ def get_cached_streams(cache_key, max_age_hours=24):
             row = cursor.fetchone()
             if row and row[0]:
                 updated_at = row[1]
-                if (time.time() - updated_at) / 3600 < max_age_hours:
+                try:
+                    age = max(0.0, time.time() - float(updated_at)) if updated_at is not None else float("inf")
+                except (ValueError, TypeError):
+                    age = float("inf")
+                if age / 3600 < max_age_hours:
                     raw_streams = json.loads(row[0])
                     if isinstance(raw_streams, list):
                         clean = []
                         has_warning = False
                         for s in raw_streams:
+                            if isinstance(s, dict) and updated_at is not None:
+                                s.setdefault("saved_at", updated_at)
                             s_str = str(s).lower()
                             if "ratelimit" in s_str or "muitas requisi" in s_str or "aguarde 5 minutos" in s_str or "(banned)" in s_str:
                                 has_warning = True
@@ -2283,22 +2289,28 @@ def get_cached_streams(cache_key, max_age_hours=24):
                             else:
                                 cursor.execute("DELETE FROM stream_cache WHERE cache_key = ?", (str(cache_key),))
                             conn.commit()
-                            return clean if clean else None
-                    return raw_streams
+                            res = clean if clean else None
+                            return (res, age) if return_age else res
+                        return (clean, age) if return_age else clean
+                    return (raw_streams, age) if return_age else raw_streams
     except Exception as e:
         print(f"Error reading stream cache: {e}")
-    return None
+    return (None, None) if return_age else None
 
 def save_cached_streams(cache_key, streams):
     if not cache_key or streams is None:
         return
     try:
+        now = time.time()
+        for s in streams:
+            if isinstance(s, dict):
+                s.setdefault("saved_at", now)
         with _cache_db_lock:
             conn = _get_cache_db()
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT OR REPLACE INTO stream_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
-                (str(cache_key), json.dumps(streams), time.time())
+                (str(cache_key), json.dumps(streams), now)
             )
             conn.commit()
     except Exception as e:

@@ -386,6 +386,126 @@ class TestStaleStreamRefresh(unittest.TestCase):
         self.assertEqual(len(requested_urls), 1)
         self.assertEqual(requested_urls[0], "https://custom.addon/stream/series/custom-episode-123.json")
 
+    def test_get_cached_streams_return_age(self):
+        from src import database
+        cache_key = "test_key_age_123"
+        streams = [{"hash": "abc", "title": "Test"}]
+        database.save_cached_streams(cache_key, streams)
+        
+        # Test without return_age (default False)
+        res_plain = database.get_cached_streams(cache_key)
+        self.assertIsInstance(res_plain, list)
+        self.assertEqual(len(res_plain), 1)
+        
+        # Test with return_age=True
+        res_age = database.get_cached_streams(cache_key, return_age=True)
+        self.assertIsInstance(res_age, tuple)
+        self.assertEqual(len(res_age), 2)
+        cached_items, age = res_age
+        self.assertIsInstance(cached_items, list)
+        self.assertIsInstance(age, float)
+        self.assertLess(age, 5.0)
+
+    def test_get_torrents_streamed_fresh_cache_returns_without_revalidation(self):
+        from src import api
+        cached_data = [{
+            "hash": "1111111111111111111111111111111111111111",
+            "title": "Fresh Movie Stream",
+            "addon_names": ["Torrentio"]
+        }]
+        cb_calls = []
+        def callback(torrents, is_cached=False, is_complete=False):
+            cb_calls.append((torrents, is_cached, is_complete))
+
+        with patch("src.database.get_cached_streams", return_value=(cached_data, 60.0)), \
+             patch("src.api._request_addon_streams") as mock_req:
+            res = api.get_torrents_streamed("tt1234567", "movie", callback=callback, force_refresh=False)
+            self.assertEqual(res, cached_data)
+            mock_req.assert_not_called()
+            self.assertEqual(len(cb_calls), 1)
+            self.assertEqual(cb_calls[0], (cached_data, True, True))
+
+    def test_get_torrents_streamed_stale_cache_auto_refreshes(self):
+        from src import api
+        stale_data = [{
+            "hash": "oldoldoldoldoldoldoldoldoldoldoldoldoldold",
+            "title": "Old Movie Stream",
+            "addon_names": ["Torrentio"]
+        }]
+        fresh_raw = [{
+            "infoHash": "newnewnewnewnewnewnewnewnewnewnewnewnewnew",
+            "title": "New 4K Stream",
+            "name": "Torrentio"
+        }]
+        addon = {
+            "name": "Torrentio",
+            "manifest_url": "https://torrentio.strem.fun/manifest.json",
+            "types": ["movie"],
+            "resources": [{"name": "stream", "types": ["movie"], "idPrefixes": ["tt"]}],
+            "enabled": True,
+            "streams_enabled": True
+        }
+
+        cb_calls = []
+        def callback(torrents, is_cached=False, is_complete=False):
+            cb_calls.append((torrents, is_cached, is_complete))
+
+        with patch("src.database.get_addons", return_value=[addon]), \
+             patch("src.database.get_cached_streams", return_value=(stale_data, 600.0)), \
+             patch("src.database.save_cached_streams") as mock_save, \
+             patch("src.api._request_addon_streams", return_value=fresh_raw), \
+             patch("src.api.is_addon_online", return_value=True):
+            res = api.get_torrents_streamed("tt1234567", "movie", callback=callback, force_refresh=False)
+
+            # First callback must be the cached data with is_cached=True, is_complete=False
+            self.assertTrue(len(cb_calls) >= 2)
+            first_call = cb_calls[0]
+            self.assertEqual(first_call[0], stale_data)
+            self.assertTrue(first_call[1])   # is_cached
+            self.assertFalse(first_call[2])  # is_complete is False (revalidation in progress)
+
+            # Final callback must be fresh data with is_complete=True
+            final_call = cb_calls[-1]
+            self.assertFalse(final_call[1])  # is_cached
+            self.assertTrue(final_call[2])   # is_complete
+            mock_save.assert_called()
+
+    def test_get_torrents_streamed_stale_http_link_forces_revalidation(self):
+        from src import api
+        # Cache age is only 30s, but stream link is expired (e.g. debrid link 5 hours old)
+        stale_http_data = [{
+            "url": "https://debrid.io/stream/oldtoken",
+            "is_http": True,
+            "saved_at": time.time() - 20000,
+            "title": "Debrid Stream",
+            "addon_names": ["Torbox"]
+        }]
+        addon = {
+            "name": "Torbox",
+            "manifest_url": "https://torbox.addon/manifest.json",
+            "types": ["movie"],
+            "resources": [{"name": "stream", "types": ["movie"], "idPrefixes": ["tt"]}],
+            "enabled": True,
+            "streams_enabled": True
+        }
+
+        cb_calls = []
+        def callback(torrents, is_cached=False, is_complete=False):
+            cb_calls.append((torrents, is_cached, is_complete))
+
+        with patch("src.database.get_addons", return_value=[addon]), \
+             patch("src.database.get_cached_streams", return_value=(stale_http_data, 30.0)), \
+             patch("src.database.save_cached_streams"), \
+             patch("src.api._request_addon_streams", return_value=[]), \
+             patch("src.api.is_addon_online", return_value=True):
+            api.get_torrents_streamed("tt1234567", "movie", callback=callback, force_refresh=False)
+
+            # First callback delivers stale cache with is_complete=False
+            self.assertTrue(len(cb_calls) >= 1)
+            self.assertEqual(cb_calls[0][0], stale_http_data)
+            self.assertFalse(cb_calls[0][2])  # is_complete=False because link was stale!
+
 
 if __name__ == "__main__":
     unittest.main()
+

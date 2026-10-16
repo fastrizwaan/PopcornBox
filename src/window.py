@@ -2445,7 +2445,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     if not torrents: self.progress_label.set_text("No streams available.")
                     else: self.progress_label.set_text("")
                 elif is_cached:
-                    self.progress_label.set_text("Loaded cached streams...")
+                    self.progress_label.set_text("Loaded cached streams... (Updating)")
 
             self.torrents = torrents or []
             self.update_quality_dropdown()
