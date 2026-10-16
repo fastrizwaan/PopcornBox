@@ -6391,6 +6391,14 @@ class CineWindow(Adw.ApplicationWindow):
             self.discover_back_box.set_visible(False)
             if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
                 self.discover_options_revealer.set_reveal_child(True)
+            if getattr(getattr(self, "discover_box", None), "_has_empty_label", False):
+                self._current_discover_addon = None
+                if hasattr(self, "catalog_dropdown") and self.catalog_dropdown:
+                    self._syncing_discover_toolbar = True
+                    try:
+                        self.catalog_dropdown.set_selected(0)
+                    finally:
+                        self._syncing_discover_toolbar = False
             self.reload_catalog_grid()
         action.connect("activate", on_switch_discover)
         self.add_action(action)
@@ -7225,8 +7233,12 @@ class CineWindow(Adw.ApplicationWindow):
         cat_map = getattr(self, "_dropdown_catalogs_map", {})
         if sort_str in cat_map:
             cat_info = cat_map[sort_str]
+            self.current_catalog = dict(cat_info)
             self._current_discover_addon = cat_info.get("manifest_url")
+            self.library_stack.set_visible_child_name("content")
             self._apply_sort_to_current_catalog()
+            self._refresh_content()
+            return
         else:
             self._current_discover_addon = None
 
@@ -7244,8 +7256,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._refresh_unique_combined_view()
             else:
                 filter_type = getattr(self, "_current_discover_type", "all")
-                filter_addon = getattr(self, "_current_discover_addon", None)
-                self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=filter_addon, force_refresh=True)
+                self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=None, force_refresh=True)
         elif self._is_unique_mode_active() is True:
             self.library_stack.set_visible_child_name("unique")
             self._refresh_unique_combined_view()
@@ -7449,7 +7460,7 @@ class CineWindow(Adw.ApplicationWindow):
         debug_log(f"library_genre_dropdown changed: selected='{val_str}', current_genre='{self.current_genre}', current_year='{getattr(self, 'current_year', None)}'")
 
         # Sync hidden genre_dropdown if visible
-        if hasattr(self, "genre_dropdown") and self.genre_dropdown.get_visible():
+        if hasattr(self, "genre_dropdown") and hasattr(self.genre_dropdown, "get_visible") and self.genre_dropdown.get_visible():
             model = self.genre_dropdown.get_model()
             if model:
                 target_g = self.current_genre or "All"
@@ -7471,6 +7482,14 @@ class CineWindow(Adw.ApplicationWindow):
             else:
                 filter_type = getattr(self, "_current_discover_type", "all")
                 filter_addon = getattr(self, "_current_discover_addon", None)
+                if filter_addon and self.current_genre:
+                    from . import api, database
+                    addon_entry = next((a for a in database.get_addons() if a.get("manifest_url") == filter_addon), None)
+                    if addon_entry:
+                        addon_cats = api.get_addon_catalogs(addon_entry, cache_only=True) or addon_entry.get("catalogs", [])
+                        if not any(api.catalog_supports_genre(c, self.current_genre) for c in addon_cats):
+                            self._current_discover_addon = None
+                            filter_addon = None
                 self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=filter_addon, force_refresh=True)
         elif self._is_unique_mode_active() is True:
             self._refresh_unique_combined_view()
@@ -7598,6 +7617,8 @@ class CineWindow(Adw.ApplicationWindow):
         for addon in all_addons:
             if not addon.get("enabled", True):
                 continue
+            if not addon.get("catalogs_enabled", True):
+                continue
             m_url = addon.get("manifest_url") or ""
             if not m_url or m_url.startswith("builtin:"):
                 continue
@@ -7606,14 +7627,15 @@ class CineWindow(Adw.ApplicationWindow):
 
             matches = False
             if chosen_type == "all":
-                if api.has_catalog_resource(addon) or addon.get("catalogs"):
+                cats = api.get_addon_catalogs(addon, cache_only=True) or addon.get("catalogs", [])
+                if any(api.is_catalog_browsable(c) for c in (cats or [])):
                     matches = True
             else:
                 if api.has_catalog_resource(addon, media_type=chosen_type):
                     matches = True
                 else:
                     cats = api.get_addon_catalogs(addon, cache_only=True)
-                    if any(api.is_catalog_type_match(c, chosen_type, addon.get("name")) for c in cats):
+                    if any(api.is_catalog_type_match(c, chosen_type, addon.get("name")) for c in (cats or [])):
                         matches = True
 
             if matches:
@@ -8296,7 +8318,7 @@ class CineWindow(Adw.ApplicationWindow):
         # Ensure library_stack displays unique and back button is hidden
         if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "unique":
             self.library_stack.set_visible_child_name("unique")
-        if hasattr(self, "discover_back_box"):
+        if hasattr(self, "discover_back_box") and hasattr(self.discover_back_box, "set_visible"):
             self.discover_back_box.set_visible(False)
 
         # Determine media type and filter variables
@@ -8315,6 +8337,11 @@ class CineWindow(Adw.ApplicationWindow):
         from . import api
         catalogs = list(self._get_discover_catalog_list(filter_media_type=filter_type, filter_addon_url=filter_addon))
         catalogs = [c for c in catalogs if api.is_addon_online(c.get("manifest_url", ""))]
+
+        if not catalogs and filter_addon:
+            self._current_discover_addon = None
+            catalogs = list(self._get_discover_catalog_list(filter_media_type=filter_type, filter_addon_url=None))
+            catalogs = [c for c in catalogs if api.is_addon_online(c.get("manifest_url", ""))]
 
         # Prioritize current_catalog if available in compatible catalogs
         if getattr(self, "current_catalog", None):
@@ -9503,7 +9530,7 @@ class CineWindow(Adw.ApplicationWindow):
                     if box:
                         box.remove(grandparent)
 
-    def _get_discover_catalog_list(self, filter_media_type=None, filter_addon_url=None):
+    def _get_discover_catalog_list(self, filter_media_type=None, filter_addon_url=None, force_refresh=False):
         cur_sort = getattr(self, "current_sort", "Popular")
         cur_year = getattr(self, "current_year", None)
         cur_genre = getattr(self, "current_genre", None)
@@ -9511,15 +9538,15 @@ class CineWindow(Adw.ApplicationWindow):
         if cur_lang in ("All Languages", _("All Languages"), "All"):
             cur_lang = None
         cache_key = (filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "")
-        if hasattr(self, "_discover_catalog_list_cache") and cache_key in self._discover_catalog_list_cache:
+        if not force_refresh and hasattr(self, "_discover_catalog_list_cache") and cache_key in self._discover_catalog_list_cache:
             cached_res = list(self._discover_catalog_list_cache[cache_key])
-            from . import api
-            valid_rows = [r for r in cached_res if api.is_addon_online(r.get("manifest_url", ""))]
-            if len(valid_rows) == len(cached_res):
-                debug_log(f"_get_discover_catalog_list CACHE HIT for {cache_key}", f"{len(cached_res)} rows")
-                return cached_res
-            else:
-                self._discover_catalog_list_cache.pop(cache_key, None)
+            if cached_res:
+                from . import api
+                valid_rows = [r for r in cached_res if api.is_addon_online(r.get("manifest_url", ""))]
+                if len(valid_rows) == len(cached_res):
+                    debug_log(f"_get_discover_catalog_list CACHE HIT for {cache_key}", f"{len(cached_res)} rows")
+                    return cached_res
+            self._discover_catalog_list_cache.pop(cache_key, None)
 
         debug_log(f"_get_discover_catalog_list START for {cache_key}")
         from . import database, api
@@ -9546,12 +9573,14 @@ class CineWindow(Adw.ApplicationWindow):
                 continue
             if filter_addon_url and m_url != filter_addon_url:
                 continue
-            if not api.is_addon_online(m_url):
+            if not filter_addon_url and not api.is_addon_online(m_url):
                 continue
-            if not api.is_catalog_provider(addon, media_type=filter_media_type if filter_media_type != "all" else None):
+            if not filter_addon_url and not api.is_catalog_provider(addon, media_type=filter_media_type if filter_media_type != "all" else None):
                 continue
                 
             catalogs = api.get_addon_catalogs(addon, cache_only=True)
+            if not catalogs and filter_addon_url:
+                catalogs = api.get_addon_catalogs(addon, cache_only=False)
             if not catalogs:
                 continue
                 
@@ -9585,7 +9614,8 @@ class CineWindow(Adw.ApplicationWindow):
                 # Check media type filter if specified
                 if filter_media_type and filter_media_type != "all":
                     if not api.is_catalog_type_match(cat, filter_media_type, addon_name):
-                        continue
+                        if not filter_addon_url or any(api.is_catalog_type_match(c, filter_media_type, addon_name) for c in catalogs if api.is_catalog_browsable(c)):
+                            continue
 
                 c_id = cat.get('id', '')
                 c_name = cat.get('name') or c_id
@@ -9704,7 +9734,10 @@ class CineWindow(Adw.ApplicationWindow):
 
         if not hasattr(self, "_discover_catalog_list_cache"):
             self._discover_catalog_list_cache = {}
-        self._discover_catalog_list_cache[cache_key] = rows
+        if rows:
+            self._discover_catalog_list_cache[cache_key] = rows
+        else:
+            self._discover_catalog_list_cache.pop(cache_key, None)
         debug_log(f"_get_discover_catalog_list DONE for {cache_key}", f"Generated {len(rows)} catalog rows")
         return rows
 
@@ -10039,27 +10072,59 @@ class CineWindow(Adw.ApplicationWindow):
             self._update_continue_watching_section()
 
         # Setup Sequential Row Loading List
-        self._discover_catalog_list = self._get_discover_catalog_list(filter_media_type=filter_media_type, filter_addon_url=filter_addon_url)
+        self._discover_catalog_list = self._get_discover_catalog_list(filter_media_type=filter_media_type, filter_addon_url=filter_addon_url, force_refresh=force_refresh)
         self._discover_next_row_index = 0
         self._discover_empty_batches = 0
         self._discover_auto_fill_count = 0
 
         if not self._discover_catalog_list:
-            empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            if filter_addon_url:
+                self._current_discover_addon = None
+
+            empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
             empty_box.set_valign(Gtk.Align.CENTER)
             empty_box.set_halign(Gtk.Align.CENTER)
             empty_box.set_margin_top(60)
-            empty_box.add_css_class("dim-label")
+
             if cur_lang:
                 empty_lbl = Gtk.Label(label=_("No items found for this language."))
             elif cur_genre:
                 empty_lbl = Gtk.Label(label=_("No items found for this genre."))
             elif getattr(self, "current_year", None):
                 empty_lbl = Gtk.Label(label=_("No items found for this year."))
+            elif filter_addon_url:
+                empty_lbl = Gtk.Label(label=_("No catalogs available for this addon."))
             else:
                 empty_lbl = Gtk.Label(label=_("No items found for this filter."))
             empty_lbl.add_css_class("title-3")
+            empty_lbl.add_css_class("dim-label")
             empty_box.append(empty_lbl)
+
+            reset_btn = Gtk.Button(label=_("Show All Catalogs"))
+            reset_btn.add_css_class("pill")
+            reset_btn.add_css_class("suggested-action")
+            reset_btn.set_halign(Gtk.Align.CENTER)
+
+            def _on_reset_clicked(_b):
+                self._current_discover_addon = None
+                self.current_genre = None
+                self.current_year = None
+                self.current_language = None
+                if hasattr(self, "_discover_catalog_list_cache"):
+                    self._discover_catalog_list_cache.clear()
+                if hasattr(self, "catalog_dropdown") and self.catalog_dropdown:
+                    self._syncing_discover_toolbar = True
+                    try:
+                        self.catalog_dropdown.set_selected(0)
+                    finally:
+                        self._syncing_discover_toolbar = False
+                self._sync_library_sort_dropdown_selection("Popular")
+                self._sync_library_genre_dropdown_selection(None)
+                self._refresh_discover_page(filter_media_type=self._current_discover_type or "all", filter_addon_url=None, force_refresh=True)
+
+            reset_btn.connect("clicked", _on_reset_clicked)
+            empty_box.append(reset_btn)
+
             new_box.append(empty_box)
             new_box._has_empty_label = True
             debug_log(f"_refresh_discover_page DONE (empty catalog list)")
@@ -10340,11 +10405,11 @@ class CineWindow(Adw.ApplicationWindow):
                             self._discover_views.pop(v_key, None)
 
                         if not getattr(target_box, "_has_empty_label", False):
-                            empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                            empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
                             empty_box.set_valign(Gtk.Align.CENTER)
                             empty_box.set_halign(Gtk.Align.CENTER)
                             empty_box.set_margin_top(60)
-                            empty_box.add_css_class("dim-label")
+
                             if getattr(self, "current_language", None):
                                 empty_lbl = Gtk.Label(label=_("No items found for this language."))
                             elif getattr(self, "current_year", None):
@@ -10354,7 +10419,34 @@ class CineWindow(Adw.ApplicationWindow):
                             else:
                                 empty_lbl = Gtk.Label(label=_("No items found."))
                             empty_lbl.add_css_class("title-3")
+                            empty_lbl.add_css_class("dim-label")
                             empty_box.append(empty_lbl)
+
+                            reset_btn = Gtk.Button(label=_("Show All Catalogs"))
+                            reset_btn.add_css_class("pill")
+                            reset_btn.add_css_class("suggested-action")
+                            reset_btn.set_halign(Gtk.Align.CENTER)
+
+                            def _on_reset_empty_batch(_b):
+                                self._current_discover_addon = None
+                                self.current_genre = None
+                                self.current_year = None
+                                self.current_language = None
+                                if hasattr(self, "_discover_catalog_list_cache"):
+                                    self._discover_catalog_list_cache.clear()
+                                if hasattr(self, "catalog_dropdown") and self.catalog_dropdown:
+                                    self._syncing_discover_toolbar = True
+                                    try:
+                                        self.catalog_dropdown.set_selected(0)
+                                    finally:
+                                        self._syncing_discover_toolbar = False
+                                self._sync_library_sort_dropdown_selection("Popular")
+                                self._sync_library_genre_dropdown_selection(None)
+                                self._refresh_discover_page(filter_media_type=self._current_discover_type or "all", filter_addon_url=None, force_refresh=True)
+
+                            reset_btn.connect("clicked", _on_reset_empty_batch)
+                            empty_box.append(reset_btn)
+
                             if target_box:
                                 target_box.append(empty_box)
                                 target_box._has_empty_label = True
