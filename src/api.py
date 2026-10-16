@@ -4521,7 +4521,21 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
             base_url += '/'
             
         if actual_media == "series" and season is not None and episode is not None:
-            url = f"{base_url}stream/series/{urllib.parse.quote(str(imdb_id), safe=':')}:{season}:{episode}.json"
+            clean_id = str(imdb_id)
+            if clean_id.startswith(("tt", "tmdb:")):
+                if ":" in clean_id:
+                    parts = clean_id.split(":")
+                    if len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit():
+                        clean_id = ":".join(parts[:-2])
+                    elif len(parts) == 2 and parts[-1].isdigit() and parts[0].startswith("tt"):
+                        clean_id = parts[0]
+                url = f"{base_url}stream/series/{urllib.parse.quote(clean_id, safe=':')}:{season}:{episode}.json"
+            elif clean_id.startswith("kitsu:"):
+                parts = clean_id.split(":")
+                kitsu_base = ":".join(parts[:2]) if len(parts) >= 2 else clean_id
+                url = f"{base_url}stream/series/{urllib.parse.quote(kitsu_base, safe=':')}:{episode}.json"
+            else:
+                url = f"{base_url}stream/series/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
         else:
             url = f"{base_url}stream/{actual_media}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
             
@@ -4806,7 +4820,15 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
         resource_type = matched_media_type if matched_media_type in ["series", "tv", "anime", "tvshow"] else "series"
         if (matched_media_type in ["series", "tv", "anime", "tvshow"] or actual_media in ["series", "anime", "tv"]) and season is not None and episode is not None:
-            url = f"{base_url}stream/{resource_type}/{urllib.parse.quote(clean_cur_id, safe=':')}:{season}:{episode}.json"
+            if clean_cur_id.startswith(("tt", "tmdb:")):
+                url = f"{base_url}stream/{resource_type}/{urllib.parse.quote(clean_cur_id, safe=':')}:{season}:{episode}.json"
+            elif clean_cur_id.startswith("kitsu:"):
+                parts = clean_cur_id.split(":")
+                kitsu_base = ":".join(parts[:2]) if len(parts) >= 2 else clean_cur_id
+                url = f"{base_url}stream/{resource_type}/{urllib.parse.quote(kitsu_base, safe=':')}:{episode}.json"
+            else:
+                # Custom episode ID (e.g. hse-..., hmm-..., htv-..., yt_id:..., etc.)
+                url = f"{base_url}stream/{resource_type}/{urllib.parse.quote(str(cur_id), safe=':')}.json"
         else:
             url = f"{base_url}stream/{matched_media_type}/{urllib.parse.quote(str(cur_id), safe=':')}.json"
             

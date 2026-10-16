@@ -362,6 +362,30 @@ class TestStaleStreamRefresh(unittest.TestCase):
         res = api.get_torrents_streamed("tt1234567", "movie", abort_event=abort)
         self.assertEqual(res, [])
 
+    def test_get_torrents_streamed_custom_episode_id_not_mangled(self):
+        from src import api
+        addon = {
+            "name": "Custom Stream Addon",
+            "manifest_url": "https://custom.addon/manifest.json",
+            "types": ["series"],
+            "resources": [{"name": "stream", "types": ["series"], "idPrefixes": ["custom-"]}],
+            "enabled": True,
+            "streams_enabled": True
+        }
+        requested_urls = []
+        def fake_request(addon_dict, url, timeout=8, abort_event=None):
+            requested_urls.append(url)
+            return []
+
+        with patch("src.database.get_addons", return_value=[addon]), \
+             patch("src.database.get_cached_streams", return_value=None), \
+             patch("src.api._request_addon_streams", side_effect=fake_request), \
+             patch("src.api.is_addon_online", return_value=True):
+            api.get_torrents_streamed("custom-episode-123", "series", season=1, episode=1)
+
+        self.assertEqual(len(requested_urls), 1)
+        self.assertEqual(requested_urls[0], "https://custom.addon/stream/series/custom-episode-123.json")
+
 
 if __name__ == "__main__":
     unittest.main()

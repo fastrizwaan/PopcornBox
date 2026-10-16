@@ -1242,6 +1242,13 @@ class MovieDetailsPage(Gtk.Overlay):
         if sel_prov_name != "All Providers":
             filtered_streams = [t for t in filtered_streams if sel_prov_name in t.get("addon_names", [])]
 
+        if not t_list:
+            no_s_lbl = Gtk.Label(label=_("No streams available"))
+            no_s_lbl.add_css_class("dim-label")
+            no_s_lbl.set_margin_top(16)
+            self.streams_list_box.append(no_s_lbl)
+            return
+
         if not filtered_streams:
             no_s_lbl = Gtk.Label(label="No streams match active provider/source filters")
             no_s_lbl.add_css_class("dim-label")
