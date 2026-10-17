@@ -546,6 +546,14 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                   </object>
                                 </child>
                                 <child>
+                                  <object class="GtkSpinner" id="discover_spinner">
+                                    <property name="valign">3</property>
+                                    <property name="spinning">false</property>
+                                    <property name="visible">false</property>
+                                    <property name="tooltip-text" translatable="yes">Loading...</property>
+                                  </object>
+                                </child>
+                                <child>
                                   <object class="GtkToggleButton" id="discover_search_btn">
                                     <property name="icon-name">filter-symbolic</property>
                                     <property name="valign">3</property>
@@ -574,6 +582,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                               <object class="GtkSearchEntry" id="discover_search_entry">
                                 <property name="width-request">220</property>
                                 <property name="placeholder-text" translatable="yes">Filter loaded results...</property>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkCheckButton" id="discover_title_only_check">
+                                <property name="label" translatable="yes">Title Only</property>
+                                <property name="valign">3</property>
+                                <property name="tooltip-text" translatable="yes">Filter by title only instead of genres or description</property>
                               </object>
                             </child>
                           </object>

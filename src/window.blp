@@ -345,6 +345,13 @@ template $CineWindow: Adw.ApplicationWindow {
                   tooltip-text: _("Deduplicate media across multiple provider streams/catalogs");
                 }
 
+                Spinner discover_spinner {
+                  valign: center;
+                  spinning: false;
+                  visible: false;
+                  tooltip-text: _("Loading...");
+                }
+
                 ToggleButton discover_search_btn {
                   icon-name: "filter-symbolic";
                   valign: center;
@@ -367,6 +374,12 @@ template $CineWindow: Adw.ApplicationWindow {
               SearchEntry discover_search_entry {
                 width-request: 220;
                 placeholder-text: _("Filter loaded results...");
+              }
+
+              CheckButton discover_title_only_check {
+                label: _("Title Only");
+                valign: center;
+                tooltip-text: _("Filter by title only instead of genres or description");
               }
             }
 

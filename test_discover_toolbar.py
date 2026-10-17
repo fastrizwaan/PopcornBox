@@ -21,7 +21,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path(__file__).resolve().parent / "build-dir/files/share/popcorn-box/cine.gresource"
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -74,6 +74,8 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.language_dropdown = Gtk.DropDown()
         self.win.unique_check = Gtk.CheckButton()
         self.win.library_unique_check = Gtk.CheckButton()
+        self.win.discover_title_only_check = Gtk.CheckButton()
+        self.win._is_discover_search_title_only = lambda: CineWindow._is_discover_search_title_only(self.win)
         self.win.filter_toggle_btn = Gtk.ToggleButton()
 
         self.win._syncing_discover_toolbar = False
@@ -748,6 +750,59 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._apply_sort_to_current_catalog.assert_called_once()
         self.win._refresh_content.assert_called_once()
 
+    def test_unique_toggled_preserves_unique_view_when_search_query_active(self):
+        """When an active search query is present, toggling unique stays on 'unique' view and refreshes."""
+        self.win.current_discover_search_query = "final"
+        self.win._discover_result_search_query = MagicMock(return_value="final")
+        self.win.library_stack.set_visible_child_name("unique")
+        self.win.unique_check.set_active(False)
+
+        self.win._on_unique_toggled(self.win.unique_check)
+        self.assertEqual(self.win.library_stack.get_visible_child_name(), "unique")
+        self.win._refresh_unique_combined_view.assert_called_once()
+        self.win._refresh_discover_page.assert_not_called()
+
+    def test_title_only_toggled_refreshes_unique_when_query_active(self):
+        """When an active search query is present, toggling title only switches to 'unique' and refreshes."""
+        self.win.current_discover_search_query = "final"
+        self.win._discover_result_search_query = MagicMock(return_value="final")
+        self.win.library_stack.set_visible_child_name("discover")
+        self.win.discover_title_only_check.set_active(True)
+
+        CineWindow._on_discover_title_only_toggled(self.win, self.win.discover_title_only_check)
+        self.assertEqual(self.win.library_stack.get_visible_child_name(), "unique")
+        self.win._refresh_unique_combined_view.assert_called_once()
+
+    def test_filter_matches_when_unique_disabled(self):
+        """_discover_result_matches_item and _is_unique_item with unique disabled allow matching items."""
+        self.win.current_discover_search_query = "final"
+        self.win._discover_result_search_query = MagicMock(return_value="final")
+        self.win._is_unique_mode_active = MagicMock(return_value=False)
+
+        # Title only disabled: matches title or description
+        self.win.discover_title_only_check.set_active(False)
+        item_title_match = {"title": "Final Destination", "id": "tt01", "manifest_url": "url1"}
+        item_desc_match = {"title": "Some Movie", "description": "The final battle", "id": "tt02", "manifest_url": "url1"}
+        item_no_match = {"title": "Unrelated Movie", "description": "Nothing here", "id": "tt03", "manifest_url": "url1"}
+
+        self.assertTrue(CineWindow._discover_result_matches_item(self.win, item_title_match))
+        self.assertTrue(CineWindow._discover_result_matches_item(self.win, item_desc_match))
+        self.assertFalse(CineWindow._discover_result_matches_item(self.win, item_no_match))
+
+        # Title only enabled: matches title only
+        self.win.discover_title_only_check.set_active(True)
+        self.assertTrue(CineWindow._discover_result_matches_item(self.win, item_title_match))
+        self.assertFalse(CineWindow._discover_result_matches_item(self.win, item_desc_match))
+        self.assertFalse(CineWindow._discover_result_matches_item(self.win, item_no_match))
+
+        # Unique disabled allows same movie from different addons
+        self.win.unique_seen_ids = set()
+        self.win.unique_seen_keys = set()
+        item_addon1 = {"title": "Final Destination", "id": "tt01", "manifest_url": "url1"}
+        item_addon2 = {"title": "Final Destination", "id": "tt01", "manifest_url": "url2"}
+        self.assertTrue(CineWindow._is_unique_item(self.win, item_addon1))
+        self.assertTrue(CineWindow._is_unique_item(self.win, item_addon2))
+
     def test_window_ui_headerbar_has_filter_toggle_and_no_dropdowns(self):
         """window.ui must contain filter_toggle_btn with filter-symbolic and remove library dropdowns."""
         import xml.etree.ElementTree as ET
@@ -1098,6 +1153,92 @@ class TestDiscoverToolbar(unittest.TestCase):
             child = child.get_next_sibling()
 
         self.assertEqual(card_count, 36)
+
+    def test_discover_search_changed_filters_locally_without_reload(self):
+        """Typing in search entry filters locally immediately via _on_discover_results_search_changed and does NOT reload catalog grid."""
+        self.win._on_discover_results_search_changed = MagicMock()
+        self.win.reload_catalog_grid = MagicMock()
+        self.win._discover_search_debounce_timer = None
+
+        # Simulate typing "maid"
+        CineWindow._on_discover_search_changed(self.win, None)
+
+        # Immediate local UI filtering
+        self.win._on_discover_results_search_changed.assert_called_once()
+        self.win.reload_catalog_grid.assert_not_called()
+
+    def test_discover_search_activated_keeps_local_filter(self):
+        """Pressing Enter in search entry triggers local filtering and does NOT reload catalog grid."""
+        self.win._on_discover_results_search_changed = MagicMock()
+        self.win.reload_catalog_grid = MagicMock()
+
+        CineWindow._on_discover_search_activated(self.win, None)
+        self.win._on_discover_results_search_changed.assert_called_once()
+        self.win.reload_catalog_grid.assert_not_called()
+
+    def test_discover_search_mode_toggled_off_clears_query_and_filters_locally(self):
+        """Toggling search mode off clears entry and filters locally without calling reload_catalog_grid."""
+        self.win.discover_search_entry = Gtk.Entry()
+        self.win.discover_search_entry.set_text("maid")
+        self.win.advanced_search_box = Gtk.Box()
+        self.win.reload_catalog_grid = MagicMock()
+        self.win._on_discover_results_search_changed = MagicMock()
+        self.win.current_discover_search_query = "maid"
+        self.win._discover_search_debounce_timer = None
+
+        btn = Gtk.ToggleButton()
+        btn.set_active(False)
+        CineWindow._on_discover_search_mode_toggled(self.win, btn)
+
+        self.assertEqual(self.win.discover_search_entry.get_text(), "")
+        self.assertEqual(self.win.current_discover_search_query, "")
+        self.win._on_discover_results_search_changed.assert_called_once()
+        self.win.reload_catalog_grid.assert_not_called()
+
+    def test_discover_search_title_only_matching(self):
+        """When Title Only is enabled, matches title/name only and ignores genre/description."""
+        item = {
+            "id": "tt123",
+            "title": "The Dark Knight",
+            "description": "Batman fights the Joker in an action packed thriller",
+            "genres": ["Action", "Crime", "Drama"]
+        }
+        self.win._discover_result_search_query = MagicMock(return_value="action")
+        self.win.current_discover_search_query = "action"
+        
+        # 1. When Title Only is OFF, matches because 'action' is in genres and description
+        self.win.discover_title_only_check = MagicMock()
+        self.win.discover_title_only_check.get_active.return_value = False
+        self.assertTrue(CineWindow._discover_result_matches_item(self.win, item))
+
+        # 2. When Title Only is ON, does NOT match because 'action' is not in title
+        self.win.discover_title_only_check.get_active.return_value = True
+        self.assertFalse(CineWindow._discover_result_matches_item(self.win, item))
+
+        # 3. When Title Only is ON and query is 'knight', DOES match
+        self.win._discover_result_search_query = MagicMock(return_value="knight")
+        self.win.current_discover_search_query = "knight"
+        self.assertTrue(CineWindow._discover_result_matches_item(self.win, item))
+
+    def test_get_cached_items_by_search_title_only(self):
+        """database.get_cached_items_by_search filters by title only when title_only=True."""
+        from src import database
+        item1 = {"id": "tt9001", "title": "Space Odyssey", "description": "A journey to Jupiter", "genres": ["Sci-Fi"]}
+        item2 = {"id": "tt9002", "title": "Interstellar", "description": "Journey through space and time", "genres": ["Sci-Fi"]}
+        database.save_cached_metadata("tt9001", "movie", item1)
+        database.save_cached_metadata("tt9002", "movie", item2)
+
+        # 'space' matches tt9001 (title) and tt9002 (description) when title_only=False
+        all_matches = database.get_cached_items_by_search("space", title_only=False)
+        all_ids = [it.get("id") for it in all_matches]
+        self.assertIn("tt9001", all_ids)
+        self.assertIn("tt9002", all_ids)
+
+        # 'space' matches ONLY tt9001 (title) when title_only=True
+        title_matches = database.get_cached_items_by_search("space", title_only=True)
+        title_ids = [it.get("id") for it in title_matches]
+        self.assertIn("tt9001", title_ids)
+        self.assertNotIn("tt9002", title_ids)
 
 
 if __name__ == "__main__":

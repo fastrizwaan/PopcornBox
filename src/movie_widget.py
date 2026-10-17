@@ -466,9 +466,14 @@ class MovieWidget(Gtk.Box):
         item_id = movie_data.get("imdb_id") or movie_data.get("id")
         item_type = movie_data.get("type", "movie")
         poster_url = extract_image_url(movie_data)
-        has_valid_title = bool(movie_data.get("title") and movie_data.get("title") != "Unknown")
+        has_valid_title = bool(
+            (movie_data.get("title") and movie_data.get("title") != "Unknown")
+            or (movie_data.get("name") and movie_data.get("name") != "Unknown")
+        )
+        if not movie_data.get("title") and movie_data.get("name"):
+            movie_data["title"] = movie_data["name"]
 
-        # Only check metadata cache if essential info is missing, avoiding main thread SQLite lock contention
+        # Only check metadata cache if essential info (poster or title) is missing, avoiding main thread SQLite lock contention
         if item_id and (not poster_url or not has_valid_title):
             try:
                 cached = database.get_cached_metadata(item_id, item_type)
@@ -476,6 +481,7 @@ class MovieWidget(Gtk.Box):
                     c_title = cached.get("title") or cached.get("name")
                     if c_title and c_title != "Unknown" and not has_valid_title:
                         movie_data["title"] = c_title
+                        has_valid_title = True
                     c_poster = cached.get("medium_cover_image") or cached.get("poster")
                     if c_poster and not poster_url:
                         poster_url = c_poster
@@ -483,8 +489,25 @@ class MovieWidget(Gtk.Box):
                     c_year = str(cached.get("year", "")) if cached.get("year") else ""
                     if c_year and not movie_data.get("year"):
                         movie_data["year"] = c_year
+                    if cached.get("genres") and not movie_data.get("genres"):
+                        movie_data["genres"] = list(cached["genres"])
+                    c_desc = cached.get("description") or cached.get("overview")
+                    if c_desc and not movie_data.get("description"):
+                        movie_data["description"] = c_desc
+                    if cached.get("imdbRating") and not movie_data.get("imdbRating"):
+                        movie_data["imdbRating"] = str(cached["imdbRating"])
+                    if cached.get("runtime") and not movie_data.get("runtime"):
+                        movie_data["runtime"] = str(cached["runtime"])
+                    if cached.get("cast") and not movie_data.get("cast"):
+                        movie_data["cast"] = list(cached["cast"])
             except Exception:
                 pass
+            if str(item_id).startswith("tt") and (not has_valid_title or not poster_url):
+                try:
+                    from . import api
+                    api.queue_metadata_hydration(str(item_id), item_type, item_dict=movie_data)
+                except Exception:
+                    pass
 
         with _IMAGE_GEN_LOCK:
             task_gen = _IMAGE_GENERATION_ID

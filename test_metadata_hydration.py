@@ -410,5 +410,113 @@ class TestMetadataHydration(unittest.TestCase):
             self.assertEqual(det.get("description"), "Full synopsis from Cinemeta.")
             self.assertEqual(det.get("runtime"), "145 min")
 
+    def test_hydrate_items_from_metadata_batch(self):
+        """database.hydrate_items_from_metadata enriches bare items with genres and year from SQLite cache."""
+        meta1 = {
+            "id": "tt1111111",
+            "name": "The Housemaid",
+            "title": "The Housemaid",
+            "year": "2024",
+            "genres": ["Thriller", "Drama"],
+            "description": "A gripping domestic thriller about a secretive housemaid."
+        }
+        database.save_cached_metadata("tt1111111", "movie", meta1)
+
+        items = [
+            {"id": "tt1111111", "title": "The Housemaid", "type": "movie"},
+            {"id": "tt2222222", "title": "Unknown Film", "type": "movie"}
+        ]
+        hydrated_count = database.hydrate_items_from_metadata(items, media_type="movie")
+        self.assertEqual(hydrated_count, 1)
+        self.assertEqual(items[0].get("genres"), ["Thriller", "Drama"])
+        self.assertEqual(items[0].get("year"), "2024")
+        self.assertIn("gripping domestic thriller", items[0].get("description", ""))
+        self.assertIsNone(items[1].get("genres"))
+
+    def test_get_cached_items_by_search(self):
+        """database.get_cached_items_by_search returns items matching query in title or description."""
+        meta = {
+            "id": "tt3333333",
+            "name": "The Maid in Manhattan",
+            "year": "2002",
+            "genres": ["Comedy", "Romance"],
+            "description": "A hotel maid falls for a politician."
+        }
+        database.save_cached_metadata("tt3333333", "movie", meta)
+
+        results = database.get_cached_items_by_search("maid", media_type="movie")
+        self.assertTrue(len(results) >= 1)
+        found_ids = [r.get("id") for r in results]
+        self.assertIn("tt3333333", found_ids)
+
+    def test_fetch_items_pre_hydrates_before_genre_filter(self):
+        """api.fetch_items hydrates bare manifest items from DB before applying genre filter."""
+        meta = {
+            "id": "tt4444444",
+            "name": "Hidden Mystery",
+            "year": "2023",
+            "genres": ["Mystery", "Sci-Fi"],
+            "description": "An enigmatic story."
+        }
+        database.save_cached_metadata("tt4444444", "movie", meta)
+
+        # Raw response has empty genres (like scrapers or sparse manifests)
+        raw_items = [
+            {"id": "tt4444444", "name": "Hidden Mystery", "type": "movie", "genres": []}
+        ]
+        with patch("src.api._get_cached_request", return_value={"metas": raw_items}):
+            # Filter by "Mystery" - should succeed because pre-hydration fills in ["Mystery", "Sci-Fi"]
+            res = api.fetch_items("movie", catalog_id="top", genre="Mystery", catalog_url="https://fake-addon/manifest.json")
+            self.assertEqual(len(res), 1)
+            self.assertEqual(res[0]["id"], "tt4444444")
+            self.assertEqual(res[0]["genres"], ["Mystery", "Sci-Fi"])
+
+    def test_search_results_batch_hydration(self):
+        """When searching, items in returned batches are hydrated from metadata cache."""
+        meta = {
+            "id": "tt5555555",
+            "name": "Search Target",
+            "year": "2025",
+            "genres": ["Action", "Thriller"],
+            "description": "A high-stakes thriller."
+        }
+        database.save_cached_metadata("tt5555555", "movie", meta)
+
+        raw_search_items = [
+            {"id": "tt5555555", "name": "Search Target", "type": "movie"}
+        ]
+        with patch("src.api._get_cached_request", return_value={"metas": raw_search_items}):
+            batch_result = []
+            res = api.fetch_items("movie", query="Search", catalog_url="https://fake-addon/manifest.json", on_item_found=lambda b: batch_result.extend(b))
+            self.assertEqual(len(res), 1)
+            self.assertEqual(res[0].get("genres"), ["Action", "Thriller"])
+            self.assertEqual(res[0].get("year"), "2025")
+            self.assertIn("high-stakes thriller", res[0].get("description", ""))
+            self.assertEqual(len(batch_result), 1)
+            self.assertEqual(batch_result[0].get("genres"), ["Action", "Thriller"])
+
+    def test_movie_widget_enriches_missing_metadata(self):
+        """MovieWidget initializes with enriched metadata from local database cache."""
+        from src.movie_widget import MovieWidget
+        meta = {
+            "id": "tt6666666",
+            "title": "Widget Film",
+            "year": "2021",
+            "genres": ["Horror", "Mystery"],
+            "description": "A spooky movie.",
+            "imdbRating": "7.5",
+            "runtime": "90 min"
+        }
+        database.save_cached_metadata("tt6666666", "movie", meta)
+
+        bare_data = {"id": "tt6666666", "title": "Widget Film", "type": "movie"}
+        card = MovieWidget(bare_data, lambda *a: None)
+        self.assertEqual(bare_data.get("genres"), ["Horror", "Mystery"])
+        self.assertEqual(bare_data.get("year"), "2021")
+        self.assertEqual(bare_data.get("description"), "A spooky movie.")
+        self.assertEqual(bare_data.get("imdbRating"), "7.5")
+        self.assertEqual(bare_data.get("runtime"), "90 min")
+
+
 if __name__ == "__main__":
     unittest.main()

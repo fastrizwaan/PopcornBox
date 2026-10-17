@@ -341,9 +341,10 @@ class TestCategoryMenus(unittest.TestCase):
             )
 
         # URL should NOT have genre=Animation appended (which would 404 on the addon server)
-        self.assertEqual(len(requested_urls), 1)
-        self.assertTrue(requested_urls[0].endswith("/catalog/movie/torrentfreak-top10.json"))
-        self.assertNotIn("genre=", requested_urls[0])
+        catalog_urls = [u for u in requested_urls if "torrentfreak-top10" in u]
+        self.assertEqual(len(catalog_urls), 1)
+        self.assertTrue(catalog_urls[0].endswith("/catalog/movie/torrentfreak-top10.json"))
+        self.assertNotIn("genre=", catalog_urls[0])
 
         # Client-side filter should keep only Toy Story 5
         self.assertEqual(len(items), 1)

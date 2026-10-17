@@ -127,6 +127,20 @@ def _find_stream_index_exact(stream, stream_list):
 def _stream_matches_provider(stream, provider_name):
     return api.stream_matches_provider(stream, provider_name)
 
+def _extract_active_discover_query(win) -> str:
+    q_fn = getattr(win, "_discover_result_search_query", None)
+    if callable(q_fn):
+        try:
+            res = q_fn()
+            if isinstance(res, str):
+                return res.strip()
+        except Exception:
+            pass
+    cur_q = getattr(win, "current_discover_search_query", None)
+    if isinstance(cur_q, str) and cur_q.strip():
+        return cur_q.strip()
+    return ""
+
 def _find_best_matching_stream(target_stream, candidate_streams, preferred_provider=None, preferred_quality=None):
     return api.find_best_matching_stream(target_stream, candidate_streams, preferred_provider=preferred_provider, preferred_quality=preferred_quality)
 
@@ -770,6 +784,11 @@ class MovieDetailsPage(Gtk.Overlay):
 
         self.provider_dropdown.connect("notify::selected", on_provider_changed)
         self.stream_header_box.append(self.provider_dropdown)
+        self.provider_spinner = Gtk.Spinner()
+        self.provider_spinner.set_size_request(16, 16)
+        self.provider_spinner.set_valign(Gtk.Align.CENTER)
+        self.provider_spinner.set_visible(False)
+        self.stream_header_box.append(self.provider_spinner)
         self.update_provider_dropdown_model()
 
         # Quality Row Box (Quality Pills & Check Live Button)
@@ -1212,6 +1231,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if hasattr(self, 'check_live_btn'):
             self.check_live_btn.set_sensitive(False)
             self.check_live_btn.set_label("⏳ Checking...")
+        self._set_provider_spinner_active(True)
 
         if hasattr(self, '_live_check_abort_event'):
             self._live_check_abort_event.set()
@@ -1232,12 +1252,15 @@ class MovieDetailsPage(Gtk.Overlay):
                     futures = [executor.submit(check_stream, t) for t in http_streams]
                     concurrent.futures.wait(futures)
             except (RuntimeError, Exception):
+                self._set_provider_spinner_active(False)
                 return
 
             if _is_event_set(abort_event) or not self._is_current_details_page():
+                self._set_provider_spinner_active(False)
                 return
 
             def on_complete():
+                self._set_provider_spinner_active(False)
                 if hasattr(self, 'check_live_btn'):
                     self.check_live_btn.set_sensitive(True)
                     self.check_live_btn.set_label("⚡ Check Direct")
@@ -1248,6 +1271,22 @@ class MovieDetailsPage(Gtk.Overlay):
             GLib.idle_add(on_complete)
 
         threading.Thread(target=live_check, daemon=True).start()
+
+    def _set_provider_spinner_active(self, active: bool):
+        def _apply():
+            spinner = getattr(self, "provider_spinner", None)
+            if spinner is not None and hasattr(spinner, "set_visible"):
+                is_act = bool(active)
+                spinner.set_visible(is_act)
+                if is_act:
+                    spinner.start()
+                else:
+                    spinner.stop()
+            return False
+        if threading.current_thread() is threading.main_thread():
+            _apply()
+        else:
+            GLib.idle_add(_apply)
 
     def update_provider_dropdown_model(self):
         if not hasattr(self, 'provider_dropdown'): return
@@ -1289,6 +1328,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 self._ignore_provider_signals = False
 
     def render_streams_list(self):
+        self._set_provider_spinner_active(getattr(self, '_fetching_streams', False))
         while child := self.streams_list_box.get_first_child():
             self.streams_list_box.remove(child)
 
@@ -2560,6 +2600,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def destroy_page(self):
         self._destroyed = True
+        self._set_provider_spinner_active(False)
         if hasattr(self, 'page_abort_event') and self.page_abort_event:
             self.page_abort_event.set()
         if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
@@ -2606,6 +2647,7 @@ class MovieDetailsPage(Gtk.Overlay):
             if getattr(self, 'stream_abort_event', None):
                 self.stream_abort_event.set()
             self._fetching_streams = False
+            self._set_provider_spinner_active(False)
             self.torrents = []
             self.current_t_list = []
             self.render_streams_list()
@@ -2627,6 +2669,7 @@ class MovieDetailsPage(Gtk.Overlay):
         self._last_fetch_key = fetch_key
 
         self._fetching_streams = True
+        self._set_provider_spinner_active(True)
         self._stream_loading_status = "Searching streams..."
         if hasattr(self, 'progress_label') and self.progress_label:
             self.progress_label.set_text("Loading streams...")
@@ -2664,6 +2707,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
             if is_complete:
                 self._fetching_streams = False
+                self._set_provider_spinner_active(False)
                 if hasattr(self, 'progress_label') and self.progress_label:
                     if not torrents: self.progress_label.set_text("No streams available.")
                     else: self.progress_label.set_text("")
@@ -3761,6 +3805,7 @@ class CineWindow(Adw.ApplicationWindow):
     discover_search_btn: Gtk.ToggleButton = Gtk.Template.Child()
     advanced_search_box: Gtk.Box = Gtk.Template.Child()
     discover_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
+    discover_title_only_check: Gtk.CheckButton = Gtk.Template.Child()
     type_dropdown: Gtk.DropDown = Gtk.Template.Child()
     catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
     section_dropdown: Gtk.DropDown = Gtk.Template.Child()
@@ -3768,6 +3813,7 @@ class CineWindow(Adw.ApplicationWindow):
     year_dropdown: Gtk.DropDown = Gtk.Template.Child()
     language_dropdown: Gtk.DropDown = Gtk.Template.Child()
     unique_check: Gtk.CheckButton = Gtk.Template.Child()
+    discover_spinner: Gtk.Spinner = Gtk.Template.Child()
     filter_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
     unique_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
     unique_flowbox: Gtk.FlowBox = Gtk.Template.Child()
@@ -6640,6 +6686,7 @@ class CineWindow(Adw.ApplicationWindow):
         def on_switch_home(action, parameter):
             self._cancel_all_background_fetching()
             self._set_discover_results_search_visible(False)
+            self._set_discover_spinner_active(True)
             self.category_btn_stack.set_visible_child_name("home")
             # Home is a stable landing page: keep its Continue Watching row
             # visible and do not let Discover's Unique mode take over it.
@@ -6681,6 +6728,7 @@ class CineWindow(Adw.ApplicationWindow):
         def on_switch_discover(action, parameter):
             self._cancel_all_background_fetching()
             self._set_discover_results_search_visible(False)
+            self._set_discover_spinner_active(True)
             self.category_btn_stack.set_visible_child_name("discover")
             if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn:
                 self.filter_toggle_btn.set_visible(False)
@@ -6890,6 +6938,7 @@ class CineWindow(Adw.ApplicationWindow):
             from . import api
             self._cancel_all_background_fetching()
             self._set_discover_results_search_visible(False)
+            self._set_discover_spinner_active(True)
             self.category_btn_stack.set_visible_child_name("movies")
             if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
                 self.discover_options_revealer.set_reveal_child(False)
@@ -6942,6 +6991,7 @@ class CineWindow(Adw.ApplicationWindow):
             from . import api
             self._cancel_all_background_fetching()
             self._set_discover_results_search_visible(False)
+            self._set_discover_spinner_active(True)
             self.category_btn_stack.set_visible_child_name("series")
             if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
                 self.discover_options_revealer.set_reveal_child(False)
@@ -6999,6 +7049,7 @@ class CineWindow(Adw.ApplicationWindow):
                 return
             self._cancel_all_background_fetching()
             self._set_discover_results_search_visible(False)
+            self._set_discover_spinner_active(True)
             self.category_btn_stack.set_visible_child_name("anime")
             if hasattr(self, "discover_options_revealer") and self.discover_options_revealer:
                 self.discover_options_revealer.set_reveal_child(False)
@@ -7253,6 +7304,8 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             self._search_pool = None
+
+        self._set_discover_spinner_active(False)
 
     def update_category_buttons_visibility(self):
         show_movies = settings.get_boolean("show-movies-button")
@@ -7520,6 +7573,8 @@ class CineWindow(Adw.ApplicationWindow):
         if not selected_item:
             return
         self._cancel_all_background_fetching()
+        self._clear_discover_search_on_filter_change()
+        self._set_discover_spinner_active(True)
         sort_str = selected_item.get_string()
         self.current_sort = sort_str
 
@@ -7742,6 +7797,8 @@ class CineWindow(Adw.ApplicationWindow):
         if not selected_item:
             return
         self._cancel_all_background_fetching()
+        self._clear_discover_search_on_filter_change()
+        self._set_discover_spinner_active(True)
         val_str = selected_item.get_string()
 
         cur_sort = getattr(self, "current_sort", "Popular")
@@ -7903,6 +7960,11 @@ class CineWindow(Adw.ApplicationWindow):
                 self.unique_check.connect("toggled", self._on_discover_unique_toggled)
             if hasattr(self, "discover_search_entry") and self.discover_search_entry:
                 self.discover_search_entry.connect("search-changed", self._on_discover_search_changed)
+                self.discover_search_entry.connect("activate", self._on_discover_search_activated)
+            if hasattr(self, "discover_title_only_check") and self.discover_title_only_check:
+                title_only_saved = database.get_setting("discover_title_only", False)
+                self.discover_title_only_check.set_active(bool(title_only_saved))
+                self.discover_title_only_check.connect("toggled", self._on_discover_title_only_toggled)
             for flowbox_name in ("content_flowbox", "unique_flowbox"):
                 flowbox = getattr(self, flowbox_name, None)
                 if flowbox:
@@ -7910,21 +7972,132 @@ class CineWindow(Adw.ApplicationWindow):
         finally:
             self._syncing_discover_toolbar = False
 
+    def _set_discover_spinner_active(self, active: bool):
+        def _apply():
+            spinner = getattr(self, "discover_spinner", None)
+            if spinner is not None and hasattr(spinner, "set_visible"):
+                is_act = bool(active)
+                spinner.set_visible(is_act)
+                if is_act:
+                    spinner.start()
+                else:
+                    spinner.stop()
+            return False
+        if threading.current_thread() is threading.main_thread():
+            _apply()
+        else:
+            GLib.idle_add(_apply)
+
+    def _clear_discover_search_on_filter_change(self):
+        if hasattr(self, "discover_search_entry") and self.discover_search_entry:
+            if self.discover_search_entry.get_text():
+                self._clearing_search_for_filter = True
+                try:
+                    self.discover_search_entry.set_text("")
+                finally:
+                    self._clearing_search_for_filter = False
+        self.current_discover_search_query = ""
+
     def _set_discover_results_search_visible(self, visible):
+        box = getattr(self, "advanced_search_box", None)
+        if box and hasattr(box, "set_visible"):
+            box.set_visible(bool(visible))
         button = getattr(self, "discover_search_btn", None)
-        if button:
+        if button and hasattr(button, "get_active") and button.get_active() != bool(visible):
             button.set_active(bool(visible))
+        if not visible:
+            self._clear_discover_search_on_filter_change()
+
+    def _create_empty_filter_box(self, message):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        box._is_empty_box = True
+        box.set_valign(Gtk.Align.CENTER)
+        box.set_halign(Gtk.Align.CENTER)
+        box.set_margin_top(60)
+        box.add_css_class("dim-label")
+
+        lbl = Gtk.Label(label=message)
+        lbl.add_css_class("title-3")
+        box.append(lbl)
+
+        active_q = _extract_active_discover_query(self)
+        if active_q:
+            clear_btn = Gtk.Button(label=_("Clear Search Filter"))
+            clear_btn.set_halign(Gtk.Align.CENTER)
+            clear_btn.add_css_class("suggested-action")
+            clear_btn.add_css_class("pill")
+            def _on_clear_clicked(_btn):
+                self._clear_discover_search_on_filter_change()
+                self._set_discover_results_search_visible(False)
+                self._on_discover_results_search_changed()
+                self.reload_catalog_grid()
+            clear_btn.connect("clicked", _on_clear_clicked)
+            box.append(clear_btn)
+        return box
+
+    def _update_flowbox_empty_state(self, flowbox):
+        if not flowbox:
+            return
+        has_visible_cards = False
+        empty_box = None
+        ch = flowbox.get_first_child()
+        while ch is not None:
+            widget = ch.get_child() if hasattr(ch, "get_child") else ch
+            if widget is not None and getattr(widget, "_is_empty_box", False):
+                empty_box = ch
+            elif ch.get_child_visible():
+                has_visible_cards = True
+            ch = ch.get_next_sibling()
+
+        if has_visible_cards:
+            if empty_box is not None:
+                flowbox.remove(empty_box)
+        else:
+            is_fetching = False
+            if flowbox == getattr(self, "unique_flowbox", None):
+                is_fetching = getattr(self, "is_fetching_unique", False)
+            elif flowbox == getattr(self, "content_flowbox", None):
+                is_fetching = getattr(self, "is_fetching_content", False)
+
+            if not is_fetching:
+                active_q = _extract_active_discover_query(self)
+                cur_genre = getattr(self, "current_genre", None)
+                if cur_genre in ("All Genres", _("All Genres"), "All"):
+                    cur_genre = None
+                if active_q and cur_genre:
+                    msg = _(f"No {cur_genre} items matching '{active_q}'.")
+                elif active_q:
+                    msg = _(f"No items matching '{active_q}'.")
+                elif getattr(self, "current_language", None):
+                    msg = _("No items found for this language.")
+                elif cur_genre:
+                    msg = _("No items found for this genre.")
+                elif getattr(self, "current_year", None):
+                    msg = _("No items found for this year.")
+                else:
+                    msg = _("No items found for this filter.")
+                if empty_box is None:
+                    new_empty = CineWindow._create_empty_filter_box(self, msg)
+                    flowbox.append(new_empty)
+                else:
+                    w = empty_box.get_child() if hasattr(empty_box, "get_child") else empty_box
+                    if hasattr(w, "get_first_child") and w.get_first_child():
+                        first_c = w.get_first_child()
+                        if hasattr(first_c, "set_label"):
+                            first_c.set_label(msg)
 
     def _on_discover_results_search_changed(self, *_args):
         for flowbox_name in ("content_flowbox", "unique_flowbox"):
             flowbox = getattr(self, flowbox_name, None)
             if flowbox and hasattr(flowbox, "invalidate_filter"):
                 flowbox.invalidate_filter()
+                GLib.idle_add(self._update_flowbox_empty_state, flowbox)
 
         # Home/Discover rows use Gtk.Box rather than FlowBox, so they need
         # the same query applied directly to their MovieWidget children.
         root = getattr(self, "discover_box", None)
         if root is not None:
+            active_q = _extract_active_discover_query(self)
             pending = [root]
             while pending:
                 widget = pending.pop()
@@ -7937,27 +8110,128 @@ class CineWindow(Adw.ApplicationWindow):
                         pending.append(child)
                         child = child.get_next_sibling()
 
+            # Update slot visibility so empty rows don't display disconnected headers
+            any_slot_visible = False
+            slot = root.get_first_child()
+            while slot is not None:
+                if getattr(slot, "_is_empty_box", False):
+                    slot = slot.get_next_sibling()
+                    continue
+                if hasattr(slot, "set_visible") and hasattr(slot, "get_first_child"):
+                    if not active_q:
+                        slot.set_visible(True)
+                        any_slot_visible = True
+                    else:
+                        cards = []
+                        sub_pending = [slot]
+                        while sub_pending:
+                            w = sub_pending.pop()
+                            if isinstance(getattr(w, "movie_data", None), dict):
+                                cards.append(w)
+                            elif hasattr(w, "get_first_child"):
+                                ch = w.get_first_child()
+                                while ch is not None:
+                                    sub_pending.append(ch)
+                                    ch = ch.get_next_sibling()
+                        if cards:
+                            has_vis = any(c.get_visible() for c in cards)
+                            slot.set_visible(has_vis)
+                            if has_vis:
+                                any_slot_visible = True
+                slot = slot.get_next_sibling()
+
+            empty_banner = getattr(root, "_discover_empty_banner", None)
+            if not any_slot_visible and active_q:
+                if not empty_banner or empty_banner.get_parent() != root:
+                    msg = _(f"No items matching '{active_q}'.")
+                    empty_banner = self._create_empty_filter_box(msg)
+                    root._discover_empty_banner = empty_banner
+                    root.append(empty_banner)
+            else:
+                if empty_banner and empty_banner.get_parent() == root:
+                    root.remove(empty_banner)
+                    root._discover_empty_banner = None
+
     def _discover_result_search_query(self):
         search_box = getattr(self, "advanced_search_box", None)
-        if search_box is not None and not search_box.get_visible():
-            return ""
+        if search_box is not None and hasattr(search_box, "get_visible"):
+            try:
+                vis = search_box.get_visible()
+                if isinstance(vis, bool) and not vis:
+                    return ""
+            except Exception:
+                pass
         entry = getattr(self, "discover_search_entry", None)
-        return entry.get_text().strip().casefold() if entry else ""
+        if entry is not None and hasattr(entry, "get_text"):
+            try:
+                txt = entry.get_text()
+                if isinstance(txt, str):
+                    return txt.strip().casefold()
+            except Exception:
+                pass
+        return ""
+
+    def _is_discover_search_title_only(self) -> bool:
+        check = getattr(self, "discover_title_only_check", None)
+        if check is not None and hasattr(check, "get_active"):
+            try:
+                return bool(check.get_active())
+            except Exception:
+                pass
+        return False
+
+    def _on_discover_title_only_toggled(self, button):
+        from . import database
+        is_active = button.get_active() if hasattr(button, "get_active") else False
+        database.set_setting("discover_title_only", bool(is_active))
+        self._on_discover_results_search_changed()
+        active_q = _extract_active_discover_query(self)
+        stack = getattr(self, "library_stack", None)
+        visible_page = stack.get_visible_child_name() if stack else ""
+        if active_q:
+            if visible_page != "unique":
+                if hasattr(self, "library_stack"):
+                    self.library_stack.set_visible_child_name("unique")
+            self._refresh_unique_combined_view()
+        elif visible_page == "unique":
+            self._refresh_unique_combined_view()
+        elif visible_page == "content":
+            self._refresh_content()
+
+    def _get_active_discover_search_query(self) -> str:
+        return _extract_active_discover_query(self)
 
     def _discover_result_matches_item(self, item):
-        query = self._discover_result_search_query()
+        query = _extract_active_discover_query(self)
         if not query:
             return True
         if not isinstance(item, dict):
             return False
-        searchable = " ".join(
-            str(item.get(key) or "")
-            for key in ("title", "name", "description", "overview", "genres", "catalog_name", "addon_name")
-        )
-        return query in searchable.casefold()
+
+        if self._is_discover_search_title_only():
+            parts = []
+            for key in ("title", "name"):
+                val = item.get(key)
+                if val:
+                    parts.append(str(val))
+            searchable = " ".join(parts)
+            return query.casefold() in searchable.casefold()
+
+        parts = []
+        for key in ("title", "name", "description", "overview", "genres", "catalog_name", "addon_name", "year", "releaseInfo"):
+            val = item.get(key)
+            if isinstance(val, (list, tuple, set)):
+                parts.append(" ".join(str(x) for x in val if x))
+            elif val:
+                parts.append(str(val))
+        searchable = " ".join(parts)
+        return query.casefold() in searchable.casefold()
 
     def _discover_result_filter(self, flowbox_child, _user_data=None):
         widget = flowbox_child.get_child() if hasattr(flowbox_child, "get_child") else flowbox_child
+        if widget is not None:
+            if getattr(widget, "_is_empty_box", False) or (hasattr(widget, "has_css_class") and widget.has_css_class("dim-label")):
+                return True
         item = getattr(widget, "movie_data", None)
         return self._discover_result_matches_item(item)
 
@@ -8399,6 +8673,7 @@ class CineWindow(Adw.ApplicationWindow):
         language = l_str if l_str and l_str not in ("All Languages", _("All Languages"), "All") else None
 
         unique_only = self._is_unique_mode_active()
+        query = self._discover_result_search_query()
 
         return {
             "type": m_type,
@@ -8409,11 +8684,14 @@ class CineWindow(Adw.ApplicationWindow):
             "language": language,
             "unique_only": unique_only,
             "addon_url": addon_url,
+            "query": query,
         }
 
     def _on_discover_filter_changed(self):
         if getattr(self, "_syncing_discover_toolbar", False):
             return
+        self._clear_discover_search_on_filter_change()
+        self._set_discover_spinner_active(True)
         filters = self._get_current_discover_filter_dict()
         cb = getattr(self, "_on_filters_changed_callback", None)
         if callable(cb):
@@ -8432,6 +8710,10 @@ class CineWindow(Adw.ApplicationWindow):
         genre = filters.get("genre")
         year = filters.get("year")
         language = filters.get("language")
+        raw_query = filters.get("query") if "query" in filters else self._discover_result_search_query()
+        query = raw_query.strip() if isinstance(raw_query, str) else ""
+        self.current_discover_search_query = query
+        self.current_search_query = query
         if "unique_only" in filters:
             unique_only = bool(filters["unique_only"])
         else:
@@ -8469,6 +8751,8 @@ class CineWindow(Adw.ApplicationWindow):
         self.current_genre = genre
         self.current_year = year
         self.current_language = language
+        self.current_discover_search_query = query
+        self.current_search_query = query
 
         self._syncing_unique_check = True
         try:
@@ -8479,7 +8763,7 @@ class CineWindow(Adw.ApplicationWindow):
         finally:
             self._syncing_unique_check = False
 
-        if unique_only:
+        if unique_only or query:
             self.library_stack.set_visible_child_name("unique")
             self._refresh_unique_combined_view()
             return
@@ -8492,6 +8776,8 @@ class CineWindow(Adw.ApplicationWindow):
                 "display_name": section or catalog_id.title()
             }
             disp_title = section or catalog_id.title()
+            if query:
+                disp_title += f" · 🔍 {query}"
             if genre:
                 disp_title += f" — {genre}"
             if year:
@@ -8605,22 +8891,6 @@ class CineWindow(Adw.ApplicationWindow):
         is_active = button.get_active()
         cat_btn = self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else ""
 
-        # Unique belongs to Discover. A stale Home click or menu action should
-        # never replace the landing feed and its Continue Watching section.
-        if is_active and cat_btn == "home":
-            self._syncing_unique_check = True
-            try:
-                for btn_name in ("unique_check", "library_unique_check"):
-                    btn = getattr(self, btn_name, None)
-                    if btn is not None and hasattr(btn, "set_active"):
-                        btn.set_active(False)
-                action = self.lookup_action("toggle-unique") if hasattr(self, "lookup_action") else None
-                if action:
-                    action.set_state(GLib.Variant.new_boolean(False))
-            finally:
-                self._syncing_unique_check = False
-            return
-
         # Keep the Discover preference across Home navigation and cold starts.
         self._persisted_unique_enabled = bool(is_active)
         database.set_setting("discover_unique_enabled", bool(is_active))
@@ -8643,6 +8913,20 @@ class CineWindow(Adw.ApplicationWindow):
             self._syncing_unique_check = False
 
         debug_log(f"_on_unique_toggled: active={is_active}")
+        self._set_discover_spinner_active(True)
+        active_q = _extract_active_discover_query(self)
+        if active_q:
+            # An active search query is in progress. Staying on the search view
+            # is essential regardless of whether Unique is enabled or disabled.
+            # Toggling Unique switches between deduplicated vs all results.
+            self._cancel_unique_background()
+            self._cancel_discover_background()
+            if hasattr(self, "discover_back_box"):
+                self.discover_back_box.set_visible(False)
+            if hasattr(self, "library_stack"):
+                self.library_stack.set_visible_child_name("unique")
+            self._refresh_unique_combined_view()
+            return
         if is_active:
             # Cancel both unique and discover background work so unique has full resources
             self._cancel_unique_background()
@@ -8687,6 +8971,8 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_unique_scroll(self, adj):
         if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "unique":
             return
+        if not hasattr(adj, "get_value"):
+            return
         if getattr(self, "is_fetching_unique", False):
             return
         val = adj.get_value()
@@ -8694,7 +8980,10 @@ class CineWindow(Adw.ApplicationWindow):
         upper = adj.get_upper()
         if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
             if not getattr(self, "has_more_unique", True):
-                # When user reaches the end and catalogs were exhausted, try fetching further pages!
+                if upper <= page_size:
+                    # Content is under-filled and already exhausted: do not loop
+                    return
+                # When user scrolls near bottom and catalogs were exhausted, try fetching further pages!
                 can_fetch_more = False
                 for cat in getattr(self, "unique_catalogs", []):
                     cat_key = (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("media_type"))
@@ -8722,13 +9011,13 @@ class CineWindow(Adw.ApplicationWindow):
             return False
 
         filter_type = getattr(self, "_current_unique_media_type", None)
-        if filter_type and filter_type != "all":
+        if isinstance(filter_type, str) and filter_type and filter_type != "all":
             from . import api
             if not api.is_item_type_compatible(item, filter_type):
                 return False
 
         filter_lang = getattr(self, "current_language", None)
-        if filter_lang and filter_lang not in ("All Languages", _("All Languages"), "All"):
+        if isinstance(filter_lang, str) and filter_lang and filter_lang not in ("All Languages", _("All Languages"), "All"):
             from . import api
             if not api.filter_items_by_genre([item], filter_lang):
                 return False
@@ -8744,20 +9033,52 @@ class CineWindow(Adw.ApplicationWindow):
             if val:
                 canon_id = str(val).split(":")[0] if str(val).startswith("tt") else str(val)
 
-        if canon_id and canon_id in self.unique_seen_ids:
-            return False
+        is_unique_active = getattr(self, "_current_unique_mode_enabled", None)
+        if not isinstance(is_unique_active, bool) and hasattr(self, "_is_unique_mode_active"):
+            try:
+                res = self._is_unique_mode_active()
+                if isinstance(res, bool):
+                    is_unique_active = res
+                elif hasattr(res, "__bool__"):
+                    is_unique_active = bool(res)
+            except Exception:
+                pass
+        if not isinstance(is_unique_active, bool):
+            is_unique_active = True
 
-        title = (item.get("title") or item.get("name") or "").strip().lower()
-        year = str(item.get("year") or "").strip()[:4]
-        title_key = (title, year) if (title and year) else ((title,) if title else None)
-        if title_key and title_key in self.unique_seen_keys:
-            return False
+        if is_unique_active:
+            if canon_id and canon_id in self.unique_seen_ids:
+                return False
 
-        if canon_id:
-            self.unique_seen_ids.add(canon_id)
-        if title_key:
-            self.unique_seen_keys.add(title_key)
-        return True
+            title = (item.get("title") or item.get("name") or "").strip().lower()
+            year = str(item.get("year") or "").strip()[:4]
+            title_key = (title, year) if (title and year) else ((title,) if title else None)
+            if title_key and title_key in self.unique_seen_keys:
+                return False
+
+            if canon_id:
+                self.unique_seen_ids.add(canon_id)
+            if title_key:
+                self.unique_seen_keys.add(title_key)
+            return True
+        else:
+            # Unique is disabled: do not deduplicate across different addons/manifests!
+            # Only deduplicate exact duplicate entries within the same manifest/catalog feed.
+            item_addon = str(item.get("manifest_url") or item.get("addon_name") or "")
+            unique_per_addon_id = f"{item_addon}:{canon_id}" if canon_id else None
+            if unique_per_addon_id and unique_per_addon_id in self.unique_seen_ids:
+                return False
+            title = (item.get("title") or item.get("name") or "").strip().lower()
+            year = str(item.get("year") or "").strip()[:4]
+            title_key = (item_addon, title, year) if (title and year) else ((item_addon, title) if title else None)
+            if title_key and title_key in self.unique_seen_keys:
+                return False
+
+            if unique_per_addon_id:
+                self.unique_seen_ids.add(unique_per_addon_id)
+            if title_key:
+                self.unique_seen_keys.add(title_key)
+            return True
 
     def _refresh_unique_combined_view(self):
         from .movie_widget import cancel_pending_image_downloads
@@ -8775,6 +9096,8 @@ class CineWindow(Adw.ApplicationWindow):
                 pass
             self._unique_active_pool = None
 
+        self._unique_auto_fill_count = 0
+        self._current_unique_mode_enabled = self._is_unique_mode_active()
         with self._unique_lock:
             self.has_more_unique = True
             self.unique_seen_ids.clear()
@@ -8813,7 +9136,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._current_unique_media_type = filter_type
 
         filter_addon = getattr(self, "_current_discover_addon", None)
-        from . import api
+        from . import api, database
         catalogs = list(self._get_discover_catalog_list(filter_media_type=filter_type, filter_addon_url=filter_addon))
         # The provider may be temporarily marked offline while its cached
         # catalog and Unique pages are still usable.
@@ -8827,7 +9150,59 @@ class CineWindow(Adw.ApplicationWindow):
         selected_genre = getattr(self, "current_genre", None)
         if not isinstance(selected_genre, str) or selected_genre in ("All Genres", _("All Genres"), "All"):
             selected_genre = None
-        if selected_genre and not filter_addon and not section_scope and not any(c.get("_source") == "genre_cache" for c in catalogs):
+
+        active_query = _extract_active_discover_query(self)
+        if active_query:
+            query_title_only = self._is_discover_search_title_only()
+            # 1. DB-first: instant local results from SQLite cache
+            query_cache_cat = {
+                "_source": "query_cache",
+                "addon_name": "",
+                "media_type": filter_type or "all",
+                "catalog_id": "query_cache",
+                "catalog_name": f"Search: {active_query}",
+                "manifest_url": None,
+                "query": active_query,
+                "title_only": query_title_only,
+                "genre": selected_genre,
+                "year": getattr(self, "current_year", None),
+                "sort_mode": getattr(self, "current_sort", None),
+            }
+            # 2. Then search catalogs to query all addons for the title substring
+            search_catalog_entries = []
+            seen_search_keys = set()
+            types_to_search = (
+                [filter_type] if filter_type not in ("all", None, "movie_series")
+                else ["movie", "series"] + (["anime"] if getattr(self, "anime_supported", False) else [])
+            )
+            for mt in types_to_search:
+                avail = api.get_available_search_catalogs(mt, only_working=True)
+                for sc in avail:
+                    m_url = sc.get("manifest_url")
+                    c_id = sc.get("catalog_id")
+                    if filter_addon and m_url != filter_addon:
+                        continue
+                    if section_scope:
+                        if m_url != section_scope.get("manifest_url") or str(c_id) != str(section_scope.get("catalog_id")):
+                            continue
+                    skey = (m_url, c_id, mt)
+                    if skey not in seen_search_keys:
+                        seen_search_keys.add(skey)
+                        search_catalog_entries.append({
+                            "_source": "catalog_search",
+                            "addon_name": sc.get("addon_name", ""),
+                            "manifest_url": m_url,
+                            "catalog_id": c_id,
+                            "catalog_name": sc.get("catalog_name") or c_id,
+                            "media_type": mt,
+                            "query": active_query,
+                            "title_only": True,  # Catalogs search title only
+                            "genre": selected_genre,
+                            "year": getattr(self, "current_year", None),
+                            "sort_mode": getattr(self, "current_sort", None),
+                        })
+            catalogs = [query_cache_cat] + search_catalog_entries
+        elif selected_genre and not filter_addon and not section_scope and not any(c.get("_source") == "genre_cache" for c in catalogs):
             catalogs.insert(0, {
                 "_source": "genre_cache",
                 "addon_name": "",
@@ -8847,7 +9222,7 @@ class CineWindow(Adw.ApplicationWindow):
         if section_scope:
             catalogs = [
                 c for c in catalogs
-                if c.get("_source") == "genre_cache"
+                if c.get("_source") in ("genre_cache", "query_cache", "catalog_search")
                 or (
                     c.get("manifest_url") == section_scope.get("manifest_url")
                     and str(c.get("catalog_id") or "") == str(section_scope.get("catalog_id") or "")
@@ -8858,19 +9233,20 @@ class CineWindow(Adw.ApplicationWindow):
             self._current_discover_addon = None
             catalogs = list(self._get_discover_catalog_list(filter_media_type=filter_type, filter_addon_url=None))
 
-        # Prioritize current_catalog if available in compatible catalogs
-        if getattr(self, "current_catalog", None):
+        # Prioritize current_catalog if available in compatible catalogs (only when not searching)
+        if not active_query and getattr(self, "current_catalog", None):
             cur_cat = self.current_catalog
             c_id = cur_cat.get("catalog_id")
             m_url = cur_cat.get("manifest_url")
             match_idx = next((i for i, c in enumerate(catalogs) if c.get("catalog_id") == c_id and c.get("manifest_url") == m_url), None)
+            cache_prefix_len = sum(1 for c in catalogs if c.get("_source") in ("genre_cache", "query_cache"))
             if match_idx is not None:
                 cat_item = catalogs.pop(match_idx)
-                catalogs.insert(0, cat_item)
+                catalogs.insert(cache_prefix_len, cat_item)
             elif not filter_addon or filter_addon == m_url:
                 c_type = cur_cat.get("media_type") or cur_cat.get("type") or filter_type
                 if api.is_type_match(c_type, filter_type):
-                    catalogs.insert(0, {
+                    catalogs.insert(cache_prefix_len, {
                         "addon_name": cur_cat.get("addon_name", ""),
                         "manifest_url": m_url,
                         "catalog_id": c_id,
@@ -8878,8 +9254,11 @@ class CineWindow(Adw.ApplicationWindow):
                         "media_type": c_type
                     })
 
-        # A global genre cache row is always first, even when a previously
+        # A global query cache or genre cache row is always first, even when a previously
         # selected provider catalog was otherwise prioritized.
+        query_cache_idx = next((i for i, c in enumerate(catalogs) if c.get("_source") == "query_cache"), None)
+        if query_cache_idx not in (None, 0):
+            catalogs.insert(0, catalogs.pop(query_cache_idx))
         genre_cache_idx = next((i for i, c in enumerate(catalogs) if c.get("_source") == "genre_cache"), None)
         if genre_cache_idx not in (None, 0):
             catalogs.insert(0, catalogs.pop(genre_cache_idx))
@@ -8889,27 +9268,12 @@ class CineWindow(Adw.ApplicationWindow):
             (c.get("manifest_url"), c.get("catalog_id"), c.get("media_type")): c
             for c in catalogs
         }
-        self._unique_empty_batches = 0
         if not self.unique_catalogs:
             self.has_more_unique = False
             self.is_fetching_unique = False
-            if hasattr(self, "unique_flowbox") and not self.unique_flowbox.get_first_child():
-                empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-                empty_box.set_valign(Gtk.Align.CENTER)
-                empty_box.set_halign(Gtk.Align.CENTER)
-                empty_box.set_margin_top(60)
-                empty_box.add_css_class("dim-label")
-                if getattr(self, "current_language", None):
-                    empty_lbl = Gtk.Label(label=_("No items found for this language."))
-                elif getattr(self, "current_genre", None):
-                    empty_lbl = Gtk.Label(label=_("No items found for this genre."))
-                elif getattr(self, "current_year", None):
-                    empty_lbl = Gtk.Label(label=_("No items found for this year."))
-                else:
-                    empty_lbl = Gtk.Label(label=_("No items found for this filter."))
-                empty_lbl.add_css_class("title-3")
-                empty_box.append(empty_lbl)
-                self.unique_flowbox.append(empty_box)
+            self._set_discover_spinner_active(False)
+            if hasattr(self, "unique_flowbox"):
+                self._update_flowbox_empty_state(self.unique_flowbox)
             return
 
         self._load_next_unique_batch()
@@ -8933,11 +9297,17 @@ class CineWindow(Adw.ApplicationWindow):
             if slice_idx < len(slices):
                 chunk = slices[slice_idx]
                 if hasattr(self, "unique_flowbox"):
+                    # Remove any placeholder or empty state before adding cards
+                    child = self.unique_flowbox.get_first_child()
+                    while child:
+                        w = child.get_child() if hasattr(child, "get_child") else child
+                        if w and (getattr(w, "_is_empty_box", False) or (hasattr(w, "has_css_class") and w.has_css_class("dim-label"))):
+                            self.unique_flowbox.remove(child)
+                            break
+                        child = child.get_next_sibling()
                     for it in chunk:
                         self.unique_flowbox.append(MovieWidget(it, self._on_movie_clicked))
-                    c = self.unique_flowbox.get_first_child()
-                    if c and isinstance(c, Gtk.Box) and c.has_css_class("dim-label"):
-                        self.unique_flowbox.remove(c)
+                    GLib.idle_add(self._update_flowbox_empty_state, self.unique_flowbox)
                 GLib.idle_add(_append_next, slice_idx + 1)
             return False
 
@@ -8956,25 +9326,11 @@ class CineWindow(Adw.ApplicationWindow):
             cur_empty += 1
             self._unique_empty_batches = cur_empty
             self.is_fetching_unique = False
+            self._set_discover_spinner_active(False)
             if not has_more or cur_empty >= 2:
                 self.has_more_unique = False
-                if hasattr(self, "unique_flowbox") and not self.unique_flowbox.get_first_child():
-                    empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-                    empty_box.set_valign(Gtk.Align.CENTER)
-                    empty_box.set_halign(Gtk.Align.CENTER)
-                    empty_box.set_margin_top(60)
-                    empty_box.add_css_class("dim-label")
-                    if getattr(self, "current_language", None):
-                        empty_lbl = Gtk.Label(label=_("No items found for this language."))
-                    elif getattr(self, "current_genre", None):
-                        empty_lbl = Gtk.Label(label=_("No items found for this genre."))
-                    elif getattr(self, "current_year", None):
-                        empty_lbl = Gtk.Label(label=_("No items found for this year."))
-                    else:
-                        empty_lbl = Gtk.Label(label=_("No items found for this filter."))
-                    empty_lbl.add_css_class("title-3")
-                    empty_box.append(empty_lbl)
-                    self.unique_flowbox.append(empty_box)
+                if hasattr(self, "unique_flowbox"):
+                    CineWindow._update_flowbox_empty_state(self, self.unique_flowbox)
             else:
                 GLib.timeout_add(100, self._load_next_unique_batch)
             return
@@ -8987,6 +9343,7 @@ class CineWindow(Adw.ApplicationWindow):
         def _deliver_next_slice(slice_idx):
             if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
                 self.is_fetching_unique = False
+                self._set_discover_spinner_active(False)
                 return False
 
             if slice_idx < len(slices):
@@ -8996,12 +9353,15 @@ class CineWindow(Adw.ApplicationWindow):
                         self.unique_flowbox.append(MovieWidget(it, self._on_movie_clicked))
                     # Remove empty label if cards are added
                     c = self.unique_flowbox.get_first_child()
-                    if c and isinstance(c, Gtk.Box) and c.has_css_class("dim-label"):
+                    widget = c.get_child() if (c and hasattr(c, "get_child")) else c
+                    if widget and (getattr(widget, "_is_empty_box", False) or (hasattr(widget, "has_css_class") and widget.has_css_class("dim-label"))):
                         self.unique_flowbox.remove(c)
+                    GLib.idle_add(self._update_flowbox_empty_state, self.unique_flowbox)
                 GLib.idle_add(_deliver_next_slice, slice_idx + 1)
                 return False
 
             self.is_fetching_unique = False
+            self._set_discover_spinner_active(False)
             if not has_more and not items:
                 self.has_more_unique = False
             # Check if viewport needs more cards to fill the window
@@ -9018,6 +9378,8 @@ class CineWindow(Adw.ApplicationWindow):
             return
 
         self.is_fetching_unique = True
+        self._set_discover_spinner_active(True)
+        self._current_unique_mode_enabled = self._is_unique_mode_active()
         req_id = self.unique_request_id
         abort_ev = getattr(self, "_unique_abort_event", None)
         cur_genre = getattr(self, "current_genre", None)
@@ -9035,7 +9397,9 @@ class CineWindow(Adw.ApplicationWindow):
             collected = []
             num_catalogs = len(self.unique_catalogs)
             consecutive_empty_passes = 0
-            max_passes = 12
+            max_passes = 4 if cur_genre else 3
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=6)
+            self._unique_active_pool = pool
 
             try:
                 while len(collected) < target_batch_count and max_passes > 0:
@@ -9092,7 +9456,27 @@ class CineWindow(Adw.ApplicationWindow):
                         c_id = cat_info.get("catalog_id")
                         m_url = cat_info.get("manifest_url")
                         c_name = cat_info.get("catalog_name") or cat_info.get("name") or c_id
-                        a_name = cat_info.get("addon_name") or ""
+                        a_name = cat_info.get("addon_name", "")
+                        if cat_info.get("_source") == "query_cache":
+                            items = database.get_cached_items_by_search(
+                                cat_info.get("query"),
+                                media_type=None if m_type in ("all", "discover") else m_type,
+                                genre=cat_info.get("genre"),
+                                year=cat_info.get("year"),
+                                sort_mode=cat_info.get("sort_mode"),
+                                limit=50,
+                                offset=max(0, page - 1) * 50,
+                                title_only=bool(cat_info.get("title_only", False)),
+                            )
+                            raw_count = len(items)
+                            if cur_lang:
+                                items = api.filter_items_by_genre(items, cur_lang, media_type=m_type)
+                            if database.is_adult_content_hidden():
+                                items = [it for it in items if not api.is_adult_item(it)]
+                            database.hydrate_items_from_metadata(items, media_type=m_type)
+                            api.hydrate_missing_catalog_items(items, media_type=m_type)
+                            debug_log(f"unique query cache: '{cat_info.get('query')}' -> {len(items)} items (page {page})")
+                            return (key, page, items, raw_count)
 
                         if cat_info.get("_source") == "genre_cache":
                             items = database.get_cached_items_by_genre(
@@ -9111,13 +9495,51 @@ class CineWindow(Adw.ApplicationWindow):
                             debug_log(f"unique genre cache: '{cat_info.get('genre')}' -> {len(items)} items (page {page})")
                             return (key, page, items, raw_count)
 
+                        if cat_info.get("_source") == "catalog_search":
+                            query = cat_info.get("query", "")
+                            raw_items = api.fetch_items(
+                                media_type=m_type,
+                                query=query,
+                                catalog_id=c_id,
+                                target_manifest_url=m_url,
+                                target_catalog_id=c_id,
+                                genre=cur_genre or "",
+                                page=page,
+                                limit=50,
+                                title_only=True,
+                                timeout=3.5,
+                                is_cancelled=(lambda: _is_event_set(abort_ev))
+                            )
+                            if _is_event_set(abort_ev):
+                                return None
+                            items = list(raw_items) if raw_items is not None else None
+                            if items:
+                                q_low = query.lower()
+                                items = [it for it in items if q_low in (it.get("title") or it.get("name") or "").lower()]
+                                if database.is_adult_content_hidden():
+                                    items = [it for it in items if not api.is_adult_item(it)]
+                                for it in items:
+                                    if not it.get("addon_name"): it["addon_name"] = a_name
+                                    if not it.get("catalog_name"): it["catalog_name"] = c_name
+                                    if not it.get("catalog_id"): it["catalog_id"] = c_id
+                                    if not it.get("manifest_url"): it["manifest_url"] = m_url
+                                database.hydrate_items_from_metadata(items, media_type=m_type)
+                                api.hydrate_missing_catalog_items(items, media_type=m_type)
+                            filtered = items or []
+                            if filtered and cur_genre:
+                                filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
+                            if filtered and cur_lang:
+                                filtered = api.filter_items_by_genre(filtered, cur_lang, media_type=m_type)
+                            if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
+                                filtered = [it for it in filtered if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(cur_year)]
+                            raw_count = len(raw_items) if raw_items is not None else -1
+                            debug_log(f"unique catalog search '{c_name}': '{query}' -> {len(filtered)} items (page {page})")
+                            return (key, page, filtered, raw_count)
+
                         if cur_genre and not api.catalog_supports_genre(cat_info, cur_genre):
                             return (key, page, [], 0)
 
                         if cur_lang and not api.catalog_supports_genre(cat_info, cur_lang):
-                            # Provider cannot filter by this language; skip it
-                            # instead of fetching results that will be filtered
-                            # out locally.
                             return (key, page, [], 0)
 
                         fetch_genre = cur_genre
@@ -9149,18 +9571,17 @@ class CineWindow(Adw.ApplicationWindow):
                                 if not it.get("catalog_name"): it["catalog_name"] = c_name
                                 if not it.get("catalog_id"): it["catalog_id"] = c_id
                                 if not it.get("manifest_url"): it["manifest_url"] = m_url
+                            database.hydrate_items_from_metadata(cached, media_type=m_type)
+                            api.hydrate_missing_catalog_items(cached, media_type=m_type)
                             filtered = cached
                             if cur_genre:
                                 filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
-                            elif filtered and m_type:
+                            elif filtered and m_type and m_type not in ("all", "discover"):
                                 filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
                             if filtered and cur_lang:
                                 filtered = api.filter_items_by_genre(filtered, cur_lang, media_type=m_type)
                             if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
                                 filtered = [it for it in filtered if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(cur_year)]
-                            if filtered and api.hydrate_missing_catalog_items(filtered, media_type=m_type):
-                                if not _is_event_set(abort_ev):
-                                    database.save_cached_catalog(cache_key, cached)
                             return (key, page, filtered, len(cached))
 
                         if _is_event_set(abort_ev):
@@ -9188,17 +9609,19 @@ class CineWindow(Adw.ApplicationWindow):
                                     if not it.get("catalog_name"): it["catalog_name"] = c_name
                                     if not it.get("catalog_id"): it["catalog_id"] = c_id
                                     if not it.get("manifest_url"): it["manifest_url"] = m_url
+                                database.hydrate_items_from_metadata(items, media_type=m_type)
+                                api.hydrate_missing_catalog_items(items, media_type=m_type)
+                                if not _is_event_set(abort_ev):
+                                    database.save_cached_catalog(cache_key, items)
                             filtered = items or []
                             if filtered and cur_genre:
                                 filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
-                            elif filtered and m_type:
+                            elif filtered and m_type and m_type not in ("all", "discover"):
                                 filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
                             if filtered and cur_lang:
                                 filtered = api.filter_items_by_genre(filtered, cur_lang, media_type=m_type)
                             if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
                                 filtered = [it for it in filtered if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(cur_year)]
-                            if items and not _is_event_set(abort_ev):
-                                database.save_cached_catalog(cache_key, items)
                             raw_count = len(raw_items) if raw_items is not None else -1
                             return (key, page, filtered, raw_count)
                         except Exception as e:
@@ -9208,90 +9631,74 @@ class CineWindow(Adw.ApplicationWindow):
                     if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
                         return
 
-                    pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_cats), 6))
-                    self._unique_active_pool = pool
                     pass_added = 0
                     try:
-                        try:
-                            futures = [pool.submit(_fetch_cat, c, k, p) for c, k, p in batch_cats]
-                        except RuntimeError:
-                            # Executor or Python interpreter shutting down
-                            return
-                        try:
-                            for f in concurrent.futures.as_completed(futures, timeout=3.0):
+                        futures = [pool.submit(_fetch_cat, c, k, p) for c, k, p in batch_cats]
+                        for f in concurrent.futures.as_completed(futures, timeout=3.0):
+                            if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
+                                break
+                            res = f.result()
+                            if not res:
+                                continue
+                            cat_key, page, items, raw_count = res
+                            # Process results under lock to prevent state corruption
+                            with unique_lock:
                                 if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
-                                    pool.shutdown(wait=False, cancel_futures=True)
-                                    return
-                                res = f.result()
-                                if not res:
-                                    continue
-                                cat_key, page, items, raw_count = res
-                                # Process results under lock to prevent state corruption
-                                with unique_lock:
-                                    if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
-                                        pool.shutdown(wait=False, cancel_futures=True)
-                                        return
-                                    if raw_count == -1:
-                                        continue
-                                    elif raw_count == 0:
-                                        self.unique_exhausted_catalogs.add(cat_key)
-                                        self.unique_truly_empty_catalogs.add(cat_key)
-                                        if cat_key in getattr(self, "unique_productive_catalogs", []):
-                                            self.unique_productive_catalogs.remove(cat_key)
-                                    else:
-                                        if not items:
-                                            streak = getattr(self, "unique_empty_streak", {}).get(cat_key, 0) + 1
-                                            self.unique_empty_streak[cat_key] = streak
-                                            max_streak = 2 if (cur_lang or not cur_genre) else 4
-                                            max_page = 2 if cur_lang else (5 if cur_genre else 3)
-                                            if streak >= max_streak or page >= max_page:
-                                                self.unique_exhausted_catalogs.add(cat_key)
-                                                if cat_key in getattr(self, "unique_productive_catalogs", []):
-                                                    self.unique_productive_catalogs.remove(cat_key)
-                                            else:
-                                                self.unique_page_per_catalog[cat_key] = page + 1
-                                        else:
-                                            # Yielded matching items!
-                                            if hasattr(self, "unique_empty_streak"):
-                                                self.unique_empty_streak[cat_key] = 0
-                                            if not hasattr(self, "unique_productive_catalogs"):
-                                                self.unique_productive_catalogs = []
-                                            if cat_key not in self.unique_productive_catalogs:
-                                                self.unique_productive_catalogs.append(cat_key)
-                                            next_page = page + 1
-                                            self.unique_page_per_catalog[cat_key] = next_page
-                                            if next_page > 25:
-                                                self.unique_exhausted_catalogs.add(cat_key)
-                                                if cat_key in self.unique_productive_catalogs:
-                                                    self.unique_productive_catalogs.remove(cat_key)
-
-                                            # Collect unique items and stream immediately to UI!
-                                            unique_new = []
-                                            for item in items:
-                                                if database.is_adult_content_hidden() and api.is_adult_item(item):
-                                                    continue
-                                                if self._is_unique_item(item):
-                                                    unique_new.append(item)
-                                                    collected.append(item)
-                                                    pass_added += 1
-
-                                            if unique_new:
-                                                GLib.idle_add(self._append_unique_slice_to_ui, unique_new, req_id)
-
-                                if len(collected) >= target_batch_count:
                                     break
-                        except concurrent.futures.TimeoutError:
-                            pass
-                    finally:
-                        pool.shutdown(wait=False, cancel_futures=True)
-                        if getattr(self, "_unique_active_pool", None) is pool:
-                            self._unique_active_pool = None
+                                if raw_count == -1:
+                                    continue
+                                elif raw_count == 0:
+                                    self.unique_exhausted_catalogs.add(cat_key)
+                                    self.unique_truly_empty_catalogs.add(cat_key)
+                                    if cat_key in getattr(self, "unique_productive_catalogs", []):
+                                        self.unique_productive_catalogs.remove(cat_key)
+                                else:
+                                    if not items:
+                                        streak = getattr(self, "unique_empty_streak", {}).get(cat_key, 0) + 1
+                                        max_streak = 2 if (cur_lang or not cur_genre) else 4
+                                        max_page = 2 if cur_lang else (5 if cur_genre else 3)
+                                        if streak >= max_streak or page >= max_page:
+                                            self.unique_exhausted_catalogs.add(cat_key)
+                                            if cat_key in getattr(self, "unique_productive_catalogs", []):
+                                                self.unique_productive_catalogs.remove(cat_key)
+                                        else:
+                                            self.unique_page_per_catalog[cat_key] = page + 1
+                                    else:
+                                        # Yielded matching items!
+                                        if hasattr(self, "unique_empty_streak"):
+                                            self.unique_empty_streak[cat_key] = 0
+                                        if not hasattr(self, "unique_productive_catalogs"):
+                                            self.unique_productive_catalogs = []
+                                        if cat_key not in self.unique_productive_catalogs:
+                                            self.unique_productive_catalogs.append(cat_key)
+                                        next_page = page + 1
+                                        self.unique_page_per_catalog[cat_key] = next_page
+                                        if next_page > 25 or (cat_key and cat_key[0] is None and cat_key[1] in ("query_cache", None)) or (raw_count < 50 and len(items) < 50):
+                                            self.unique_exhausted_catalogs.add(cat_key)
+                                            if cat_key in self.unique_productive_catalogs:
+                                                self.unique_productive_catalogs.remove(cat_key)
+
+                                        # Collect unique items and stream immediately to UI!
+                                        unique_new = []
+                                        for item in items:
+                                            if database.is_adult_content_hidden() and api.is_adult_item(item):
+                                                continue
+                                            if self._is_unique_item(item):
+                                                unique_new.append(item)
+                                                collected.append(item)
+                                                pass_added += 1
+
+                                        if unique_new:
+                                            GLib.idle_add(self._append_unique_slice_to_ui, unique_new, req_id)
+
+                            if len(collected) >= target_batch_count:
+                                break
+                    except (concurrent.futures.TimeoutError, RuntimeError):
+                        pass
 
                     if pass_added == 0:
                         consecutive_empty_passes += 1
-                        if consecutive_empty_passes >= 4 and len(collected) >= 24:
-                            break
-                        elif consecutive_empty_passes >= 12:
+                        if consecutive_empty_passes >= 2:
                             break
                     else:
                         consecutive_empty_passes = 0
@@ -9307,22 +9714,40 @@ class CineWindow(Adw.ApplicationWindow):
                     GLib.idle_add(self._deliver_unique_slices_to_ui, [], req_id, True)
             except (RuntimeError, Exception) as e:
                 logger.debug(f"Unique batch worker stopped or encountered error: {e}")
+                self._set_discover_spinner_active(False)
             finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+                if getattr(self, "_unique_active_pool", None) is pool:
+                    self._unique_active_pool = None
+
                 def _finish_unique_batch():
-                    if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
+                    if req_id == getattr(self, "unique_request_id", 0):
+                        self.is_fetching_unique = False
+                        self._set_discover_spinner_active(False)
+                    if _is_event_set(abort_ev) or req_id != getattr(self, "unique_request_id", 0):
                         return False
-                    self.is_fetching_unique = False
                     
-                    def check_fill():
-                        if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
+                    if collected:
+                        def check_fill():
+                            if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
+                                return False
+                            if not getattr(self, "has_more_unique", True) or getattr(self, "is_fetching_unique", False):
+                                return False
+                            auto_fill_count = getattr(self, "_unique_auto_fill_count", 0)
+                            if auto_fill_count >= 2:
+                                return False
+                            if hasattr(self, "unique_scrolled") and self.unique_scrolled is not None:
+                                adj = self.unique_scrolled.get_vadjustment()
+                                if adj and hasattr(adj, "get_page_size"):
+                                    page_size = adj.get_page_size()
+                                    upper = adj.get_upper()
+                                    if page_size > 0 and upper <= page_size:
+                                        self._unique_auto_fill_count = auto_fill_count + 1
+                                        self._load_next_unique_batch()
                             return False
-                        if getattr(self, "has_more_unique", True) and hasattr(self, "unique_scrolled") and self.unique_scrolled is not None:
-                            self._on_unique_scroll(self.unique_scrolled.get_vadjustment())
-                        return False
-                    GLib.timeout_add(150, check_fill)
+                        GLib.timeout_add(250, check_fill)
                     return False
-                if collected:
-                    GLib.idle_add(_finish_unique_batch)
+                GLib.idle_add(_finish_unique_batch)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -9331,6 +9756,7 @@ class CineWindow(Adw.ApplicationWindow):
         cancel_pending_image_downloads()
         self.content_request_id = getattr(self, "content_request_id", 0) + 1
         self.is_fetching_content = False
+        self._set_discover_spinner_active(True)
         if hasattr(self, "_content_abort_event") and self._content_abort_event:
             self._content_abort_event.set()
         self._content_abort_event = threading.Event()
@@ -9352,12 +9778,14 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _fetch_content_page(self):
         if not self.current_catalog or not getattr(self, "has_more_content", True):
+            self._set_discover_spinner_active(False)
             return
 
         if getattr(self, "is_fetching_content", False):
             return
 
         self.is_fetching_content = True
+        self._set_discover_spinner_active(True)
 
         current_req_id = getattr(self, "content_request_id", 0)
         abort_ev = getattr(self, "_content_abort_event", None)
@@ -9370,6 +9798,7 @@ class CineWindow(Adw.ApplicationWindow):
         def fetch():
             if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
                 self.is_fetching_content = False
+                self._set_discover_spinner_active(False)
                 return
             from . import api, database
             import concurrent.futures
@@ -9386,26 +9815,7 @@ class CineWindow(Adw.ApplicationWindow):
                 if cur_lang in ("All Languages", _("All Languages"), "All"):
                     cur_lang = None
 
-                if genre and not api.catalog_supports_genre(catalog, genre):
-                    debug_log(f"content: skipping catalog '{cat_id}' — genre '{genre}' not supported")
-                    def apply_unsupported_genre():
-                        if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
-                            return False
-                        self.is_fetching_content = False
-                        self.has_more_content = False
-                        if not (hasattr(self, "content_flowbox") and self.content_flowbox.get_first_child()):
-                            empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-                            empty_box.set_valign(Gtk.Align.CENTER)
-                            empty_box.set_halign(Gtk.Align.CENTER)
-                            empty_box.set_margin_top(60)
-                            empty_box.add_css_class("dim-label")
-                            empty_lbl = Gtk.Label(label=_("No items found for this genre."))
-                            empty_lbl.add_css_class("title-3")
-                            empty_box.append(empty_lbl)
-                            self.content_flowbox.append(empty_box)
-                        return False
-                    GLib.idle_add(apply_unsupported_genre)
-                    return
+                genre_unsupported = bool(genre and not api.catalog_supports_genre(catalog, genre))
 
                 if cur_sort_val == "Year" or (cat_id == "year" and not genre):
                     fetch_genre = str(year) if year and str(year) not in ("All Years", "All", _("All Years")) else ""
@@ -9419,10 +9829,91 @@ class CineWindow(Adw.ApplicationWindow):
                 lang_suffix = f":l{cur_lang}" if cur_lang else ""
                 cache_key = f"discover:{cat_url}:{cat_id}:{active_discover_type}{genre_suffix}{year_suffix}{lang_suffix}:p{page_to_fetch}"
 
-                # 1. DB-first on page 1: instant results from SQLite cache
+                # 1. DB-first: instant results from SQLite cache
+                db_first_items = []
+                target_db_mt = media_type if active_discover_type != "all" else None
+                active_query = _extract_active_discover_query(self)
+                if active_query:
+                    query_title_only = self._is_discover_search_title_only()
+                    # 1. DB-first: instant local results from SQLite cache
+                    search_items = database.get_cached_items_by_search(
+                        active_query,
+                        media_type=target_db_mt,
+                        genre=genre,
+                        year=year,
+                        sort_mode=cur_sort_val,
+                        limit=80,
+                        offset=(page_to_fetch - 1) * 80,
+                        title_only=query_title_only,
+                    )
+                    database.hydrate_items_from_metadata(search_items, media_type=media_type)
+                    api.hydrate_missing_catalog_items(search_items, media_type=media_type)
+                    def apply_search_content(found_items=search_items):
+                        if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
+                            return False
+                        self.is_fetching_content = False
+                        self._set_discover_spinner_active(False)
+                        if found_items:
+                            self.content_error_count = 0
+                            if page_to_fetch == 1 and not (hasattr(self, "content_flowbox") and self.content_flowbox.get_first_child()):
+                                self._populate_flowbox(self.content_flowbox, found_items, self.content_seen_ids)
+                                self._schedule_deferred_menu_build(1000)
+                            else:
+                                self._append_flowbox(self.content_flowbox, found_items, self.content_seen_ids)
+                            self.content_page = page_to_fetch + 1
+                        return False
+                    GLib.idle_add(apply_search_content)
+
+                    # 2. Then search catalogs for title substring on page 1
+                    if page_to_fetch == 1:
+                        def on_content_search_batch(batch):
+                            if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
+                                return
+                            new_items = []
+                            for it in batch:
+                                cid = it.get("id") or it.get("imdb_id")
+                                if cid and cid not in self.content_seen_ids:
+                                    q_l = active_query.lower()
+                                    if q_l not in (it.get("title") or it.get("name") or "").lower():
+                                        continue
+                                    self.content_seen_ids.add(cid)
+                                    new_items.append(it)
+                            if new_items:
+                                database.hydrate_items_from_metadata(new_items, media_type=media_type)
+                                api.hydrate_missing_catalog_items(new_items, media_type=media_type)
+                                def append_content_ui(items_to_add=new_items):
+                                    if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
+                                        return False
+                                    self._append_flowbox(self.content_flowbox, items_to_add, self.content_seen_ids)
+                                    return False
+                                GLib.idle_add(append_content_ui)
+
+                        try:
+                            api.fetch_items(
+                                media_type=media_type if media_type not in ("all", "discover") else "movie",
+                                query=active_query,
+                                catalog_id=cat_id,
+                                catalog_url=cat_url,
+                                title_only=True,
+                                on_item_found=on_content_search_batch,
+                                is_cancelled=(lambda: current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev))
+                            )
+                        except Exception as e:
+                            logger.debug(f"Content catalog search error: {e}")
+
+                        def finalize_content_search():
+                            if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
+                                return False
+                            self.has_more_content = False
+                            self.is_fetching_content = False
+                            self._set_discover_spinner_active(False)
+                            if hasattr(self, "content_flowbox"):
+                                self._update_flowbox_empty_state(self.content_flowbox)
+                            return False
+                        GLib.idle_add(finalize_content_search)
+                    return
+
                 if page_to_fetch == 1:
-                    db_first_items = []
-                    target_db_mt = media_type if active_discover_type != "all" else None
                     if year and str(year) not in ("All Years", "All", _("All Years")):
                         db_first_items = database.get_cached_items_by_year(
                             year,
@@ -9457,16 +9948,41 @@ class CineWindow(Adw.ApplicationWindow):
                             return False
                         GLib.idle_add(apply_db_first)
 
+                if genre_unsupported and not db_first_items:
+                    debug_log(f"content: skipping catalog '{cat_id}' — genre '{genre}' not supported")
+                    def apply_unsupported_genre():
+                        if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
+                            return False
+                        self.is_fetching_content = False
+                        self.has_more_content = False
+                        self._set_discover_spinner_active(False)
+                        if not (hasattr(self, "content_flowbox") and self.content_flowbox.get_first_child()):
+                            empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                            empty_box.set_valign(Gtk.Align.CENTER)
+                            empty_box.set_halign(Gtk.Align.CENTER)
+                            empty_box.set_margin_top(60)
+                            empty_box.add_css_class("dim-label")
+                            empty_lbl = Gtk.Label(label=_("No items found for this genre."))
+                            empty_lbl.add_css_class("title-3")
+                            empty_box.append(empty_lbl)
+                            self.content_flowbox.append(empty_box)
+                        return False
+                    GLib.idle_add(apply_unsupported_genre)
+                    return
+
                 # Cache-first: show instantly if we have a recent result
                 cached = database.get_cached_catalog(cache_key, max_age_hours=6)
                 if not cached and page_to_fetch == 1 and genre:
                     base_cached = database.get_cached_catalog(f"discover:{cat_url}:{cat_id}:{active_discover_type}{year_suffix}{lang_suffix}", max_age_hours=6)
                     if base_cached:
-                        cached = api.filter_items_by_genre(base_cached, genre, media_type=media_type)
+                        cached = base_cached
                 if _is_event_set(abort_ev):
                     self.is_fetching_content = False
+                    self._set_discover_spinner_active(False)
                     return
                 if cached:
+                    database.hydrate_items_from_metadata(cached, media_type=media_type)
+                    api.hydrate_missing_catalog_items(cached, media_type=media_type)
                     if genre:
                         cached = api.filter_items_by_genre(cached, genre, media_type=media_type)
                     elif cached and media_type and active_discover_type != "all":
@@ -9475,15 +9991,15 @@ class CineWindow(Adw.ApplicationWindow):
                         cached = api.filter_items_by_genre(cached, cur_lang, media_type=media_type)
                     if cached and year and cat_id != "year":
                         cached = [it for it in cached if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(year))]
-                    if cached and api.hydrate_missing_catalog_items(cached, media_type=media_type):
-                        if not _is_event_set(abort_ev):
-                            database.save_cached_catalog(cache_key, cached)
+                    if cached and not _is_event_set(abort_ev):
+                        database.save_cached_catalog(cache_key, cached)
                     if cached and cur_sort_val == "Recent":
                         cached.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
                     def apply_cached(cached_items=cached):
                         if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
                             return False
                         self.is_fetching_content = False
+                        self._set_discover_spinner_active(False)
                         if cached_items:
                             self.content_error_count = 0
                             if page_to_fetch == 1 and not (hasattr(self, "content_flowbox") and self.content_flowbox.get_first_child()):
@@ -9501,72 +10017,6 @@ class CineWindow(Adw.ApplicationWindow):
                         GLib.timeout_add(150, check_fill_cached)
                         return False
                     GLib.idle_add(apply_cached)
-                    # Silent background refresh — update cache only, don't redraw
-                    try:
-                        yr_str = str(year) if year and str(year) not in ("All Years", "All", _("All Years")) else ""
-                        if active_discover_type == "all" and (year or cur_sort_val == "Year" or cat_id == "year"):
-                            def _fetch_sub_bg(mt):
-                                if _is_event_set(abort_ev):
-                                    return []
-                                return api.fetch_items(
-                                    media_type=mt,
-                                    catalog_id=cat_id if cat_id == "year" else "year",
-                                    catalog_url=cat_url or "https://v3-cinemeta.strem.io/manifest.json",
-                                    genre=yr_str,
-                                    page=page_to_fetch,
-                                    is_cancelled=(lambda: _is_event_set(abort_ev))
-                                ) or []
-
-                            try:
-                                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-                                    f_m = ex.submit(_fetch_sub_bg, "movie")
-                                    f_s = ex.submit(_fetch_sub_bg, "series")
-                                    m_items = f_m.result()
-                                    s_items = f_s.result()
-                            except RuntimeError:
-                                return
-                            fresh = []
-                            max_len = max(len(m_items), len(s_items))
-                            for i in range(max_len):
-                                if i < len(m_items):
-                                    fresh.append(m_items[i])
-                                if i < len(s_items):
-                                    fresh.append(s_items[i])
-                        elif (year and (cur_sort_val == "Year" or cat_id == "year")) or cat_id == "year":
-                            target_mt = "series" if active_discover_type == "series" else ("anime" if active_discover_type == "anime" else "movie")
-                            fresh = api.fetch_items(
-                                media_type=target_mt,
-                                catalog_id=cat_id if cat_id == "year" else "year",
-                                catalog_url=cat_url or "https://v3-cinemeta.strem.io/manifest.json",
-                                genre=yr_str,
-                                page=page_to_fetch,
-                                is_cancelled=(lambda: _is_event_set(abort_ev))
-                            )
-                        else:
-                            fresh = api.fetch_items(
-                                media_type=media_type,
-                                catalog_id=cat_id,
-                                catalog_url=cat_url,
-                                genre=fetch_genre or "",
-                                page=page_to_fetch,
-                                is_cancelled=(lambda: _is_event_set(abort_ev))
-                            )
-                        if _is_event_set(abort_ev):
-                            return
-                        if fresh and genre:
-                            fresh = api.filter_items_by_genre(fresh, genre, media_type=media_type)
-                        elif fresh and media_type and active_discover_type != "all":
-                            fresh = [it for it in fresh if api.is_item_type_compatible(it, media_type)]
-                        if fresh and cur_lang:
-                            fresh = api.filter_items_by_genre(fresh, cur_lang, media_type=media_type)
-                        if fresh and year and cat_id != "year":
-                            fresh = [it for it in fresh if not it.get("year") or str(it.get("year", "")).startswith(str(year))]
-                        if fresh and cur_sort_val == "Recent":
-                            fresh.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
-                        if fresh and not _is_event_set(abort_ev):
-                            database.save_cached_catalog(cache_key, fresh)
-                    except Exception:
-                        pass
                     return
 
                 # No cache — fetch from network and save
@@ -9672,6 +10122,11 @@ class CineWindow(Adw.ApplicationWindow):
                     self.is_fetching_content = False
                     return
                 raw_count = len(items) if items else 0
+                if items:
+                    database.hydrate_items_from_metadata(items, media_type=media_type)
+                    api.hydrate_missing_catalog_items(items, media_type=media_type)
+                    if not _is_event_set(abort_ev):
+                        database.save_cached_catalog(cache_key, items)
                 if items and genre:
                     items = api.filter_items_by_genre(items, genre, media_type=media_type)
                 elif items and media_type and active_discover_type != "all":
@@ -9682,8 +10137,6 @@ class CineWindow(Adw.ApplicationWindow):
                     items = [it for it in items if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(year))]
                 if items and cur_sort_val == "Recent":
                     items.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
-                if items and not _is_event_set(abort_ev):
-                    database.save_cached_catalog(cache_key, items)
             except Exception as e:
                 logger.error(f"Error fetching content: {e}")
                 items = None
@@ -9694,6 +10147,7 @@ class CineWindow(Adw.ApplicationWindow):
                     return False
 
                 self.is_fetching_content = False
+                self._set_discover_spinner_active(False)
 
                 if items is None:
                     err_count = getattr(self, "content_error_count", 0) + 1
@@ -9709,27 +10163,16 @@ class CineWindow(Adw.ApplicationWindow):
                         self._append_flowbox(self.content_flowbox, items, self.content_seen_ids)
                     self.content_page = page_to_fetch + 1
                 else:
-                    if raw_count > 0 and page_to_fetch < 3:
-                        # Server returned items, but client genre filter yielded none on this page: advance page and continue
+                    if raw_count > 0 and page_to_fetch < 6:
+                        # Server returned items, but client query/genre filter yielded none on this page: advance page and continue
                         self.content_page = page_to_fetch + 1
+                        self.is_fetching_content = False
+                        self._fetch_content_page()
                     else:
                         self.content_error_count = 0
                         self.has_more_content = False
-                        if not (hasattr(self, "content_flowbox") and self.content_flowbox.get_first_child()):
-                            empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-                            empty_box.set_valign(Gtk.Align.CENTER)
-                            empty_box.set_halign(Gtk.Align.CENTER)
-                            empty_box.set_margin_top(60)
-                            empty_box.add_css_class("dim-label")
-                            if getattr(self, "current_year", None):
-                                empty_lbl = Gtk.Label(label=_("No items found for this year."))
-                            elif getattr(self, "current_sort", None) == "Language":
-                                empty_lbl = Gtk.Label(label=_("No items found for this language."))
-                            else:
-                                empty_lbl = Gtk.Label(label=_("No items found for this genre."))
-                            empty_lbl.add_css_class("title-3")
-                            empty_box.append(empty_lbl)
-                            self.content_flowbox.append(empty_box)
+                        if hasattr(self, "content_flowbox"):
+                            self._update_flowbox_empty_state(self.content_flowbox)
 
                 def check_fill_results():
                     if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
@@ -10573,6 +11016,12 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _refresh_discover_page(self, filter_media_type=None, filter_addon_url=None, custom_title=None, force_refresh=False):
         debug_log(f"_refresh_discover_page START (media_type={filter_media_type}, addon={filter_addon_url}, force={force_refresh})")
+        active_q = _extract_active_discover_query(self)
+        if active_q:
+            if hasattr(self, "library_stack"):
+                self.library_stack.set_visible_child_name("unique")
+            self._refresh_unique_combined_view()
+            return
         from . import database
         
         # Increment request ID to cancel any pending background loaders from previous tab
@@ -10635,6 +11084,7 @@ class CineWindow(Adw.ApplicationWindow):
                         c = nxt
                     
                 debug_log(f"_refresh_discover_page DONE (cache hit)")
+                self._set_discover_spinner_active(False)
                 return
             else:
                 self._discover_views.pop(view_key, None)
@@ -10714,6 +11164,7 @@ class CineWindow(Adw.ApplicationWindow):
             new_box.append(empty_box)
             new_box._has_empty_label = True
             debug_log(f"_refresh_discover_page DONE (empty catalog list)")
+            self._set_discover_spinner_active(False)
             return
 
         self._discover_views[view_key] = {
@@ -10725,6 +11176,7 @@ class CineWindow(Adw.ApplicationWindow):
         
         # Load initial batch of 6 rows to cleanly fill viewport without flooding (lazy load rest on scroll)
         debug_log(f"_refresh_discover_page dispatching initial batch of 6 rows (req_id={req_id})")
+        self._set_discover_spinner_active(True)
         self._load_next_discover_batch(req_id, batch_size=6)
         debug_log(f"_refresh_discover_page DONE")
 
@@ -10738,9 +11190,11 @@ class CineWindow(Adw.ApplicationWindow):
             return
         if not hasattr(self, "_discover_catalog_list") or self._discover_next_row_index >= len(self._discover_catalog_list):
             debug_log(f"_load_next_discover_batch SKIPPED: all rows loaded ({self._discover_next_row_index}/{len(self._discover_catalog_list) if hasattr(self, '_discover_catalog_list') else 0})")
+            self._set_discover_spinner_active(False)
             return
             
         self._discover_is_loading_rows = True
+        self._set_discover_spinner_active(True)
         
         target_box = getattr(self, "discover_box", None)
         start_idx = self._discover_next_row_index
@@ -10842,6 +11296,8 @@ class CineWindow(Adw.ApplicationWindow):
                         if _is_event_set(abort_ev):
                             return None
                         if cached:
+                            database.hydrate_items_from_metadata(cached, media_type=m_type)
+                            api.hydrate_missing_catalog_items(cached, media_type=m_type)
                             if current_g:
                                 cached = api.filter_items_by_genre(cached, current_g, media_type=m_type)
                             elif cached and m_type:
@@ -10850,9 +11306,6 @@ class CineWindow(Adw.ApplicationWindow):
                                 cached = api.filter_items_by_genre(cached, current_l, media_type=m_type)
                             if cached and current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
                                 cached = [it for it in cached if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(current_y)]
-                            if cached and api.hydrate_missing_catalog_items(cached, media_type=m_type):
-                                if not _is_event_set(abort_ev):
-                                    database.save_cached_catalog(cache_key, cached)
                             if not cached and (current_g or current_l):
                                 cached = None
                             if cached:
@@ -10877,19 +11330,22 @@ class CineWindow(Adw.ApplicationWindow):
                         )
                         if _is_event_set(abort_ev):
                             return None
-                        if items and current_g:
-                            items = api.filter_items_by_genre(items, current_g, media_type=m_type)
-                        elif items and m_type:
-                            items = [it for it in items if api.is_item_type_compatible(it, m_type)]
-                        if items and current_l:
-                            items = api.filter_items_by_genre(items, current_l, media_type=m_type)
-                        if items and current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
-                            items = [it for it in items if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(current_y)]
-                        if items and database.is_adult_content_hidden():
-                            items = [it for it in items if not api.is_adult_item(it)]
+                        if items:
+                            database.hydrate_items_from_metadata(items, media_type=m_type)
+                            api.hydrate_missing_catalog_items(items, media_type=m_type)
+                            if not _is_event_set(abort_ev):
+                                database.save_cached_catalog(cache_key, items)
+                            if current_g:
+                                items = api.filter_items_by_genre(items, current_g, media_type=m_type)
+                            elif m_type:
+                                items = [it for it in items if api.is_item_type_compatible(it, m_type)]
+                            if current_l:
+                                items = api.filter_items_by_genre(items, current_l, media_type=m_type)
+                            if current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
+                                items = [it for it in items if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(current_y)]
+                            if database.is_adult_content_hidden():
+                                items = [it for it in items if not api.is_adult_item(it)]
                         debug_log(f"discover row FETCHED from API: '{row_title}'", f"Got {len(items) if items else 0} items")
-                        if items and not _is_event_set(abort_ev):
-                            database.save_cached_catalog(cache_key, items)
                         return (row_info, items)
                     except Exception as e:
                         logger.error(f"Error fetching discover row {row_info.get('title')}: {e}")
@@ -10959,9 +11415,11 @@ class CineWindow(Adw.ApplicationWindow):
                 def _finish_batch(added_count=rows_added_in_batch):
                     if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
                         self._discover_is_loading_rows = False
+                        self._set_discover_spinner_active(False)
                         return False
 
                     self._discover_is_loading_rows = False
+                    self._set_discover_spinner_active(False)
                     debug_log(f"discover batch finished for req_id={req_id} (added {added_count} rows)")
 
                     if added_count == 0:
@@ -11061,6 +11519,7 @@ class CineWindow(Adw.ApplicationWindow):
                 def _reset_flag():
                     if req_id == getattr(self, "discover_request_id", 0):
                         self._discover_is_loading_rows = False
+                        self._set_discover_spinner_active(False)
                     return False
                 GLib.idle_add(_reset_flag)
 
@@ -11120,6 +11579,8 @@ class CineWindow(Adw.ApplicationWindow):
         sec_row.add_css_class("discover-row-box")
 
         display_items = items[:36]
+        database.hydrate_items_from_metadata(display_items, media_type=m_type)
+        api.hydrate_missing_catalog_items(display_items, media_type=m_type)
         for it in display_items:
             if database.is_adult_content_hidden() and api.is_adult_item(it):
                 continue
@@ -11575,6 +12036,9 @@ class CineWindow(Adw.ApplicationWindow):
 
         if not valid_items:
             return
+
+        database.hydrate_items_from_metadata(valid_items)
+        api.hydrate_missing_catalog_items(valid_items)
 
         SLICE_SIZE = 12
         slices = [valid_items[i:i + SLICE_SIZE] for i in range(0, len(valid_items), SLICE_SIZE)]
@@ -14453,8 +14917,10 @@ class CineWindow(Adw.ApplicationWindow):
             lib_page = entry.get("library_page")
             if hasattr(self, "library_stack") and lib_page:
                 self.library_stack.set_visible_child_name(lib_page)
-                if hasattr(self, "library_unique_check") and hasattr(self.library_unique_check, "set_active"):
-                    self.library_unique_check.set_active(lib_page == "unique")
+                for btn_name in ("unique_check", "library_unique_check"):
+                    btn = getattr(self, btn_name, None)
+                    if btn is not None and hasattr(btn, "set_active"):
+                        btn.set_active(lib_page == "unique")
                 if lib_page == "search_results" and hasattr(self, "header_stack"):
                     self.header_stack.set_visible_child_name("search_header")
                     self._open_search()
@@ -14687,6 +15153,8 @@ class CineWindow(Adw.ApplicationWindow):
 
                     def on_batch(batch):
                         if self._current_search_id == current_search_id and batch and not _is_event_set(getattr(self, "_search_abort_event", None)):
+                            database.hydrate_items_from_metadata(batch, media_type=media_type)
+                            api.hydrate_missing_catalog_items(batch, media_type=media_type)
                             def update_ui():
                                 if self._current_search_id != current_search_id or _is_event_set(getattr(self, "_search_abort_event", None)):
                                     return False
@@ -14731,10 +15199,98 @@ class CineWindow(Adw.ApplicationWindow):
             self.discover_search_entry.grab_focus()
         else:
             self.discover_search_entry.set_text("")
-        self._on_discover_results_search_changed()
+            if getattr(self, "_discover_search_debounce_timer", None):
+                GLib.source_remove(self._discover_search_debounce_timer)
+                self._discover_search_debounce_timer = None
+            self.current_discover_search_query = ""
+            self._on_discover_results_search_changed()
+            if getattr(self, "_search_originated_from_discover", False) and not self._is_unique_mode_active():
+                self._search_originated_from_discover = False
+                if hasattr(self, "library_stack"):
+                    self.library_stack.set_visible_child_name("discover")
+                self._refresh_discover_page()
+            elif getattr(self, "_search_originated_from_content", False) and not self._is_unique_mode_active():
+                self._search_originated_from_content = False
+                if hasattr(self, "library_stack"):
+                    self.library_stack.set_visible_child_name("content")
+                self._refresh_content()
+            else:
+                stack = getattr(self, "library_stack", None)
+                vis_page = stack.get_visible_child_name() if stack else ""
+                if vis_page == "unique":
+                    self._refresh_unique_combined_view()
+                elif vis_page == "content":
+                    self._refresh_content()
 
     def _on_discover_search_changed(self, _entry):
+        # Keep current_discover_search_query synchronized with entry text
+        self.current_discover_search_query = self._discover_result_search_query()
+        # Instantly filter visible cards on screen locally without blocking or network calls
+        if getattr(self, "_discover_search_debounce_timer", None):
+            GLib.source_remove(self._discover_search_debounce_timer)
+            self._discover_search_debounce_timer = None
         self._on_discover_results_search_changed()
+
+        if getattr(self, "_clearing_search_for_filter", False):
+            self._search_originated_from_discover = False
+            self._search_originated_from_content = False
+            return
+
+        stack = getattr(self, "library_stack", None)
+        visible_page = stack.get_visible_child_name() if stack else ""
+        if self.current_discover_search_query:
+            if visible_page == "discover":
+                self._search_originated_from_discover = True
+                self.library_stack.set_visible_child_name("unique")
+                visible_page = "unique"
+            elif visible_page == "content":
+                self._search_originated_from_content = True
+                self.library_stack.set_visible_child_name("unique")
+                visible_page = "unique"
+        elif not self.current_discover_search_query and visible_page == "unique":
+            if not self._is_unique_mode_active():
+                if getattr(self, "_search_originated_from_content", False):
+                    self._search_originated_from_content = False
+                    self.library_stack.set_visible_child_name("content")
+                    self._refresh_content()
+                    return
+                else:
+                    self._search_originated_from_discover = False
+                    self.library_stack.set_visible_child_name("discover")
+                    self._refresh_discover_page()
+                    return
+
+        # If in Unique view or Content view, debounce a refresh to populate matching items from local database
+        if visible_page in ("unique", "content"):
+            def _debounced_refresh():
+                self._discover_search_debounce_timer = None
+                cur_page = self.library_stack.get_visible_child_name() if hasattr(self, "library_stack") else ""
+                if cur_page == "unique":
+                    self._refresh_unique_combined_view()
+                elif cur_page == "content":
+                    self._refresh_content()
+                return False
+            self._discover_search_debounce_timer = GLib.timeout_add(150, _debounced_refresh)
+
+    def _on_discover_search_activated(self, _entry):
+        # Keep Enter key focused on instant local filtering
+        self.current_discover_search_query = self._discover_result_search_query()
+        self._on_discover_results_search_changed()
+        stack = getattr(self, "library_stack", None)
+        visible_page = stack.get_visible_child_name() if stack else ""
+        if self.current_discover_search_query:
+            if visible_page == "discover":
+                self._search_originated_from_discover = True
+                self.library_stack.set_visible_child_name("unique")
+                visible_page = "unique"
+            elif visible_page == "content":
+                self._search_originated_from_content = True
+                self.library_stack.set_visible_child_name("unique")
+                visible_page = "unique"
+        if visible_page == "unique":
+            self._refresh_unique_combined_view()
+        elif visible_page == "content":
+            self._refresh_content()
 
     def switch_to_library_page(self, page_name: str):
         self.library_stack.set_visible_child_name(page_name)

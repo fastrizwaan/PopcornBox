@@ -526,9 +526,103 @@ class TestUniqueCombinedView(unittest.TestCase):
             mock_fetch.assert_not_called()
             self.assertIn(("https://v3-cinemeta.strem.io/manifest.json", "top", "movie"), win.unique_exhausted_catalogs)
 
+    def test_unique_combined_view_with_search_query_uses_db_then_catalog_search(self):
+        """Unique view queries local DB first via query_cache, followed by catalog_search for addons."""
+        win = MagicMock()
+        win.category_btn_stack.get_visible_child_name.return_value = "movies"
+        win._current_discover_type = "movie"
+        win._current_discover_addon = None
+        win.current_genre = None
+        win.current_discover_search_query = "maid"
+        win._is_discover_search_title_only.return_value = True
+
+        cat1 = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json", "media_type": "movie", "title": "Top"}
+        win._get_discover_catalog_list.return_value = [cat1]
+        win.current_catalog = cat1
+
+        search_cat = {
+            "addon_name": "Cinemeta",
+            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
+            "catalog_id": "top",
+            "catalog_name": "Popular",
+            "media_type": "movie"
+        }
+        with patch("src.window.cancel_pending_image_downloads", create=True), \
+             patch("src.api.get_available_search_catalogs", return_value=[search_cat]):
+            CineWindow._refresh_unique_combined_view(win)
+
+        sources = [c.get("_source") for c in win.unique_catalogs]
+        self.assertEqual(sources[0], "query_cache")
+        self.assertIn("catalog_search", sources)
+        search_entries = [c for c in win.unique_catalogs if c.get("_source") == "catalog_search"]
+        self.assertTrue(len(search_entries) >= 1)
+        self.assertTrue(search_entries[0].get("title_only"))
+        win._load_next_unique_batch.assert_called_once()
+
+    def test_query_cache_meta_search_when_title_only_disabled(self):
+        """When Title Only is disabled, SQLite query searches metadata fields (title, name, description, genres)."""
+        from src import database
+        # Test that searching with title_only=False searches meta and returns results
+        items = database.get_cached_items_by_search("final", title_only=False, limit=60)
+        self.assertIsInstance(items, list)
+        self.assertTrue(len(items) > 0)
+        # Verify first item is a title match due to prioritization
+        first_title = str(items[0].get("title") or items[0].get("name") or "").lower()
+        self.assertIn("final", first_title)
+
+    def test_empty_filter_box_has_clear_button(self):
+        """Empty filter box includes clear button when active query is set."""
+        win = MagicMock()
+        win.current_discover_search_query = "virgin"
+        win.discover_search_entry = MagicMock()
+        empty_box = CineWindow._create_empty_filter_box(win, "No Animation items matching 'virgin'.")
+        self.assertIsNotNone(empty_box)
+        self.assertTrue(getattr(empty_box, "_is_empty_box", False))
+        
+        # Verify clear button exists in empty box
+        children = []
+        ch = empty_box.get_first_child()
+        while ch:
+            children.append(ch)
+            ch = ch.get_next_sibling()
+        self.assertEqual(len(children), 2)  # Label + Button
+        btn = children[1]
+        self.assertIsInstance(btn, Gtk.Button)
+        self.assertEqual(btn.get_label(), "Clear Search Filter")
+
+    def test_update_flowbox_empty_state_shows_and_hides(self):
+        """_update_flowbox_empty_state reveals empty box when all cards are hidden, removes it when cards are visible."""
+        win = MagicMock()
+        win.current_discover_search_query = "xyznonexistent"
+        win.current_genre = "Animation"
+        win.is_fetching_unique = False
+        fb = Gtk.FlowBox()
+        win.unique_flowbox = fb
+
+        # With 0 cards in flowbox, empty box is added
+        CineWindow._update_flowbox_empty_state(win, fb)
+        first_ch = fb.get_first_child()
+        self.assertIsNotNone(first_ch)
+        widget = first_ch.get_child() if hasattr(first_ch, "get_child") else first_ch
+        self.assertTrue(getattr(widget, "_is_empty_box", False))
+
+        # With visible card added, empty box is removed
+        card = Gtk.Box()
+        fb.append(card)
+        CineWindow._update_flowbox_empty_state(win, fb)
+        has_empty = False
+        ch = fb.get_first_child()
+        while ch:
+            w = ch.get_child() if hasattr(ch, "get_child") else ch
+            if getattr(w, "_is_empty_box", False):
+                has_empty = True
+            ch = ch.get_next_sibling()
+        self.assertFalse(has_empty)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

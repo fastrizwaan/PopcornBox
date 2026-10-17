@@ -1864,6 +1864,153 @@ def get_cached_metadata(item_id, media_type=None):
         print(f"Error reading metadata cache: {e}")
     return None
 
+def hydrate_items_from_metadata(items, media_type=None):
+    """
+    Fast batch-hydrate catalog items in-place using SQLite metadata_cache and item_genres.
+    Takes a list of item dicts and enriches any items missing genres/year/title/cover/desc/lang.
+    Returns the number of items that were updated.
+    """
+    if not items or not isinstance(items, list):
+        return 0
+
+    to_hydrate = []
+    id_to_items = {}
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        iid = it.get("id") or it.get("imdb_id")
+        if not iid:
+            continue
+        # Ensure clean year is extracted from releaseInfo / released
+        clean_yr = extract_clean_year(it)
+        if clean_yr and not it.get("year"):
+            it["year"] = clean_yr
+
+        has_genres = bool(it.get("genres"))
+        has_year = bool(it.get("year"))
+        has_desc = bool(it.get("description") or it.get("overview"))
+        has_cover = bool(it.get("medium_cover_image") or it.get("poster"))
+        has_title = bool(it.get("title") and it.get("title") != "Unknown")
+        has_lang = bool(it.get("language"))
+
+        if not (has_genres and has_year and has_desc and has_cover and has_title and has_lang):
+            candidates = [str(iid)]
+            if it.get("imdb_id") and str(it["imdb_id"]) not in candidates:
+                candidates.append(str(it["imdb_id"]))
+            for aid in (it.get("alias_ids") or []):
+                if aid and str(aid) not in candidates:
+                    candidates.append(str(aid))
+            for cid in candidates:
+                id_to_items.setdefault(cid, []).append(it)
+            to_hydrate.append(it)
+
+    if not id_to_items:
+        return 0
+
+    updated_items = set()
+
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            all_ids = list(id_to_items.keys())
+
+            # 1. Batch query metadata_cache in chunks of 500
+            for i in range(0, len(all_ids), 500):
+                chunk = all_ids[i:i+500]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor.execute(f"SELECT id, data FROM metadata_cache WHERE id IN ({placeholders})", chunk)
+                for row_id, data_str in cursor.fetchall():
+                    if not data_str:
+                        continue
+                    try:
+                        meta = json.loads(data_str)
+                    except Exception:
+                        continue
+                    if not isinstance(meta, dict):
+                        continue
+
+                    target_items = id_to_items.get(str(row_id), [])
+                    for it in target_items:
+                        it_updated = False
+                        if (not it.get("title") or it.get("title") == "Unknown") and (meta.get("title") or meta.get("name")):
+                            t = meta.get("title") or meta.get("name")
+                            if t and t != "Unknown":
+                                it["title"] = t
+                                it_updated = True
+                        if not it.get("medium_cover_image") and not it.get("poster"):
+                            cov = meta.get("medium_cover_image") or meta.get("poster")
+                            if cov:
+                                it["medium_cover_image"] = cov
+                                it["poster"] = cov
+                                it_updated = True
+                        if not it.get("genres") and meta.get("genres"):
+                            it["genres"] = list(meta["genres"])
+                            it_updated = True
+                        c_yr = extract_clean_year(meta) or meta.get("year")
+                        if not it.get("year") and c_yr:
+                            it["year"] = str(c_yr)
+                            it_updated = True
+                        desc = meta.get("description") or meta.get("overview")
+                        if not it.get("description") and desc:
+                            it["description"] = desc
+                            it_updated = True
+                        if not it.get("imdbRating") and meta.get("imdbRating"):
+                            it["imdbRating"] = str(meta["imdbRating"])
+                            it_updated = True
+                        if not it.get("runtime") and meta.get("runtime"):
+                            it["runtime"] = str(meta["runtime"])
+                            it_updated = True
+                        if not it.get("language") and meta.get("language"):
+                            it["language"] = meta["language"]
+                            it_updated = True
+                        if not it.get("background") and meta.get("background"):
+                            it["background"] = meta["background"]
+                            it_updated = True
+                        if not it.get("cast") and meta.get("cast"):
+                            it["cast"] = list(meta["cast"])
+                            it_updated = True
+                        if not it.get("videos") and meta.get("videos"):
+                            it["videos"] = meta["videos"]
+                            it_updated = True
+                        if meta.get("adult") or meta.get("isAdult"):
+                            it["adult"] = True
+                        if it_updated:
+                            updated_items.add(id(it))
+
+            # 2. For items still missing genres or year, check item_genres table
+            still_need_genres = [it for it in to_hydrate if not it.get("genres") or not it.get("year")]
+            if still_need_genres:
+                need_ids = []
+                need_map = {}
+                for it in still_need_genres:
+                    iid = str(it.get("id") or it.get("imdb_id") or "")
+                    if iid:
+                        need_ids.append(iid)
+                        need_map.setdefault(iid, []).append(it)
+                if need_ids:
+                    for i in range(0, len(need_ids), 500):
+                        chunk = need_ids[i:i+500]
+                        placeholders = ",".join("?" for _ in chunk)
+                        cursor.execute(f"SELECT item_id, genre, year FROM item_genres WHERE item_id IN ({placeholders})", chunk)
+                        for row_iid, genre_val, yr_val in cursor.fetchall():
+                            for it in need_map.get(str(row_iid), []):
+                                if genre_val and genre_val.strip():
+                                    if "genres" not in it or not it["genres"]:
+                                        it["genres"] = [genre_val.strip()]
+                                        updated_items.add(id(it))
+                                    elif genre_val.strip() not in it["genres"]:
+                                        it["genres"].append(genre_val.strip())
+                                        updated_items.add(id(it))
+                                if yr_val and yr_val.strip() and not it.get("year"):
+                                    it["year"] = yr_val.strip()
+                                    updated_items.add(id(it))
+
+    except Exception as e:
+        print(f"Error in hydrate_items_from_metadata: {e}")
+
+    return len(updated_items)
+
 def save_cached_metadata(item_id, media_type, details):
     if not item_id or not details:
         return
@@ -1873,6 +2020,19 @@ def save_cached_metadata(item_id, media_type, details):
             cursor = conn.cursor()
             now = time.time()
             if isinstance(details, dict):
+                # Merge with existing record in metadata_cache so rich fields are never lost
+                try:
+                    cursor.execute("SELECT data FROM metadata_cache WHERE id = ?", (str(item_id),))
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        existing_meta = json.loads(row[0])
+                        if isinstance(existing_meta, dict):
+                            for k, v in existing_meta.items():
+                                if k not in details or not details[k]:
+                                    details[k] = v
+                except Exception:
+                    pass
+
                 if details.get("name") and not details.get("title"):
                     details["title"] = details["name"]
                 if details.get("title") and not details.get("name"):
@@ -1964,6 +2124,33 @@ def save_cached_metadata(item_id, media_type, details):
                         )
                         if cursor.rowcount > 0:
                             has_new = True
+
+            # Update matching items inside in-memory catalog cache (_MEM_CATALOG_CACHE)
+            try:
+                with _MEM_CATALOG_LOCK:
+                    for _ckey, (c_items, _ctime) in _MEM_CATALOG_CACHE.items():
+                        if isinstance(c_items, list):
+                            for cit in c_items:
+                                if isinstance(cit, dict):
+                                    cit_id = cit.get("id") or cit.get("imdb_id")
+                                    if cit_id and str(cit_id) == str(item_id):
+                                        if genres and not cit.get("genres"):
+                                            cit["genres"] = list(genres)
+                                        if year_val and not cit.get("year"):
+                                            cit["year"] = str(year_val)
+                                        if details.get("title") and (not cit.get("title") or cit.get("title") == "Unknown"):
+                                            cit["title"] = details["title"]
+                                        if (details.get("medium_cover_image") or details.get("poster")) and not cit.get("medium_cover_image"):
+                                            cov = details.get("medium_cover_image") or details.get("poster")
+                                            cit["medium_cover_image"] = cov
+                                            cit["poster"] = cov
+                                        if (details.get("description") or details.get("overview")) and not cit.get("description"):
+                                            cit["description"] = details.get("description") or details.get("overview")
+                                        if details.get("language") and not cit.get("language"):
+                                            cit["language"] = details["language"]
+            except Exception:
+                pass
+
 
             conn.commit()
             if has_new:
@@ -2357,6 +2544,108 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
         print(f"Error fetching cached items by year: {e}")
     return items
 
+def get_cached_items_by_search(query, media_type=None, genre=None, year=None, sort_mode=None, limit=60, offset=0, title_only=False):
+    """Retrieve catalog item dicts from SQLite cache matching a search keyword and optional media_type/genre/year."""
+    if not query or not str(query).strip():
+        return []
+    q_str = str(query).strip().lower()
+    items = []
+    seen_ids = set()
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            if title_only:
+                search_condition = "(lower(json_extract(m.data, '$.title')) LIKE ? OR lower(json_extract(m.data, '$.name')) LIKE ?)"
+                cond_params = [f"%{q_str}%", f"%{q_str}%"]
+            else:
+                search_condition = """(
+                    lower(json_extract(m.data, '$.title')) LIKE ?
+                    OR lower(json_extract(m.data, '$.name')) LIKE ?
+                    OR lower(json_extract(m.data, '$.description')) LIKE ?
+                    OR lower(json_extract(m.data, '$.overview')) LIKE ?
+                    OR lower(json_extract(m.data, '$.genres')) LIKE ?
+                )"""
+                cond_params = [f"%{q_str}%"] * 5
+
+            if genre and str(genre) not in ("All", "All Genres", "all"):
+                sql = f"""
+                    SELECT m.data
+                    FROM item_genres ig
+                    JOIN metadata_cache m ON ig.item_id = m.id
+                    WHERE lower(ig.genre) = lower(?)
+                      AND {search_condition}
+                """
+                params = [genre.strip()] + cond_params
+            else:
+                sql = f"""
+                    SELECT m.data
+                    FROM metadata_cache m
+                    WHERE {search_condition}
+                """
+                params = list(cond_params)
+
+            if media_type and media_type not in ("all", "discover"):
+                mt = str(media_type).lower()
+                if mt == "movie":
+                    sql += " AND (m.media_type IN ('movie', 'collections') OR m.media_type IS NULL OR m.media_type = '')"
+                elif mt == "series":
+                    sql += " AND (m.media_type IN ('series', 'tv', 'show') OR m.media_type IS NULL OR m.media_type = '')"
+                elif mt == "anime":
+                    sql += " AND (m.media_type = 'anime' OR m.media_type IS NULL OR m.media_type = '')"
+                else:
+                    sql += " AND m.media_type = ?"
+                    params.append(mt)
+
+            if year and str(year) not in ("All Years", "All", "all", "None"):
+                yr_str = str(year).strip()
+                sql += " AND (json_extract(m.data, '$.year') LIKE ?)"
+                params.append(f"{yr_str}%")
+
+            if sort_mode == "Recent":
+                sql += """
+                    ORDER BY 
+                        CASE WHEN lower(json_extract(m.data, '$.title')) LIKE ? OR lower(json_extract(m.data, '$.name')) LIKE ? THEN 0 ELSE 1 END,
+                        COALESCE(json_extract(m.data, '$.year'), 0) DESC,
+                        COALESCE(json_extract(m.data, '$.rating'), json_extract(m.data, '$.imdbRating'), 0) DESC,
+                        m.updated_at DESC
+                    LIMIT ? OFFSET ?
+                """
+            else:
+                sql += """
+                    ORDER BY 
+                        CASE WHEN lower(json_extract(m.data, '$.title')) LIKE ? OR lower(json_extract(m.data, '$.name')) LIKE ? THEN 0 ELSE 1 END,
+                        COALESCE(json_extract(m.data, '$.rating'), json_extract(m.data, '$.imdbRating'), 0) DESC,
+                        m.updated_at DESC
+                    LIMIT ? OFFSET ?
+                """
+            params.extend([f"%{q_str}%", f"%{q_str}%", limit, offset])
+            cursor.execute(sql, params)
+            for row in cursor.fetchall():
+                if not row or not row[0]:
+                    continue
+                try:
+                    it = json.loads(row[0])
+                    if isinstance(it, dict):
+                        iid = it.get("id") or it.get("imdb_id")
+                        if iid and iid not in seen_ids:
+                            title = str(it.get("title") or it.get("name") or "").lower()
+                            if title_only:
+                                if q_str in title:
+                                    seen_ids.add(iid)
+                                    items.append(it)
+                            else:
+                                desc = str(it.get("description") or it.get("overview") or "").lower()
+                                genres = str(it.get("genres") or "").lower()
+                                if q_str in title or q_str in desc or q_str in genres:
+                                    seen_ids.add(iid)
+                                    items.append(it)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"Error fetching cached items by search: {e}")
+    return items
+
 def get_stored_years(media_type=None):
     """Return distinct 4-digit release years stored in item_genres (not exceeding current year)."""
     years = set()
@@ -2709,6 +2998,10 @@ def get_cached_catalog(cache_key, max_age_hours=24):
             data = json.loads(raw_json)
             if not data:
                 return None
+            try:
+                hydrate_items_from_metadata(data)
+            except Exception:
+                pass
             with _MEM_CATALOG_LOCK:
                 while len(_MEM_CATALOG_CACHE) >= 500:
                     _MEM_CATALOG_CACHE.pop(next(iter(_MEM_CATALOG_CACHE)), None)
@@ -2727,6 +3020,13 @@ def save_cached_catalog(cache_key, items):
     if is_adult_content_hidden():
         from . import api
         items = [it for it in items if not api.is_adult_item(it)]
+
+    # Pre-enrich items with any existing metadata from metadata_cache
+    try:
+        hydrate_items_from_metadata(items)
+    except Exception:
+        pass
+
     now = time.time()
     with _MEM_CATALOG_LOCK:
         while len(_MEM_CATALOG_CACHE) >= 500:
@@ -2737,10 +3037,6 @@ def save_cached_catalog(cache_key, items):
         with _cache_db_lock:
             conn = _get_cache_db()
             cursor = conn.cursor()
-            cursor.execute(
-                "INSERT OR REPLACE INTO catalog_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
-                (str(cache_key), json.dumps(items), now)
-            )
             # Index items and genres into metadata_cache and item_genres for instant DB genre filtering
             try:
                 meta_batch = []
@@ -2820,7 +3116,7 @@ def save_cached_catalog(cache_key, items):
                             genre_batch.append((bid, str(mtype), "", clean_yr))
 
                 if meta_batch:
-                    cursor.executemany("INSERT OR IGNORE INTO metadata_cache VALUES (?, ?, ?, ?)", meta_batch)
+                    cursor.executemany("INSERT OR REPLACE INTO metadata_cache VALUES (?, ?, ?, ?)", meta_batch)
                 if genre_batch:
                     cursor.executemany("""
                         INSERT INTO item_genres (item_id, media_type, genre, year)
@@ -2831,6 +3127,13 @@ def save_cached_catalog(cache_key, items):
                     """, genre_batch)
                     invalidate_dropdown_caches()
                     _notify_genre_listeners()
+
+                # Save fully enriched items JSON into catalog_cache
+                cursor.execute(
+                    "INSERT OR REPLACE INTO catalog_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
+                    (str(cache_key), json.dumps(items), now)
+                )
+
                 if enriched_count > 0:
                     print(f"[METADATA-HYDRATE] Enriched {enriched_count} items from metadata_cache for catalog '{cache_key}'")
             except Exception:

@@ -2187,11 +2187,16 @@ def get_available_search_catalogs(c_type="movie", only_working=True):
     return catalogs
 
 
-def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None, target_manifest_url=None, target_catalog_id=None, is_cancelled=None, timeout=3.5):
+def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None, target_manifest_url=None, target_catalog_id=None, is_cancelled=None, timeout=3.5, title_only=False):
     from . import database
     c_type = "series" if media_type == "series" else media_type
     page_limit = limit if (limit and limit > 0) else 50
     skip = (page - 1) * page_limit
+
+    if not target_manifest_url and catalog_url:
+        target_manifest_url = catalog_url
+    if not target_catalog_id and catalog_id and catalog_id != "top":
+        target_catalog_id = catalog_id
 
     if query:
         import concurrent.futures
@@ -2209,9 +2214,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             if target_manifest_url and m_url != target_manifest_url:
                 return []
                 
-            if not is_search_provider(addon, media_type=c_type):
+            if not target_manifest_url and not is_search_provider(addon, media_type=c_type):
                 return []
-            if not is_addon_online(m_url):
+            if not target_manifest_url and not is_addon_online(m_url):
                 return []
             
             base_url = m_url.rsplit("manifest.json", 1)[0]
@@ -2221,6 +2226,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 search_catalogs = [target_catalog_id]
             else:
                 search_catalogs = _get_search_catalogs_for_addon(addon, c_type, cache_only=cache_only)
+                if not search_catalogs and target_manifest_url:
+                    search_catalogs = [catalog_id or "top"]
                 
             if not search_catalogs:
                 return []
@@ -2229,9 +2236,16 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             for cat_id in search_catalogs:
                 if is_cancelled and is_cancelled():
                     break
-                search_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(query)}.json"
+                if page > 1:
+                    skip_val = (page - 1) * page_limit
+                    search_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(query)}/skip={skip_val}.json"
+                else:
+                    search_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(query)}.json"
                 fetch_kw = {"is_cancelled": is_cancelled} if is_cancelled is not None else {}
                 data = _get_cached_request(search_url, max_age_hours=2, cache_only=cache_only, timeout=3.5, **fetch_kw)
+                if not data and page > 1:
+                    alt_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(query)}.json?skip={skip_val}"
+                    data = _get_cached_request(alt_url, max_age_hours=2, cache_only=cache_only, timeout=3.5, **fetch_kw)
                 if data and isinstance(data.get("metas"), list):
                     addon_items.extend(data["metas"])
                     if addon_items: 
@@ -2242,9 +2256,20 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             addons_to_search = [
                 a for a in database.get_addons() 
                 if a.get("manifest_url") == target_manifest_url 
-                and is_search_provider(a, media_type=c_type)
                 and is_addon_online(a.get("manifest_url", ""))
             ]
+            if not addons_to_search:
+                addons_to_search = [
+                    a for a in database.get_addons()
+                    if a.get("manifest_url") == target_manifest_url and a.get("enabled", True)
+                ]
+            if not addons_to_search:
+                addons_to_search = [{
+                    "manifest_url": target_manifest_url,
+                    "name": "Addon",
+                    "enabled": True,
+                    "catalogs": [{"type": c_type, "id": target_catalog_id or "top", "extra": ["search"]}]
+                }]
         else:
             addons_to_search = get_search_addons(media_type=c_type, only_working=True)
             if not addons_to_search:
@@ -2271,10 +2296,14 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     for m in addon_items:
                         if database.is_adult_content_hidden() and is_adult_item(m):
                             continue
-                        title = m.get("name") or ""
-                        desc = m.get("description") or ""
-                        if q_lower not in str(title).lower() and q_lower not in str(desc).lower():
-                            continue
+                        title = m.get("name") or m.get("title") or ""
+                        desc = m.get("description") or m.get("overview") or ""
+                        if title_only:
+                            if q_lower not in str(title).lower():
+                                continue
+                        else:
+                            if q_lower not in str(title).lower() and q_lower not in str(desc).lower():
+                                continue
 
                         imdb_id = m.get("imdb_id") or m.get("id")
                         if not imdb_id or imdb_id in seen_ids:
@@ -2351,6 +2380,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                         seen_titles.setdefault(title_lower, []).append(item_obj)
                         items.append(item_obj)
                         new_batch.append(item_obj)
+                    if new_batch:
+                        database.hydrate_items_from_metadata(new_batch, media_type=c_type)
+                        hydrate_missing_catalog_items(new_batch, media_type=c_type)
                     if new_batch and on_item_found:
                         if not (is_cancelled and is_cancelled()):
                             on_item_found(new_batch)
@@ -2369,6 +2401,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             except Exception:
                 pass
                     
+        if items:
+            database.hydrate_items_from_metadata(items, media_type=c_type)
+            hydrate_missing_catalog_items(items, media_type=c_type)
         return items
 
     if catalog_url:
@@ -2625,14 +2660,13 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     item_dict["videos"] = item_videos
                 if item_trailer:
                     item_dict["trailer"] = item_trailer
-
-                if item_desc and imdb_id:
+                if imdb_id:
                     database.save_cached_metadata(imdb_id, item_type, item_dict)
 
                 movies.append(item_dict)
+            hydrate_missing_catalog_items(movies, media_type=media_type)
             if genre and genre != "All" and str(catalog_id) not in ("year", "years", "acc85513", "tmdb.year"):
                 movies = filter_items_by_genre(movies, genre, media_type=media_type)
-            hydrate_missing_catalog_items(movies, media_type=media_type)
             if database.is_adult_content_hidden():
                 movies = [m for m in movies if not is_adult_item(m)]
             if movies and page_limit and page_limit > 0:
@@ -2859,8 +2893,15 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
     missing_titles = []
     missing_metadata = []
     local_hydrated_count = 0
-
     # 0. Immediate local DB cache pass (sub-millisecond SQLite WAL lookup) for ALL items
+    try:
+        fast_count = database.hydrate_items_from_metadata(items, media_type=media_type)
+        if fast_count > 0:
+            updated = True
+            local_hydrated_count += fast_count
+    except Exception:
+        pass
+
     for m in items:
         if not isinstance(m, dict):
             continue
@@ -2957,7 +2998,7 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
 
         if is_missing_title:
             missing_titles.append(m)
-        elif (is_missing_genres or is_missing_year) and tt_id:
+        elif (is_missing_genres or is_missing_year or is_missing_desc or is_missing_cover) and tt_id:
             missing_metadata.append((m, tt_id))
 
     if local_hydrated_count > 0:

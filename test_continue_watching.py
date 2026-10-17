@@ -44,6 +44,7 @@ class TestContinueWatching(unittest.TestCase):
         
         from src import database
         database.close_cache_db()
+        database.reset_json_cache()
         database._json_cache_valid = False
         database._json_cache = None
 
