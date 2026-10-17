@@ -225,6 +225,10 @@ class MovieDetailsPage(Gtk.Overlay):
 
         self.selected_season = None
         self.selected_episode = None
+        # Set once the user explicitly picks an episode/season, so later
+        # background build_ui() refreshes never clobber the active selection
+        # with a stale Continue Watching resume point.
+        self._user_selected_episode = False
         self.torrents = []
         self._last_torrents_hash = None  # For change detection to skip redundant UI rebuilds
         self.videos = []
@@ -2159,7 +2163,10 @@ class MovieDetailsPage(Gtk.Overlay):
                     + [self.movie_stub.get("imdb_id"), item_id]
                 ) if value
             ))
-            resume_item = database.get_continue_watching_item(resume_ids)
+            resume_item = (
+                None if getattr(self, "_user_selected_episode", False)
+                else database.get_continue_watching_item(resume_ids)
+            )
             if resume_item:
                 resume_season = resume_item.get("season")
                 resume_episode = resume_item.get("episode")
@@ -2195,6 +2202,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     if not getattr(self, "_building_series_dropdowns", False):
                         self._preferred_series_season = s_val
                         self._preferred_series_episode = self.selected_episode
+                        self._user_selected_episode = True
                     primary_id = (self.movie_stub.get("alias_ids") or [self.movie_stub.get("id") or self.movie_stub.get("imdb_id")])[0]
                     self.remembered_working_stream = database.get_working_stream(primary_id, getattr(self, 'selected_season', None), self.selected_episode)
                     if self.remembered_working_stream:
@@ -2226,6 +2234,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 if not getattr(self, "_building_series_dropdowns", False):
                     self._preferred_series_season = s
                     self._preferred_series_episode = None
+                    self._user_selected_episode = True
                 self.selected_season = s
                 self.movie_stub["season"] = s
                 eps = [v for v in self.videos if v.get("season", 1) == s]
@@ -3215,6 +3224,10 @@ class MovieDetailsPage(Gtk.Overlay):
             elif t_list:
                 pref_prov = getattr(self, 'preferred_direct_provider', None)
                 pref_matches = [t for t in t_list if t.get('is_http') and _stream_matches_provider(t, pref_prov)] if pref_prov else []
+                if not pref_matches:
+                    gen_prov = getattr(self, 'preferred_provider', None)
+                    if gen_prov:
+                        pref_matches = [t for t in t_list if _stream_matches_provider(t, gen_prov)]
                 if pref_matches:
                     self.selected_torrent = pref_matches[0]
                 else:
@@ -3222,6 +3235,10 @@ class MovieDetailsPage(Gtk.Overlay):
             elif raw_t_list and source_idx == 0:
                 pref_prov = getattr(self, 'preferred_direct_provider', None)
                 pref_matches = [t for t in raw_t_list if t.get('is_http') and _stream_matches_provider(t, pref_prov)] if pref_prov else []
+                if not pref_matches:
+                    gen_prov = getattr(self, 'preferred_provider', None)
+                    if gen_prov:
+                        pref_matches = [t for t in raw_t_list if _stream_matches_provider(t, gen_prov)]
                 if pref_matches:
                     self.selected_torrent = pref_matches[0]
                 else:
@@ -5198,22 +5215,29 @@ class CineWindow(Adw.ApplicationWindow):
 
             is_trailer = self._is_playing_trailer()
             auto_play_enabled = settings.get_boolean("auto-play-next")
+            # Warm the next episode's streams just before this one ends so the
+            # automatic transition does not sit waiting on streaming providers.
+            if (
+                not is_trailer
+                and auto_play_enabled
+                and not getattr(self, "next_ep_dismissed", False)
+                and remaining > 0
+                and remaining <= self._NEXT_EPISODE_PREFETCH_LEAD_SECONDS
+            ):
+                self._prefetch_next_episode_streams()
             if not is_trailer and auto_play_enabled and not getattr(self, "next_ep_dismissed", False) and duration > 30 and remaining <= 30 and remaining > 0 and self._has_next_episode():
-                if hasattr(self, "next_episode_revealer"):
-                    rem_sec = max(1, int(remaining))
-                    if hasattr(self, "next_ep_label"):
-                        self.next_ep_label.set_text(f"Next episode in {rem_sec}s")
-                    if not self.next_episode_revealer.get_reveal_child():
-                        self.next_episode_revealer.set_reveal_child(True)
+                rem_sec = max(1, int(remaining))
+                next_ep_label = getattr(self, "next_ep_label", None)
+                if callable(getattr(next_ep_label, "set_text", None)):
+                    next_ep_label.set_text(f"Next episode in {rem_sec}s")
+                self._set_next_episode_banner_visible(True)
 
                 if remaining <= 1.0 and not getattr(self, "next_ep_auto_triggered", False):
                     self.next_ep_auto_triggered = True
-                    if hasattr(self, "next_episode_revealer"):
-                        self.next_episode_revealer.set_reveal_child(False)
+                    self._set_next_episode_banner_visible(False)
                     self._try_play_next_episode()
             else:
-                if hasattr(self, "next_episode_revealer") and self.next_episode_revealer.get_reveal_child():
-                    self.next_episode_revealer.set_reveal_child(False)
+                self._set_next_episode_banner_visible(False)
 
             # Track Continue Watching progress and mark verified working stream
             if curr_time >= 0.1 and getattr(self, "stream_queue", None) and not is_trailer:
@@ -8072,15 +8096,9 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _populate_discover_genre_dropdown(self, addon, chosen_type, active_cat=None):
         from . import database
-        if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat):
-            self._set_discover_filter_dropdowns_visible(False)
-            self._discover_genre_items = ["All Genres"]
-            if getattr(self, "genre_dropdown", None):
-                self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
-                self.genre_dropdown.set_selected(0)
-                self.genre_dropdown.set_sensitive(False)
-                self.genre_dropdown.set_visible(False)
-            return
+        # Unique mode aggregates provider catalogs through local metadata, so
+        # genre filtering stays meaningful even for catalogs that declare no
+        # genres of their own (or for audio/live-TV providers).
         if addon is None or self._is_unique_mode_active():
             genres = database.get_available_genres(chosen_type)
             self._discover_genre_items = ["All Genres"] + genres
@@ -8089,6 +8107,15 @@ class CineWindow(Adw.ApplicationWindow):
                 self.genre_dropdown.set_selected(0)
                 self.genre_dropdown.set_sensitive(True)
                 self.genre_dropdown.set_visible(True)
+            return
+        if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat):
+            self._set_discover_filter_dropdowns_visible(False)
+            self._discover_genre_items = ["All Genres"]
+            if getattr(self, "genre_dropdown", None):
+                self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
+                self.genre_dropdown.set_selected(0)
+                self.genre_dropdown.set_sensitive(False)
+                self.genre_dropdown.set_visible(False)
             return
 
         cats = [active_cat] if active_cat else [s.get("cat") for s in getattr(self, "_discover_section_items", []) if s.get("cat")]
@@ -8144,15 +8171,9 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _populate_discover_year_dropdown(self, addon, chosen_type, active_cat=None):
         from . import database
-        if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat):
-            self._set_discover_filter_dropdowns_visible(False)
-            self._discover_year_items = ["All Years"]
-            if getattr(self, "year_dropdown", None):
-                self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
-                self.year_dropdown.set_selected(0)
-                self.year_dropdown.set_sensitive(False)
-                self.year_dropdown.set_visible(False)
-            return
+        # Unique mode aggregates provider catalogs through local metadata, so
+        # year filtering stays meaningful even for catalogs that declare no
+        # year support of their own (or for audio/live-TV providers).
         if addon is None or self._is_unique_mode_active():
             years = database.get_available_years(chosen_type)
             self._discover_year_items = ["All Years"] + years
@@ -8161,6 +8182,15 @@ class CineWindow(Adw.ApplicationWindow):
                 self.year_dropdown.set_selected(0)
                 self.year_dropdown.set_sensitive(True)
                 self.year_dropdown.set_visible(True)
+            return
+        if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat):
+            self._set_discover_filter_dropdowns_visible(False)
+            self._discover_year_items = ["All Years"]
+            if getattr(self, "year_dropdown", None):
+                self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
+                self.year_dropdown.set_selected(0)
+                self.year_dropdown.set_sensitive(False)
+                self.year_dropdown.set_visible(False)
             return
 
         cats = [active_cat] if active_cat else [s.get("cat") for s in getattr(self, "_discover_section_items", []) if s.get("cat")]
@@ -8792,8 +8822,10 @@ class CineWindow(Adw.ApplicationWindow):
         # no items for the selected genre. Put the indexed DB results first so
         # the filter can populate immediately while provider rows continue.
         section_scope = getattr(self, "_unique_section_scope", None)
+        if not isinstance(section_scope, dict):
+            section_scope = None
         selected_genre = getattr(self, "current_genre", None)
-        if selected_genre in ("All Genres", _("All Genres"), "All"):
+        if not isinstance(selected_genre, str) or selected_genre in ("All Genres", _("All Genres"), "All"):
             selected_genre = None
         if selected_genre and not filter_addon and not section_scope and not any(c.get("_source") == "genre_cache" for c in catalogs):
             catalogs.insert(0, {
@@ -9080,6 +9112,12 @@ class CineWindow(Adw.ApplicationWindow):
                             return (key, page, items, raw_count)
 
                         if cur_genre and not api.catalog_supports_genre(cat_info, cur_genre):
+                            return (key, page, [], 0)
+
+                        if cur_lang and not api.catalog_supports_genre(cat_info, cur_lang):
+                            # Provider cannot filter by this language; skip it
+                            # instead of fetching results that will be filtered
+                            # out locally.
                             return (key, page, [], 0)
 
                         fetch_genre = cur_genre
@@ -9995,11 +10033,25 @@ class CineWindow(Adw.ApplicationWindow):
         if not force_refresh and hasattr(self, "_discover_catalog_list_cache") and cache_key in self._discover_catalog_list_cache:
             cached_res = list(self._discover_catalog_list_cache[cache_key])
             if cached_res:
-                # A temporary provider health failure must not invalidate a
-                # previously known catalog list. Rows can still render from
-                # local result caches while the provider is down.
-                debug_log(f"_get_discover_catalog_list CACHE HIT for {cache_key}", f"{len(cached_res)} rows")
-                return cached_res
+                from . import api
+                # Evict rows whose provider has since gone offline for the
+                # session, so a stale cache entry never keeps a dead provider
+                # in the list. Rows without a manifest_url (local cache rows)
+                # are always kept.
+                online_rows = [
+                    row for row in cached_res
+                    if not row.get("manifest_url") or api.is_addon_online(row.get("manifest_url"))
+                ]
+                if len(online_rows) == len(cached_res):
+                    # A temporary provider health failure must not invalidate a
+                    # previously known catalog list. Rows can still render from
+                    # local result caches while the provider is down.
+                    debug_log(f"_get_discover_catalog_list CACHE HIT for {cache_key}", f"{len(cached_res)} rows")
+                    return cached_res
+                if online_rows:
+                    debug_log(f"_get_discover_catalog_list CACHE EVICTED offline providers for {cache_key}", f"{len(cached_res) - len(online_rows)} rows dropped")
+                    self._discover_catalog_list_cache[cache_key] = list(online_rows)
+                    return list(online_rows)
             self._discover_catalog_list_cache.pop(cache_key, None)
 
         debug_log(f"_get_discover_catalog_list START for {cache_key}")
@@ -10148,11 +10200,10 @@ class CineWindow(Adw.ApplicationWindow):
                     })
 
         # If no provider can filter this genre, use matching items indexed in
-        # the local metadata database instead of leaving Discover empty.
-        if cur_genre and not filter_addon_url:
-            # Include local indexed matches even when providers also declare
-            # this genre. It is the fastest source and makes results stable
-            # when a provider ignores genre parameters or returns no matches.
+        # the local metadata database instead of leaving Discover empty. When a
+        # provider does support the genre, keep provider rows only so the list
+        # is not duplicated with a synthetic cached-results row.
+        if cur_genre and not filter_addon_url and not rows:
             rows.insert(0, {
                 "_source": "genre_cache",
                 "addon_name": "",
@@ -10760,6 +10811,13 @@ class CineWindow(Adw.ApplicationWindow):
 
                         if current_g and m_type in ("tv", "channel", "live", "music", "radio", "podcast"):
                             debug_log(f"discover row SKIPPED: '{row_title}' — narrative genres do not apply to {m_type}")
+                            return (row_info, [])
+
+                        if current_l and not api.catalog_supports_genre(row_info, current_l):
+                            # The provider cannot filter by this language, so
+                            # every result would be discarded by the local
+                            # language filter. Skip it without a network call.
+                            debug_log(f"discover row SKIPPED: '{row_title}' — language '{current_l}' not supported")
                             return (row_info, [])
 
                         fetch_genre = current_g
@@ -11704,9 +11762,13 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue_index = 0
 
     def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None, audio_url=None, item_id=None, media_type=None, season=None, episode=None, is_download=False):
-        # Don't carry stale status/error toasts over to the next video.
-        if hasattr(self, "toast_overlay"):
-            self.toast_overlay.dismiss_all()
+        # Don't carry stale status/error toasts over to the next video. The
+        # template child can be an unbound descriptor on partially constructed
+        # windows, so verify the widget actually exposes dismiss_all().
+        toast_overlay = getattr(self, "toast_overlay", None)
+        dismiss_all = getattr(toast_overlay, "dismiss_all", None)
+        if callable(dismiss_all):
+            dismiss_all()
 
         curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
         if curr_page and curr_page != "player":
@@ -11930,8 +11992,7 @@ class CineWindow(Adw.ApplicationWindow):
         is_playing_tr = self._is_playing_trailer() or is_trailer
         self.next_ep_dismissed = is_playing_tr
         self.next_ep_auto_triggered = is_playing_tr
-        if hasattr(self, "next_episode_revealer") and hasattr(self.next_episode_revealer, "set_reveal_child"):
-            self.next_episode_revealer.set_reveal_child(False)
+        self._set_next_episode_banner_visible(False)
 
         try:
             if audio_url:
@@ -11968,6 +12029,11 @@ class CineWindow(Adw.ApplicationWindow):
         self.is_inactive = False
         if hasattr(self, "gl_area"):
             self.gl_area.queue_render()
+
+        if not is_trailer:
+            # With Auto Play Next Episodes enabled, resolve the next episode's
+            # streams now so the end-of-episode transition is instant.
+            self._prefetch_next_episode_streams()
 
     def _on_track_list_for_subtitles(self, track_list):
         """Called when track-list updates in MPV. If a preferred embedded subtitle is found, select it immediately and prevent downloading."""
@@ -12270,6 +12336,12 @@ class CineWindow(Adw.ApplicationWindow):
             cur_prov = getattr(self, "preferred_direct_provider", None) or getattr(self, "preferred_provider", None)
 
         cur_q = _normalize_stream_quality(current_stream) or getattr(self, "user_selected_quality", None)
+        if cur_prov:
+            if isinstance(current_stream, dict) and current_stream.get("is_http"):
+                self.preferred_direct_provider = cur_prov
+            self.preferred_provider = cur_prov
+        if cur_q:
+            self.user_selected_quality = cur_q
 
         self._current_playing_item = {
             "id": target_id,
@@ -12647,13 +12719,77 @@ class CineWindow(Adw.ApplicationWindow):
             return True
         return False
 
-    def _has_next_episode(self):
-        if self._is_playing_trailer():
+    def _next_episode_revealer(self):
+        """The bound Next Episode banner, or None on a partially built window.
+
+        Gtk.Template.Child descriptors stay unbound `Child` objects until the
+        template is constructed, so probe for the real widget API first.
+        """
+        revealer = getattr(self, "next_episode_revealer", None)
+        return revealer if callable(getattr(revealer, "set_reveal_child", None)) else None
+
+    def _set_next_episode_banner_visible(self, visible):
+        """Show/hide the Next Episode banner, tolerating an unbound template child."""
+        revealer = self._next_episode_revealer()
+        if revealer is None:
+            return
+        try:
+            if revealer.get_reveal_child() != bool(visible):
+                revealer.set_reveal_child(bool(visible))
+        except Exception:
+            pass
+
+    def _is_auto_play_next_enabled(self):
+        """True when the user enabled 'Auto Play Next Episode' in preferences."""
+        try:
+            return bool(settings.get_boolean("auto-play-next"))
+        except Exception:
             return False
-        page = self.details_box.get_first_child()
+
+    def _get_next_episode_target(self):
+        """Resolve the next episode of the page currently being watched.
+
+        Returns a (season, episode, title) tuple, or None when the current item
+        is a trailer/channel or the series has no later episode. Single source of
+        truth for the Next Episode prompt and for pre-fetching its streams.
+        """
+        if self._is_playing_trailer():
+            return None
+        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+        if not page or getattr(page, 'is_channel', False):
+            return None
+        videos = self._get_videos_for_current_page(page)
+        if not videos or len(videos) <= 1:
+            return None
+        current_season = getattr(page, 'selected_season', 1) or 1
+        current_episode = getattr(page, 'selected_episode', None)
+        if current_episode is None:
+            return None
+
+        target_season = current_season
+        target_episode = current_episode + 1
+        eps_in_season = [v for v in videos if v.get("season", 1) == current_season]
+        if not any(e.get("episode") == target_episode for e in eps_in_season):
+            target_season = current_season + 1
+            eps_in_next_season = [v for v in videos if v.get("season", 1) == target_season]
+            if not eps_in_next_season:
+                return None
+            target_episode = min((e.get("episode", 1) for e in eps_in_next_season), default=1)
+
+        next_v = next(
+            (v for v in videos if v.get("season", 1) == target_season and v.get("episode") == target_episode),
+            None,
+        )
+        next_title = (next_v.get("title") or next_v.get("name")) if next_v else None
+        return target_season, target_episode, next_title
+
+    def _has_next_episode(self):
+        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
         if not page:
             return False
         if getattr(page, 'is_channel', False):
+            if self._is_playing_trailer():
+                return False
             eps = getattr(page, 'current_episodes', []) or self._get_videos_for_current_page(page)
             if not eps or len(eps) <= 1:
                 return False
@@ -12663,33 +12799,18 @@ class CineWindow(Adw.ApplicationWindow):
                 curr_idx = next((i for i, v in enumerate(eps) if v.get("id") == sel_id), -1)
                 return (0 <= curr_idx < len(eps) - 1)
             return True
-        videos = self._get_videos_for_current_page(page)
-        if not videos or len(videos) <= 1:
-            return False
-        current_season = getattr(page, 'selected_season', 1) or 1
-        current_episode = getattr(page, 'selected_episode', None)
-        if current_episode is None:
-            return False
-        next_ep = current_episode + 1
-        eps_in_season = [v for v in videos if v.get("season", 1) == current_season]
-        if any(e.get("episode") == next_ep for e in eps_in_season):
-            return True
-        target_season = current_season + 1
-        eps_in_next_season = [v for v in videos if v.get("season", 1) == target_season]
-        return bool(eps_in_next_season)
+        return self._get_next_episode_target() is not None
 
     @Gtk.Template.Callback()
     def _on_next_ep_play_clicked(self, *args):
         self.next_ep_dismissed = True
-        if hasattr(self, "next_episode_revealer"):
-            self.next_episode_revealer.set_reveal_child(False)
+        self._set_next_episode_banner_visible(False)
         self._try_play_next_episode()
 
     @Gtk.Template.Callback()
     def _on_next_ep_dismiss_clicked(self, *args):
         self.next_ep_dismissed = True
-        if hasattr(self, "next_episode_revealer"):
-            self.next_episode_revealer.set_reveal_child(False)
+        self._set_next_episode_banner_visible(False)
 
     def _advance_continue_watching_for_item(self, item):
         from . import database
@@ -12875,6 +12996,14 @@ class CineWindow(Adw.ApplicationWindow):
                     reused_stream["file_index"] = None
                     reused_stream["fileIdx"] = None
 
+        # No torrent already carrying the next episode: fall back to the direct
+        # streams pre-fetched while the current episode was playing.
+        prefetched_streams = None
+        if not reused_stream:
+            prefetched_streams = self._take_prefetched_next_episode_streams(target_season, target_episode)
+            if prefetched_streams:
+                reused_stream = prefetched_streams[0]
+
         if reused_stream:
             page.selected_torrent = reused_stream
             page.remembered_working_stream = reused_stream
@@ -12888,7 +13017,7 @@ class CineWindow(Adw.ApplicationWindow):
             self.selected_torrent = None
             self.remembered_working_stream = None
 
-        # Carry over preferred direct provider
+        # Carry over preferred direct provider and general provider
         prov = getattr(self, 'preferred_direct_provider', None)
         if not prov and getattr(self, 'stream_queue', None) and self.stream_queue_index < len(self.stream_queue):
             cur_st = self.stream_queue[self.stream_queue_index]
@@ -12897,11 +13026,27 @@ class CineWindow(Adw.ApplicationWindow):
                 prov = anames[0] if anames else cur_st.get("addon_name")
         if prov:
             self.preferred_direct_provider = prov
-            page.preferred_direct_provider = prov
-            primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0]
+            if page:
+                page.preferred_direct_provider = prov
+            primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0] if page else None
             if primary_id:
                 from . import database
                 database.set_setting(f"preferred_direct_provider_{primary_id}", prov)
+
+        gen_prov = getattr(self, 'preferred_provider', None)
+        if not gen_prov and getattr(self, 'stream_queue', None) and self.stream_queue_index < len(self.stream_queue):
+            cur_st = self.stream_queue[self.stream_queue_index]
+            if isinstance(cur_st, dict):
+                anames = cur_st.get("addon_names", [])
+                gen_prov = anames[0] if anames else cur_st.get("addon_name")
+        if gen_prov:
+            self.preferred_provider = gen_prov
+            if page:
+                page.preferred_provider = gen_prov
+            primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0] if page else None
+            if primary_id:
+                from . import database
+                database.set_setting(f"preferred_provider_{primary_id}", gen_prov)
 
         # Carry over preferred resolution/quality
         cur_q = getattr(page, 'user_selected_quality', None) or getattr(self, 'user_selected_quality', None)
@@ -12923,7 +13068,7 @@ class CineWindow(Adw.ApplicationWindow):
             from . import database
             database.set_setting(f"last_s_{primary_id}", target_season)
             database.set_setting(f"last_ep_{primary_id}_{target_season}", target_episode)
-            if reused_stream:
+            if reused_stream and not reused_stream.get("is_http"):
                 database.save_working_stream(primary_id, target_season, target_episode, reused_stream)
                 database.save_series_pack_torrent(primary_id, reused_stream, season=target_season)
 
@@ -12986,7 +13131,7 @@ class CineWindow(Adw.ApplicationWindow):
         if reused_stream:
             display_title = next_title or (f"Season {target_season} Episode {target_episode}" if getattr(page, 'media_type', '') in ["series", "anime", "tv"] else f"Part {target_episode}")
             self.play_stream_with_failover(
-                [reused_stream],
+                prefetched_streams or [reused_stream],
                 initial_index=0,
                 title=display_title,
                 season=target_season,
@@ -12997,9 +13142,184 @@ class CineWindow(Adw.ApplicationWindow):
                 
         return True
 
+    # How long before the end of an episode the next episode's streams are
+    # refreshed, and the minimum delay between two pre-fetches of the same
+    # episode so provider hits stay bounded while a long episode plays.
+    _NEXT_EPISODE_PREFETCH_LEAD_SECONDS = 120.0
+    _NEXT_EPISODE_PREFETCH_MIN_INTERVAL = 240.0
+
+    def _cancel_next_episode_prefetch(self):
+        """Abort an in-flight next-episode pre-fetch and drop its staged result."""
+        abort = getattr(self, "_next_ep_prefetch_abort", None)
+        abort_fn = getattr(abort, "set", None)
+        if callable(abort_fn):
+            try:
+                abort_fn()
+            except Exception:
+                pass
+        self._next_ep_prefetch_abort = None
+        self._next_ep_prefetch_source = None
+        self._next_ep_prefetch_key = None
+        self._next_ep_prefetch_at = 0.0
+        self._next_ep_prefetched = None
+
+    def _rank_direct_streams_for_playback(self, streams):
+        """Order direct HTTP streams so the provider/quality being watched comes first."""
+        direct = [
+            s for s in (streams or [])
+            if isinstance(s, dict) and s.get("is_http") and (s.get("url") or s.get("stream_url"))
+        ]
+        if not direct:
+            return []
+        provider = getattr(self, "preferred_direct_provider", None)
+        if not provider:
+            cur_item = getattr(self, "_current_playing_item", None) or {}
+            provider = cur_item.get("provider")
+        if not provider and getattr(self, "stream_queue", None) and self.stream_queue_index < len(self.stream_queue):
+            cur_st = self.stream_queue[self.stream_queue_index]
+            if isinstance(cur_st, dict):
+                anames = cur_st.get("addon_names", [])
+                provider = anames[0] if anames else cur_st.get("addon_name")
+        if not provider:
+            page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+            if page:
+                provider = getattr(page, "preferred_direct_provider", None) or getattr(page, "preferred_provider", None)
+        if not provider:
+            provider = getattr(self, "preferred_provider", None)
+        if not provider:
+            from . import database
+            provider = database.get_setting("last_direct_provider", None) or database.get_setting("last_provider", None)
+
+        quality = getattr(self, "user_selected_quality", None)
+        if not quality:
+            cur_item = getattr(self, "_current_playing_item", None) or {}
+            quality = cur_item.get("quality") or cur_item.get("stream_quality")
+        if not quality and getattr(self, "stream_queue", None) and self.stream_queue_index < len(self.stream_queue):
+            cur_st = self.stream_queue[self.stream_queue_index]
+            if isinstance(cur_st, dict):
+                quality = _normalize_stream_quality(cur_st)
+        if not quality:
+            page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+            if page:
+                quality = getattr(page, "user_selected_quality", None)
+        if not quality:
+            from . import database
+            quality = database.get_setting("preferred_quality", None)
+
+        def _rank(stream):
+            score = 0
+            if provider and _stream_matches_provider(stream, provider):
+                score -= 2
+            if quality and _normalize_stream_quality(stream) == quality:
+                score -= 1
+            return score
+
+        return sorted(direct, key=_rank)
+
+    def _take_prefetched_next_episode_streams(self, season, episode):
+        """Return the staged direct streams for an episode, or None when unusable."""
+        staged = getattr(self, "_next_ep_prefetched", None)
+        if not isinstance(staged, dict):
+            return None
+        if staged.get("season") != season or staged.get("episode") != episode:
+            return None
+        streams = staged.get("streams") or []
+        if not streams or any(database.is_stream_stale(s) for s in streams):
+            self._next_ep_prefetched = None
+            return None
+        return list(streams)
+
+    def _prefetch_next_episode_streams(self, force=False):
+        """Warm the next episode's streams while the current episode is playing.
+
+        Requires Auto Play Next Episodes and an unwatched next episode. The
+        direct provider streams are resolved in a background thread and staged,
+        so the end-of-episode transition starts immediately instead of waiting
+        for providers. Returns True when a new pre-fetch was started.
+        """
+        if not self._is_auto_play_next_enabled() or self._is_playing_trailer():
+            return False
+        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+        if not page or getattr(page, 'is_channel', False):
+            return False
+        media_type = getattr(page, 'media_type', None) or 'series'
+        if media_type not in ("series", "anime", "tv"):
+            return False
+
+        # Cheap O(1) gate: resolving the target walks the episode list, so skip
+        # that walk entirely while this episode's pre-fetch is still warm.
+        source = (
+            id(page),
+            getattr(page, 'selected_season', 1) or 1,
+            getattr(page, 'selected_episode', None),
+        )
+        now = time.time()
+        last_at = getattr(self, "_next_ep_prefetch_at", 0.0) or 0.0
+        if not force and source == getattr(self, "_next_ep_prefetch_source", None) and (now - last_at) < self._NEXT_EPISODE_PREFETCH_MIN_INTERVAL:
+            return False
+
+        target = self._get_next_episode_target()
+        if not target:
+            return False
+        target_season, target_episode, next_title = target
+
+        item_id = (
+            getattr(page, 'movie_details', {}).get("imdb_id")
+            or getattr(page, 'movie_details', {}).get("id")
+            or (getattr(page, 'movie_stub', {}) or {}).get("imdb_id")
+            or (getattr(page, 'movie_stub', {}) or {}).get("id")
+        )
+        if not item_id:
+            return False
+        series_title = (getattr(page, 'movie_stub', {}) or {}).get("title") or (getattr(page, 'movie_stub', {}) or {}).get("name")
+        try:
+            cache_key = api.get_stream_cache_key(item_id, media_type, target_season, target_episode)
+        except Exception:
+            return False
+
+        self._cancel_next_episode_prefetch()
+        abort_event = threading.Event()
+        self._next_ep_prefetch_abort = abort_event
+        self._next_ep_prefetch_source = source
+        self._next_ep_prefetch_key = cache_key
+        self._next_ep_prefetch_at = now
+        logger.debug(f"[PREFETCH] next episode S{target_season}E{target_episode} key={cache_key!r}")
+
+        def worker():
+            try:
+                streams = api.get_torrents_streamed(
+                    item_id,
+                    media_type,
+                    season=target_season,
+                    episode=target_episode,
+                    abort_event=abort_event,
+                    title=series_title or next_title,
+                    ep_title=next_title,
+                )
+            except Exception as e:
+                logger.debug(f"[PREFETCH] next episode request failed key={cache_key!r}: {e}")
+                return
+            if abort_event.is_set() or self._next_ep_prefetch_abort is not abort_event:
+                return
+            direct = self._rank_direct_streams_for_playback(streams)
+            self._next_ep_prefetched = {
+                "key": cache_key,
+                "season": target_season,
+                "episode": target_episode,
+                "streams": direct,
+            }
+            logger.debug(
+                f"[PREFETCH] next episode S{target_season}E{target_episode} ready: "
+                f"{len(streams or [])} cards, {len(direct)} direct"
+            )
+
+        threading.Thread(target=worker, daemon=True, name="next-episode-prefetch").start()
+        return True
+
     def _close_player(self, *args, remove_torrent=True):
         self.hide_player_loading()
         self._clear_stream_failover()
+        self._cancel_next_episode_prefetch()
         self._show_ui()
         if hasattr(self, "revealer_ui"):
             self.revealer_ui.set_reveal_child(True)

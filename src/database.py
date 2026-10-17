@@ -2424,8 +2424,12 @@ def get_available_sort_options(media_type=None):
     return opts
 
 def get_available_languages():
-    """Return canonical languages actually present in the local metadata DB."""
-    languages = set()
+    """Return canonical languages present in the local metadata DB.
+
+    Falls back to the canonical language set so the language filter is always
+    usable, even before any item metadata has been cached locally.
+    """
+    languages = set(ALL_LANGUAGE_GENRES)
 
     def add_language(value):
         if isinstance(value, dict):

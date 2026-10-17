@@ -5073,7 +5073,9 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         # Providers can take longer than a short UI interaction to return a
         # stream list. The old 5s limit caused the first details-page search to
         # fail while an immediate manual retry often succeeded.
-        streams = _request_addon_streams(addon, url, timeout=provider_timeout, retries=provider_retries, abort_event=abort_event)
+        # Omit retries: _request_addon_streams already defaults to the
+        # configured stream-provider retry policy.
+        streams = _request_addon_streams(addon, url, timeout=provider_timeout, abort_event=abort_event)
         print(f"[STREAM DEBUG] addon request done addon={addon.get('name')!r} id={cur_id!r} raw_cards={len(streams or [])}")
         return addon.get("name", "Unknown"), streams
 
