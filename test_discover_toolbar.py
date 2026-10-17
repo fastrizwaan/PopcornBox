@@ -739,16 +739,15 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertEqual(self.win.library_stack.get_visible_child_name(), "discover")
         self.win._refresh_discover_page.assert_called_once()
 
-    def test_category_tab_disabling_unique_restores_content_view(self):
-        """When in movies/series/anime tab, disabling unique returns to content view."""
+    def test_category_tab_disabling_unique_shows_discover_rows(self):
+        """When in movies/series/anime tab, disabling unique returns to discover rows."""
         self.win.category_btn_stack.set_visible_child_name("movies")
         self.win.library_stack.set_visible_child_name("unique")
         self.win.unique_check.set_active(False)
 
         self.win._on_unique_toggled(self.win.unique_check)
-        self.assertEqual(self.win.library_stack.get_visible_child_name(), "content")
-        self.win._apply_sort_to_current_catalog.assert_called_once()
-        self.win._refresh_content.assert_called_once()
+        self.assertEqual(self.win.library_stack.get_visible_child_name(), "discover")
+        self.win._refresh_discover_page.assert_called_once()
 
     def test_unique_toggled_preserves_unique_view_when_search_query_active(self):
         """When an active search query is present, toggling unique stays on 'unique' view and refreshes."""
@@ -1239,6 +1238,36 @@ class TestDiscoverToolbar(unittest.TestCase):
         title_ids = [it.get("id") for it in title_matches]
         self.assertIn("tt9001", title_ids)
         self.assertNotIn("tt9002", title_ids)
+
+    def test_get_cached_items_by_genre_with_language_filter(self):
+        """database.get_cached_items_by_genre returns hydrated items when filtering by language."""
+        from src import database, api
+        item = {"id": "tt9999", "title": "Bollywood Hit", "genres": ["Action", "Hindi"], "language": "Hindi"}
+        database.save_cached_metadata("tt9999", "movie", item)
+
+        results = database.get_cached_items_by_genre(None, language="Hindi")
+        ids = [it.get("id") for it in results]
+        self.assertIn("tt9999", ids)
+        matched = next(it for it in results if it.get("id") == "tt9999")
+        self.assertEqual(matched.get("language"), "Hindi")
+
+        filtered = api.filter_items_by_genre(results, "Hindi")
+        filtered_ids = [it.get("id") for it in filtered]
+        self.assertIn("tt9999", filtered_ids)
+
+    def test_discover_catalog_list_hindi_language_fallback(self):
+        """When Hindi is selected as language and no addons declare Hindi support, discover generates cached row."""
+        self.win.current_language = "Hindi"
+        self.win.current_genre = None
+        self.win.current_sort = "Popular"
+        self.win.current_year = None
+        self.win._discover_catalog_list_cache = {}
+
+        rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="movie", force_refresh=True)
+        self.assertTrue(len(rows) > 0)
+        cached_row = next((r for r in rows if r.get("_source") == "genre_cache"), None)
+        self.assertIsNotNone(cached_row)
+        self.assertEqual(cached_row.get("language"), "Hindi")
 
 
 if __name__ == "__main__":

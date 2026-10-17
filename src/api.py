@@ -1965,9 +1965,21 @@ def filter_items_by_genre(items, genre, media_type=None):
                         _add_genre_entry(elem)
                 elif raw is not None:
                     _add_genre_entry(raw)
-            lang = src.get("language")
-            if lang:
-                _add_genre_entry(lang)
+            for k in ("language", "languages", "original_language", "spoken_languages"):
+                raw = src.get(k)
+                if isinstance(raw, list):
+                    for elem in raw:
+                        _add_genre_entry(elem)
+                elif raw is not None:
+                    _add_genre_entry(raw)
+            if src.get("country"):
+                c_str = str(src.get("country")).lower()
+                if "india" in c_str:
+                    _add_genre_entry("Hindi")
+                elif "japan" in c_str:
+                    _add_genre_entry("Japanese")
+                elif "korea" in c_str:
+                    _add_genre_entry("Korean")
 
         # Consult cached metadata only when the item response cannot answer
         # the genre/language question. This avoids one SQLite lookup for every
@@ -1982,13 +1994,21 @@ def filter_items_by_genre(items, genre, media_type=None):
                     metadata_ids.append(candidate_id)
             cached_meta = database.get_cached_metadata(metadata_ids, media_type or item.get("type"))
             if cached_meta and isinstance(cached_meta, dict):
-                for key in ("genres", "genre", "genre_ids", "language"):
+                for key in ("genres", "genre", "genre_ids", "language", "original_language", "spoken_languages"):
                     raw = cached_meta.get(key)
                     if isinstance(raw, list):
                         for elem in raw:
                             _add_genre_entry(elem)
                     elif raw is not None:
                         _add_genre_entry(raw)
+                if cached_meta.get("country"):
+                    c_str = str(cached_meta.get("country")).lower()
+                    if "india" in c_str:
+                        _add_genre_entry("Hindi")
+                    elif "japan" in c_str:
+                        _add_genre_entry("Japanese")
+                    elif "korea" in c_str:
+                        _add_genre_entry("Korean")
         # Check media type after the optional metadata fallback so an item
         # without a type does not trigger a second metadata lookup internally.
         if media_type and media_type != "all" and not (metadata_checked and not cached_meta and not (item.get("type") or item.get("media_type"))):
@@ -2008,11 +2028,24 @@ def filter_items_by_genre(items, genre, media_type=None):
                 normalized = database.normalize_imdb_genre(value)
                 if normalized and database.is_language_genre(normalized):
                     known_languages.add(normalized.lower())
-            # The metadata source commonly omits language for English titles.
-            # Treat that absence as English, but keep an explicit non-English
-            # language authoritative when it is present.
             if not known_languages:
-                known_languages.add("english")
+                title = (item.get("title") or item.get("name") or "")
+                if re.search(r'[\u0900-\u097F]', title):
+                    known_languages.add("hindi")
+                elif re.search(r'[\u0B80-\u0BFF]', title):
+                    known_languages.add("tamil")
+                elif re.search(r'[\u0C00-\u0C7F]', title):
+                    known_languages.add("telugu")
+                elif re.search(r'[\u0C80-\u0CFF]', title):
+                    known_languages.add("kannada")
+                elif re.search(r'[\u0D00-\u0D7F]', title):
+                    known_languages.add("malayalam")
+                elif re.search(r'[\u3040-\u30FF\u31F0-\u31FF]', title):
+                    known_languages.add("japanese")
+                elif re.search(r'[\uAC00-\uD7AF]', title):
+                    known_languages.add("korean")
+                else:
+                    known_languages.add("english")
             if any(does_genre_match_filter(language, g_norm) for language in known_languages):
                 filtered.append(item)
             continue
@@ -2825,8 +2858,10 @@ def _run_metadata_hydration_worker():
                             if not genres_list and tmdb_data.get("genres"):
                                 meta_dict["genres"] = tmdb_data["genres"]
                                 genres_list = tmdb_data["genres"]
-                            if not meta_dict.get("language") and tmdb_data.get("language_name"):
-                                meta_dict["language"] = tmdb_data["language_name"]
+                            if tmdb_data.get("language_name"):
+                                lang_name = tmdb_data["language_name"]
+                                if not meta_dict.get("language"):
+                                    meta_dict["language"] = lang_name
                             if not clean_year_val and tmdb_data.get("release_date"):
                                 clean_year_val = database.extract_clean_year(tmdb_data["release_date"])
                                 if clean_year_val:
@@ -2847,8 +2882,15 @@ def _run_metadata_hydration_worker():
 
                 # In-memory hydration of live card
                 if item_dict is not None and isinstance(item_dict, dict):
-                    if genres_list and not item_dict.get("genres"):
-                        item_dict["genres"] = list(genres_list)
+                    if genres_list:
+                        if not item_dict.get("genres"):
+                            item_dict["genres"] = list(genres_list)
+                        else:
+                            for g in genres_list:
+                                if g not in item_dict["genres"]:
+                                    item_dict["genres"].append(g)
+                    if meta_dict.get("language"):
+                        item_dict["language"] = meta_dict["language"]
                     clean_yr = clean_year_val or meta_dict.get("year")
                     if clean_yr and not item_dict.get("year"):
                         item_dict["year"] = str(clean_yr)
@@ -2920,6 +2962,7 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
         is_missing_year = not m.get("year")
         is_missing_cover = not m.get("medium_cover_image") and not m.get("poster")
         is_missing_desc = not m.get("description") and not m.get("overview")
+        is_missing_language = not m.get("language")
 
         candidates = [str(m_id)]
         if m.get("imdb_id") and str(m["imdb_id"]) not in candidates:
@@ -2932,7 +2975,7 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
         if not has_known_key:
             continue
 
-        if is_missing_title or is_missing_genres or is_missing_year or is_missing_cover or is_missing_desc:
+        if is_missing_title or is_missing_genres or is_missing_year or is_missing_cover or is_missing_desc or is_missing_language:
             c_meta = None
             for cid in candidates:
                 c_meta = database.get_cached_metadata(cid, m_type)
@@ -2959,6 +3002,15 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     is_missing_genres = False
                     updated = True
                     item_hydrated = True
+                c_lang = c_meta.get("language") or c_meta.get("original_language")
+                if c_lang:
+                    norm_lang = database.normalize_imdb_genre(str(c_lang))
+                    if norm_lang:
+                        if is_missing_language:
+                            m["language"] = norm_lang
+                            is_missing_language = False
+                            updated = True
+                            item_hydrated = True
                 c_yr = database.extract_clean_year(c_meta)
                 if is_missing_year and c_yr:
                     m["year"] = str(c_yr)

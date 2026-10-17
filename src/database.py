@@ -1771,6 +1771,47 @@ def _get_cache_db():
     except Exception as e:
         print(f"Error rebuilding metadata genre index: {e}")
 
+    # Migration: Backfill language genres into item_genres from metadata_cache
+    try:
+        cur = _cache_conn.cursor()
+        cur.execute("SELECT val FROM cache_meta WHERE key = 'backfill_languages_to_item_genres_v2'")
+        if not cur.fetchone():
+            cur.execute("""
+                SELECT id, media_type, data FROM metadata_cache
+                WHERE json_extract(data, '$.language') IS NOT NULL
+                   OR json_extract(data, '$.original_language') IS NOT NULL
+                   OR json_extract(data, '$.spoken_languages') IS NOT NULL
+                   OR json_extract(data, '$.country') LIKE '%India%'
+            """)
+            rows = cur.fetchall()
+            lang_batch = []
+            for item_id, media_type, data_json in rows:
+                if not data_json:
+                    continue
+                try:
+                    d = json.loads(data_json)
+                except Exception:
+                    continue
+                if not isinstance(d, dict):
+                    continue
+                clean_yr = extract_clean_year(d)
+                mtype = media_type or d.get("type") or "movie"
+                for g in _extract_metadata_genres(d, mtype):
+                    if is_language_genre(g) and g.lower() != "english":
+                        lang_batch.append((str(item_id), str(mtype), g, clean_yr))
+            if lang_batch:
+                _cache_conn.executemany("""
+                    INSERT INTO item_genres (item_id, media_type, genre, year)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(item_id, genre) DO UPDATE SET
+                        year = CASE WHEN excluded.year != '' THEN excluded.year ELSE item_genres.year END,
+                        media_type = excluded.media_type
+                """, lang_batch)
+            _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('backfill_languages_to_item_genres_v2', '1')")
+            _cache_conn.commit()
+    except Exception as e:
+        print(f"Error in backfill_languages migration: {e}")
+
     _cache_conn.commit()
     _cache_db_initialized = True
     return _cache_conn
@@ -1961,9 +2002,13 @@ def hydrate_items_from_metadata(items, media_type=None):
                         if not it.get("runtime") and meta.get("runtime"):
                             it["runtime"] = str(meta["runtime"])
                             it_updated = True
-                        if not it.get("language") and meta.get("language"):
-                            it["language"] = meta["language"]
-                            it_updated = True
+                        meta_lang = meta.get("language") or meta.get("original_language")
+                        if meta_lang:
+                            norm_lang = normalize_imdb_genre(str(meta_lang))
+                            if norm_lang:
+                                if not it.get("language"):
+                                    it["language"] = norm_lang
+                                    it_updated = True
                         if not it.get("background") and meta.get("background"):
                             it["background"] = meta["background"]
                             it_updated = True
@@ -1978,8 +2023,8 @@ def hydrate_items_from_metadata(items, media_type=None):
                         if it_updated:
                             updated_items.add(id(it))
 
-            # 2. For items still missing genres or year, check item_genres table
-            still_need_genres = [it for it in to_hydrate if not it.get("genres") or not it.get("year")]
+            # 2. For items still missing genres, year, or language, check item_genres table
+            still_need_genres = [it for it in to_hydrate if not it.get("genres") or not it.get("year") or not it.get("language")]
             if still_need_genres:
                 need_ids = []
                 need_map = {}
@@ -1996,12 +2041,18 @@ def hydrate_items_from_metadata(items, media_type=None):
                         for row_iid, genre_val, yr_val in cursor.fetchall():
                             for it in need_map.get(str(row_iid), []):
                                 if genre_val and genre_val.strip():
-                                    if "genres" not in it or not it["genres"]:
-                                        it["genres"] = [genre_val.strip()]
-                                        updated_items.add(id(it))
-                                    elif genre_val.strip() not in it["genres"]:
-                                        it["genres"].append(genre_val.strip())
-                                        updated_items.add(id(it))
+                                    g_clean = genre_val.strip()
+                                    if is_language_genre(g_clean):
+                                        if not it.get("language"):
+                                            it["language"] = g_clean
+                                            updated_items.add(id(it))
+                                    else:
+                                        if "genres" not in it or not it["genres"]:
+                                            it["genres"] = [g_clean]
+                                            updated_items.add(id(it))
+                                        elif g_clean not in it["genres"]:
+                                            it["genres"].append(g_clean)
+                                            updated_items.add(id(it))
                                 if yr_val and yr_val.strip() and not it.get("year"):
                                     it["year"] = yr_val.strip()
                                     updated_items.add(id(it))
@@ -2353,6 +2404,33 @@ def _extract_metadata_genres(details, media_type=None):
             normalized = normalize_imdb_genre(part.strip(), media_type=media_type)
             if normalized:
                 genres.add(normalized)
+
+    # Extract language signals into canonical language genres
+    lang_raw = []
+    for k in ("language", "languages", "original_language", "spoken_languages"):
+        v = details.get(k)
+        if v:
+            if isinstance(v, list):
+                lang_raw.extend(v)
+            else:
+                lang_raw.append(v)
+    for l_val in lang_raw:
+        if isinstance(l_val, dict):
+            l_val = l_val.get("english_name") or l_val.get("name") or l_val.get("iso_639_1")
+        if not isinstance(l_val, str):
+            continue
+        for part in l_val.split(","):
+            normalized = normalize_imdb_genre(part.strip(), media_type=media_type)
+            if normalized and is_language_genre(normalized):
+                genres.add(normalized)
+
+    # Country signal fallback (e.g. India -> Hindi if no Indian language present)
+    country_val = details.get("country")
+    if country_val and isinstance(country_val, str) and "india" in country_val.lower():
+        indian_langs = {"Hindi", "Tamil", "Telugu", "Malayalam", "Kannada", "Bengali", "Punjabi", "Marathi", "Gujarati", "Urdu"}
+        if not (genres & indian_langs):
+            genres.add("Hindi")
+
     return sorted(genres)
 
 def is_clean_genre(g, media_type=None):
@@ -2382,9 +2460,11 @@ def get_stored_genres(media_type=None):
         print(f"Error reading stored genres: {e}")
     return sorted(list(genres), key=lambda s: s.lower())
 
-def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None, limit=60, offset=0):
-    """Retrieve catalog item dicts from SQLite cache matching a specific genre and optional media_type/year/sort_mode."""
+def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None, limit=60, offset=0, language=None):
+    """Retrieve catalog item dicts from SQLite cache matching a specific genre and optional media_type/year/sort_mode/language."""
     if not genre or genre in ("All", "All Genres", "all"):
+        if language and language not in ("All", "All Languages", "all"):
+            return get_cached_items_by_genre(language, media_type=media_type, year=year, sort_mode=sort_mode, limit=limit, offset=offset)
         if year:
             return get_cached_items_by_year(year, media_type=media_type, sort_mode=sort_mode, limit=limit, offset=offset)
         return []
@@ -2401,6 +2481,9 @@ def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None,
                 WHERE ig.genre = ? COLLATE NOCASE
             """
             params = [genre.strip()]
+            if language and language not in ("All", "All Languages", "all") and language.strip().lower() != genre.strip().lower():
+                query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
+                params.append(language.strip())
             if media_type and media_type not in ("all", "discover"):
                 mt = str(media_type).lower()
                 if mt == "movie":
@@ -2457,10 +2540,12 @@ def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None,
                     pass
     except Exception as e:
         print(f"Error fetching cached items by genre: {e}")
+    if items:
+        hydrate_items_from_metadata(items, media_type=media_type)
     return items
 
-def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, limit=80, offset=0):
-    """Retrieve catalog item dicts from SQLite cache matching a specific release year and optional media_type/genre."""
+def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, limit=80, offset=0, language=None):
+    """Retrieve catalog item dicts from SQLite cache matching a specific release year and optional media_type/genre/language."""
     if not year or str(year) in ("All Years", "All", "all", "None"):
         return []
     yr_str = str(year).strip()
@@ -2473,7 +2558,11 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
             conn = _get_cache_db()
             cursor = conn.cursor()
 
-            if genre and str(genre) not in ("All", "All Genres", "all"):
+            effective_genre = genre
+            if (not effective_genre or effective_genre in ("All", "All Genres", "all")) and language and language not in ("All", "All Languages", "all"):
+                effective_genre = language
+
+            if effective_genre and str(effective_genre) not in ("All", "All Genres", "all"):
                 query = """
                     SELECT m.data
                     FROM item_genres ig
@@ -2481,7 +2570,10 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
                     WHERE lower(ig.genre) = lower(?)
                       AND (ig.year = ? OR json_extract(m.data, '$.year') = ? OR json_extract(m.data, '$.year') = ?)
                 """
-                params = [genre.strip(), yr_str, yr_str, int(yr_str)]
+                params = [effective_genre.strip(), yr_str, yr_str, int(yr_str)]
+                if language and language not in ("All", "All Languages", "all") and language.strip().lower() != effective_genre.strip().lower():
+                    query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
+                    params.append(language.strip())
                 if media_type and media_type not in ("all", "discover"):
                     mt = str(media_type).lower()
                     if mt == "movie":
@@ -2501,6 +2593,9 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
                            OR m.id IN (SELECT item_id FROM item_genres WHERE year = ?))
                 """
                 params = [yr_str, int(yr_str), yr_str]
+                if language and language not in ("All", "All Languages", "all"):
+                    query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
+                    params.append(language.strip())
                 if media_type and media_type not in ("all", "discover"):
                     mt = str(media_type).lower()
                     if mt == "movie":
@@ -2542,10 +2637,12 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
                     pass
     except Exception as e:
         print(f"Error fetching cached items by year: {e}")
+    if items:
+        hydrate_items_from_metadata(items, media_type=media_type)
     return items
 
-def get_cached_items_by_search(query, media_type=None, genre=None, year=None, sort_mode=None, limit=60, offset=0, title_only=False):
-    """Retrieve catalog item dicts from SQLite cache matching a search keyword and optional media_type/genre/year."""
+def get_cached_items_by_search(query, media_type=None, genre=None, year=None, sort_mode=None, limit=60, offset=0, title_only=False, language=None):
+    """Retrieve catalog item dicts from SQLite cache matching a search keyword and optional media_type/genre/year/language."""
     if not query or not str(query).strip():
         return []
     q_str = str(query).strip().lower()
@@ -2568,7 +2665,11 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                 )"""
                 cond_params = [f"%{q_str}%"] * 5
 
-            if genre and str(genre) not in ("All", "All Genres", "all"):
+            effective_genre = genre
+            if (not effective_genre or effective_genre in ("All", "All Genres", "all")) and language and language not in ("All", "All Languages", "all"):
+                effective_genre = language
+
+            if effective_genre and str(effective_genre) not in ("All", "All Genres", "all"):
                 sql = f"""
                     SELECT m.data
                     FROM item_genres ig
@@ -2576,7 +2677,10 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                     WHERE lower(ig.genre) = lower(?)
                       AND {search_condition}
                 """
-                params = [genre.strip()] + cond_params
+                params = [effective_genre.strip()] + cond_params
+                if language and language not in ("All", "All Languages", "all") and language.strip().lower() != effective_genre.strip().lower():
+                    sql += " AND m.id IN (SELECT item_id FROM item_genres WHERE lower(genre) = lower(?))"
+                    params.append(str(language).strip())
             else:
                 sql = f"""
                     SELECT m.data
@@ -2584,6 +2688,9 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                     WHERE {search_condition}
                 """
                 params = list(cond_params)
+                if language and language not in ("All", "All Languages", "all"):
+                    sql += " AND m.id IN (SELECT item_id FROM item_genres WHERE lower(genre) = lower(?))"
+                    params.append(str(language).strip())
 
             if media_type and media_type not in ("all", "discover"):
                 mt = str(media_type).lower()
@@ -2644,6 +2751,8 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                     pass
     except Exception as e:
         print(f"Error fetching cached items by search: {e}")
+    if items:
+        hydrate_items_from_metadata(items, media_type=media_type)
     return items
 
 def get_stored_years(media_type=None):
