@@ -1588,6 +1588,23 @@ def _get_cache_db():
         except Exception:
             pass
 
+        _cache_conn.execute("""
+            CREATE TABLE IF NOT EXISTS item_countries (
+                item_id TEXT,
+                media_type TEXT,
+                country TEXT,
+                year TEXT,
+                PRIMARY KEY (item_id, country)
+            )
+        """)
+        try:
+            _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_countries_type ON item_countries(media_type, country)")
+            _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_countries_country ON item_countries(country)")
+            _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_countries_country_nocase ON item_countries(country COLLATE NOCASE, media_type)")
+            _cache_conn.execute("CREATE INDEX IF NOT EXISTS idx_item_countries_year ON item_countries(year)")
+        except Exception:
+            pass
+
     # Migration: Backfill item_genres from metadata_cache if empty
     try:
         cur = _cache_conn.cursor()
@@ -1812,6 +1829,45 @@ def _get_cache_db():
     except Exception as e:
         print(f"Error in backfill_languages migration: {e}")
 
+    # Migration: Backfill countries into item_countries from metadata_cache
+    try:
+        cur = _cache_conn.cursor()
+        cur.execute("SELECT val FROM cache_meta WHERE key = 'backfill_countries_to_item_countries_v1'")
+        if not cur.fetchone():
+            cur.execute("""
+                SELECT id, media_type, data FROM metadata_cache
+                WHERE json_extract(data, '$.country') IS NOT NULL
+                   OR json_extract(data, '$.countries') IS NOT NULL
+                   OR json_extract(data, '$.origin_country') IS NOT NULL
+            """)
+            rows = cur.fetchall()
+            country_batch = []
+            for item_id, media_type, data_json in rows:
+                if not data_json:
+                    continue
+                try:
+                    d = json.loads(data_json)
+                except Exception:
+                    continue
+                if not isinstance(d, dict):
+                    continue
+                clean_yr = extract_clean_year(d)
+                mtype = media_type or d.get("type") or "movie"
+                for c in _extract_metadata_countries(d):
+                    country_batch.append((str(item_id), str(mtype), c, clean_yr))
+            if country_batch:
+                _cache_conn.executemany("""
+                    INSERT INTO item_countries (item_id, media_type, country, year)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(item_id, country) DO UPDATE SET
+                        year = CASE WHEN excluded.year != '' THEN excluded.year ELSE item_countries.year END,
+                        media_type = excluded.media_type
+                """, country_batch)
+            _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('backfill_countries_to_item_countries_v1', '1')")
+            _cache_conn.commit()
+    except Exception as e:
+        print(f"Error in backfill_countries migration: {e}")
+
     _cache_conn.commit()
     _cache_db_initialized = True
     return _cache_conn
@@ -2009,6 +2065,9 @@ def hydrate_items_from_metadata(items, media_type=None):
                                 if not it.get("language"):
                                     it["language"] = norm_lang
                                     it_updated = True
+                        if not it.get("country") and meta.get("country"):
+                            it["country"] = meta["country"]
+                            it_updated = True
                         if not it.get("background") and meta.get("background"):
                             it["background"] = meta["background"]
                             it_updated = True
@@ -2056,6 +2115,36 @@ def hydrate_items_from_metadata(items, media_type=None):
                                 if yr_val and yr_val.strip() and not it.get("year"):
                                     it["year"] = yr_val.strip()
                                     updated_items.add(id(it))
+
+            # 3. For items still missing country, check item_countries table
+            still_need_country = [it for it in to_hydrate if not it.get("country")]
+            if still_need_country:
+                c_need_ids = []
+                c_need_map = {}
+                for it in still_need_country:
+                    iid = str(it.get("id") or it.get("imdb_id") or "")
+                    if iid:
+                        c_need_ids.append(iid)
+                        c_need_map.setdefault(iid, []).append(it)
+                if c_need_ids:
+                    for i in range(0, len(c_need_ids), 500):
+                        chunk = c_need_ids[i:i+500]
+                        placeholders = ",".join("?" for _ in chunk)
+                        cursor.execute(f"SELECT item_id, country FROM item_countries WHERE item_id IN ({placeholders})", chunk)
+                        for row_iid, c_val in cursor.fetchall():
+                            for it in c_need_map.get(str(row_iid), []):
+                                if c_val and not it.get("country"):
+                                    it["country"] = c_val.strip()
+                                    updated_items.add(id(it))
+
+            # 4. Cross-inferences between India country and Hindi language
+            for it in to_hydrate:
+                if not it.get("language") and it.get("country") and "india" in str(it.get("country", "")).lower():
+                    it["language"] = "Hindi"
+                    updated_items.add(id(it))
+                if not it.get("country") and it.get("language") == "Hindi":
+                    it["country"] = "India"
+                    updated_items.add(id(it))
 
     except Exception as e:
         print(f"Error in hydrate_items_from_metadata: {e}")
@@ -2162,6 +2251,22 @@ def save_cached_metadata(item_id, media_type, details):
                                     if cursor.rowcount > 0:
                                         has_new = True
 
+                    countries = _extract_metadata_countries(details)
+                    if countries:
+                        for norm_c in countries:
+                            cursor.execute(
+                                """
+                                INSERT INTO item_countries (item_id, media_type, country, year)
+                                VALUES (?, ?, ?, ?)
+                                ON CONFLICT(item_id, country) DO UPDATE SET
+                                    year = CASE WHEN excluded.year != '' THEN excluded.year ELSE item_countries.year END,
+                                    media_type = excluded.media_type
+                                """,
+                                (iid, str(media_type or "movie"), norm_c, year_val)
+                            )
+                            if cursor.rowcount > 0:
+                                has_new = True
+
                     if not genres and year_val:
                         cursor.execute(
                             """
@@ -2199,6 +2304,8 @@ def save_cached_metadata(item_id, media_type, details):
                                             cit["description"] = details.get("description") or details.get("overview")
                                         if details.get("language") and not cit.get("language"):
                                             cit["language"] = details["language"]
+                                        if details.get("country") and not cit.get("country"):
+                                            cit["country"] = details["country"]
             except Exception:
                 pass
 
@@ -2433,6 +2540,132 @@ def _extract_metadata_genres(details, media_type=None):
 
     return sorted(genres)
 
+COUNTRY_ALIASES = {
+    "usa": "United States",
+    "united states of america": "United States",
+    "us": "United States",
+    "u.s.a.": "United States",
+    "u.s.": "United States",
+    "uk": "United Kingdom",
+    "u.k.": "United Kingdom",
+    "great britain": "United Kingdom",
+    "gb": "United Kingdom",
+    "south korea": "South Korea",
+    "korea": "South Korea",
+    "republic of korea": "South Korea",
+    "kr": "South Korea",
+    "russia": "Russia",
+    "russian federation": "Russia",
+    "ru": "Russia",
+    "taiwan": "Taiwan",
+    "taiwan, province of china": "Taiwan",
+    "tw": "Taiwan",
+    "hong kong": "Hong Kong",
+    "hk": "Hong Kong",
+    "india": "India",
+    "in": "India",
+    "japan": "Japan",
+    "jp": "Japan",
+    "france": "France",
+    "fr": "France",
+    "germany": "Germany",
+    "west germany": "Germany",
+    "de": "Germany",
+    "italy": "Italy",
+    "it": "Italy",
+    "spain": "Spain",
+    "es": "Spain",
+    "canada": "Canada",
+    "ca": "Canada",
+    "australia": "Australia",
+    "au": "Australia",
+    "brazil": "Brazil",
+    "br": "Brazil",
+    "mexico": "Mexico",
+    "mx": "Mexico",
+    "china": "China",
+    "cn": "China",
+    "sweden": "Sweden",
+    "se": "Sweden",
+    "norway": "Norway",
+    "no": "Norway",
+    "denmark": "Denmark",
+    "dk": "Denmark",
+    "finland": "Finland",
+    "fi": "Finland",
+    "netherlands": "Netherlands",
+    "nl": "Netherlands",
+    "belgium": "Belgium",
+    "be": "Belgium",
+    "ireland": "Ireland",
+    "ie": "Ireland",
+    "new zealand": "New Zealand",
+    "nz": "New Zealand",
+    "turkey": "Turkey",
+    "tr": "Turkey",
+    "poland": "Poland",
+    "pl": "Poland",
+    "philippines": "Philippines",
+    "ph": "Philippines",
+    "thailand": "Thailand",
+    "th": "Thailand",
+    "indonesia": "Indonesia",
+    "id": "Indonesia",
+    "argentina": "Argentina",
+    "ar": "Argentina",
+    "colombia": "Colombia",
+    "co": "Colombia",
+    "chile": "Chile",
+    "cl": "Chile",
+    "south africa": "South Africa",
+    "za": "South Africa",
+    "egypt": "Egypt",
+    "eg": "Egypt",
+    "nigeria": "Nigeria",
+    "ng": "Nigeria",
+    "pakistan": "Pakistan",
+    "pk": "Pakistan",
+}
+
+def normalize_country_name(name):
+    """Normalize raw country strings/codes to canonical country name."""
+    if not name:
+        return ""
+    clean = str(name).strip()
+    low = clean.lower()
+    if low in COUNTRY_ALIASES:
+        return COUNTRY_ALIASES[low]
+    return clean.title() if len(clean) > 3 else clean.upper()
+
+def _extract_metadata_countries(details):
+    """Return canonical country names from common metadata and Stremio shapes."""
+    if not isinstance(details, dict):
+        return []
+    countries = set()
+    for key in ("country", "countries", "origin_country", "production_countries"):
+        val = details.get(key)
+        if not val:
+            continue
+        if isinstance(val, str):
+            for part in val.split(","):
+                norm = normalize_country_name(part)
+                if norm:
+                    countries.add(norm)
+        elif isinstance(val, list):
+            for elem in val:
+                if isinstance(elem, str):
+                    for part in elem.split(","):
+                        norm = normalize_country_name(part)
+                        if norm:
+                            countries.add(norm)
+                elif isinstance(elem, dict):
+                    c_name = elem.get("name") or elem.get("iso_3166_1")
+                    if c_name:
+                        norm = normalize_country_name(c_name)
+                        if norm:
+                            countries.add(norm)
+    return sorted(list(countries))
+
 def is_clean_genre(g, media_type=None):
     """Validate that genre is a strict standard IMDb genre."""
     return normalize_imdb_genre(g, media_type=media_type) is not None
@@ -2460,13 +2693,102 @@ def get_stored_genres(media_type=None):
         print(f"Error reading stored genres: {e}")
     return sorted(list(genres), key=lambda s: s.lower())
 
-def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None, limit=60, offset=0, language=None):
-    """Retrieve catalog item dicts from SQLite cache matching a specific genre and optional media_type/year/sort_mode/language."""
-    if not genre or genre in ("All", "All Genres", "all"):
+def get_cached_items_by_country(country, media_type=None, genre=None, year=None, sort_mode=None, limit=60, offset=0, language=None):
+    """Retrieve catalog item dicts from SQLite cache matching a specific country and optional media_type/genre/year/sort_mode/language."""
+    if not country or country in ("All", "All Countries", "all"):
+        if genre and genre not in ("All", "All Genres", "all"):
+            return get_cached_items_by_genre(genre, media_type=media_type, year=year, sort_mode=sort_mode, limit=limit, offset=offset, language=language)
         if language and language not in ("All", "All Languages", "all"):
             return get_cached_items_by_genre(language, media_type=media_type, year=year, sort_mode=sort_mode, limit=limit, offset=offset)
         if year:
-            return get_cached_items_by_year(year, media_type=media_type, sort_mode=sort_mode, limit=limit, offset=offset)
+            return get_cached_items_by_year(year, media_type=media_type, genre=genre, sort_mode=sort_mode, limit=limit, offset=offset, language=language)
+        return []
+    items = []
+    seen_ids = set()
+    norm_c = normalize_country_name(country)
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            query = """
+                SELECT m.data
+                FROM item_countries ic
+                JOIN metadata_cache m ON ic.item_id = m.id
+                WHERE ic.country = ? COLLATE NOCASE
+            """
+            params = [norm_c]
+            if genre and genre not in ("All", "All Genres", "all"):
+                query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
+                params.append(genre.strip())
+            if language and language not in ("All", "All Languages", "all"):
+                query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
+                params.append(language.strip())
+            if media_type and media_type not in ("all", "discover"):
+                mt = str(media_type).lower()
+                if mt == "movie":
+                    query += " AND (ic.media_type IN ('movie', 'collections') OR ic.media_type IS NULL OR ic.media_type = '')"
+                elif mt == "series":
+                    query += " AND (ic.media_type IN ('series', 'tv', 'show') OR ic.media_type IS NULL OR ic.media_type = '')"
+                elif mt == "anime":
+                    query += " AND (ic.media_type = 'anime' OR ic.media_type IS NULL OR ic.media_type = '')"
+                else:
+                    query += " AND ic.media_type = ?"
+                    params.append(mt)
+            if year and str(year) not in ("All Years", "All", "all", "None"):
+                yr_str = str(year).strip()
+                query += " AND (ic.year LIKE ? OR json_extract(m.data, '$.year') LIKE ?)"
+                params.extend([f"{yr_str}%", f"{yr_str}%"])
+
+            query += """
+                GROUP BY COALESCE(
+                    NULLIF(json_extract(m.data, '$.id'), ''),
+                    NULLIF(json_extract(m.data, '$.imdb_id'), ''),
+                    m.id
+                )
+            """
+
+            if sort_mode == "Recent":
+                query += """
+                    ORDER BY CASE WHEN ic.year GLOB '[1-2][0-9][0-9][0-9]' THEN ic.year ELSE '0000' END DESC,
+                             COALESCE(json_extract(m.data, '$.rating'), json_extract(m.data, '$.imdbRating'), 0) DESC,
+                             m.updated_at DESC
+                    LIMIT ? OFFSET ?
+                """
+            else:
+                query += """
+                    ORDER BY COALESCE(json_extract(m.data, '$.rating'), json_extract(m.data, '$.imdbRating'), 0) DESC,
+                             m.updated_at DESC
+                    LIMIT ? OFFSET ?
+                """
+            params.extend([limit, offset])
+            cursor.execute(query, params)
+            for row in cursor.fetchall():
+                if not row or not row[0]:
+                    continue
+                try:
+                    it = json.loads(row[0])
+                    if isinstance(it, dict):
+                        iid = it.get("id") or it.get("imdb_id")
+                        if iid and iid not in seen_ids:
+                            seen_ids.add(iid)
+                            items.append(it)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"Error fetching cached items by country: {e}")
+    if items:
+        hydrate_items_from_metadata(items, media_type=media_type)
+    return items
+
+def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None, limit=60, offset=0, language=None, country=None):
+    """Retrieve catalog item dicts from SQLite cache matching a specific genre and optional media_type/year/sort_mode/language/country."""
+    if not genre or genre in ("All", "All Genres", "all"):
+        if country and country not in ("All", "All Countries", "all"):
+            return get_cached_items_by_country(country, media_type=media_type, year=year, sort_mode=sort_mode, limit=limit, offset=offset, language=language)
+        if language and language not in ("All", "All Languages", "all"):
+            return get_cached_items_by_genre(language, media_type=media_type, year=year, sort_mode=sort_mode, limit=limit, offset=offset, country=country)
+        if year:
+            return get_cached_items_by_year(year, media_type=media_type, sort_mode=sort_mode, limit=limit, offset=offset, country=country)
         return []
     items = []
     seen_ids = set()
@@ -2484,6 +2806,9 @@ def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None,
             if language and language not in ("All", "All Languages", "all") and language.strip().lower() != genre.strip().lower():
                 query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
                 params.append(language.strip())
+            if country and country not in ("All", "All Countries", "all"):
+                query += " AND m.id IN (SELECT item_id FROM item_countries WHERE country = ? COLLATE NOCASE)"
+                params.append(normalize_country_name(country))
             if media_type and media_type not in ("all", "discover"):
                 mt = str(media_type).lower()
                 if mt == "movie":
@@ -2544,8 +2869,8 @@ def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None,
         hydrate_items_from_metadata(items, media_type=media_type)
     return items
 
-def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, limit=80, offset=0, language=None):
-    """Retrieve catalog item dicts from SQLite cache matching a specific release year and optional media_type/genre/language."""
+def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, limit=80, offset=0, language=None, country=None):
+    """Retrieve catalog item dicts from SQLite cache matching a specific release year and optional media_type/genre/language/country."""
     if not year or str(year) in ("All Years", "All", "all", "None"):
         return []
     yr_str = str(year).strip()
@@ -2574,6 +2899,9 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
                 if language and language not in ("All", "All Languages", "all") and language.strip().lower() != effective_genre.strip().lower():
                     query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
                     params.append(language.strip())
+                if country and country not in ("All", "All Countries", "all"):
+                    query += " AND m.id IN (SELECT item_id FROM item_countries WHERE country = ? COLLATE NOCASE)"
+                    params.append(normalize_country_name(country))
                 if media_type and media_type not in ("all", "discover"):
                     mt = str(media_type).lower()
                     if mt == "movie":
@@ -2596,6 +2924,9 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
                 if language and language not in ("All", "All Languages", "all"):
                     query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
                     params.append(language.strip())
+                if country and country not in ("All", "All Countries", "all"):
+                    query += " AND m.id IN (SELECT item_id FROM item_countries WHERE country = ? COLLATE NOCASE)"
+                    params.append(normalize_country_name(country))
                 if media_type and media_type not in ("all", "discover"):
                     mt = str(media_type).lower()
                     if mt == "movie":
@@ -2641,8 +2972,8 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
         hydrate_items_from_metadata(items, media_type=media_type)
     return items
 
-def get_cached_items_by_search(query, media_type=None, genre=None, year=None, sort_mode=None, limit=60, offset=0, title_only=False, language=None):
-    """Retrieve catalog item dicts from SQLite cache matching a search keyword and optional media_type/genre/year/language."""
+def get_cached_items_by_search(query, media_type=None, genre=None, year=None, sort_mode=None, limit=60, offset=0, title_only=False, language=None, country=None):
+    """Retrieve catalog item dicts from SQLite cache matching a search keyword and optional media_type/genre/year/language/country."""
     if not query or not str(query).strip():
         return []
     q_str = str(query).strip().lower()
@@ -2681,6 +3012,9 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                 if language and language not in ("All", "All Languages", "all") and language.strip().lower() != effective_genre.strip().lower():
                     sql += " AND m.id IN (SELECT item_id FROM item_genres WHERE lower(genre) = lower(?))"
                     params.append(str(language).strip())
+                if country and country not in ("All", "All Countries", "all"):
+                    sql += " AND m.id IN (SELECT item_id FROM item_countries WHERE lower(country) = lower(?))"
+                    params.append(normalize_country_name(country))
             else:
                 sql = f"""
                     SELECT m.data
@@ -2691,6 +3025,9 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                 if language and language not in ("All", "All Languages", "all"):
                     sql += " AND m.id IN (SELECT item_id FROM item_genres WHERE lower(genre) = lower(?))"
                     params.append(str(language).strip())
+                if country and country not in ("All", "All Countries", "all"):
+                    sql += " AND m.id IN (SELECT item_id FROM item_countries WHERE lower(country) = lower(?))"
+                    params.append(normalize_country_name(country))
 
             if media_type and media_type not in ("all", "discover"):
                 mt = str(media_type).lower()
@@ -2786,12 +3123,60 @@ _DROPDOWN_CACHE_LOCK = threading.Lock()
 _GENRES_CACHE = {}
 _SORT_OPTIONS_CACHE = {}
 _YEARS_CACHE = {}
+_COUNTRIES_CACHE = {}
 
 def invalidate_dropdown_caches():
     with _DROPDOWN_CACHE_LOCK:
         _GENRES_CACHE.clear()
         _SORT_OPTIONS_CACHE.clear()
         _YEARS_CACHE.clear()
+        _COUNTRIES_CACHE.clear()
+
+DEFAULT_CANONICAL_COUNTRIES = [
+    "United States", "United Kingdom", "India", "Japan", "South Korea",
+    "France", "Germany", "Canada", "Australia", "Spain", "Italy",
+    "China", "Hong Kong", "Taiwan", "Russia", "Brazil", "Mexico",
+    "Sweden", "Denmark", "Norway", "Finland", "Netherlands", "Belgium",
+    "Ireland", "New Zealand", "Turkey", "Poland", "Thailand",
+    "Indonesia", "Philippines", "Argentina", "Colombia", "South Africa",
+    "Egypt", "Nigeria", "Pakistan"
+]
+
+def get_available_countries(media_type=None):
+    """Return distinct canonical countries present in item_countries or fallback list."""
+    mt = (media_type or "all").lower()
+    with _DROPDOWN_CACHE_LOCK:
+        if mt in _COUNTRIES_CACHE:
+            return list(_COUNTRIES_CACHE[mt])
+
+    countries = set(DEFAULT_CANONICAL_COUNTRIES)
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            if mt not in ("all", "discover"):
+                if mt in ("movie_series", "movies_series", "movie+series", "movies+series"):
+                    cursor.execute("SELECT DISTINCT country FROM item_countries WHERE country != '' AND media_type IN ('movie', 'series')")
+                else:
+                    cursor.execute("SELECT DISTINCT country FROM item_countries WHERE country != '' AND media_type = ?", (mt,))
+            else:
+                cursor.execute("SELECT DISTINCT country FROM item_countries WHERE country != ''")
+            for row in cursor.fetchall():
+                if row and row[0]:
+                    norm = normalize_country_name(row[0].strip())
+                    if norm:
+                        countries.add(norm)
+    except Exception as e:
+        print(f"Error reading available countries: {e}")
+
+    priority = {
+        "United States": 0, "United Kingdom": 1, "India": 2, "Japan": 3,
+        "South Korea": 4, "France": 5, "Germany": 6, "Canada": 7, "Australia": 8
+    }
+    res = sorted(list(countries), key=lambda c: (priority.get(c, 99), c.lower()))
+    with _DROPDOWN_CACHE_LOCK:
+        _COUNTRIES_CACHE[mt] = list(res)
+    return res
 
 def get_available_years(media_type=None):
     """Return distinct release years (stored + recent years) in descending order, capped at current year."""

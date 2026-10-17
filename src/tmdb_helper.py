@@ -994,10 +994,25 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None):
             if norm and norm not in tmdb_genres:
                 tmdb_genres.append(norm)
 
+    countries = []
+    for oc in result_item.get("origin_country", []):
+        norm_c = database.normalize_country_name(oc)
+        if norm_c and norm_c not in countries:
+            countries.append(norm_c)
+    for pc in result_item.get("production_countries", []):
+        if isinstance(pc, dict):
+            c_name = pc.get("name") or pc.get("iso_3166_1")
+            norm_c = database.normalize_country_name(c_name)
+            if norm_c and norm_c not in countries:
+                countries.append(norm_c)
+    primary_country = countries[0] if countries else None
+
     return {
         "language_code": orig_lang,
         "language_name": lang_name,
         "genres": tmdb_genres,
+        "country": primary_country,
+        "countries": countries,
         "adult": bool(result_item.get("adult", False)),
         "tmdb_id": result_item.get("id")
     }
@@ -1156,6 +1171,21 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
             for _s_num, eps in results:
                 episodes.extend(eps)
 
+    countries = []
+    for oc in data.get("origin_country", []):
+        norm_c = database.normalize_country_name(oc)
+        if norm_c and norm_c not in countries:
+            countries.append(norm_c)
+    for pc in data.get("production_countries", []):
+        if isinstance(pc, dict):
+            c_name = pc.get("name") or pc.get("iso_3166_1")
+            norm_c = database.normalize_country_name(c_name)
+            if norm_c and norm_c not in countries:
+                countries.append(norm_c)
+    primary_country = countries[0] if countries else None
+    orig_lang = data.get("original_language")
+    lang_name = database.LANGUAGE_CODE_MAP.get(orig_lang.lower()) if orig_lang else None
+
     return {
         "id": imdb_id,
         "title": clean_title,
@@ -1166,6 +1196,9 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
         "runtime": runtime_str,
         "genre": ", ".join(genre_names),
         "genres": genre_names,
+        "country": primary_country,
+        "countries": countries,
+        "language": lang_name,
         "imdbRating": rating_str,
         "cast": cast_list,
         "director": director_name,

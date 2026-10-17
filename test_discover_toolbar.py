@@ -72,6 +72,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.genre_dropdown = Gtk.DropDown()
         self.win.year_dropdown = Gtk.DropDown()
         self.win.language_dropdown = Gtk.DropDown()
+        self.win.country_dropdown = Gtk.DropDown()
         self.win.unique_check = Gtk.CheckButton()
         self.win.library_unique_check = Gtk.CheckButton()
         self.win.discover_title_only_check = Gtk.CheckButton()
@@ -84,6 +85,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.current_genre = None
         self.win.current_year = None
         self.win.current_language = None
+        self.win.current_country = None
         self.win.current_media_type = "movie"
         self.win._current_discover_type = "all"
         self.win._current_discover_addon = None
@@ -985,7 +987,7 @@ class TestDiscoverToolbar(unittest.TestCase):
 
         # Prime the cache with both addons present
         self.win.current_sort = "Popular"
-        cache_key = ("all", "", "Popular", "", "", "")
+        cache_key = ("all", "", "Popular", "", "", "", "")
         self.win._discover_catalog_list_cache[cache_key] = [
             {"manifest_url": "https://online.addon/manifest.json", "catalog_id": "top", "title": "Top"},
             {"manifest_url": "https://offline.addon/manifest.json", "catalog_id": "tv", "title": "TV"},

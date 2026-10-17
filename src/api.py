@@ -2060,6 +2060,102 @@ def filter_items_by_genre(items, genre, media_type=None):
 
     return filtered
 
+def filter_items_by_country(items, country, media_type=None):
+    """
+    Strictly filter items by the specified country and media type.
+    Items with known country from response or cache that do NOT match are excluded.
+    Items incompatible with media_type are excluded.
+    """
+    if not items:
+        return []
+
+    from . import database
+
+    if not country or country in ("All", "All Countries", "all"):
+        if media_type and media_type != "all":
+            return [it for it in items if is_item_type_compatible(it, media_type)]
+        return items or []
+
+    c_norm = database.normalize_country_name(country).lower()
+    filtered = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if media_type and media_type not in ("all", "discover"):
+            if not is_item_type_compatible(item, media_type):
+                continue
+
+        item_countries = set()
+
+        def _add_country_val(val):
+            if not val:
+                return
+            if isinstance(val, str):
+                for part in val.split(","):
+                    norm = database.normalize_country_name(part).lower()
+                    if norm:
+                        item_countries.add(norm)
+            elif isinstance(val, list):
+                for elem in val:
+                    if isinstance(elem, str):
+                        for part in elem.split(","):
+                            norm = database.normalize_country_name(part).lower()
+                            if norm:
+                                item_countries.add(norm)
+                    elif isinstance(elem, dict):
+                        c_name = elem.get("name") or elem.get("iso_3166_1")
+                        if c_name:
+                            norm = database.normalize_country_name(c_name).lower()
+                            if norm:
+                                item_countries.add(norm)
+
+        for k in ("country", "countries", "origin_country", "production_countries"):
+            _add_country_val(item.get(k))
+
+        lang = str(item.get("language") or "").strip().lower()
+        if not item_countries and lang:
+            if lang in ("hindi", "tamil", "telugu", "malayalam", "kannada", "bengali", "punjabi", "marathi", "gujarati", "urdu"):
+                item_countries.add("india")
+            elif lang == "japanese":
+                item_countries.add("japan")
+            elif lang == "korean":
+                item_countries.add("south korea")
+
+        item_id = item.get("id") or item.get("imdb_id")
+        if not item_countries and item_id:
+            c_meta = database.get_cached_metadata(item_id, media_type or item.get("type"))
+            if c_meta and isinstance(c_meta, dict):
+                for k in ("country", "countries", "origin_country", "production_countries"):
+                    _add_country_val(c_meta.get(k))
+                c_lang = str(c_meta.get("language") or "").strip().lower()
+                if not item_countries and c_lang:
+                    if c_lang in ("hindi", "tamil", "telugu", "malayalam", "kannada", "bengali", "punjabi", "marathi", "gujarati", "urdu"):
+                        item_countries.add("india")
+                    elif c_lang == "japanese":
+                        item_countries.add("japan")
+                    elif c_lang == "korean":
+                        item_countries.add("south korea")
+
+        if not item_countries and item_id:
+            try:
+                with database._cache_db_lock:
+                    conn = database._get_cache_db()
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT country FROM item_countries WHERE item_id = ?", (str(item_id),))
+                    for row in cursor.fetchall():
+                        if row and row[0]:
+                            norm = database.normalize_country_name(row[0]).lower()
+                            if norm:
+                                item_countries.add(norm)
+            except Exception:
+                pass
+
+        if c_norm in item_countries or any(c_norm in x or x in c_norm for x in item_countries):
+            filtered.append(item)
+
+    return filtered
+
 _AVAILABLE_CATALOGS_CACHE = {}
 _AVAILABLE_CATALOGS_LOCK = threading.Lock()
 
@@ -2849,8 +2945,8 @@ def _run_metadata_hydration_worker():
                     meta_dict["year"] = clean_year_val
                 genres_list = meta_dict.get("genres") or []
 
-                # Fallback to TMDB if Cinemeta has no genres or no language
-                if not genres_list or not meta_dict.get("language"):
+                # Fallback to TMDB if Cinemeta has no genres or no language or no country
+                if not genres_list or not meta_dict.get("language") or not meta_dict.get("country"):
                     try:
                         from . import tmdb_helper
                         tmdb_data = tmdb_helper.fetch_title_language_and_genres(item_id, media_type=m_type, title=title_str)
@@ -2862,6 +2958,11 @@ def _run_metadata_hydration_worker():
                                 lang_name = tmdb_data["language_name"]
                                 if not meta_dict.get("language"):
                                     meta_dict["language"] = lang_name
+                            if tmdb_data.get("country"):
+                                if not meta_dict.get("country"):
+                                    meta_dict["country"] = tmdb_data["country"]
+                            if tmdb_data.get("countries"):
+                                meta_dict["countries"] = tmdb_data["countries"]
                             if not clean_year_val and tmdb_data.get("release_date"):
                                 clean_year_val = database.extract_clean_year(tmdb_data["release_date"])
                                 if clean_year_val:
@@ -2891,6 +2992,8 @@ def _run_metadata_hydration_worker():
                                     item_dict["genres"].append(g)
                     if meta_dict.get("language"):
                         item_dict["language"] = meta_dict["language"]
+                    if meta_dict.get("country") and not item_dict.get("country"):
+                        item_dict["country"] = meta_dict["country"]
                     clean_yr = clean_year_val or meta_dict.get("year")
                     if clean_yr and not item_dict.get("year"):
                         item_dict["year"] = str(clean_yr)
@@ -3011,6 +3114,11 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                             is_missing_language = False
                             updated = True
                             item_hydrated = True
+                c_country = c_meta.get("country")
+                if c_country and not m.get("country"):
+                    m["country"] = c_country
+                    updated = True
+                    item_hydrated = True
                 c_yr = database.extract_clean_year(c_meta)
                 if is_missing_year and c_yr:
                     m["year"] = str(c_yr)
@@ -3102,6 +3210,8 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     m_item["adult"] = True
                 if meta_dict.get("certification"):
                     m_item["certification"] = meta_dict["certification"]
+                if meta_dict.get("country") and not m_item.get("country"):
+                    m_item["country"] = meta_dict["country"]
 
         # 2. If still missing, try fetch_movie_details
         if not m_item.get("title") or m_item.get("title") == "Unknown":
@@ -3125,6 +3235,8 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     m_item["adult"] = True
                 if det.get("certification"):
                     m_item["certification"] = det["certification"]
+                if det.get("country") and not m_item.get("country"):
+                    m_item["country"] = det["country"]
 
         # Fast TMDb check for adult flag if still unknown and IMDb ID
         if database.is_adult_content_hidden() and not m_item.get("adult") and str(m_id).startswith("tt"):
@@ -3158,6 +3270,8 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                     cached_rec["adult"] = True
                 if m_item.get("certification"):
                     cached_rec["certification"] = m_item["certification"]
+                if m_item.get("country"):
+                    cached_rec["country"] = m_item["country"]
                 cached_rec["id"] = m_id
                 database.save_cached_metadata(m_id, m_type, cached_rec)
             except Exception:

@@ -539,6 +539,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                   </object>
                                 </child>
                                 <child>
+                                  <object class="GtkDropDown" id="country_dropdown">
+                                    <property name="valign">3</property>
+                                    <property name="enable-search">true</property>
+                                    <property name="tooltip-text" translatable="yes">All Countries</property>
+                                  </object>
+                                </child>
+                                <child>
                                   <object class="GtkCheckButton" id="unique_check">
                                     <property name="label" translatable="yes">Unique</property>
                                     <property name="valign">3</property>
