@@ -4,6 +4,7 @@ import json
 import base64
 import threading
 import concurrent.futures
+import logging
 from . import database
 
 def _get_cached_request(*args, **kwargs):
@@ -852,7 +853,7 @@ def fetch_collection_details(cid, title=None, poster=None):
             for idx, i_id in executor.map(resolve_part, enumerate(parts), timeout=10.0):
                 resolved_ids[idx] = i_id
         except Exception as e:
-            logger.debug(f"Timeout or error resolving parts: {e}")
+            logging.debug(f"Timeout or error resolving parts: {e}")
 
     videos = []
     genre_names = set()

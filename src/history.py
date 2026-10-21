@@ -48,6 +48,7 @@ class HistoryDialog(Adw.Dialog):
         self._win = window
         self._hist_path = window.mpv["watch-history-path"]
         self._groups = {}
+        self._load_all_added = False
 
         self._load_all_group = Adw.PreferencesGroup()
         self._load_btn = Gtk.Button(
@@ -70,6 +71,9 @@ class HistoryDialog(Adw.Dialog):
         for group in list(self._groups.values()):
             self.history_prefs_page.remove(group)
         self._groups.clear()
+        if self._load_all_added:
+            self.history_prefs_page.remove(self._load_all_group)
+            self._load_all_added = False
 
         if os.path.exists(self._hist_path) and os.path.getsize(self._hist_path) > 0:
             self.clear_btn.set_sensitive(True)
@@ -183,15 +187,15 @@ class HistoryDialog(Adw.Dialog):
                     self.history_prefs_page.add(group)
 
             if not load_all and len(ordered_entries) > 100:
+                self._load_all_group.set_visible(True)
                 self.history_prefs_page.add(self._load_all_group)
+                self._load_all_added = True
                 self._load_btn.props.label = _("Load All") + f" (+{len(ordered_entries) - 100})"  # type: ignore
 
         else:
             self.clear_btn.set_sensitive(False)
             self.placeholder_img.set_visible(True)
             self.history_prefs_page.set_visible(False)
-            if self.history_prefs_page.get_group(0):  # type: ignore
-                self.history_prefs_page.remove(self._load_all_group)
 
         idle_add_once(self.spinner.set_visible, False)
 

@@ -150,11 +150,21 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                     if not is_priority and not is_image_generation_active(task_gen):
                         return
                     try:
-                        with urllib.request.urlopen(req, timeout=3.5) as response:
+                        from .api import _SSL_CONTEXT
+                        with urllib.request.urlopen(req, timeout=3.5, context=_SSL_CONTEXT) as response:
                             data = response.read()
                             if data:
-                                with open(cache_file, 'wb') as f:
-                                    f.write(data)
+                                temp_file = f"{cache_file}.{os.getpid()}.{threading.get_ident()}.tmp"
+                                try:
+                                    with open(temp_file, 'wb') as f:
+                                        f.write(data)
+                                    os.replace(temp_file, cache_file)
+                                except Exception:
+                                    try:
+                                        if os.path.exists(temp_file):
+                                            os.remove(temp_file)
+                                    except Exception:
+                                        pass
                                 _mark_image_success(url)
                             break
                     except Exception as e:
@@ -610,6 +620,10 @@ class MovieWidget(Gtk.Box):
 
     def _apply_resolved_meta(self, title, year, poster_url, is_adult=False):
         try:
+            from . import api
+            if is_adult or (database.is_adult_content_hidden() and api.is_adult_item(self.movie_data)):
+                self.set_visible(False)
+                return
             if title and title != "Unknown" and (not self.movie_data.get("title") or self.movie_data.get("title") == "Unknown"):
                 self.movie_data["title"] = title
                 if hasattr(self, "title_label") and self.title_label:

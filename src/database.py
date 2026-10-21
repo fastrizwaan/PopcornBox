@@ -2504,6 +2504,16 @@ def _extract_metadata_genres(details, media_type=None):
         if isinstance(value, dict):
             value = value.get("name") or value.get("id")
         if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
+            gid = int(value)
+            if gid == 10759:
+                genres.update(("Action", "Adventure"))
+            elif gid == 10765:
+                genres.update(("Sci-Fi", "Fantasy"))
+            elif gid == 10762:
+                genres.update(("Family",))
+            elif gid == 10768:
+                genres.update(("War",))
+        if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
             value = TMDB_GENRES.get(int(value))
         if not isinstance(value, str):
             continue

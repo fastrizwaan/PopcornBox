@@ -289,6 +289,7 @@ class TorrentStreamEngine:
             try:
                 with open(self.resume_path, "rb") as f:
                     atp = lt.read_resume_data(f.read())
+                atp.save_path = self.session_dir
             except Exception:
                 atp = None
 
@@ -922,7 +923,7 @@ class TorrentStreamEngine:
             return self._target_downloaded() == total_size
         
         # Check first 2MB or 1% (capped at 5MB) for instant player startup
-        req_bytes = min(5 * 1024 * 1024, max(2 * 1024 * 1024, total_size * 0.01))
+        req_bytes = int(min(5 * 1024 * 1024, max(2 * 1024 * 1024, total_size * 0.01)))
         first_parts_done = self._has_range_downloaded(0, req_bytes - 1)
         sequential_done = self._buffered_from_start() >= req_bytes
         
@@ -952,6 +953,16 @@ class TorrentStreamEngine:
             if self.error:
                 request.send_error(500, str(self.error))
                 return
+
+            parsed_req = urllib.parse.urlparse(request.path)
+            qs = urllib.parse.parse_qs(parsed_req.query)
+            idx_param = qs.get("idx", [None])[0]
+            if idx_param is not None and str(idx_param).isdigit():
+                req_idx = int(idx_param)
+                with self.lock:
+                    if self.file_index != req_idx:
+                        self.file_index = req_idx
+                        self._select_target_file()
 
             # Bump generation: any older _write_range thread will see the
             # mismatch and exit on its next loop iteration.

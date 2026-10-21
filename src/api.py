@@ -1219,7 +1219,7 @@ def check_addons_health_background(callback=None):
                         except Exception: pass
                     if manifest_data.get("resources") and not addon.get("resources"):
                         addon["resources"] = manifest_data["resources"]
-                        try: database.update_addon(addon)
+                        try: database.add_addon(addon, sync_to_remote=False)
                         except Exception: pass
                     return (url, True, elapsed_ms, None)
                 else:
@@ -3022,7 +3022,7 @@ def _run_metadata_hydration_worker():
 
                     _notify_hydration_listeners(item_id, item_dict)
         except Exception as e:
-            logger.debug(f"Metadata hydration error for {item_id}: {e}")
+            logging.debug(f"Metadata hydration error for {item_id}: {e}")
         finally:
             try:
                 _HYDRATION_QUEUE.task_done()
@@ -4974,21 +4974,7 @@ def _ping_stream_url(stream):
     if not url or not isinstance(url, str) or not (url.startswith("http://") or url.startswith("https://")):
         return stream
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-    bh = stream.get("behaviorHints", {})
-    if isinstance(bh, dict) and "headers" in bh:
-        for k, v in bh.get("headers", {}).items():
-            headers[k] = v
-
-    try:
-        import urllib.parse
-        parsed = urllib.parse.urlparse(url)
-        params = urllib.parse.parse_qs(parsed.query)
-        for k_target in ["User-Agent", "Referer", "Origin", "Cookie"]:
-            for p_key, p_val in params.items():
-                if p_key.lower() == k_target.lower() and p_val:
-                    headers[k_target] = p_val[0]
-    except Exception:
-        pass
+    headers.update(extract_stream_headers(stream, url))
 
     for attempt in range(2):
         if _has_ffprobe:
@@ -5475,7 +5461,7 @@ SUBTITLE_LANGUAGE_NAMES = {
     "hin": "Hindi", "hi": "Hindi", "hindi": "Hindi",
     "chi": "Chinese", "zho": "Chinese", "zh": "Chinese", "chinese": "Chinese",
     "jpn": "Japanese", "ja": "Japanese", "japanese": "Japanese",
-    "ko": "Korean", "ko": "Korean", "korean": "Korean",
+    "kor": "Korean", "ko": "Korean", "korean": "Korean",
     "tur": "Turkish", "tr": "Turkish", "turkish": "Turkish",
     "pol": "Polish", "pl": "Polish", "polish": "Polish",
     "dut": "Dutch", "nld": "Dutch", "nl": "Dutch", "dutch": "Dutch",
@@ -6028,9 +6014,26 @@ def download_subtitle_to_path(sub_url, file_path):
     os.makedirs(dir_name, exist_ok=True)
     
     try:
-        req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+        req = urllib.request.Request(
+            sub_url,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Encoding': 'gzip, deflate'
+            }
+        )
         with urllib.request.urlopen(req, timeout=10, context=_SSL_CONTEXT) as response:
             payload = response.read()
+            encoding = response.headers.get("Content-Encoding", "").lower()
+            if encoding == "gzip" or payload.startswith(b"\x1f\x8b"):
+                try:
+                    payload = gzip.decompress(payload)
+                except Exception as ge:
+                    logging.debug(f"Gzip decompression error: {ge}")
+            elif encoding == "deflate":
+                try:
+                    payload = zlib.decompress(payload)
+                except Exception:
+                    pass
         temp_path = f"{file_path}.{os.getpid()}.{threading.get_ident()}.tmp"
         try:
             with open(temp_path, 'wb') as f:
@@ -6046,7 +6049,10 @@ def download_subtitle_to_path(sub_url, file_path):
         return file_path
     except urllib.error.HTTPError as e:
         print(f"HTTP Error {e.code} downloading subtitle")
-        e.close()
+        try:
+            e.close()
+        except Exception:
+            pass
         return None
     except Exception as e:
         print(f"Error downloading subtitle: {e}")

@@ -3966,7 +3966,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.add_controller(mouse_back_gesture)
         self.playlist_ls: Gio.ListStore = Gio.ListStore.new(PlaylistItemObj)
         self.playlist_debounce_id: int = 0
-        self.playlist_prev_pos: int
+        self.playlist_prev_pos: int = 0
         self.prev_shuffle: bool = False
         self.playlist_changed: bool = False
         self.has_some_doc_path: bool = False
@@ -6613,10 +6613,8 @@ class CineWindow(Adw.ApplicationWindow):
             if btn and hasattr(btn, "set_active"):
                 btn.set_active(new_state)
             elif hasattr(self, "_on_unique_toggled"):
-                dummy_btn = MagicMock() if hasattr(self, "_is_mock") else None
-                if dummy_btn:
-                    dummy_btn.get_active.return_value = new_state
-                    self._on_unique_toggled(dummy_btn)
+                dummy_btn = type("_DummyBtn", (), {"get_active": lambda _s: new_state})()
+                self._on_unique_toggled(dummy_btn)
         action.connect("activate", on_toggle_unique)
         self.add_action(action)
 
