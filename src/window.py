@@ -2659,15 +2659,19 @@ class MovieDetailsPage(Gtk.Overlay):
 
         key_item_id = item_id[0] if isinstance(item_id, (list, tuple)) and item_id else item_id
         fetch_key = f"{key_item_id}_{sel_season}_{sel_episode}"
-        if not force and getattr(self, '_last_fetch_key', None) == fetch_key:
-            # Coalesce duplicate UI triggers while a request is active or has
-            # already produced streams. Let a completed empty lookup retry
-            # when metadata is refreshed; that often arrives after a transient
-            # provider timeout from the initial stub-based request.
-            if getattr(self, '_fetching_streams', False) or getattr(self, 'torrents', None):
+        if getattr(self, '_last_fetch_key', None) == fetch_key:
+            # Never cancel an active lookup for the same item just because a
+            # later UI trigger requests a forced refresh. The provider HTTP
+            # request may continue holding its host slot after its abort event
+            # is set, leaving the replacement request unable to run and making
+            # the original results stale. Share the in-flight lookup; a forced
+            # refresh can still run after it completes.
+            already_fetching = getattr(self, '_fetching_streams', False)
+            has_results = bool(getattr(self, 'torrents', None))
+            if already_fetching or (not force and has_results):
                 print(
                     f"[STREAM DEBUG] UI fetch coalesced key={fetch_key!r} "
-                    f"already_fetching={getattr(self, '_fetching_streams', False)} cards={len(getattr(self, 'torrents', []) or [])}"
+                    f"already_fetching={already_fetching} cards={len(getattr(self, 'torrents', []) or [])} force={force}"
                 )
                 return
         self._last_fetch_key = fetch_key
@@ -14597,7 +14601,13 @@ class CineWindow(Adw.ApplicationWindow):
 
         self._addon_catalog_sources = api.get_addon_directory_catalogs()
         display_names = []
-        target_idx = 0
+        # Start each fresh app session on the installed list. When the user
+        # has already chosen a directory during this session, keep that choice
+        # while refreshing the available sources.
+        target_idx = next(
+            (idx for idx, src in enumerate(self._addon_catalog_sources) if src.get("is_installed_view")),
+            0,
+        )
 
         for idx, src in enumerate(self._addon_catalog_sources):
             name = src.get("name", "Unknown")
@@ -14913,13 +14923,17 @@ class CineWindow(Adw.ApplicationWindow):
         installed_addons = database.get_addons()
         installed_urls = {a.get("manifest_url") for a in installed_addons if a.get("manifest_url")}
         installed_ids = {a.get("id") for a in installed_addons if a.get("id")}
-
         for item in addons:
             addon_id = item.get("id")
             transport_url = item.get("transport_url", "")
             is_installed = (transport_url in installed_urls) or (addon_id in installed_ids)
 
             row = Gtk.ListBoxRow()
+            # ListBoxRow may otherwise allocate its child at natural width and
+            # center it, causing each catalog entry's logo/text to shift based
+            # on the length of its description.
+            row.set_hexpand(True)
+            row.set_halign(Gtk.Align.FILL)
             row._is_catalog_row = True
             row._addon_data = item
             row._addon_name = str(item.get("name", "")).lower()
@@ -14928,33 +14942,33 @@ class CineWindow(Adw.ApplicationWindow):
             row._addon_id = str(addon_id or "").lower()
 
             card_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+            card_box.set_hexpand(True)
+            card_box.set_halign(Gtk.Align.FILL)
             card_box.set_margin_top(10)
             card_box.set_margin_bottom(10)
             card_box.set_margin_start(14)
             card_box.set_margin_end(14)
 
-            # Left: Logo
-            logo_box = Gtk.Box()
-            logo_box.set_size_request(56, 56)
-            logo_box.add_css_class("card")
-            logo_box.set_valign(Gtk.Align.CENTER)
-            logo_box.set_halign(Gtk.Align.CENTER)
-
+            # Use the image itself as the fixed-width first column. A wrapper
+            # around the image can grow to its natural width and shift the text
+            # column differently for each addon.
             logo_url = item.get("logo")
             if logo_url:
-                pic = Gtk.Picture()
-                pic.set_size_request(56, 56)
-                pic.set_can_shrink(True)
-                pic.set_content_fit(Gtk.ContentFit.COVER)
-                load_image_into_picture(logo_url, pic, width=56, height=56, crop=True, is_priority=True)
-                logo_box.append(pic)
+                logo_widget = Gtk.Picture()
+                logo_widget.set_size_request(56, 56)
+                logo_widget.set_can_shrink(True)
+                logo_widget.set_content_fit(Gtk.ContentFit.COVER)
+                load_image_into_picture(logo_url, logo_widget, width=56, height=56, crop=True, is_priority=True)
             else:
-                icon_img = Gtk.Image(icon_name="application-x-addon-symbolic")
-                icon_img.set_pixel_size(32)
-                icon_img.set_hexpand(True)
-                icon_img.set_vexpand(True)
-                logo_box.append(icon_img)
-            card_box.append(logo_box)
+                logo_widget = Gtk.Image(icon_name="application-x-addon-symbolic")
+                logo_widget.set_pixel_size(32)
+                logo_widget.set_size_request(56, 56)
+            logo_widget.add_css_class("card")
+            logo_widget.set_valign(Gtk.Align.CENTER)
+            logo_widget.set_halign(Gtk.Align.CENTER)
+            logo_widget.set_hexpand(False)
+            logo_widget.set_vexpand(False)
+            card_box.append(logo_widget)
 
             # Middle: Info
             mid_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
