@@ -11,4 +11,5 @@ fi
 
 echo "Building PopcornBox v2.1 flatpak..."
 flatpak-builder --user --install --force-clean --disable-rofiles-fuse build-dir build-aux/flatpak/io.github.fastrizwaan.PopcornBox.json
-echo "Build complete! You can run it with: flatpak run io.github.fastrizwaan.PopcornBox"
+echo "Build complete! You can run it with: 
+flatpak run io.github.fastrizwaan.PopcornBox"
