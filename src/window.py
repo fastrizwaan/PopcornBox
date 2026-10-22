@@ -6560,7 +6560,7 @@ class CineWindow(Adw.ApplicationWindow):
         # Discover and Library share the same Unique mode. Restore it before
         # the initial Home/Discover view is built so the first frame matches
         # the user's last selection.
-        self._persisted_unique_enabled = bool(database.get_setting("discover_unique_enabled", False))
+        self._persisted_unique_enabled = bool(database.get_setting("discover_unique_enabled", True))
         
         self.all_catalogs = []
         self.current_media_type = "movie"
@@ -6607,7 +6607,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         # Action: Toggle Unique View (stateful boolean action used by header and Home menu)
         action = Gio.SimpleAction.new_stateful(
-            "toggle-unique", None, GLib.Variant.new_boolean(False)
+            "toggle-unique", None, GLib.Variant.new_boolean(self._persisted_unique_enabled)
         )
         def on_toggle_unique(action, parameter):
             curr = action.get_state().get_boolean()
@@ -6622,14 +6622,14 @@ class CineWindow(Adw.ApplicationWindow):
         action.connect("activate", on_toggle_unique)
         self.add_action(action)
 
-        # Home always starts with Unique off. The saved Discover preference is
-        # applied only when the user enters Discover.
+        # Keep the Unique checkbox state aligned with the saved preference
+        # from the first view; new installs default to Unique on.
         self._syncing_unique_check = True
         try:
             for btn_name in ("unique_check", "library_unique_check"):
                 btn = getattr(self, btn_name, None)
                 if btn is not None and hasattr(btn, "set_active"):
-                    btn.set_active(False)
+                    btn.set_active(self._persisted_unique_enabled)
         finally:
             self._syncing_unique_check = False
 
@@ -6736,6 +6736,35 @@ class CineWindow(Adw.ApplicationWindow):
             self._set_discover_results_search_visible(False)
             self._set_discover_spinner_active(True)
             self.category_btn_stack.set_visible_child_name("discover")
+            # Continue Watching belongs to Home only; remove it immediately
+            # when navigating away, even if no Discover refresh is needed.
+            self._update_continue_watching_section()
+            # The category buttons may leave Discover's type filter set to
+            # Movies, Series, or Anime. Enter Discover with its broad default.
+            self._current_discover_type = "all"
+            self._current_discover_addon = None
+            self.current_media_type = "movie"
+            self.current_catalog = None
+            self.current_genre = None
+            self.current_year = None
+            self.current_language = None
+            self.current_country = None
+            self._syncing_discover_toolbar = True
+            try:
+                all_type_index = next(
+                    (i for i, item in enumerate(getattr(self, "_discover_type_items", [])) if item[1] == "all"),
+                    0,
+                )
+                if getattr(self, "type_dropdown", None):
+                    self.type_dropdown.set_selected(all_type_index)
+                self._populate_discover_catalog_dropdown("all")
+                self._populate_discover_section_dropdown(None, "all")
+                self._populate_discover_genre_dropdown(None, "all", None)
+                self._populate_discover_year_dropdown(None, "all", None)
+                self._populate_discover_language_dropdown(None, "all", None)
+                self._populate_discover_country_dropdown(None, "all", None)
+            finally:
+                self._syncing_discover_toolbar = False
             if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn:
                 self.filter_toggle_btn.set_visible(False)
                 self.filter_toggle_btn.set_active(False)
@@ -6756,13 +6785,26 @@ class CineWindow(Adw.ApplicationWindow):
                         self.catalog_dropdown.set_selected(0)
                     finally:
                         self._syncing_discover_toolbar = False
-            if self._persisted_unique_enabled:
-                if hasattr(self, "unique_check") and self.unique_check:
-                    self.unique_check.set_active(True)
-                else:
-                    self.reload_catalog_grid()
-            else:
-                self.reload_catalog_grid()
+            # Discover always opens its deduplicated listing. Refresh it
+            # explicitly because set_active(True) emits no signal when the
+            # checkbox was already checked (the common startup case).
+            self._persisted_unique_enabled = True
+            from . import database
+            database.set_setting("discover_unique_enabled", True)
+            self._syncing_unique_check = True
+            try:
+                for btn_name in ("unique_check", "library_unique_check"):
+                    btn = getattr(self, btn_name, None)
+                    if btn is not None and hasattr(btn, "set_active"):
+                        btn.set_active(True)
+                unique_action = self.lookup_action("toggle-unique") if hasattr(self, "lookup_action") else None
+                if unique_action:
+                    unique_action.set_state(GLib.Variant.new_boolean(True))
+            finally:
+                self._syncing_unique_check = False
+            filters = self._get_current_discover_filter_dict()
+            filters["unique_only"] = True
+            self.reload_catalog_grid(filters)
         action.connect("activate", on_switch_discover)
         self.add_action(action)
 
@@ -7976,7 +8018,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.discover_search_entry.connect("search-changed", self._on_discover_search_changed)
                 self.discover_search_entry.connect("activate", self._on_discover_search_activated)
             if hasattr(self, "discover_title_only_check") and self.discover_title_only_check:
-                title_only_saved = database.get_setting("discover_title_only", False)
+                title_only_saved = database.get_setting("discover_title_only", True)
                 self.discover_title_only_check.set_active(bool(title_only_saved))
                 self.discover_title_only_check.connect("toggled", self._on_discover_title_only_toggled)
             for flowbox_name in ("content_flowbox", "unique_flowbox"):
