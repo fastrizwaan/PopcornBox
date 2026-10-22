@@ -180,15 +180,11 @@ def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, sea
                 if should_delete:
                     print(f"Stopping and deleting incomplete separate torrent: {_streaming_hash}")
                     info_hash_to_delete = _streaming_hash
-                    import threading
                     threading.Thread(target=engine.stop, daemon=True).start()
                     del _engines[info_hash_to_delete]
                     
                     database.remove_download(info_hash_to_delete)
                     
-                    import shutil
-                    import os
-                    import time
                     def _delete_files():
                         time.sleep(1.5) # Wait for libtorrent to release file locks
                         path = os.path.join(DOWNLOAD_BASE, info_hash_to_delete)

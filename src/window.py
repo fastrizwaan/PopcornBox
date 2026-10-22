@@ -3552,7 +3552,8 @@ class MovieDetailsPage(Gtk.Overlay):
                     try: os.remove(part_path)
                     except Exception: pass
                 if self.window and hasattr(self.window, "_show_toast"):
-                    GLib.idle_add(lambda: self.window._show_toast(_(f"Download failed: {e}")))
+                    error_message = str(e)
+                    GLib.idle_add(lambda: self.window._show_toast(_(f"Download failed: {error_message}")))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -7178,7 +7179,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.unique_catalog_idx = 0
         self.unique_page_per_catalog = {}
         self.unique_exhausted_catalogs = set()
-        self.unique_truly_empty_catalogs = set()
+        self.unique_retryable_catalogs = set()
         self.is_fetching_unique = False
         self.has_more_unique = True
         self.unique_request_id = 0
@@ -8049,11 +8050,12 @@ class CineWindow(Adw.ApplicationWindow):
             GLib.idle_add(_apply)
 
     def _clear_discover_search_on_filter_change(self):
-        if hasattr(self, "discover_search_entry") and self.discover_search_entry:
-            if self.discover_search_entry.get_text():
+        entry = getattr(self, "discover_search_entry", None)
+        if entry and hasattr(entry, "get_text"):
+            if entry.get_text():
                 self._clearing_search_for_filter = True
                 try:
-                    self.discover_search_entry.set_text("")
+                    entry.set_text("")
                 finally:
                     self._clearing_search_for_filter = False
         self.current_discover_search_query = ""
@@ -9124,7 +9126,33 @@ class CineWindow(Adw.ApplicationWindow):
         upper = adj.get_upper()
         if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
             if not getattr(self, "has_more_unique", True):
-                return
+                exhausted = getattr(self, "unique_exhausted_catalogs", None)
+                retryable_catalogs = getattr(self, "unique_retryable_catalogs", None)
+                if not isinstance(exhausted, set) or not isinstance(retryable_catalogs, set):
+                    return
+                lock = getattr(self, "_unique_lock", None)
+                if lock is not None:
+                    with lock:
+                        retryable = exhausted & retryable_catalogs
+                        if not retryable:
+                            return
+                        exhausted.difference_update(retryable)
+                        retryable_catalogs.difference_update(retryable)
+                        streaks = getattr(self, "unique_empty_streak", None)
+                        if isinstance(streaks, dict):
+                            for key in retryable:
+                                streaks[key] = 0
+                else:
+                    retryable = exhausted & retryable_catalogs
+                    if not retryable:
+                        return
+                    exhausted.difference_update(retryable)
+                    retryable_catalogs.difference_update(retryable)
+                    streaks = getattr(self, "unique_empty_streak", None)
+                    if isinstance(streaks, dict):
+                        for key in retryable:
+                            streaks[key] = 0
+                self.has_more_unique = True
             self._load_next_unique_batch()
 
     def _is_unique_item(self, item):
@@ -9235,7 +9263,7 @@ class CineWindow(Adw.ApplicationWindow):
             self.unique_seen_keys.clear()
             self.unique_page_per_catalog.clear()
             self.unique_exhausted_catalogs.clear()
-            self.unique_truly_empty_catalogs.clear()
+            self.unique_retryable_catalogs.clear()
             self.unique_productive_catalogs = []
             self.unique_empty_streak = {}
             self.unique_catalog_idx = 0
@@ -9889,16 +9917,18 @@ class CineWindow(Adw.ApplicationWindow):
 
                                 if raw_count == -1:
                                     self.unique_exhausted_catalogs.add(cat_key)
+                                    self.unique_retryable_catalogs.add(cat_key)
                                     if cat_key in getattr(self, "unique_productive_catalogs", []):
                                         self.unique_productive_catalogs.remove(cat_key)
                                     continue
                                 if raw_count == 0:
                                     self.unique_exhausted_catalogs.add(cat_key)
-                                    self.unique_truly_empty_catalogs.add(cat_key)
+                                    self.unique_retryable_catalogs.discard(cat_key)
                                     if cat_key in getattr(self, "unique_productive_catalogs", []):
                                         self.unique_productive_catalogs.remove(cat_key)
                                     continue
 
+                                self.unique_retryable_catalogs.discard(cat_key)
                                 page_limit = 25 if is_catalog_search else 50
                                 supports_pagination = (
                                     source in ("query_cache", "genre_cache")
@@ -14728,61 +14758,72 @@ class CineWindow(Adw.ApplicationWindow):
                 status_label.set_label("🔴")
 
             desc_str_orig = GLib.markup_escape_text(addon.get("description", "") or "")
-            def update_row_subtitle():
+            row_state = {
+                "addon": addon,
+                "manifest_url": manifest_url,
+                "row": row,
+                "has_cats": has_cats,
+                "has_streams": has_streams,
+                "desc_str_orig": desc_str_orig,
+                "updating_sync": False,
+                "cat_toggle": None,
+                "stream_toggle": None,
+                "cat_check": None,
+                "stream_check": None,
+            }
+
+            def update_row_subtitle(state=row_state):
                 tags = []
-                if has_cats and not addon.get("catalogs_enabled", True):
+                cur_addon = state["addon"]
+                if state["has_cats"] and not cur_addon.get("catalogs_enabled", True):
                     tags.append(_("Catalogs disabled"))
-                if has_streams and not addon.get("streams_enabled", True):
+                if state["has_streams"] and not cur_addon.get("streams_enabled", True):
                     tags.append(_("Media disabled"))
-                s = desc_str_orig
+                s = state["desc_str_orig"]
                 if tags:
                     tag_str = " • ".join(tags)
                     s = f"{s} ({tag_str})" if s else f"({tag_str})"
-                row.set_subtitle(s)
+                state["row"].set_subtitle(s)
 
-            updating_sync = False
-            cat_toggle = None
-            stream_toggle = None
-            cat_check = None
-            stream_check = None
-
-            def on_cat_changed(active):
-                nonlocal updating_sync
-                if updating_sync:
+            def on_cat_changed(active, state=row_state):
+                if state["updating_sync"]:
                     return
-                updating_sync = True
+                state["updating_sync"] = True
                 try:
-                    addon["catalogs_enabled"] = bool(active)
+                    state["addon"]["catalogs_enabled"] = bool(active)
+                    cat_toggle = state["cat_toggle"]
                     if cat_toggle and cat_toggle.get_active() != active:
                         cat_toggle.set_active(active)
+                    cat_check = state["cat_check"]
                     if cat_check and cat_check.get_active() != active:
                         cat_check.set_active(active)
-                    update_row_subtitle()
+                    update_row_subtitle(state)
                 finally:
-                    updating_sync = False
-                database.set_addon_catalogs_enabled(addon.get("id"), active, manifest_url=manifest_url)
+                    state["updating_sync"] = False
+                database.set_addon_catalogs_enabled(state["addon"].get("id"), active, manifest_url=state["manifest_url"])
                 self._on_addons_changed()
 
-            def on_stream_changed(active):
-                nonlocal updating_sync
-                if updating_sync:
+            def on_stream_changed(active, state=row_state):
+                if state["updating_sync"]:
                     return
-                updating_sync = True
+                state["updating_sync"] = True
                 try:
-                    addon["streams_enabled"] = bool(active)
+                    state["addon"]["streams_enabled"] = bool(active)
+                    stream_toggle = state["stream_toggle"]
                     if stream_toggle and stream_toggle.get_active() != active:
                         stream_toggle.set_active(active)
+                    stream_check = state["stream_check"]
                     if stream_check and stream_check.get_active() != active:
                         stream_check.set_active(active)
-                    update_row_subtitle()
+                    update_row_subtitle(state)
                 finally:
-                    updating_sync = False
-                database.set_addon_streams_enabled(addon.get("id"), active, manifest_url=manifest_url)
+                    state["updating_sync"] = False
+                database.set_addon_streams_enabled(state["addon"].get("id"), active, manifest_url=state["manifest_url"])
                 self._on_addons_changed()
 
-            def on_enable_changed(active):
-                addon["enabled"] = bool(active)
-                database.set_addon_enabled(addon.get("id"), active, manifest_url=manifest_url)
+            def on_enable_changed(active, state=row_state):
+                state["addon"]["enabled"] = bool(active)
+                database.set_addon_enabled(state["addon"].get("id"), active, manifest_url=state["manifest_url"])
                 self._on_addons_changed()
 
             box = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
@@ -14792,19 +14833,21 @@ class CineWindow(Adw.ApplicationWindow):
                 cat_toggle.set_active(addon.get("catalogs_enabled", True))
                 cat_toggle.set_tooltip_text(_("Enable/disable catalogs from this addon"))
                 cat_toggle.add_css_class("flat")
-                cat_toggle.connect("toggled", lambda btn: on_cat_changed(btn.get_active()))
+                cat_toggle.connect("toggled", lambda btn, handler=on_cat_changed: handler(btn.get_active()))
+                row_state["cat_toggle"] = cat_toggle
                 box.append(cat_toggle)
 
                 stream_toggle = Gtk.ToggleButton(label=_("Media"), valign=Gtk.Align.CENTER)
                 stream_toggle.set_active(addon.get("streams_enabled", True))
                 stream_toggle.set_tooltip_text(_("Enable/disable media streams from this addon"))
                 stream_toggle.add_css_class("flat")
-                stream_toggle.connect("toggled", lambda btn: on_stream_changed(btn.get_active()))
+                stream_toggle.connect("toggled", lambda btn, handler=on_stream_changed: handler(btn.get_active()))
+                row_state["stream_toggle"] = stream_toggle
                 box.append(stream_toggle)
 
             enable_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
             enable_switch.set_active(addon.get("enabled", True))
-            enable_switch.connect("notify::active", lambda sw, pspec: on_enable_changed(sw.get_active()))
+            enable_switch.connect("notify::active", lambda sw, pspec, handler=on_enable_changed: handler(sw.get_active()))
             box.append(enable_switch)
 
             menu_btn = Gtk.MenuButton(icon_name="view-more-symbolic", valign=Gtk.Align.CENTER)
@@ -14825,13 +14868,15 @@ class CineWindow(Adw.ApplicationWindow):
             if has_cats:
                 cat_check = Gtk.CheckButton(label=_("Enable Catalogs"))
                 cat_check.set_active(addon.get("catalogs_enabled", True))
-                cat_check.connect("toggled", lambda btn, pop=popover: (pop.popdown(), on_cat_changed(btn.get_active())))
+                cat_check.connect("toggled", lambda btn, pop=popover, handler=on_cat_changed: (pop.popdown(), handler(btn.get_active())))
+                row_state["cat_check"] = cat_check
                 popover_box.append(cat_check)
 
             if has_streams:
                 stream_check = Gtk.CheckButton(label=_("Enable Media / Streams"))
                 stream_check.set_active(addon.get("streams_enabled", True))
-                stream_check.connect("toggled", lambda btn, pop=popover: (pop.popdown(), on_stream_changed(btn.get_active())))
+                stream_check.connect("toggled", lambda btn, pop=popover, handler=on_stream_changed: (pop.popdown(), handler(btn.get_active())))
+                row_state["stream_check"] = stream_check
                 popover_box.append(stream_check)
 
             if has_cats or has_streams:

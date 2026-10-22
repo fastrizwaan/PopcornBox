@@ -335,6 +335,8 @@ def _read_db():
                     return _json_cache
             except Exception:
                 pass
+            _db_corrupted = True
+            logging.error("Database recovery failed. Writes are disabled to protect existing data.")
             return {"favorites": [], "watched": [], "history": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}
         except Exception as e:
             # Transient I/O problems (permissions, disk full, FUSE hiccups) must
