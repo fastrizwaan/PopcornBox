@@ -229,6 +229,7 @@ class TestUniqueCombinedView(unittest.TestCase):
 
         win.unique_exhausted_catalogs = {cat1_key, cat2_key}
         win.unique_truly_empty_catalogs = {cat2_key}  # cat2 confirmed 0 items at API end
+        win.unique_retryable_catalogs = {cat1_key}  # cat1 hit transient failure, retry candidate
         win.unique_page_per_catalog = {cat1_key: 3, cat2_key: 1}
 
         adj = MagicMock()

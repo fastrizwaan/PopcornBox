@@ -9263,7 +9263,8 @@ class CineWindow(Adw.ApplicationWindow):
             self.unique_seen_keys.clear()
             self.unique_page_per_catalog.clear()
             self.unique_exhausted_catalogs.clear()
-            self.unique_retryable_catalogs.clear()
+            if hasattr(self, "unique_retryable_catalogs"):
+                self.unique_retryable_catalogs.clear()
             self.unique_productive_catalogs = []
             self.unique_empty_streak = {}
             self.unique_catalog_idx = 0
@@ -13807,6 +13808,8 @@ class CineWindow(Adw.ApplicationWindow):
             next_title = next_v.get("title") or next_v.get("name") or f"Video {target_episode}"
             msg = f"Playing next: {next_title}"
             load_msg = f"Loading {next_title}..."
+            videos = eps
+            current_season = target_season
         else:
             videos = self._get_videos_for_current_page(page)
             if not videos or len(videos) <= 1:
@@ -13975,22 +13978,25 @@ class CineWindow(Adw.ApplicationWindow):
                 database.save_series_pack_torrent(primary_id, reused_stream, season=target_season)
 
             # Immediately record next episode in Continue Watching
+            page_details = getattr(page, "movie_details", {}) or {}
+            playing_item = getattr(self, "_current_playing_item", None)
+            playing_item = playing_item if isinstance(playing_item, dict) else {}
             cov = (
-                getattr(page, "movie_details", {}).get("medium_cover_image")
+                page_details.get("medium_cover_image")
                 or (getattr(page, "movie_stub", {}) or {}).get("medium_cover_image")
-                or getattr(page, "movie_details", {}).get("poster")
+                or page_details.get("poster")
                 or (getattr(page, "movie_stub", {}) or {}).get("poster")
-                or self._current_playing_item.get("medium_cover_image")
-                or self._current_playing_item.get("poster")
+                or playing_item.get("medium_cover_image")
+                or playing_item.get("poster")
             )
             m_title = (
-                getattr(page, "movie_details", {}).get("title")
+                page_details.get("title")
                 or (getattr(page, "movie_stub", {}) or {}).get("title")
                 or (getattr(page, "movie_stub", {}) or {}).get("name")
-                or self._current_playing_item.get("title")
+                or playing_item.get("title")
                 or "Unknown"
             )
-            m_type = getattr(page, "media_type", None) or self._current_playing_item.get("type", "series")
+            m_type = getattr(page, "media_type", None) or playing_item.get("type", "series")
             import re
             base_t = re.sub(r'\s*\(S\d+E\d+\)', '', m_title).strip()
             from time import time as _time
@@ -15236,6 +15242,7 @@ class CineWindow(Adw.ApplicationWindow):
             self._show_toast(_(f"Removed addon: {addon_name}"))
 
     def _addon_filter_func(self, row):
+        search_text = ""
         search_entry = getattr(self, "addon_search_entry", None)
         if search_entry and hasattr(search_entry, "get_text"):
             search_text = search_entry.get_text().strip().lower()
