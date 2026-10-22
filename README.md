@@ -53,6 +53,12 @@ flatpak-builder --user --install --force-clean --disable-rofiles-fuse \
   build-dir build-aux/flatpak/io.github.fastrizwaan.PopcornBox.json
 ```
 
+### Flatpak bundle
+```bash
+flatpak build-bundle ~/.local/share/flatpak/repo io.github.fastrizwaan.PopcornBox.flatpak io.github.fastrizwaan.PopcornBox
+
+```
+
 ## Project details
 
 - **Version:** 2.2
