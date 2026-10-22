@@ -17,15 +17,16 @@
   </developer>
 
   <name translate="no">PopcornBox</name>
-  <summary>Play your videos</summary>
+  <summary>Discover and play movies, series, and more</summary>
   <description>
-    <p>Cine combines a clean interface with a high-performance engine to deliver a seamless viewing experience.</p>
-		<ul>
-			<li>Simple Design: A refined, distraction-free interface</li>
-      <li>MPV-Based: Leverages the robust power of MPV for great playback and format support</li>
-      <li>Audio and Subtitles: Control track selection and synchronization for both</li>
-      <li>Video Controls: Easily adjust brightness, contrast, zoom, aspect ratio, etc.</li>
-		</ul>
+    <p>PopcornBox is a Linux media client that brings compatible addon catalogs, your personal library, and video playback together in one application.</p>
+    <ul>
+      <li>Browse movies, series, anime, and other media from installed Stremio-compatible addons</li>
+      <li>Search catalog titles and filter by type, catalog, genre, year, language, and country</li>
+      <li>Keep favorites, watch history, watched items, and continue-watching progress in your library</li>
+      <li>Play addon streams, local videos, and torrent-backed streams with the integrated MPV player</li>
+      <li>Manage audio tracks, subtitles, chapters, playback speed, and video display options</li>
+    </ul>
   </description>
 
   <branding>
@@ -69,6 +70,16 @@
   </requires>
 
   <releases>
+    <release version="2.2" date="2026-10-22">
+      <description translate="no">
+        <ul>
+          <li>Expanded Discover search across addon catalogs with improved paging and loading as you scroll</li>
+          <li>Improved Unique results and filter-plus-search behavior</li>
+          <li>Discover opens with All Types and the Unique listing</li>
+          <li>Updated application documentation and release metadata</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.1.0" date="2026-08-07">
       <description translate="no">
         <ul>

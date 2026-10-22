@@ -117,7 +117,7 @@ def _post_json(url, payload, timeout=DEFAULT_TIMEOUT):
     data_bytes = json.dumps(payload).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "PopcornBox/2.1 (Linux; Flatpak) StremioSync/1.0",
+        "User-Agent": "PopcornBox/2.2 (Linux; Flatpak) StremioSync/1.0",
     }
     req = urllib.request.Request(url, data=data_bytes, headers=headers)
 

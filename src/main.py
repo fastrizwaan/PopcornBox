@@ -245,7 +245,7 @@ class CineApplication(Adw.Application):
 
     def _on_about_action(self, *args):
         """Callback for the app.about action."""
-        APP_VERSION = getattr(sys.modules["__main__"], "VERSION", "2.1.0")
+        APP_VERSION = getattr(sys.modules["__main__"], "VERSION", "2.2")
         about = Adw.AboutDialog(
             application_name="PopcornBox",
             application_icon="io.github.fastrizwaan.PopcornBox",

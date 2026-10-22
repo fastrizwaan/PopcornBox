@@ -1,45 +1,69 @@
-# Popcorn Box 2.1
+# PopcornBox 2.2
 
-Watch movies, series, and stream videos seamlessly
+A Linux media client for discovering and playing movies, series, anime, and other media through Stremio-compatible addons. PopcornBox combines catalog browsing, search, a local library, and an integrated MPV-based player in a GTK4 and Libadwaita desktop app.
 
-This is version 2.1, using Cine player instead of basic mpv.
+## Features
 
+### Discover and search
 
-![Popcorn Box Screenshot](https://github.com/fastrizwaan/WineCharm/releases/download/1.3/1.png)
+- Browse Home and Discover feeds built from installed addon catalogs.
+- Browse movies, series, anime, live TV, and other catalog types when supported by your addons.
+- Filter Discover by media type, addon catalog, section, genre, year, language, and country.
+- Use **Unique** to combine matching catalog results while removing duplicates. Discover opens with Unique enabled by default.
+- Search while filtering. Search checks titles across addon catalogs, supports title-only matching, and loads additional pages as you scroll.
+- Use the separate search view to search available catalogs and browse results by media type.
 
-A Stremio-compatible native media client built specifically for GNU/Linux using **Python 3**, **GTK4**, and **Libadwaita**.
+### Library and addons
 
-use STABLE 1.2 (nvida+wayland+gnome blanks video player)
-### 🛠 Installation & Usage
-Open this flatpak with Gnome Software: [io.github.fastrizwaan.PopcornBox.flatpak](https://github.com/fastrizwaan/popcorn-box/releases/download/1.2/io.github.fastrizwaan.PopcornBox.flatpak)
+- Keep Favorites, History, Watched, and Continue Watching lists, with progress saved for playback.
+- Search and filter local library lists by media type.
+- Browse Community, Official, and Stremio-Addons.net directories to find compatible addons; install by manifest URL and import or export addon configurations.
+- Optionally sync supported library, playback progress, and addon data with a connected Stremio or Nuvio account.
+- Manage downloads and resume saved playback sessions.
 
-### Method 1: Install Flatpak via CLI (Recommended)
+### Playback
 
-```bash
-flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-flatpak --user install flathub org.gnome.Platform//50
-wget -c https://github.com/fastrizwaan/popcorn-box/releases/download/1.2/io.github.fastrizwaan.PopcornBox.flatpak
-flatpak install --user io.github.fastrizwaan.PopcornBox.flatpak
-```
+- Play streams from addons, torrent-backed streams, local video files, folders, URLs, and playlists.
+- Use the integrated MPV-based player with hardware decoding when available.
+- Select audio and subtitle tracks, load external tracks, search for subtitles, and navigate chapters.
+- Adjust playback and picture options such as volume, speed, brightness, contrast, zoom, and aspect ratio.
+- Resume playback and optionally play the next episode automatically.
+- Integrate with desktop media controls through MPRIS.
 
-Run the application:
-```bash
-flatpak run io.github.fastrizwaan.PopcornBox
-```
+## Install or build
 
-### Method 2: Build and Install via Flatpak
-##### Current github has version 2.0-beta is being worked on using Cine player as backend.
-The installation script compiles, sandboxes, and installs the application locally:
+PopcornBox is packaged as a Flatpak. To build and install the current source locally, use a Linux system with Flatpak, Flatpak Builder, and the GNOME 50 runtime/SDK available:
 
 ```bash
 git clone https://github.com/fastrizwaan/PopcornBox.git
 cd PopcornBox
-chmod +x build_bundle.sh
 ./build_bundle.sh
 ```
 
-#### Create flatpak-bundle (.flatpak file)
+Then launch it with:
+
+```bash
+flatpak run io.github.fastrizwaan.PopcornBox
 ```
-flatpak build-bundle ~/.local/share/flatpak/repo io.github.fastrizwaan.PopcornBox.flatpak io.github.fastrizwaan.PopcornBox
+
+The build script uses the project Flatpak manifest and installs the app for your user. To build directly instead:
+
+```bash
+flatpak-builder --user --install --force-clean --disable-rofiles-fuse \
+  build-dir build-aux/flatpak/io.github.fastrizwaan.PopcornBox.json
 ```
-Licensed under the **GPL-3.0-or-later** license. See the `COPYING` file for details.
+
+## Project details
+
+- **Version:** 2.2
+- **Platform:** GNU/Linux (Flatpak)
+- **UI:** Python, GTK4, Libadwaita
+- **Playback:** MPV with libtorrent-backed streaming support
+- **License:** GPL-3.0-or-later
+
+Addon catalogs and streams are provided by the addons you choose to install. Availability and metadata can vary between providers.
+
+## Links
+
+- [Source code](https://github.com/fastrizwaan/PopcornBox)
+- [Report an issue](https://github.com/fastrizwaan/PopcornBox/issues)
