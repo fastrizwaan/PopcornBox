@@ -132,7 +132,7 @@ def _extract_active_discover_query(win) -> str:
     if callable(q_fn):
         try:
             res = q_fn()
-            if isinstance(res, str):
+            if isinstance(res, str) and res.strip():
                 return res.strip()
         except Exception:
             pass
@@ -2032,12 +2032,16 @@ class MovieDetailsPage(Gtk.Overlay):
         if details.get("runtime"):
             meta_parts.append(str(details.get("runtime")))
         g_val = details.get("genre")
+        if isinstance(g_val, (list, tuple, set)):
+            g_val = ", ".join(str(g).strip() for g in g_val if g)
+        elif g_val is not None:
+            g_val = str(g_val).strip()
         if not g_val and details.get("genres"):
             genres_list = details.get("genres")
-            if isinstance(genres_list, list):
-                g_val = ", ".join(str(g) for g in genres_list if g)
+            if isinstance(genres_list, (list, tuple, set)):
+                g_val = ", ".join(str(g).strip() for g in genres_list if g)
             else:
-                g_val = str(genres_list)
+                g_val = str(genres_list).strip()
         lang = details.get("language")
         if lang and str(lang).strip().lower() != "english":
             lang_clean = str(lang).strip()
@@ -9074,26 +9078,7 @@ class CineWindow(Adw.ApplicationWindow):
         upper = adj.get_upper()
         if page_size > 0 and (val + page_size >= upper - 800 or upper <= page_size):
             if not getattr(self, "has_more_unique", True):
-                if upper <= page_size:
-                    # Content is under-filled and already exhausted: do not loop
-                    return
-                # When user scrolls near bottom and catalogs were exhausted, try fetching further pages!
-                can_fetch_more = False
-                for cat in getattr(self, "unique_catalogs", []):
-                    cat_key = (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("media_type"))
-                    if cat_key in getattr(self, "unique_truly_empty_catalogs", set()):
-                        continue
-                    cur_p = self.unique_page_per_catalog.get(cat_key, 1)
-                    if cur_p < 25:
-                        self.unique_exhausted_catalogs.discard(cat_key)
-                        if hasattr(self, "unique_empty_streak"):
-                            self.unique_empty_streak.pop(cat_key, None)
-                        can_fetch_more = True
-                if can_fetch_more:
-                    self.has_more_unique = True
-                    self._load_next_unique_batch()
                 return
-
             self._load_next_unique_batch()
 
     def _is_unique_item(self, item):
@@ -9286,6 +9271,8 @@ class CineWindow(Adw.ApplicationWindow):
                 else ["movie", "series"] + (["anime"] if getattr(self, "anime_supported", False) else [])
             )
             for mt in types_to_search:
+                # Query each catalog independently, like SearchRepository does in
+                # NuvioDesktop. A slow addon then cannot hold up every other result.
                 avail = api.get_available_search_catalogs(mt, only_working=True)
                 for sc in avail:
                     m_url = sc.get("manifest_url")
@@ -9303,10 +9290,13 @@ class CineWindow(Adw.ApplicationWindow):
                             "addon_name": sc.get("addon_name", ""),
                             "manifest_url": m_url,
                             "catalog_id": c_id,
+                            "target_catalog_id": c_id,
                             "catalog_name": sc.get("catalog_name") or c_id,
+                            "supports_pagination": bool(sc.get("supports_pagination", False)),
                             "media_type": mt,
                             "query": active_query,
-                            "title_only": True,  # Catalogs search title only
+                            # Keep title-only and title-plus-description behavior in sync with the filter.
+                            "title_only": query_title_only,
                             "genre": selected_genre,
                             "language": selected_lang,
                             "country": selected_country,
@@ -9443,7 +9433,7 @@ class CineWindow(Adw.ApplicationWindow):
             self._unique_empty_batches = cur_empty
             self.is_fetching_unique = False
             self._set_discover_spinner_active(False)
-            if not has_more or cur_empty >= 2:
+            if not has_more:
                 self.has_more_unique = False
                 if hasattr(self, "unique_flowbox"):
                     CineWindow._update_flowbox_empty_state(self, self.unique_flowbox)
@@ -9519,13 +9509,25 @@ class CineWindow(Adw.ApplicationWindow):
             target_batch_count = 36
             collected = []
             num_catalogs = len(self.unique_catalogs)
-            consecutive_empty_passes = 0
-            max_passes = 4 if cur_genre else 3
+            pending_catalog_searches = {
+                (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("media_type"))
+                for cat in self.unique_catalogs
+                if cat.get("_source") == "catalog_search"
+                and self.unique_page_per_catalog.get(
+                    (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("media_type")), 1
+                ) == 1
+                and (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("media_type"))
+                not in self.unique_exhausted_catalogs
+            }
+            # Search every catalog through five pages before stopping the initial
+            # filtered load. Later scrolls can continue paging up to page 25.
+            search_page_passes = ((len(pending_catalog_searches) + 5) // 6) * 5
+            max_passes = max(4 if cur_genre else 3, num_catalogs + 2 if pending_catalog_searches else 0, search_page_passes + 2)
             pool = concurrent.futures.ThreadPoolExecutor(max_workers=6)
             self._unique_active_pool = pool
 
             try:
-                while len(collected) < target_batch_count and max_passes > 0:
+                while (len(collected) < target_batch_count or pending_catalog_searches) and max_passes > 0:
                     max_passes -= 1
                     if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
                         return
@@ -9536,6 +9538,21 @@ class CineWindow(Adw.ApplicationWindow):
                             break
 
                         batch_cats = []
+                        # Advance catalog search sources through their first five
+                        # pages before spending the batch on ordinary catalog pages.
+                        pending_search_cats = []
+                        for cat_key in pending_catalog_searches:
+                            cat = getattr(self, "unique_catalogs_by_key", {}).get(cat_key)
+                            if not cat or cat_key in self.unique_exhausted_catalogs:
+                                continue
+                            page = self.unique_page_per_catalog.get(cat_key, 1)
+                            pending_search_cats.append((page, cat, cat_key))
+                        pending_search_cats.sort(key=lambda entry: entry[0])
+                        for page, cat, cat_key in pending_search_cats:
+                            if len(batch_cats) >= 6:
+                                break
+                            batch_cats.append((cat, cat_key, page))
+
                         # 1. Productive catalogs first (catalogs that previously yielded matching items)
                         prod_to_remove = []
                         for cat_key in list(getattr(self, "unique_productive_catalogs", [])):
@@ -9547,12 +9564,9 @@ class CineWindow(Adw.ApplicationWindow):
                                 prod_to_remove.append(cat_key)
                                 continue
                             page = self.unique_page_per_catalog.get(cat_key, 1)
-                            if page >= 25:
-                                self.unique_exhausted_catalogs.add(cat_key)
-                                prod_to_remove.append(cat_key)
-                                continue
-                            batch_cats.append((cat, cat_key, page))
-                            if len(batch_cats) >= 4:
+                            if cat_key not in [bc_k for _bc_cat, bc_k, _bc_pg in batch_cats]:
+                                batch_cats.append((cat, cat_key, page))
+                            if len(batch_cats) >= 6:
                                 break
                         for pk in prod_to_remove:
                             if pk in getattr(self, "unique_productive_catalogs", []):
@@ -9643,13 +9657,15 @@ class CineWindow(Adw.ApplicationWindow):
                             raw_items = api.fetch_items(
                                 media_type=m_type,
                                 query=query,
-                                catalog_id=c_id,
+                                catalog_id=c_id or "top",
                                 target_manifest_url=m_url,
-                                target_catalog_id=c_id,
+                                target_catalog_id=cat_info.get("target_catalog_id", c_id),
                                 genre=cur_genre or "",
                                 page=page,
-                                limit=50,
-                                title_only=True,
+                                # Search catalogs commonly return 25 metas; use the same
+                                # page size so page 2 starts at skip=25 instead of 50.
+                                limit=25,
+                                title_only=bool(cat_info.get("title_only", False)),
                                 timeout=3.5,
                                 is_cancelled=(lambda: _is_event_set(abort_ev))
                             )
@@ -9657,8 +9673,6 @@ class CineWindow(Adw.ApplicationWindow):
                                 return None
                             items = list(raw_items) if raw_items is not None else None
                             if items:
-                                q_low = query.lower()
-                                items = [it for it in items if q_low in (it.get("title") or it.get("name") or "").lower()]
                                 if database.is_adult_content_hidden():
                                     items = [it for it in items if not api.is_adult_item(it)]
                                 for it in items:
@@ -9678,7 +9692,10 @@ class CineWindow(Adw.ApplicationWindow):
                             if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
                                 filtered = [it for it in filtered if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(cur_year)]
                             raw_count = len(raw_items) if raw_items is not None else -1
-                            debug_log(f"unique catalog search '{c_name}': '{query}' -> {len(filtered)} items (page {page})")
+                            debug_log(
+                                f"unique catalog search '{c_name}' ({m_type}): '{query}' "
+                                f"-> {len(filtered)} filtered items from {raw_count} search matches (page {page})"
+                            )
                             return (key, page, filtered, raw_count)
 
                         if cur_genre and not api.catalog_supports_genre(cat_info, cur_genre):
@@ -9802,7 +9819,9 @@ class CineWindow(Adw.ApplicationWindow):
                     pass_added = 0
                     try:
                         futures = [pool.submit(_fetch_cat, c, k, p) for c, k, p in batch_cats]
-                        for f in concurrent.futures.as_completed(futures, timeout=3.0):
+                        # Allow each paginated catalog request time to try both URL forms
+                        # before this page can be issued again.
+                        for f in concurrent.futures.as_completed(futures, timeout=15.0):
                             if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
                                 break
                             res = f.result()
@@ -9813,65 +9832,69 @@ class CineWindow(Adw.ApplicationWindow):
                             with unique_lock:
                                 if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
                                     break
+                                cat_info = self.unique_catalogs_by_key.get(cat_key, {})
+                                source = cat_info.get("_source")
+                                is_catalog_search = source == "catalog_search"
+                                if is_catalog_search and (
+                                    raw_count == -1 or raw_count == 0 or page >= 5
+                                    or not cat_info.get("supports_pagination", False)
+                                ):
+                                    pending_catalog_searches.discard(cat_key)
+
                                 if raw_count == -1:
+                                    self.unique_exhausted_catalogs.add(cat_key)
+                                    if cat_key in getattr(self, "unique_productive_catalogs", []):
+                                        self.unique_productive_catalogs.remove(cat_key)
                                     continue
-                                elif raw_count == 0:
+                                if raw_count == 0:
                                     self.unique_exhausted_catalogs.add(cat_key)
                                     self.unique_truly_empty_catalogs.add(cat_key)
                                     if cat_key in getattr(self, "unique_productive_catalogs", []):
                                         self.unique_productive_catalogs.remove(cat_key)
+                                    continue
+
+                                page_limit = 25 if is_catalog_search else 50
+                                supports_pagination = (
+                                    source in ("query_cache", "genre_cache")
+                                    or bool(cat_info.get("supports_pagination", False))
+                                    or (not is_catalog_search and raw_count >= page_limit)
+                                )
+                                self.unique_page_per_catalog[cat_key] = page + 1
+                                if not supports_pagination:
+                                    self.unique_exhausted_catalogs.add(cat_key)
+
+                                unique_new = []
+                                for item in items or []:
+                                    if database.is_adult_content_hidden() and api.is_adult_item(item):
+                                        continue
+                                    if self._is_unique_item(item):
+                                        unique_new.append(item)
+                                        collected.append(item)
+                                        pass_added += 1
+
+                                if unique_new:
+                                    self.unique_empty_streak[cat_key] = 0
+                                    if not hasattr(self, "unique_productive_catalogs"):
+                                        self.unique_productive_catalogs = []
+                                    if cat_key not in self.unique_productive_catalogs:
+                                        self.unique_productive_catalogs.append(cat_key)
+                                    GLib.idle_add(self._append_unique_slice_to_ui, unique_new, req_id)
                                 else:
-                                    if not items:
-                                        streak = getattr(self, "unique_empty_streak", {}).get(cat_key, 0) + 1
-                                        max_streak = 2 if (cur_lang or not cur_genre) else 4
-                                        max_page = 2 if cur_lang else (5 if cur_genre else 3)
-                                        if streak >= max_streak or page >= max_page:
-                                            self.unique_exhausted_catalogs.add(cat_key)
-                                            if cat_key in getattr(self, "unique_productive_catalogs", []):
-                                                self.unique_productive_catalogs.remove(cat_key)
-                                        else:
-                                            self.unique_page_per_catalog[cat_key] = page + 1
-                                    else:
-                                        # Yielded matching items!
-                                        if hasattr(self, "unique_empty_streak"):
-                                            self.unique_empty_streak[cat_key] = 0
-                                        if not hasattr(self, "unique_productive_catalogs"):
-                                            self.unique_productive_catalogs = []
-                                        if cat_key not in self.unique_productive_catalogs:
-                                            self.unique_productive_catalogs.append(cat_key)
-                                        next_page = page + 1
-                                        self.unique_page_per_catalog[cat_key] = next_page
-                                        if next_page > 25 or (cat_key and cat_key[0] is None and cat_key[1] in ("query_cache", None)) or (raw_count < 50 and len(items) < 50):
-                                            self.unique_exhausted_catalogs.add(cat_key)
-                                            if cat_key in self.unique_productive_catalogs:
-                                                self.unique_productive_catalogs.remove(cat_key)
+                                    # Providers can repeat pages or return items that
+                                    # do not pass the active filters. Allow a few pages
+                                    # to advance, then stop this source like Nuvio does.
+                                    streak = self.unique_empty_streak.get(cat_key, 0) + 1
+                                    self.unique_empty_streak[cat_key] = streak
+                                    if streak >= 3:
+                                        self.unique_exhausted_catalogs.add(cat_key)
+                                        if cat_key in getattr(self, "unique_productive_catalogs", []):
+                                            self.unique_productive_catalogs.remove(cat_key)
 
-                                        # Collect unique items and stream immediately to UI!
-                                        unique_new = []
-                                        for item in items:
-                                            if database.is_adult_content_hidden() and api.is_adult_item(item):
-                                                continue
-                                            if self._is_unique_item(item):
-                                                unique_new.append(item)
-                                                collected.append(item)
-                                                pass_added += 1
-
-                                        if unique_new:
-                                            GLib.idle_add(self._append_unique_slice_to_ui, unique_new, req_id)
-
-                            if len(collected) >= target_batch_count:
-                                break
                     except (concurrent.futures.TimeoutError, RuntimeError):
                         pass
 
-                    if pass_added == 0:
-                        consecutive_empty_passes += 1
-                        if consecutive_empty_passes >= 2:
-                            break
-                    else:
-                        consecutive_empty_passes = 0
-                        if len(collected) >= target_batch_count:
-                            break
+                    if pass_added and len(collected) >= target_batch_count and not pending_catalog_searches:
+                        break
 
                 with unique_lock:
                     has_more = len(self.unique_exhausted_catalogs) < num_catalogs
@@ -9901,16 +9924,22 @@ class CineWindow(Adw.ApplicationWindow):
                                 return False
                             if not getattr(self, "has_more_unique", True) or getattr(self, "is_fetching_unique", False):
                                 return False
-                            auto_fill_count = getattr(self, "_unique_auto_fill_count", 0)
-                            if auto_fill_count >= 2:
-                                return False
                             if hasattr(self, "unique_scrolled") and self.unique_scrolled is not None:
                                 adj = self.unique_scrolled.get_vadjustment()
                                 if adj and hasattr(adj, "get_page_size"):
                                     page_size = adj.get_page_size()
                                     upper = adj.get_upper()
+                                    value = adj.get_value()
                                     if page_size > 0 and upper <= page_size:
-                                        self._unique_auto_fill_count = auto_fill_count + 1
+                                        # Fill a short viewport a couple of times without
+                                        # triggering an unbounded startup fetch.
+                                        auto_fill_count = getattr(self, "_unique_auto_fill_count", 0)
+                                        if auto_fill_count < 2:
+                                            self._unique_auto_fill_count = auto_fill_count + 1
+                                            self._load_next_unique_batch()
+                                    elif page_size > 0 and value + page_size >= upper - 800:
+                                        # Scroll signals can arrive while a batch is loading
+                                        # and be ignored. Recheck the bottom after it finishes.
                                         self._load_next_unique_batch()
                             return False
                         GLib.timeout_add(250, check_fill)
@@ -10869,6 +10898,7 @@ class CineWindow(Adw.ApplicationWindow):
                         'genres': list(cat.get('genres') or []),
                         'extra': list(cat.get('extra') or []),
                         'extraSupported': list(cat.get('extraSupported') or []),
+                        'supports_pagination': api.catalog_supports_pagination(cat),
                         'title': row_title
                     })
 
@@ -15592,7 +15622,24 @@ class CineWindow(Adw.ApplicationWindow):
                     self._refresh_discover_page()
                     return
 
-        # If in Unique view or Content view, debounce a refresh to populate matching items from local database
+        # Stop the previous Unique query immediately. Its results must not arrive
+        # during the debounce window and be mistaken for the replacement query.
+        if visible_page == "unique":
+            self.unique_request_id = getattr(self, "unique_request_id", 0) + 1
+            abort_ev = getattr(self, "_unique_abort_event", None)
+            if abort_ev:
+                abort_ev.set()
+            pool = getattr(self, "_unique_active_pool", None)
+            if pool:
+                try:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+                self._unique_active_pool = None
+            self.is_fetching_unique = False
+            self.has_more_unique = False
+
+        # Debounce DB and catalog searches while keeping the visible cards filtered immediately.
         if visible_page in ("unique", "content"):
             def _debounced_refresh():
                 self._discover_search_debounce_timer = None
@@ -15602,10 +15649,14 @@ class CineWindow(Adw.ApplicationWindow):
                 elif cur_page == "content":
                     self._refresh_content()
                 return False
-            self._discover_search_debounce_timer = GLib.timeout_add(150, _debounced_refresh)
+            self._discover_search_debounce_timer = GLib.timeout_add(500, _debounced_refresh)
 
     def _on_discover_search_activated(self, _entry):
-        # Keep Enter key focused on instant local filtering
+        # Enter runs the current query immediately instead of leaving a delayed
+        # refresh queued to run a second time.
+        if getattr(self, "_discover_search_debounce_timer", None):
+            GLib.source_remove(self._discover_search_debounce_timer)
+            self._discover_search_debounce_timer = None
         self.current_discover_search_query = self._discover_result_search_query()
         self._on_discover_results_search_changed()
         stack = getattr(self, "library_stack", None)

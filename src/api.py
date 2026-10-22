@@ -1770,6 +1770,21 @@ def does_genre_match_filter(candidate_genre, target_genre):
         return True
     return False
 
+def catalog_supports_pagination(cat):
+    """Return whether a catalog declares support for Stremio's skip extra."""
+    if not isinstance(cat, dict):
+        return False
+    for key in ("extra", "extraSupported", "extraRequired"):
+        extras = cat.get(key) or []
+        if not isinstance(extras, (list, tuple, set)):
+            continue
+        for extra in extras:
+            name = extra.get("name") if isinstance(extra, dict) else extra
+            if str(name or "").strip().lower() == "skip":
+                return True
+    return False
+
+
 def catalog_supports_genre(cat, genre):
     """
     Check if a Stremio catalog supports filtering by the specified genre.
@@ -2311,7 +2326,8 @@ def get_available_search_catalogs(c_type="movie", only_working=True):
                     "catalog_id": cat_id,
                     "catalog_name": cat_name,
                     "display_name": f"{addon_name} - {cat_name}",
-                    "media_type": c_type
+                    "media_type": c_type,
+                    "supports_pagination": catalog_supports_pagination(cat),
                 })
     return catalogs
 
@@ -2412,7 +2428,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         except RuntimeError:
             return []
         try:
-            for future in concurrent.futures.as_completed(future_to_addon, timeout=7):
+            # Allow room for the primary search URL and the alternate skip URL
+            # used by providers that encode pagination differently.
+            for future in concurrent.futures.as_completed(future_to_addon, timeout=max(7.0, timeout * 3)):
                 if is_cancelled and is_cancelled():
                     break
                 try:
@@ -2618,7 +2636,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     genre_extra = ex_dict
                 elif ex_name == "language":
                     lang_extra = ex_dict
-            if "skip" in (cat_obj.get("extraSupported") or []):
+            if catalog_supports_pagination(cat_obj):
                 server_supports_skip = True
 
             is_lang = database.is_language_genre(g_str.lower())
