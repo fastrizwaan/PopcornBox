@@ -29,7 +29,7 @@ if res_file.exists():
     except Exception:
         pass
 
-from src.window import CineWindow
+from src.window import CineWindow, DISCOVER_ROW_CARD_LIMIT
 from src import api, database
 
 
@@ -1582,7 +1582,7 @@ class TestDiscoverToolbar(unittest.TestCase):
             card_count += 1
             child = child.get_next_sibling()
 
-        self.assertEqual(card_count, 36)
+        self.assertEqual(card_count, DISCOVER_ROW_CARD_LIMIT)
 
     def test_discover_search_changed_filters_locally_without_reload(self):
         """Typing in search entry filters locally immediately via _on_discover_results_search_changed and does NOT reload catalog grid."""

@@ -201,7 +201,8 @@ class TestBlankImageRepair(unittest.TestCase):
         tile = _FakePicture("")
         with patch.object(database, "get_cached_metadata", return_value=None), \
              patch.object(api, "_get_cached_request", return_value=None), \
-             patch.object(api, "fetch_movie_details", return_value=None):
+             patch.object(api, "fetch_movie_details", return_value=None), \
+             patch("urllib.request.urlopen", side_effect=Exception("offline")):
             movie_widget.fetch_fallback_poster(
                 "tt0111161", "movie", tile, "The Shawshank Redemption")
             self.assertEqual(len(movie_widget._BLANK_TILES), 1)

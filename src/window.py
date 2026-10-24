@@ -99,6 +99,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("GObject", "2.0")
 from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject, Pango
 
+DISCOVER_ROW_CARD_LIMIT = 30
+
 def _streams_match(s1, s2):
     return api.streams_match(s1, s2)
 
@@ -7390,6 +7392,16 @@ class CineWindow(Adw.ApplicationWindow):
         except Exception as e:
             logger.debug(f"Stremio sync trigger error: {e}")
 
+    def _cancel_discover_batch_timer(self):
+        timer_id = getattr(self, "_discover_batch_timer_id", None)
+        if timer_id:
+            self._discover_batch_timer_id = None
+            try:
+                if GLib.MainContext.default().find_source_by_id(timer_id):
+                    GLib.source_remove(timer_id)
+            except Exception:
+                pass
+
     def _cancel_all_background_fetching(self):
         """Instantly terminate and cancel all in-flight background catalog/search fetching threads and pools.
         
@@ -7419,6 +7431,7 @@ class CineWindow(Adw.ApplicationWindow):
         # 3. Discover multi-row view
         self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
         self._discover_is_loading_rows = False
+        self._cancel_discover_batch_timer()
         if hasattr(self, "_discover_abort_event") and self._discover_abort_event:
             self._discover_abort_event.set()
         self._discover_abort_event = threading.Event()
@@ -11541,7 +11554,7 @@ class CineWindow(Adw.ApplicationWindow):
         debug_log("_update_continue_watching_section START")
         cw_items = database.get_continue_watching()
         visible_card_count, card_width = self._discover_row_card_metrics()
-        display_cw_items = cw_items[:max(36, visible_card_count)]
+        display_cw_items = cw_items[:max(DISCOVER_ROW_CARD_LIMIT, visible_card_count)]
         debug_log(f"_update_continue_watching_section DB returned {len(cw_items)} items (displaying {len(display_cw_items)})")
         
         self._start_background_continue_watching_refresh(cw_items)
@@ -11688,7 +11701,7 @@ class CineWindow(Adw.ApplicationWindow):
             return 15, 130
 
         usable_width = max(1, width - 48)
-        visible_count = max(1, min(36, int((usable_width + 12) // (130 + 12))))
+        visible_count = max(1, min(DISCOVER_ROW_CARD_LIMIT, int((usable_width + 12) // (130 + 12))))
         return visible_count, 130
 
     def _fit_discover_row_card(self, card):
@@ -11737,6 +11750,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._discover_is_loading_rows = False
         self._discover_auto_fill_count = 0
         self._discover_empty_batches = 0
+        self._cancel_discover_batch_timer()
         if hasattr(self, "_discover_abort_event") and self._discover_abort_event:
             self._discover_abort_event.set()
         self._discover_abort_event = threading.Event()
@@ -11794,7 +11808,18 @@ class CineWindow(Adw.ApplicationWindow):
                         c = nxt
                     
                 debug_log(f"_refresh_discover_page DONE (cache hit)")
-                self._set_discover_spinner_active(False)
+                if self._discover_next_row_index < len(self._discover_catalog_list):
+                    self._set_discover_spinner_active(True)
+                    def _resume_load():
+                        if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(getattr(self, "_discover_abort_event", None)):
+                            return False
+                        if getattr(self, "_discover_is_loading_rows", False):
+                            return False
+                        self._load_next_discover_batch(req_id, batch_size=4)
+                        return False
+                    self._discover_batch_timer_id = GLib.timeout_add(120, _resume_load)
+                else:
+                    self._set_discover_spinner_active(False)
                 return
             else:
                 self._discover_views.pop(view_key, None)
@@ -11940,6 +11965,7 @@ class CineWindow(Adw.ApplicationWindow):
             
         self._discover_is_loading_rows = True
         self._set_discover_spinner_active(True)
+        self._cancel_discover_batch_timer()
         
         target_box = getattr(self, "discover_box", None)
         # Deeper TMDb pages repeat titles the fan-out of the first page already
@@ -12031,9 +12057,11 @@ class CineWindow(Adw.ApplicationWindow):
                                 req_page = 1
                             tmdb_key = (
                                 f"tmdb-country:{req_country}:{m_type}:{req_genre or ''}:"
-                                f"{req_year or ''}:{req_sort or ''}:{req_lang or ''}:p{req_page}:row36"
+                                f"{req_year or ''}:{req_sort or ''}:{req_lang or ''}:p{req_page}:row{DISCOVER_ROW_CARD_LIMIT}"
                             )
                             items = database.get_cached_catalog(tmdb_key, max_age_hours=database.CATALOG_CACHE_HOURS)
+                            if not items:
+                                items = database.get_cached_catalog(tmdb_key.replace(f":row{DISCOVER_ROW_CARD_LIMIT}", ":row36"), max_age_hours=database.CATALOG_CACHE_HOURS)
                             total_pages = int(row_info.get("tmdb_total_pages") or 0)
                             if not items:
                                 items, page_total = tmdb_helper.fetch_country_catalog_page(
@@ -12043,7 +12071,7 @@ class CineWindow(Adw.ApplicationWindow):
                                     year=req_year,
                                     sort_mode=req_sort,
                                     language=req_lang,
-                                    limit=36,
+                                    limit=DISCOVER_ROW_CARD_LIMIT,
                                     page=req_page,
                                     exclude_ids=tmdb_seen_snapshot,
                                 )
@@ -12130,10 +12158,14 @@ class CineWindow(Adw.ApplicationWindow):
                         year_suffix = f":y{current_y}" if current_y else ""
                         lang_suffix = f":l{current_l}" if current_l else ""
                         country_suffix = f":c{current_c}" if current_c else ""
-                        cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}{country_suffix}:row36"
+                        cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}{country_suffix}:row{DISCOVER_ROW_CARD_LIMIT}"
                         cached = database.get_cached_catalog(cache_key, max_age_hours=database.CATALOG_CACHE_HOURS)
+                        if not cached:
+                            cached = database.get_cached_catalog(cache_key.replace(f":row{DISCOVER_ROW_CARD_LIMIT}", ":row36"), max_age_hours=database.CATALOG_CACHE_HOURS)
                         if not cached and fetch_genre:
-                            base_cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{year_suffix}{lang_suffix}{country_suffix}:row36", max_age_hours=database.CATALOG_CACHE_HOURS)
+                            base_cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{year_suffix}{lang_suffix}{country_suffix}:row{DISCOVER_ROW_CARD_LIMIT}", max_age_hours=database.CATALOG_CACHE_HOURS)
+                            if not base_cached:
+                                base_cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{year_suffix}{lang_suffix}{country_suffix}:row36", max_age_hours=database.CATALOG_CACHE_HOURS)
                             if base_cached:
                                 cached = api.filter_items_by_genre(base_cached, fetch_genre, media_type=m_type)
                         if _is_event_set(abort_ev):
@@ -12175,7 +12207,7 @@ class CineWindow(Adw.ApplicationWindow):
                             catalog_url=m_url,
                             genre=fetch_genre or "",
                             page=1,
-                            limit=36,
+                            limit=DISCOVER_ROW_CARD_LIMIT,
                             timeout=2.5,
                             is_cancelled=(lambda: _is_event_set(abort_ev))
                         )
@@ -12287,12 +12319,14 @@ class CineWindow(Adw.ApplicationWindow):
 
                     has_content = bool(target_box and target_box.get_first_child())
                     more_catalogs = self._discover_next_row_index < len(self._discover_catalog_list)
-                    if not more_catalogs:
-                        # Hiding only once the list is exhausted keeps the
-                        # indicator steady while lazy batches chain together.
-                        self._set_discover_spinner_active(False)
-                        self._discover_scroll_parked_rows = None
-                        self._discover_scroll_parked_upper = None
+
+                    active_l = getattr(self, "current_language", None)
+                    if not isinstance(active_l, str) or active_l in ("All Languages", _("All Languages"), "All"):
+                        active_l = None
+                    active_c = getattr(self, "current_country", None)
+                    if not isinstance(active_c, str) or active_c in ("All Countries", _("All Countries"), "All"):
+                        active_c = None
+                    limit_empty = 2 if (active_l or active_c) else 4
 
                     if added_count == 0 and more_catalogs:
                         # Nothing appeared. Before parking, hand the network source
@@ -12304,63 +12338,33 @@ class CineWindow(Adw.ApplicationWindow):
                             debug_log(f"discover lazy load continues with a TMDb page at row {self._discover_next_row_index}",
                                       f"{len(self._discover_catalog_list) - self._discover_next_row_index} catalog rows left, none answered this filter")
                             self._load_next_discover_batch(req_id, batch_size=1)
-                        else:
-                            # Still nothing to show, so the viewport did not grow and
-                            # the same bottom-edge condition stays true forever. Park
-                            # lazy loading until rows are consumed elsewhere or the
-                            # user scrolls away and back.
-                            adj = self.discover_scrolled.get_vadjustment() if hasattr(self, "discover_scrolled") else None
-                            self._discover_scroll_parked_rows = self._discover_next_row_index
-                            self._discover_scroll_parked_upper = adj.get_upper() if adj else 0
-                            debug_log(f"discover lazy load PARKED at row {self._discover_next_row_index}", f"{len(self._discover_catalog_list) - self._discover_next_row_index} catalog rows left, none answered this filter")
-                    elif added_count:
+                            return False
+
+                    # Gentle continuous background population of remaining catalog rows
+                    if not more_catalogs:
+                        self._set_discover_spinner_active(False)
                         self._discover_scroll_parked_rows = None
                         self._discover_scroll_parked_upper = None
-
-                    # Check if viewport still has unfilled room on initial display (bound to max auto-fills)
-                    if more_catalogs:
-                        def _check_deferred_fill():
+                    elif has_content or getattr(self, "_discover_empty_batches", 0) < limit_empty:
+                        def _schedule_next_batch():
+                            self._discover_batch_timer_id = None
                             if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
                                 self._set_discover_spinner_active(False)
                                 return False
-                            if not hasattr(self, "discover_scrolled"):
-                                self._set_discover_spinner_active(False)
+                            if getattr(self, "_discover_is_loading_rows", False):
                                 return False
-                            adj = self.discover_scrolled.get_vadjustment()
-                            val = adj.get_value()
-                            page_size = adj.get_page_size()
-                            upper = adj.get_upper()
-                            auto_fill_count = getattr(self, "_discover_auto_fill_count", 0)
-                            empty_batches = getattr(self, "_discover_empty_batches", 0)
-                            cur_has_content = bool(target_box and target_box.get_first_child())
-                            debug_log(f"check_fill_viewport: val={val:.1f}, page_size={page_size:.1f}, upper={upper:.1f}, auto_fills={auto_fill_count}, empty_batches={empty_batches}")
-                            cur_l_filter = getattr(self, "current_language", None)
-                            if not isinstance(cur_l_filter, str) or cur_l_filter in ("All Languages", _("All Languages"), "All"):
-                                cur_l_filter = None
-                            cur_c_filter = getattr(self, "current_country", None)
-                            if not isinstance(cur_c_filter, str) or cur_c_filter in ("All Countries", _("All Countries"), "All"):
-                                cur_c_filter = None
-                            max_auto = 3 if not cur_has_content else 1
-                            max_empty = 2 if (cur_l_filter or cur_c_filter) else (4 if not cur_has_content else 2)
-                            if page_size > 0 and upper <= page_size and auto_fill_count < max_auto and empty_batches < max_empty:
-                                self._discover_auto_fill_count = auto_fill_count + 1
-                                self._load_next_discover_batch(req_id, batch_size=4)
-                            elif not getattr(self, "_discover_is_loading_rows", False):
-                                self._set_discover_spinner_active(False)
+                            self._load_next_discover_batch(req_id, batch_size=4)
                             return False
 
-                        if added_count == 0:
-                            _check_deferred_fill()
-                        else:
-                            GLib.timeout_add(200, _check_deferred_fill)
-
-                    active_l = getattr(self, "current_language", None)
-                    if not isinstance(active_l, str) or active_l in ("All Languages", _("All Languages"), "All"):
-                        active_l = None
-                    active_c = getattr(self, "current_country", None)
-                    if not isinstance(active_c, str) or active_c in ("All Countries", _("All Countries"), "All"):
-                        active_c = None
-                    limit_empty = 2 if (active_l or active_c) else 4
+                        self._cancel_discover_batch_timer()
+                        adj = self.discover_scrolled.get_vadjustment() if hasattr(self, "discover_scrolled") else None
+                        page_size = adj.get_page_size() if adj else 0
+                        upper = adj.get_upper() if adj else 0
+                        is_screen_filled = bool(page_size > 0 and upper > page_size)
+                        batch_delay = 120 if is_screen_filled else 40
+                        self._discover_batch_timer_id = GLib.timeout_add(batch_delay, _schedule_next_batch)
+                    else:
+                        self._set_discover_spinner_active(False)
                     if not has_content and (not more_catalogs or getattr(self, "_discover_empty_batches", 0) >= limit_empty):
                         # Evict the empty view from _discover_views so it won't be cached as blank
                         v_key = self._get_discover_view_key()
@@ -12496,7 +12500,7 @@ class CineWindow(Adw.ApplicationWindow):
         sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         sec_row.add_css_class("discover-row-box")
 
-        display_items = items[:36]
+        display_items = items[:DISCOVER_ROW_CARD_LIMIT]
         if row_info.get("_source") == "tmdb_country" and target_box is not None:
             # What this view already showed; the next TMDb page is fetched
             # against a snapshot of the set taken on the main thread.
@@ -12569,6 +12573,7 @@ class CineWindow(Adw.ApplicationWindow):
         # edge away and paces the batches itself.
         if at_bottom:
             debug_log(f"_on_discover_scroll TRIGGERING NEXT BATCH: val={val:.1f}, page_size={page_size:.1f}, upper={upper:.1f}")
+            self._cancel_discover_batch_timer()
             self._load_next_discover_batch(getattr(self, "discover_request_id", 0), batch_size=4)
 
     def _queue_next_discover_tmdb_page(self, insert_at=None):
@@ -12654,8 +12659,11 @@ class CineWindow(Adw.ApplicationWindow):
                         mt = row_info.get("media_type", m_type)
                         c_id = row_info.get("catalog_id")
                         m_url = row_info.get("manifest_url")
-                        cache_key = f"discover:{m_url}:{c_id}:{mt}:row36"
-                        if database.get_cached_catalog(cache_key, max_age_hours=database.CATALOG_CACHE_HOURS) is None:
+                        cache_key = f"discover:{m_url}:{c_id}:{mt}:row{DISCOVER_ROW_CARD_LIMIT}"
+                        cached = database.get_cached_catalog(cache_key, max_age_hours=database.CATALOG_CACHE_HOURS)
+                        if not cached:
+                            cached = database.get_cached_catalog(cache_key.replace(f":row{DISCOVER_ROW_CARD_LIMIT}", ":row36"), max_age_hours=database.CATALOG_CACHE_HOURS)
+                        if cached is None:
                             all_uncached.append((mt, c_id, m_url, cache_key))
                 except Exception as e:
                     logger.debug(f"Prewarm error for {m_type}: {e}")
@@ -12668,7 +12676,7 @@ class CineWindow(Adw.ApplicationWindow):
             def _fetch_one(args):
                 mt, c_id, m_url, cache_key = args
                 try:
-                    items = api.fetch_items(media_type=mt, catalog_id=c_id, catalog_url=m_url, page=1, limit=36)
+                    items = api.fetch_items(media_type=mt, catalog_id=c_id, catalog_url=m_url, page=1, limit=DISCOVER_ROW_CARD_LIMIT)
                     if items:
                         database.save_cached_catalog(cache_key, items)
                 except Exception:
