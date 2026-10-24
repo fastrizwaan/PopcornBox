@@ -653,7 +653,7 @@ def load_remote_image(first, second=None, width=None, height=None, on_error=None
     )
 
 
-def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=130, height=195, on_meta_resolved=None, task_gen=None):
+def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=130, height=195, on_meta_resolved=None, task_gen=None, is_priority=False):
     if not item_id:
         return
     if task_gen is not None and not is_image_generation_active(task_gen):
@@ -681,7 +681,7 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                 found_year = cached_year
 
             if found_poster and poster_widget and not is_adult:
-                GLib.idle_add(load_image_into_picture, found_poster, poster_widget, width, height)
+                GLib.idle_add(load_image_into_picture, found_poster, poster_widget, width, height, None, is_priority)
             if on_meta_resolved and (found_title or found_poster or is_adult):
                 GLib.idle_add(on_meta_resolved, found_title, found_year, found_poster, is_adult)
             if (found_title and found_poster) or is_adult:
@@ -741,6 +741,43 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
         except Exception:
             pass
 
+    # THIRD FALLBACK: Title-based search across IMDb suggestions & TMDB if still no poster
+    if not found_poster and (title or found_title):
+        search_title = title or found_title
+        try:
+            from .tmdb_helper import normalize_title_variants, is_similar_title
+            from .api import _SSL_CONTEXT
+            variants = normalize_title_variants(search_title)
+            for v in variants:
+                try:
+                    clean = re.sub(r'[^a-zA-Z0-9]', '_', v).lower()
+                    clean = re.sub(r'_+', '_', clean).strip('_')
+                    if not clean:
+                        continue
+                    first_char = clean[0]
+                    imdb_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{urllib.parse.quote(clean)}.json"
+                    req = urllib.request.Request(imdb_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+                    with urllib.request.urlopen(req, timeout=2.0, context=_SSL_CONTEXT) as response:
+                        s_data = json.loads(response.read().decode('utf-8', errors='ignore'))
+                        if s_data and "d" in s_data:
+                            for item in s_data["d"]:
+                                if item.get("i") and item["i"].get("imageUrl"):
+                                    m_name = item.get("l", "")
+                                    if is_similar_title(v, m_name):
+                                        p_url = item["i"]["imageUrl"]
+                                        found_poster = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX400_.jpg', p_url)
+                                        if not found_title and item.get("l"):
+                                            found_title = item["l"]
+                                        if not found_year and item.get("y"):
+                                            found_year = str(item["y"])
+                                        break
+                    if found_poster:
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     # Save to database cache
     if found_poster or found_title or found_year or is_adult:
         try:
@@ -763,7 +800,7 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
         return
 
     if found_poster and poster_widget and not is_adult:
-        GLib.idle_add(load_image_into_picture, found_poster, poster_widget, width, height)
+        GLib.idle_add(load_image_into_picture, found_poster, poster_widget, width, height, None, is_priority)
 
     if on_meta_resolved and (found_title or found_year or found_poster or is_adult):
         GLib.idle_add(on_meta_resolved, found_title, found_year, found_poster, is_adult)

@@ -118,6 +118,48 @@ def _decode_provider_item_id(item_id):
 
     return info or None
 
+def normalize_title_variants(title):
+    """Generate title variants for resilient searching across IMDb and TMDB.
+    Handles concatenated words/camelCase ('KeTop' -> 'Ke Top'),
+    'percent' <-> '%', and digit/word boundaries.
+    """
+    if not title:
+        return []
+    title = str(title).strip()
+    variants = [title]
+    # Split camelCase and joined words like 'KeTop' -> 'Ke Top'
+    spaced = re.sub(r'([a-z])([A-Z])', r'\1 \2', title)
+    spaced = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', spaced)
+    spaced = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', spaced)
+    spaced = re.sub(r'\s+', ' ', spaced).strip()
+    if spaced not in variants:
+        variants.append(spaced)
+    for base in [title, spaced]:
+        percent_sub = re.sub(r'\bpercent\b', '%', base, flags=re.I).strip()
+        if percent_sub not in variants:
+            variants.append(percent_sub)
+        word_percent = re.sub(r'%', 'percent', base).strip()
+        if word_percent not in variants:
+            variants.append(word_percent)
+    return variants
+
+def is_similar_title(t1, t2):
+    """Check if two titles refer to the same media item, avoiding false positives."""
+    if not t1 or not t2:
+        return False
+    w1 = set(re.findall(r'\w+', str(t1).lower()))
+    w2 = set(re.findall(r'\w+', str(t2).lower()))
+    if not w1 or not w2:
+        return False
+    # Stopwords in English / Hindi / common serial markers
+    stop = {"the", "a", "an", "and", "of", "in", "to", "ke", "ka", "ki", "hai", "se", "ek", "percent"}
+    w1_sig = w1 - stop
+    w2_sig = w2 - stop
+    if not w1_sig or not w2_sig:
+        return bool(w1 & w2)
+    overlap = len(w1_sig & w2_sig)
+    return (overlap / min(len(w1_sig), len(w2_sig))) >= 0.6
+
 def _tmdb_id_to_imdb(tmdb_id, tmdb_type="movie"):
     """Map a TMDB numeric ID to an IMDb ``tt`` ID."""
     if not tmdb_id:
@@ -155,6 +197,8 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
     if not imdb_id and not title:
         return None
 
+    orig_id = str(imdb_id).strip() if imdb_id else None
+
     if imdb_id:
         str_id = str(imdb_id).strip()
         if str_id.startswith("ctmdb."):
@@ -182,13 +226,10 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
             resolved = _tmdb_id_to_imdb(custom_info["tmdb_id"], custom_info.get("tmdb_type"))
             if resolved:
                 return resolved
-        # Custom IDs never contain an IMDb id; continue with a title lookup
-        # instead of returning the unhelpful provider ID.
         title = title or custom_info.get("title")
-        imdb_id = None
 
     is_tmdb = False
-    if imdb_id:
+    if imdb_id and not custom_info:
         str_id = str(imdb_id).strip()
         if str_id.startswith("bolly:") or str_id.startswith("hub:"):
             is_tmdb = True
@@ -205,7 +246,7 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
     
     # 1. Try official TMDB API (only for genuine TMDB IDs)
-    if is_tmdb:
+    if is_tmdb and imdb_id:
         try:
             tmdb_api_key = get_tmdb_api_key()
             if tmdb_api_key:
@@ -216,7 +257,7 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
                 tmdb_data = _get_cached_request(tmdb_url, max_age_hours=METADATA_CACHE_HOURS)
                 if tmdb_data and "external_ids" in tmdb_data:
                     resolved_id = tmdb_data["external_ids"].get("imdb_id")
-        except Exception as e:
+        except Exception:
             pass
             
         # 2. Try the public Stremio TMDB addon
@@ -230,24 +271,75 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
             except Exception:
                 pass
 
-    # 3. Fallback to Cinemeta Search by title (safe substring matching)
+    # 3. Fallback: Search by title across Cinemeta, IMDb suggestions, and TMDB
     if not resolved_id and title and title != "Loading...":
-        try:
-            search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(title)}.json"
-            search_data = _get_cached_request(search_url, max_age_hours=METADATA_CACHE_HOURS)
-            if search_data and "metas" in search_data:
-                for m in search_data["metas"]:
-                    m_id = m.get("imdb_id") or m.get("id", "")
-                    m_name = str(m.get("name", "")).lower()
-                    t_lower = str(title).lower()
-                    # Safe check: title contains or is contained in the match, and id is IMDB
-                    if str(m_id).startswith("tt") and (m_name in t_lower or t_lower in m_name):
-                        resolved_id = m_id
+        variants = normalize_title_variants(title)
+
+        # 3a. Cinemeta search
+        for v in variants:
+            try:
+                search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(v)}.json"
+                search_data = _get_cached_request(search_url, max_age_hours=METADATA_CACHE_HOURS, timeout=2.0)
+                if search_data and "metas" in search_data:
+                    for m in search_data["metas"]:
+                        m_id = m.get("imdb_id") or m.get("id", "")
+                        m_name = m.get("name", "")
+                        if str(m_id).startswith("tt") and is_similar_title(v, m_name):
+                            resolved_id = m_id
+                            break
+                if resolved_id:
+                    break
+            except Exception:
+                pass
+
+        # 3b. IMDb suggestion API
+        if not resolved_id:
+            for v in variants:
+                try:
+                    clean = re.sub(r'[^a-zA-Z0-9]', '_', v).lower()
+                    clean = re.sub(r'_+', '_', clean).strip('_')
+                    if not clean:
+                        continue
+                    first_char = clean[0]
+                    imdb_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{urllib.parse.quote(clean)}.json"
+                    req = urllib.request.Request(imdb_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+                    with urllib.request.urlopen(req, timeout=2.5) as response:
+                        s_data = json.loads(response.read().decode('utf-8', errors='ignore'))
+                        if s_data and "d" in s_data:
+                            for item in s_data["d"]:
+                                m_id = item.get("id", "")
+                                m_name = item.get("l", "")
+                                if str(m_id).startswith("tt") and is_similar_title(v, m_name):
+                                    resolved_id = m_id
+                                    break
+                    if resolved_id:
                         break
-        except Exception:
-            pass
+                except Exception:
+                    pass
+
+        # 3c. TMDB search
+        if not resolved_id:
+            api_key = get_tmdb_api_key()
+            if api_key:
+                tmdb_media_type = "tv" if c_type == "series" else "movie"
+                for v in variants:
+                    try:
+                        tmdb_search_url = f"https://api.themoviedb.org/3/search/{tmdb_media_type}?api_key={api_key}&query={urllib.parse.quote(v)}"
+                        t_data = _get_cached_request(tmdb_search_url, max_age_hours=METADATA_CACHE_HOURS, timeout=2.5)
+                        if t_data and t_data.get("results"):
+                            for res0 in t_data["results"]:
+                                r_name = res0.get("name") or res0.get("title") or ""
+                                if is_similar_title(v, r_name):
+                                    t_id = res0.get("id")
+                                    if t_id:
+                                        resolved_id = _tmdb_id_to_imdb(str(t_id), tmdb_media_type) or f"tmdb:{t_id}"
+                                        break
+                        if resolved_id:
+                            break
+                    except Exception:
+                        pass
             
-    return resolved_id or imdb_id
+    return resolved_id or orig_id
 
 def resolve_all_provider_ids(item_id, media_type="movie", title=None):
     """
@@ -443,6 +535,15 @@ def resolve_to_tmdb_id(item_id, media_type="movie", title=None):
     if str_id.isdigit():
         return str_id
 
+    custom_info = _decode_provider_item_id(item_id)
+    if custom_info:
+        if custom_info.get("tmdb_id"):
+            return str(custom_info["tmdb_id"])
+        if not title and custom_info.get("title"):
+            title = custom_info["title"]
+        if custom_info.get("media_type"):
+            media_type = custom_info["media_type"]
+
     api_key = get_tmdb_api_key()
     c_type = "tv" if media_type in ["series", "anime", "tv", "tvshow"] else "movie"
 
@@ -471,15 +572,25 @@ def resolve_to_tmdb_id(item_id, media_type="movie", title=None):
         except Exception:
             pass
 
-    # Search by title as fallback
+    # Search by title as fallback with title variants
     if title and title != "Loading..." and api_key:
-        try:
-            search_url = f"https://api.themoviedb.org/3/search/{c_type}?api_key={api_key}&query={urllib.parse.quote(title)}"
-            data = _get_cached_request(search_url, max_age_hours=METADATA_CACHE_HOURS)
-            if data and data.get("results"):
-                return str(data["results"][0]["id"])
-        except Exception:
-            pass
+        variants = normalize_title_variants(title)
+        for v in variants:
+            try:
+                search_url = f"https://api.themoviedb.org/3/search/{c_type}?api_key={api_key}&query={urllib.parse.quote(v)}"
+                data = _get_cached_request(search_url, max_age_hours=METADATA_CACHE_HOURS, timeout=2.5)
+                if data and data.get("results"):
+                    for res0 in data["results"]:
+                        r_name = res0.get("name") or res0.get("title") or ""
+                        if is_similar_title(v, r_name):
+                            return str(res0["id"])
+                    # If no similar title matched among results, accept first result if it starts with the variant
+                    res0 = data["results"][0]
+                    r_name = (res0.get("name") or res0.get("title") or "").lower()
+                    if v.lower() in r_name or r_name in v.lower():
+                        return str(res0["id"])
+            except Exception:
+                pass
 
     return None
 

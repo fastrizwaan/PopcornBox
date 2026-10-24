@@ -4041,34 +4041,54 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
     else:
         current_poster = res.get("medium_cover_image", "")
         if not current_poster and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
+            effective_title = title or res.get("title") or res.get("name")
             # Run fallback poster fetchers in parallel with short timeout
             def _fetch_tmdb_poster():
                 try:
-                    c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
-                    tmdb_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
-                    tmdb_data = _get_cached_request(tmdb_url, max_age_hours=METADATA_CACHE_HOURS, timeout=2.5)
-                    if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
-                        return tmdb_data["meta"]["poster"], tmdb_data["meta"].get("background")
+                    c_type = "tv" if media_type in ["series", "anime", "tv"] else "movie"
+                    from .tmdb_helper import resolve_to_tmdb_id, get_tmdb_api_key
+                    t_id = resolve_to_tmdb_id(imdb_id, media_type=media_type, title=effective_title)
+                    if t_id:
+                        api_key = get_tmdb_api_key()
+                        if api_key:
+                            url = f"https://api.themoviedb.org/3/{c_type}/{t_id}?api_key={api_key}"
+                            t_data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS, timeout=2.5)
+                            if t_data and t_data.get("poster_path"):
+                                p_url = f"https://image.tmdb.org/t/p/w500{t_data['poster_path']}"
+                                b_url = f"https://image.tmdb.org/t/p/w1280{t_data['backdrop_path']}" if t_data.get("backdrop_path") else None
+                                return p_url, b_url
+                        tmdb_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/tmdb:{t_id}.json"
+                        tmdb_data = _get_cached_request(tmdb_url, max_age_hours=METADATA_CACHE_HOURS, timeout=2.5)
+                        if tmdb_data and "meta" in tmdb_data and tmdb_data["meta"].get("poster"):
+                            return tmdb_data["meta"]["poster"], tmdb_data["meta"].get("background")
                 except Exception:
                     pass
                 return None, None
 
             def _fetch_imdb_poster():
-                if not title:
+                if not effective_title:
                     return None, None
                 try:
-                    clean_title = re.sub(r'[^a-zA-Z0-9]', '_', title).lower()
-                    first_char = clean_title[0] if clean_title else "t"
-                    imdb_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{urllib.parse.quote(clean_title)}.json"
-                    req = urllib.request.Request(imdb_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
-                    with urllib.request.urlopen(req, timeout=2.5, context=_SSL_CONTEXT) as response:
-                        data = json.loads(response.read().decode('utf-8', errors='ignore'))
-                        if data and "d" in data:
-                            for item in data["d"]:
-                                if "i" in item and "imageUrl" in item["i"]:
-                                    p_url = item["i"]["imageUrl"]
-                                    p_url = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX400_.jpg', p_url)
-                                    return p_url, p_url
+                    from .tmdb_helper import normalize_title_variants, is_similar_title
+                    variants = normalize_title_variants(effective_title)
+                    for v in variants:
+                        clean_title = re.sub(r'[^a-zA-Z0-9]', '_', v).lower()
+                        clean_title = re.sub(r'_+', '_', clean_title).strip('_')
+                        if not clean_title:
+                            continue
+                        first_char = clean_title[0]
+                        imdb_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{urllib.parse.quote(clean_title)}.json"
+                        req = urllib.request.Request(imdb_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+                        with urllib.request.urlopen(req, timeout=2.5, context=_SSL_CONTEXT) as response:
+                            data = json.loads(response.read().decode('utf-8', errors='ignore'))
+                            if data and "d" in data:
+                                for item in data["d"]:
+                                    if "i" in item and "imageUrl" in item["i"]:
+                                        m_name = item.get("l", "")
+                                        if is_similar_title(v, m_name):
+                                            p_url = item["i"]["imageUrl"]
+                                            p_url = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX400_.jpg', p_url)
+                                            return p_url, p_url
                 except urllib.error.HTTPError as e:
                     try:
                         e.close()
@@ -4217,10 +4237,21 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
     elif media_type not in ["movie", "series", "anime", "tv", "channel", "tvchannel", "music", "radio", "collections"]:
         media_type = "movie"
 
+    orig_item_id = str(imdb_id or "").strip()
+    is_custom_provider = any(orig_item_id.startswith(p) for p in ["dsx:", "bpx-", "bolly:", "hub:", "tpb_ctl:"])
+
     # Resolve TMDB ids to IMDB format if needed
-    imdb_id = resolve_to_imdb_id(imdb_id, media_type, title)
+    resolved_imdb = resolve_to_imdb_id(imdb_id, media_type, title)
+    if is_custom_provider:
+        canonical_id = str(resolved_imdb) if resolved_imdb and (str(resolved_imdb).startswith("tt") or str(resolved_imdb).startswith("tmdb:")) and str(resolved_imdb) != orig_item_id else None
+        imdb_id = orig_item_id
+    else:
+        imdb_id = resolved_imdb
+        canonical_id = None
 
     cached = database.get_cached_metadata(imdb_id) if imdb_id else None
+    if not cached and canonical_id:
+        cached = database.get_cached_metadata(canonical_id)
     if use_cache and cached and is_valid_meta(cached):
         desc = cached.get("description") or cached.get("overview")
         has_real_desc = bool(desc) and desc not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD")
@@ -4265,7 +4296,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
     c_type = "series" if media_type in ["series", "anime"] else ("tv" if media_type in ["tv", "channel", "tvchannel"] else ("music" if media_type in ["music", "radio"] else "movie"))
 
-    def fetch_addon_meta(addon_orig, req_type=None, use_cache=True):
+    def fetch_addon_meta(addon_orig, req_type=None, use_cache=True, query_id=None):
         addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
         target_m_type = req_type or c_type
         if not addon.get("enabled", True): return None
@@ -4291,7 +4322,8 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 pass
                 
         matched_type = target_m_type
-        if str(imdb_id).startswith("ctmdb."):
+        target_id = query_id or imdb_id
+        if str(target_id).startswith("ctmdb."):
             matched_type = "movie"
         elif addon_types is not None:
             type_match = next((t for t in addon_types if is_type_match(t, target_m_type)), None)
@@ -4299,12 +4331,18 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 matched_type = type_match
             else:
                 has_cat_match = any(is_type_match(cat.get("type"), target_m_type) for cat in addon.get("catalogs", []))
-                has_prefix_match = addon_prefixes and any(str(imdb_id).startswith(p) for p in addon_prefixes)
+                has_prefix_match = addon_prefixes and any(str(target_id).startswith(p) for p in addon_prefixes)
                 if not (has_cat_match or has_prefix_match):
                     return None
             
-        if addon_prefixes is not None:
-            if not any(str(imdb_id).startswith(p) for p in addon_prefixes):
+        if addon_prefixes is not None and not query_id:
+            if not any(str(target_id).startswith(p) for p in addon_prefixes):
+                if canonical_id and any(str(canonical_id).startswith(p) for p in addon_prefixes):
+                    target_id = canonical_id
+                else:
+                    return None
+        elif addon_prefixes is not None and query_id:
+            if not any(str(target_id).startswith(p) for p in addon_prefixes):
                 return None
                 
         if resources is not None:
@@ -4320,7 +4358,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         base_url = m_url.rsplit("manifest.json", 1)[0] if "manifest.json" in m_url else m_url
         if not base_url.endswith("/"): base_url += "/"
         
-        meta_url = f"{base_url}meta/{matched_type}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
+        meta_url = f"{base_url}meta/{matched_type}/{urllib.parse.quote(str(target_id), safe=':')}.json"
         meta_hours = METADATA_CACHE_HOURS if use_cache else 0
         data = _get_cached_request(meta_url, max_age_hours=meta_hours)
         if not data and "v3-cinemeta.strem.io" in meta_url:
@@ -4331,13 +4369,13 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             cm = data["meta"]
             t_val = cm.get("name", "") or title or ""
             if not t_val and cm.get("videos"):
-                t_val = str(imdb_id)
+                t_val = str(target_id)
             if not t_val or "error getting meta" in t_val.lower() or t_val.lower().startswith("error"):
                 return None
 
             is_channel_meta = (
                 matched_type in ["channel", "channels"]
-                or str(imdb_id).startswith("yt_id:")
+                or str(target_id).startswith("yt_id:")
                 or not any(v.get("episode") is not None or v.get("number") is not None for v in cm.get("videos", []))
             )
             videos = []
@@ -4360,7 +4398,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                     "thumbnail": v.get("thumbnail") or v.get("thumbnailHigh") or v.get("thumbnailMax", "")
                 })
             
-            true_id = cm.get("imdb_id") or imdb_id
+            true_id = cm.get("imdb_id") or target_id
             if str(true_id).startswith("tmdb:") and not str(true_id).startswith("ctmdb.") and not cm.get("videos"):
                 m_title = cm.get("name")
                 if m_title:
@@ -4399,7 +4437,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 "videos": videos,
                 "cast": cm.get("cast", []),
                 "genres": cm.get("genres", []),
-                "type": "collections" if str(imdb_id).startswith("ctmdb.") else (cm.get("type") or matched_type),
+                "type": "collections" if str(target_id).startswith("ctmdb.") else (cm.get("type") or matched_type),
                 "adult": cm.get("adult") or cm.get("isAdult") or False
             }
             if database.is_adult_content_hidden() and is_adult_item(res_dict):
@@ -4413,18 +4451,19 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
     cinemeta_addon = next((a for a in addons if a.get("id") == "cinemeta" or "cinemeta" in a.get("manifest_url", "").lower()), None)
     
     cinemeta_res = None
-    if cinemeta_addon:
-        cinemeta_res = fetch_addon_meta(cinemeta_addon, c_type, use_cache=use_cache)
-        if (not cinemeta_res or not is_valid_meta(cinemeta_res)) and str(imdb_id).startswith("tt"):
+    cinemeta_query_id = canonical_id or (imdb_id if str(imdb_id).startswith("tt") else None)
+    if cinemeta_addon and cinemeta_query_id:
+        cinemeta_res = fetch_addon_meta(cinemeta_addon, c_type, use_cache=use_cache, query_id=cinemeta_query_id)
+        if (not cinemeta_res or not is_valid_meta(cinemeta_res)) and str(cinemeta_query_id).startswith("tt"):
             alt_type = "movie" if c_type in ["series", "anime", "tv"] else "series"
-            alt_res = fetch_addon_meta(cinemeta_addon, alt_type, use_cache=use_cache)
+            alt_res = fetch_addon_meta(cinemeta_addon, alt_type, use_cache=use_cache, query_id=cinemeta_query_id)
             if alt_res and is_valid_meta(alt_res):
                 cinemeta_res = alt_res
                 media_type = alt_type
 
     # Determine if cinemeta_res has complete metadata
     is_cinemeta_complete = False
-    if cinemeta_res and is_valid_meta(cinemeta_res):
+    if cinemeta_res and is_valid_meta(cinemeta_res) and not is_custom_provider:
         has_desc = bool(cinemeta_res.get("description")) and cinemeta_res.get("description") not in (
             "No synopsis available.", "Synopsis temporarily unavailable.", "HD"
         )
@@ -4438,7 +4477,10 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
 
     # If Cinemeta failed or was incomplete, fallback to / enrich from other metadata-supporting addons
-    other_addons = [a for a in addons if a != cinemeta_addon and has_meta_resource(a, media_type=c_type, item_id=imdb_id)]
+    if is_custom_provider:
+        other_addons = [a for a in addons if a != cinemeta_addon and has_meta_resource(a, media_type=c_type, item_id=orig_item_id)]
+    else:
+        other_addons = [a for a in addons if a != cinemeta_addon and has_meta_resource(a, media_type=c_type, item_id=imdb_id)]
     if other_addons:
         def _addon_meta_priority(a):
             score = 0
@@ -4446,6 +4488,8 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             m_url = a.get("manifest_url", "").lower()
             a_id = a.get("id", "").lower()
             if any(str(imdb_id).startswith(p) for p in prefixes):
+                score += 30
+            elif canonical_id and any(str(canonical_id).startswith(p) for p in prefixes):
                 score += 20
             if "bpx-" in str(imdb_id) and "banglaplex" in m_url:
                 score += 50
@@ -4500,9 +4544,15 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
         if best_addon_res:
             final_res = merge_metadata(best_addon_res, cinemeta_res) if cinemeta_res else best_addon_res
+            final_res["id"] = orig_item_id
+            if canonical_id and not final_res.get("imdb_id"):
+                final_res["imdb_id"] = canonical_id
             return _save_and_return_meta(final_res, imdb_id, media_type, title, poster=poster)
 
     if cinemeta_res:
+        cinemeta_res["id"] = orig_item_id
+        if canonical_id and not cinemeta_res.get("imdb_id"):
+            cinemeta_res["imdb_id"] = canonical_id
         return _save_and_return_meta(cinemeta_res, imdb_id, media_type, title, poster=poster)
 
     if str(imdb_id).startswith("ctmdb.") or media_type == "collections":
@@ -4516,8 +4566,11 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
     # Robust TMDB fallback before returning generic unavailable placeholder
     try:
-        tmdb_res = fetch_tmdb_standalone_metadata(imdb_id, media_type=c_type, title=title, poster=poster)
+        tmdb_res = fetch_tmdb_standalone_metadata(canonical_id or imdb_id, media_type=c_type, title=title, poster=poster)
         if tmdb_res and is_valid_meta(tmdb_res):
+            tmdb_res["id"] = orig_item_id
+            if canonical_id and not tmdb_res.get("imdb_id"):
+                tmdb_res["imdb_id"] = canonical_id
             return _save_and_return_meta(tmdb_res, imdb_id, media_type, title, poster=poster)
     except Exception:
         pass

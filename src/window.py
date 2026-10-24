@@ -1986,8 +1986,12 @@ class MovieDetailsPage(Gtk.Overlay):
                 def on_poster_error():
                     print(f"[CARD CLICK Step 8c ERROR] Poster load failed for '{cover}'. Triggering fetch_fallback_poster.")
                     from .movie_widget import fetch_fallback_poster
-                    fetch_fallback_poster(details.get("id") or self.movie_stub.get("id"), self.media_type, self.poster, details.get("title") or self.movie_stub.get("title"))
+                    fetch_fallback_poster(details.get("id") or self.movie_stub.get("id"), self.media_type, self.poster, details.get("title") or self.movie_stub.get("title"), width=360, height=540, is_priority=True)
                 load_image_into_picture(cover, self.poster, width=360, height=540, on_error=on_poster_error, is_priority=True)
+        else:
+            print(f"[CARD CLICK Step 8c] Cover is empty. Triggering fetch_fallback_poster.")
+            from .movie_widget import fetch_fallback_poster
+            fetch_fallback_poster(details.get("id") or self.movie_stub.get("id"), self.media_type, self.poster, details.get("title") or self.movie_stub.get("title"), width=360, height=540, is_priority=True)
             
         self.title_label.set_text(details.get("title", ""))
 
