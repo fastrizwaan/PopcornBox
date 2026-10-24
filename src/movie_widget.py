@@ -4,6 +4,7 @@ gi.require_version("Pango", "1.0")
 from gi.repository import Gtk, GObject, GLib, Gdk, GdkPixbuf, Gio, Pango
 import urllib.request
 import urllib.error
+import urllib.parse
 import os
 import time
 import weakref
@@ -106,6 +107,79 @@ def _cancel_blank_tile_repairs():
         _BLANK_TILES.clear()
         _BLANK_TILE_TICK_ARMED = False
 
+def _requeue_blank_tile(entry):
+    """Put a tile back for a later tick without charging it an attempt."""
+    tile = entry["pic"]()
+    with _BLANK_TILES_LOCK:
+        if tile is None or len(_BLANK_TILES) >= _MAX_BLANK_TILES:
+            return
+        if any(existing["pic"]() is tile for existing in _BLANK_TILES):
+            return
+        _BLANK_TILES.append(entry)
+
+# A card that is not on the screen costs no download. While another page has the
+# screen - movie details, the player, another tab - its tiles' requests are parked
+# here instead of occupying the two image permits of their host, and the watch
+# below re-issues them the moment the tile becomes visible again. That is the
+# pause/resume the navigation needs, per tile, so no page switch can strand a
+# card: an aborted or parked picture is finished when the user comes back.
+def _tile_is_on_screen(picture_widget):
+    """True unless this tile is attached to a window whose page is off screen.
+
+    A widget still being built has no root yet, and is treated as visible: the
+    grid it belongs to is on its way to the screen. Only an attached tile that is
+    hidden - another tab, movie details, the player - is parked.
+    """
+    try:
+        if picture_widget.get_root() is None:
+            return True
+        return bool(picture_widget.get_mapped())
+    except Exception:
+        return True
+
+def _watch_tile_for_visibility(picture_widget, url, width, height, crop):
+    picture_widget._popcornbox_pending_image = (url, width, height, crop)
+    if getattr(picture_widget, "_popcornbox_visibility_watched", False):
+        return
+    try:
+        # A hidden page's children get `map` when it is shown again. GTK4 does not
+        # emit notify::mapped for that switch, so this is the signal to listen to.
+        picture_widget.connect("map", _on_tile_back_on_screen)
+        picture_widget._popcornbox_visibility_watched = True
+    except Exception:
+        pass
+
+def _on_tile_back_on_screen(picture_widget, *_args):
+    """Come back for the picture this tile still owes, once the page is drawn.
+
+    Showing a page maps every card on it at once, so the re-issue waits for an
+    idle turn rather than running a cache stat and a submit per tile inside the
+    map cascade.
+    """
+    try:
+        GLib.idle_add(_reissue_parked_tile, picture_widget)
+    except Exception:
+        pass
+
+def _reissue_parked_tile(picture_widget):
+    try:
+        if not _tile_is_on_screen(picture_widget):
+            return False
+        pending = getattr(picture_widget, "_popcornbox_pending_image", None)
+        if not pending:
+            return False
+        url, width, height, crop = pending
+        if url and getattr(picture_widget, "_popcornbox_image_url", None) != url:
+            return False
+        if picture_widget.get_paintable() is not None:
+            return False
+        # A fresh visit gets a fresh bounded budget from the repair queue.
+        picture_widget._popcornbox_blank_attempts = 0
+        load_image_into_picture(url, picture_widget, width=width, height=height, crop=crop)
+    except Exception:
+        pass
+    return False
+
 def _note_blank_tile(picture_widget, url, width, height, crop, unresolved=None):
     """Queue one more polite attempt at a tile that is still showing nothing.
 
@@ -122,9 +196,12 @@ def _note_blank_tile(picture_widget, url, width, height, crop, unresolved=None):
     attempts = getattr(picture_widget, "_popcornbox_blank_attempts", 0)
     if not isinstance(attempts, int):
         attempts = 0
-    attempts += 1
-    if attempts > _BLANK_TILE_MAX_TRIES:
-        return
+    if _tile_is_on_screen(picture_widget):
+        # Only a tile the user can see spends one of its tries; a tile parked
+        # because another page has the screen is finished later for free.
+        attempts += 1
+        if attempts > _BLANK_TILE_MAX_TRIES:
+            return
     picture_widget._popcornbox_blank_attempts = attempts
     if unresolved:
         # The tick only re-asks a tile that still carries this card's stamp, so
@@ -171,6 +248,11 @@ def _blank_tile_repair_tick():
             if picture.get_paintable() is not None:
                 continue
         except Exception:
+            continue
+        if not _tile_is_on_screen(picture):
+            # Another page has the screen: hold the entry, charge nothing, and
+            # keep the image permits free for the page the user is looking at.
+            _requeue_blank_tile(entry)
             continue
         unresolved = entry.get("unresolved")
         if unresolved is not None:
@@ -259,6 +341,13 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
         url = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX400_.jpg', url)
     
     setattr(picture_widget, "_popcornbox_image_url", url)
+
+    if not is_priority:
+        # Remember what this tile owes and finish it when it is next on screen;
+        # while its page is hidden, no download and no decode is spent on it.
+        _watch_tile_for_visibility(picture_widget, url, width, height, crop)
+        if not _tile_is_on_screen(picture_widget):
+            return
 
     # 1. Fast in-memory pixbuf cache check
     mem_key = (url, width, height, crop)
@@ -385,6 +474,44 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                                 else:
                                     import time
                                     time.sleep(0.3)
+                            except (urllib.error.URLError, TimeoutError, OSError) as url_err:
+                                # Some image hosts occasionally close the TLS
+                                # handshake early. Treat that like a transient
+                                # connection failure and retry once instead of
+                                # failing the whole thumbnail immediately.
+                                if attempt == 1:
+                                    # Final attempt failed -- try DoH bypass
+                                    # in case the ISP is poisoning DNS for
+                                    # this host (returns an IP that tears down
+                                    # the TLS handshake immediately).
+                                    try:
+                                        from .api import _is_dns_poisoned, _doh_fetch
+                                        parsed_host = urllib.parse.urlparse(url).hostname
+                                        if parsed_host and _is_dns_poisoned(parsed_host):
+                                            doh_data = _doh_fetch(url, timeout=5.0)
+                                            if doh_data:
+                                                data = doh_data
+                                                temp_file = f"{cache_file}.{os.getpid()}.{threading.get_ident()}.tmp"
+                                                try:
+                                                    with open(temp_file, 'wb') as f:
+                                                        f.write(data)
+                                                    os.replace(temp_file, cache_file)
+                                                except Exception:
+                                                    try:
+                                                        if os.path.exists(temp_file):
+                                                            os.remove(temp_file)
+                                                    except Exception:
+                                                        pass
+                                                _mark_image_success(url)
+                                                break
+                                    except Exception:
+                                        pass
+                                    if not data:
+                                        _mark_image_failed(url)
+                                        raise url_err
+                                else:
+                                    import time
+                                    time.sleep(0.3)
                     finally:
                         with _IMAGE_INFLIGHT_LOCK:
                             if _IMAGE_INFLIGHT.get(url) is inflight:
@@ -499,6 +626,9 @@ def _apply_pixbuf(picture_widget, pixbuf, requested_url=None):
         picture_widget.set_can_shrink(True)
         texture = Gdk.Texture.new_for_pixbuf(pixbuf)
         picture_widget.set_paintable(texture)
+        # Painted: this tile no longer owes a picture, so the visibility watch
+        # has nothing to re-issue when the page is shown again.
+        picture_widget._popcornbox_pending_image = None
     except Exception as e:
         print(f"[IMAGE APPLY ERROR] Failed to paint texture: {e}")
     return False

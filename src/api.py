@@ -31,6 +31,226 @@ def _create_ssl_context():
 _SSL_CONTEXT = _create_ssl_context()
 
 
+# ---------------------------------------------------------------------------
+# DNS-over-HTTPS (DoH) bypass for ISP-poisoned domains
+# ---------------------------------------------------------------------------
+# Some ISPs (notably in India) poison DNS responses so that blocked domains
+# resolve to an interception IP.  That IP either returns an HTTP block page
+# or, for HTTPS, immediately tears down the TLS handshake, producing an
+# ``SSL: UNEXPECTED_EOF_WHILE_READING`` error.  The actual server (often
+# behind Cloudflare) is perfectly reachable when we connect to the real IP
+# with the correct SNI.
+#
+# The helpers below resolve hostnames via Google's DoH JSON endpoint and,
+# when the result differs from what the system resolver returns, fetch the
+# resource by connecting directly to the DoH-resolved IP.
+# ---------------------------------------------------------------------------
+
+import http.client as _http_client
+
+# hostname -> (real_ips_tuple, monotonic_timestamp)
+_DOH_CACHE = {}
+_DOH_CACHE_LOCK = threading.Lock()
+_DOH_CACHE_TTL = 600  # 10 minutes
+
+# Hosts where DoH resolution already returned the same IP as the system
+# resolver, i.e. DNS is not poisoned for that host.  No point retrying DoH
+# for these -- they fail for a genuine server reason.
+_DOH_NOT_POISONED = set()
+_DOH_NOT_POISONED_LOCK = threading.Lock()
+
+
+def _doh_resolve(hostname):
+    """Resolve *hostname* via Google DNS-over-HTTPS, returning a list of IPs.
+
+    Returns an empty list on any failure so callers can fall through.  Results
+    are cached for ``_DOH_CACHE_TTL`` seconds.
+    """
+    now = time.monotonic()
+    with _DOH_CACHE_LOCK:
+        entry = _DOH_CACHE.get(hostname)
+        if entry and now - entry[1] < _DOH_CACHE_TTL:
+            return list(entry[0])
+    try:
+        doh_url = f"https://dns.google/resolve?name={urllib.parse.quote(hostname)}&type=A"
+        req = urllib.request.Request(doh_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=4, context=_SSL_CONTEXT) as resp:
+            data = json.loads(resp.read())
+        ips = [a["data"] for a in data.get("Answer", []) if a.get("type") == 1]
+        if ips:
+            with _DOH_CACHE_LOCK:
+                _DOH_CACHE[hostname] = (tuple(ips), now)
+        return ips
+    except Exception:
+        return []
+
+
+def _is_dns_poisoned(hostname):
+    """Return True if the system resolver likely gives a poisoned IP.
+
+    CDNs like Cloudflare, BunnyCDN and Akamai serve different IPs based on
+    location, so a simple "DoH IP ≠ system IP" check would false-positive on
+    almost every CDN host.  Instead, we check whether the system-resolved IP
+    actually has a working TLS stack for this hostname.  A poisoned IP will
+    fail the TLS handshake because the interception server does not have a
+    valid certificate for the hostname — or, more commonly, it simply drops
+    the connection during the handshake (the ``UNEXPECTED_EOF`` error).
+
+    A passing TLS handshake proves DNS is fine (regardless of whether the IP
+    matches DoH); a failing one combined with a *different* DoH answer is a
+    strong signal of poisoning.
+
+    Caches negative results so the DoH path is never attempted for hosts
+    whose DNS is clean.
+    """
+    with _DOH_NOT_POISONED_LOCK:
+        if hostname in _DOH_NOT_POISONED:
+            return False
+
+    # Quick TLS probe to the system-resolved IP.  Use a short timeout:
+    # a poisoned IP either closes the connection immediately or hangs, and
+    # a healthy server completes the handshake in well under a second.
+    try:
+        system_ip = socket.gethostbyname(hostname)
+    except Exception:
+        return False
+
+    tls_ok = False
+    try:
+        raw = socket.create_connection((system_ip, 443), timeout=2)
+        try:
+            ctx = _SSL_CONTEXT or ssl.create_default_context()
+            ssock = ctx.wrap_socket(raw, server_hostname=hostname)
+            ssock.close()
+            tls_ok = True
+        except Exception:
+            raw.close()
+    except Exception:
+        pass
+
+    if tls_ok:
+        with _DOH_NOT_POISONED_LOCK:
+            if len(_DOH_NOT_POISONED) < 2048:
+                _DOH_NOT_POISONED.add(hostname)
+        return False
+
+    # TLS handshake failed.  See whether DoH gives a different IP.
+    doh_ips = _doh_resolve(hostname)
+    if not doh_ips:
+        return False
+    return system_ip not in doh_ips
+
+
+def _doh_fetch(url, timeout=5.0):
+    """Fetch *url* by connecting directly to a DoH-resolved IP.
+
+    Returns the response body bytes, or *None* on failure.  Only useful when
+    ``_is_dns_poisoned()`` has confirmed the system DNS is lying.
+    """
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    path = parsed.path
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    if not path:
+        path = "/"
+
+    doh_ips = _doh_resolve(hostname)
+    if not doh_ips:
+        return None
+
+    for ip in doh_ips[:2]:
+        try:
+            raw = socket.create_connection((ip, port), timeout=timeout)
+            try:
+                ctx = _SSL_CONTEXT or ssl.create_default_context()
+                ssock = ctx.wrap_socket(raw, server_hostname=hostname)
+            except Exception:
+                raw.close()
+                continue
+            try:
+                request_line = (
+                    f"GET {path} HTTP/1.1\r\n"
+                    f"Host: {hostname}\r\n"
+                    f"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    f"AppleWebKit/537.36 (KHTML, like Gecko) "
+                    f"Chrome/120.0.0.0 Safari/537.36\r\n"
+                    f"Accept: */*\r\n"
+                    f"Connection: close\r\n"
+                    f"\r\n"
+                )
+                ssock.sendall(request_line.encode())
+
+                chunks = []
+                while True:
+                    chunk = ssock.recv(16384)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                data = b"".join(chunks)
+            finally:
+                ssock.close()
+
+            # Separate headers from body.
+            sep = data.find(b"\r\n\r\n")
+            if sep < 0:
+                continue
+            header_block = data[:sep].decode("utf-8", errors="replace")
+            body = data[sep + 4:]
+
+            status_line = header_block.split("\r\n", 1)[0]
+            # e.g. "HTTP/1.1 200 OK"
+            parts = status_line.split(None, 2)
+            if len(parts) < 2:
+                continue
+            status_code = int(parts[1])
+            if status_code != 200:
+                continue
+
+            # Handle chunked transfer encoding.
+            if "transfer-encoding: chunked" in header_block.lower():
+                body = _decode_chunked(body)
+                if body is None:
+                    continue
+
+            if body:
+                return body
+        except Exception:
+            continue
+    return None
+
+
+def _decode_chunked(data):
+    """Decode an HTTP chunked transfer-encoded body. Returns None on error."""
+    result = []
+    pos = 0
+    while pos < len(data):
+        # Find the chunk size line.
+        nl = data.find(b"\r\n", pos)
+        if nl < 0:
+            break
+        size_str = data[pos:nl].decode("ascii", errors="replace").strip()
+        if not size_str:
+            pos = nl + 2
+            continue
+        try:
+            chunk_size = int(size_str.split(";", 1)[0], 16)
+        except ValueError:
+            return None
+        if chunk_size == 0:
+            break
+        start = nl + 2
+        end = start + chunk_size
+        if end > len(data):
+            result.append(data[start:])
+            break
+        result.append(data[start:end])
+        pos = end + 2  # skip trailing \r\n
+    return b"".join(result) if result else None
+
+
+
 DEFAULT_TRACKERS = [
     "udp://tracker.opentrackr.org:1337/announce",
     "udp://open.stealth.si:80/announce",
@@ -748,6 +968,27 @@ def _request_addon_streams(addon, url, timeout=None, abort_event=None, retries=N
             except Exception:
                 pass
         except urllib.error.URLError as e:
+            # DoH bypass for ISP-poisoned DNS (SSL handshake torn down by
+            # the interception IP).
+            reason_str = str(getattr(e, "reason", "")).lower()
+            if host and ("unexpected_eof" in reason_str or "ssl" in reason_str):
+                try:
+                    parsed_host = urllib.parse.urlparse(url).hostname
+                    if parsed_host and _is_dns_poisoned(parsed_host):
+                        doh_body = _doh_fetch(url, timeout=timeout)
+                        if doh_body:
+                            data_str = doh_body.decode("utf-8")
+                            if data_str and data_str.strip():
+                                data = json.loads(data_str)
+                                _record_addon_success(manifest_url)
+                                raw_streams = data.get("streams", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                                clean_streams = [s for s in raw_streams if isinstance(s, dict) and not check_stream_rate_limit_warning(s)]
+                                if clean_streams:
+                                    _save_cached_stream_url(url, clean_streams)
+                                print(f"[STREAM DEBUG] DoH bypass success addon={addon_name!r} streams={len(clean_streams)}")
+                                return clean_streams
+                except Exception:
+                    pass
             print(f"[STREAM DEBUG] URL error addon={addon_name!r}: {e.reason}")
             logging.debug(f"Error fetching from addon {addon.get('name')}: {e.reason}")
             if _attempt < retries and _wait_before_provider_retry(_attempt, abort_event):
@@ -952,6 +1193,41 @@ def _get_cached_request_uncollapsed(url, max_age_hours=2, headers=None, cache_on
             except Exception:
                 pass
         except urllib.error.URLError as e:
+            # If the error is an SSL handshake failure, check whether the
+            # ISP is poisoning DNS for this host and retry via DoH.
+            reason_str = str(getattr(e, "reason", "")).lower()
+            if parsed_host and ("unexpected_eof" in reason_str or "ssl" in reason_str):
+                try:
+                    if _is_dns_poisoned(parsed_host):
+                        doh_body = _doh_fetch(url, timeout=timeout)
+                        if doh_body:
+                            data_str = doh_body.decode("utf-8")
+                            if data_str and data_str.strip():
+                                data = json.loads(data_str)
+                                if not (isinstance(data, dict) and data.get("meta") == []):
+                                    with _OFFLINE_HOSTS_LOCK:
+                                        _OFFLINE_HOSTS.pop(parsed_host, None)
+                                        _OFFLINE_HOST_FAIL_COUNT.pop(parsed_host, None)
+                                    with _MEM_CACHE_LOCK:
+                                        while len(_MEM_CACHE) >= _MEM_CACHE_MAX_ITEMS:
+                                            _MEM_CACHE.pop(next(iter(_MEM_CACHE)), None)
+                                        _MEM_CACHE[url] = (data, now)
+                                    temp_file = None
+                                    try:
+                                        _prune_disk_cache_if_needed(now)
+                                        temp_file = f"{cache_file}.{os.getpid()}.{threading.get_ident()}.tmp"
+                                        with open(temp_file, 'w', encoding='utf-8') as f:
+                                            f.write(data_str)
+                                        os.replace(temp_file, cache_file)
+                                    except Exception:
+                                        try:
+                                            if temp_file and os.path.exists(temp_file):
+                                                os.remove(temp_file)
+                                        except Exception:
+                                            pass
+                                    return data
+                except Exception:
+                    pass
             if parsed_host:
                 is_timeout = isinstance(e.reason, (socket.timeout, TimeoutError)) or "timed out" in str(e.reason).lower()
                 with _OFFLINE_HOSTS_LOCK:

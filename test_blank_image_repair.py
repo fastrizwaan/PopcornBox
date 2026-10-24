@@ -9,6 +9,7 @@ URL was banned for the life of the process and nothing re-asked for the picture.
 import unittest
 import os
 import sys
+import shutil
 import tempfile
 import time
 import weakref
@@ -43,14 +44,40 @@ from src import api, database, movie_widget
 
 
 class _FakePicture:
-    """The parts of a Gtk.Picture the repair queue looks at, without a display."""
+    """The parts of a Gtk.Picture the repair queue looks at, without a display.
 
-    def __init__(self, url, painted=False):
+    `mapped` stands for the tile's page being on screen and `attached` for it
+    already living inside a window: a tile in a hidden stack page is attached and
+    unmapped, which is the one case that parks a download.
+    """
+
+    def __init__(self, url, painted=False, mapped=True, attached=True):
         self._popcornbox_image_url = url
         self._painted = painted
+        self._mapped = mapped
+        self._attached = attached
+        self.handlers = {}
 
     def get_paintable(self):
         return object() if self._painted else None
+
+    def get_mapped(self):
+        return self._mapped
+
+    def get_root(self):
+        return object() if self._attached else None
+
+    def connect(self, name, callback):
+        self.handlers[name] = callback
+
+    def set_can_shrink(self, *args):
+        pass
+
+    def set_paintable(self, texture):
+        self._painted = texture is not None
+
+    def fire(self, name):
+        self.handlers[name](self)
 
 
 class TestBlankImageRepair(unittest.TestCase):
@@ -224,6 +251,109 @@ class TestBlankImageRepair(unittest.TestCase):
             card._apply_resolved_meta("The Shawshank Redemption", "1994", resolved)
         self.assertEqual(card.movie_data["medium_cover_image"], resolved)
         self.assertEqual(load.call_args.args[0], resolved)
+
+class TestCardsPauseWhileOffScreen(unittest.TestCase):
+    """The blank grid after a movie-details visit.
+
+    Opening a card stops the background workers, and until now that threw away
+    every poster the grid had not finished: the tiles stayed empty because
+    nothing asked for them again once the user came back. A card whose page is
+    off screen now holds its picture instead of dropping it, and finishes it the
+    moment the page is shown again.
+    """
+
+    def setUp(self):
+        movie_widget._clear_failed_images()
+        movie_widget._cancel_blank_tile_repairs()
+        self.tmp = tempfile.mkdtemp(prefix="popcorn-tiles-")
+        self._cache = patch.object(movie_widget, "IMAGE_CACHE_DIR", self.tmp)
+        self._cache.start()
+        self._glib = patch.object(movie_widget, "GLib", MagicMock())
+        self._glib.start()
+
+    def tearDown(self):
+        self._glib.stop()
+        self._cache.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        movie_widget._clear_failed_images()
+        movie_widget._cancel_blank_tile_repairs()
+
+    def _submits(self):
+        return patch.object(movie_widget._image_pool, "submit")
+
+    def _run_idle(self):
+        """Run the callbacks the tiles' map signals handed to the main loop."""
+        for call in movie_widget.GLib.idle_add.call_args_list:
+            args = list(call.args)
+            args[0](*args[1:])
+
+    def test_a_card_that_is_not_on_screen_costs_no_download(self):
+        poster = "https://cdn.test/poster/parked.jpg"
+        tile = _FakePicture("", mapped=False)
+        with self._submits() as submit:
+            movie_widget.load_image_into_picture(poster, tile, width=130, height=195)
+            submit.assert_not_called()
+        self.assertEqual(tile._popcornbox_pending_image[0], poster)
+        self.assertIn("map", tile.handlers)
+
+    def test_coming_back_from_the_details_page_finishes_the_parked_card(self):
+        poster = "https://cdn.test/poster/after-back.jpg"
+        tile = _FakePicture("", mapped=False)
+        with self._submits() as submit:
+            movie_widget.load_image_into_picture(poster, tile, width=130, height=195)
+            tile._mapped = True          # Back: the library page is on screen
+            tile.fire("map")
+            self.assertEqual(submit.call_count, 0,
+                             "a page return did its image work inside the map cascade")
+            self._run_idle()
+            self.assertEqual(submit.call_count, 1)
+            self.assertTrue(callable(submit.call_args.args[0]))
+
+    def test_cancelling_for_a_card_click_cannot_strand_a_tile(self):
+        """The generation bump still stops the work in flight, but the tile keeps
+        what it owes and the way back re-issues it under the new generation."""
+        poster = "https://cdn.test/poster/aborted.jpg"
+        tile = _FakePicture("", mapped=False)
+        with self._submits() as submit:
+            movie_widget.load_image_into_picture(poster, tile, width=130, height=195)
+            movie_widget.cancel_pending_image_downloads()
+            self.assertEqual(submit.call_count, 0)
+            tile._mapped = True
+            tile.fire("map")
+            self._run_idle()
+            self.assertEqual(submit.call_count, 1)
+
+    def test_a_grid_still_being_built_downloads_as_usual(self):
+        """A tile not attached to a window yet belongs to a view on its way to the
+        screen, so parking it would delay every fresh page."""
+        poster = "https://cdn.test/poster/being-built.jpg"
+        tile = _FakePicture("", mapped=False, attached=False)
+        with self._submits() as submit:
+            movie_widget.load_image_into_picture(poster, tile, width=130, height=195)
+            self.assertEqual(submit.call_count, 1)
+
+    def test_parked_cards_do_not_burn_their_repair_tries(self):
+        poster = "https://cdn.test/poster/waiting.jpg"
+        tile = _FakePicture(poster, mapped=False)
+        movie_widget._note_blank_tile(tile, poster, 130, 195, True)
+        with patch.object(movie_widget, "load_image_into_picture") as load:
+            movie_widget._blank_tile_repair_tick()
+        load.assert_not_called()
+        self.assertEqual(tile._popcornbox_blank_attempts, 0)
+        self.assertEqual(len(movie_widget._BLANK_TILES), 1)
+
+    def test_a_painted_card_stops_owing_a_picture(self):
+        poster = "https://cdn.test/poster/painted.jpg"
+        tile = _FakePicture(poster, mapped=False)
+        movie_widget._watch_tile_for_visibility(tile, poster, 130, 195, True)
+        with patch.object(movie_widget, "Gdk", MagicMock()):
+            movie_widget._apply_pixbuf(tile, object(), poster)
+        self.assertIsNone(tile._popcornbox_pending_image)
+        with self._submits() as submit:
+            tile._mapped = True
+            tile.fire("map")
+            self._run_idle()
+            submit.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

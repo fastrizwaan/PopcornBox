@@ -184,6 +184,19 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   for `_FAILED_IMAGE_RETRY_SECONDS`, it is not a process-lifetime ban: one
   timeout during a fast scroll used to leave that poster blank until the app was
   restarted. A successful download clears the mark.
+- CARDS PAUSE WHILE ANOTHER PAGE HAS THE SCREEN, AND FINISH ON THE WAY BACK. A tile
+  that is attached to a window but not mapped - hidden tab, movie details, the
+  player - does not start a download: no request, no decode, and the two image
+  permits of its host stay free for the page the user is actually looking at. The
+  tile records what it still owes and GTK's own `map` signal re-issues it when the
+  page returns, so pressing Back finishes the grid by itself. This is per tile, not
+  a global pause flag: no navigation path can forget to resume. (GTK4 emits `map`
+  on that switch; `notify::mapped` does NOT fire - use `map`.) A card click still
+  cancels in-flight downloads to keep the details page fast, and those tiles are
+  then finished the same way, which is what used to leave "many blank cards whose
+  images were not fetched" after a details visit. Tiles parked this way never spend
+  one of their bounded repair tries. A widget that has no window root yet is a grid
+  on its way to the screen and downloads immediately, exactly as before.
 - When the hydrator resolves a poster for a card whose own URL never painted
   anything, `_apply_resolved_meta` repaints the tile - but only while it is still
   blank, so a card that already shows a picture is never flickered.
