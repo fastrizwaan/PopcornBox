@@ -75,6 +75,20 @@ class FakeDropdown:
         self.selected = idx
 
 
+class CallbackDropdown(FakeDropdown):
+    """Fake Gtk.DropDown that fires notify::selected like the real widget."""
+
+    def __init__(self, selected=0):
+        super().__init__(selected)
+        self.callback = None
+
+    def set_selected(self, idx):
+        changed = idx != self.selected
+        self.selected = idx
+        if changed and self.callback:
+            self.callback(self)
+
+
 class FakeSeriesPage:
     """Minimal stand-in for MovieDetailsPage while an episode is playing."""
 
@@ -92,6 +106,39 @@ class FakeSeriesPage:
         self.current_episodes = [{"episode": 1}, {"episode": 2}]
         self.season_dropdown = FakeDropdown()
         self.episode_dropdown = FakeDropdown()
+
+
+class RolloverPage(FakeSeriesPage):
+    """Season 1 finale where autoplay must roll over to S2E1."""
+
+    def __init__(self):
+        super().__init__(season=1, episode=2)
+        self.videos = [
+            {"id": "tt1234567:1:1", "season": 1, "episode": 1, "title": "Pilot"},
+            {"id": "tt1234567:1:2", "season": 1, "episode": 2, "title": "Second"},
+            {"id": "tt1234567:2:1", "season": 2, "episode": 1, "title": "Premiere"},
+        ]
+        self.current_episodes = [v for v in self.videos if v["season"] == 1]
+        self.season_dropdown = CallbackDropdown(0)
+        self.episode_dropdown = CallbackDropdown(1)
+        self.season_callback_state = None
+        self.fetch_torrents_async = MagicMock()
+
+        def on_season_changed(dropdown):
+            # Mirrors the real callback: it derives the episode from the page
+            # selection, rebuilds the list and reloads remembered streams.
+            self.season_callback_state = (
+                self.selected_season,
+                self.selected_episode,
+                getattr(self, "_suppress_stream_reload", False),
+            )
+            self.current_episodes = [v for v in self.videos if v["season"] == 2]
+            self.selected_video = self.current_episodes[0]
+            self.selected_torrent = None
+            if not getattr(self, "_suppress_stream_reload", False):
+                self.fetch_torrents_async(force=False)
+
+        self.season_dropdown.callback = on_season_changed
 
 
 class TestNextEpisodePrefetch(unittest.TestCase):
@@ -355,6 +402,182 @@ class TestNextEpisodePrefetch(unittest.TestCase):
             self.assertTrue(self.win._try_play_next_episode())
         self.assertEqual(self.win.preferred_direct_provider, "ProviderB")
         self.assertEqual(getattr(page, "preferred_direct_provider", None), "ProviderB")
+
+    def _failover_window(self):
+        win = MagicMock()
+        win.stream_request_id = 0
+        win.details_box = MagicMock()
+        win.details_box.get_first_child.return_value = None
+        win.main_stack = MagicMock()
+        win.main_stack.get_visible_child_name.return_value = "details"
+        win._pending_seek_position = None
+        win._play_current_stream_from_queue = MagicMock()
+        return win
+
+    def _call_failover(self, win, season, episode, title):
+        queue = [{"url": "https://cdn.example/new.mp4", "is_http": True, "quality": "1080p"}]
+        with patch.object(database, "get_cached_metadata", return_value={}), \
+             patch.object(database, "save_continue_watching"):
+            CineWindow.play_stream_with_failover(
+                win,
+                queue=queue,
+                title=title,
+                season=season,
+                episode=episode,
+                imdb_id="tt1234567",
+                media_type="series",
+            )
+        return queue
+
+    def test_new_episode_does_not_inherit_previous_episode_resume(self):
+        win = self._failover_window()
+        saved = {
+            "id": "tt1234567",
+            "season": 1,
+            "episode": 3,
+            "position": 1200.0,
+            "progress": 0.95,
+            "duration": 1260.0,
+        }
+        with patch.object(database, "get_continue_watching_item", return_value=saved):
+            self._call_failover(win, season=1, episode=4, title="Test Show S01E04")
+
+        # Continue Watching is keyed by series, so the previous episode's
+        # timestamp must not leak into the newly selected episode.
+        self.assertEqual(win._current_playing_item["season"], 1)
+        self.assertEqual(win._current_playing_item["episode"], 4)
+        self.assertEqual(win._current_playing_item["position"], 0.0)
+        self.assertEqual(win._current_playing_item["progress"], 0.01)
+        self.assertEqual(win._current_playing_item["duration"], 0.0)
+        self.assertIsNone(win._pending_seek_position)
+
+    def test_same_episode_keeps_saved_resume_position(self):
+        win = self._failover_window()
+        saved = {
+            "id": "tt1234567",
+            "season": 1,
+            "episode": 3,
+            "position": 1200.0,
+            "progress": 0.95,
+            "duration": 1260.0,
+        }
+        with patch.object(database, "get_continue_watching_item", return_value=saved):
+            self._call_failover(win, season=1, episode=3, title="Test Show S01E03")
+
+        self.assertEqual(win._current_playing_item["position"], 1200.0)
+        self.assertEqual(win._current_playing_item["progress"], 0.95)
+        self.assertEqual(win._current_playing_item["duration"], 1260.0)
+        self.assertEqual(win._pending_seek_position, 1200.0)
+
+    def test_play_stream_consumes_pending_seek_with_explicit_start_time(self):
+        win = MagicMock()
+        win._is_playing_trailer.return_value = False
+        win.main_stack.get_visible_child_name.return_value = "player"
+        win.details_box.get_first_child.return_value = None
+        win._current_playing_item = {
+            "id": "tt1234567",
+            "type": "series",
+            "season": 1,
+            "episode": 4,
+            "position": 0.0,
+            "progress": 0.01,
+        }
+        win._pending_seek_position = 1200.0
+        with patch.object(database, "save_continue_watching"):
+            CineWindow._play_stream(
+                win,
+                url="https://cdn.example/e4.mp4",
+                title="Test Show S01E04",
+                start_time=1200.0,
+            )
+        # The explicit start_time already carries the resume point; leaving the
+        # pending seek set would make the next episode jump to 20:00.
+        self.assertIsNone(win._pending_seek_position)
+        self.assertEqual(win._seek_after_loaded, 1200.0)
+
+    def test_progress_tick_does_not_advance_during_transition(self):
+        self._start_playing(season=1, episode=1)
+        self.win._next_episode_transition_in_progress = True
+        self.win._try_play_next_episode = MagicMock()
+        self.win._prefetch_next_episode_streams = MagicMock()
+        with patch("src.window.settings.get_boolean", return_value=True):
+            self.win._update_progress(599.5)
+        self.win._try_play_next_episode.assert_not_called()
+        self.win._prefetch_next_episode_streams.assert_not_called()
+
+    def test_season_rollover_syncs_target_episode_without_refetch(self):
+        page = RolloverPage()
+        self.win.details_box = FakeBox()
+        self.win.details_box.append(page)
+        self.win._current_playing_item = {
+            "id": "tt1234567",
+            "imdb_id": "tt1234567",
+            "title": "Test Show",
+            "type": "series",
+            "season": 1,
+            "episode": 2,
+            "stream_url": "https://cdn.example/e2.mp4",
+        }
+        direct = self._direct_card()
+        self.win._next_ep_prefetched = {
+            "key": "tt1234567:S2:E1",
+            "season": 2,
+            "episode": 1,
+            "streams": [direct],
+        }
+        with patch("src.window.settings.get_boolean", return_value=True):
+            self.assertTrue(self.win._try_play_next_episode())
+
+        # The page selection must already point at S2E1 when the season
+        # callback runs, and the warmed stream must suppress a provider fetch.
+        self.assertEqual(page.season_callback_state, (2, 1, True))
+        page.fetch_torrents_async.assert_not_called()
+        self.assertEqual(page.selected_season, 2)
+        self.assertEqual(page.selected_episode, 1)
+        self.assertEqual(page.selected_torrent["url"], direct["url"])
+        self.assertTrue(self.win._next_episode_transition_in_progress)
+        kwargs = self.win.play_stream_with_failover.call_args.kwargs
+        self.assertEqual(kwargs["season"], 2)
+        self.assertEqual(kwargs["episode"], 1)
+
+    def test_prefetch_memoizes_no_next_episode_within_throttle_window(self):
+        self._start_playing(season=1, episode=2)
+        self.win._get_next_episode_target = MagicMock(return_value=None)
+        with patch("src.window.settings.get_boolean", return_value=True), \
+             patch("src.api.get_torrents_streamed") as mock_fetch:
+            self.assertFalse(self.win._prefetch_next_episode_streams())
+            self.assertFalse(self.win._prefetch_next_episode_streams())
+        # The final episode has a loaded list, so the "no next episode" answer
+        # is stable for the throttle window and must not be recomputed on every
+        # progress tick.
+        self.assertEqual(self.win._get_next_episode_target.call_count, 1)
+        mock_fetch.assert_not_called()
+
+    def test_prefetch_retries_no_next_episode_when_list_not_loaded(self):
+        self._start_playing(season=1, episode=2)
+        self.win._get_videos_for_current_page = lambda page: []
+        self.win._get_next_episode_target = MagicMock(return_value=None)
+        with patch("src.window.settings.get_boolean", return_value=True):
+            self.assertFalse(self.win._prefetch_next_episode_streams())
+            self.assertFalse(self.win._prefetch_next_episode_streams())
+        # Without a loaded episode list the answer is not definitive yet, so
+        # the next tick must be able to retry once episodes arrive.
+        self.assertEqual(self.win._get_next_episode_target.call_count, 2)
+
+    def test_cancel_during_ranking_does_not_stage_results(self):
+        self._start_playing(season=1, episode=1)
+        direct = self._direct_card()
+
+        def rank_then_cancel(streams):
+            self.win._cancel_next_episode_prefetch()
+            return [direct]
+
+        with patch("src.window.settings.get_boolean", return_value=True), \
+             patch("src.api.get_torrents_streamed", return_value=[direct]), \
+             patch.object(self.win, "_rank_direct_streams_for_playback", side_effect=rank_then_cancel):
+            self.assertTrue(self.win._prefetch_next_episode_streams())
+            self._join_prefetch_threads()
+        self.assertIsNone(getattr(self.win, "_next_ep_prefetched", None))
 
 
 if __name__ == "__main__":

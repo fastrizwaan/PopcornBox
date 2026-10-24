@@ -3,6 +3,7 @@ import sys
 import tempfile
 import os
 import json
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -356,6 +357,17 @@ class TestAddonCatalogs(unittest.TestCase):
         self.assertIn("https://example.com/101/manifest.json", called_urls)
         self.assertIn("https://example.com/101/catalog/101Genres/top_genres.json", called_urls)
 
+    @staticmethod
+    def _fetch_from_worker(url, **kwargs):
+        """Fetch the way the app does, off the GTK thread. The polite per-host
+        fetch window queues there; on the main thread it would answer from cache
+        instead of blocking the UI, which is not what these tests are about."""
+        out = []
+        worker = threading.Thread(target=lambda: out.append(api._get_cached_request(url, **kwargs)))
+        worker.start()
+        worker.join(timeout=15)
+        return out[0] if out else None
+
     def test_get_cached_request_urlerror_marks_host_offline_without_raising(self):
         """A URLError (DNS/refused/SSL) must be handled gracefully and mark the host
         offline instead of propagating a NameError from the circuit breaker code."""
@@ -366,7 +378,7 @@ class TestAddonCatalogs(unittest.TestCase):
         api._OFFLINE_HOST_FAIL_COUNT.pop(host, None)
         try:
             with patch("src.api.urllib.request.urlopen", side_effect=urllib.error.URLError(ConnectionRefusedError("refused"))):
-                self.assertIsNone(api._get_cached_request(url, timeout=0.2))
+                self.assertIsNone(self._fetch_from_worker(url, timeout=0.2))
             self.assertIn(host, api._OFFLINE_HOSTS)
         finally:
             api._OFFLINE_HOSTS.pop(host, None)
@@ -383,9 +395,9 @@ class TestAddonCatalogs(unittest.TestCase):
         api._OFFLINE_HOST_FAIL_COUNT.pop(host, None)
         try:
             with patch("src.api.urllib.request.urlopen", side_effect=urllib.error.URLError(socket.timeout("timed out"))):
-                self.assertIsNone(api._get_cached_request(url, timeout=0.2))
+                self.assertIsNone(self._fetch_from_worker(url, timeout=0.2))
                 self.assertNotIn(host, api._OFFLINE_HOSTS)
-                self.assertIsNone(api._get_cached_request(url, timeout=0.2))
+                self.assertIsNone(self._fetch_from_worker(url, timeout=0.2))
                 self.assertIn(host, api._OFFLINE_HOSTS)
         finally:
             api._OFFLINE_HOSTS.pop(host, None)

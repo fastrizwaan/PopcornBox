@@ -2,6 +2,7 @@ import unittest
 import tempfile
 import os
 import sys
+import time
 from pathlib import Path
 import subprocess
 from unittest.mock import MagicMock, patch
@@ -45,8 +46,9 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         database.CONFIG_DIR = Path(self.temp_dir.name)
         database.DB_FILE = database.CONFIG_DIR / "data.json"
         database.reset_json_cache()
-        database._cache_conn = None
-        database._cache_db_initialized = False
+        with database._cache_db_lock:
+            database._cache_conn = None
+            database._cache_db_initialized = False
         api.reset_addon_health_cache()
 
         self.win = MagicMock()
@@ -79,13 +81,16 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         self.win._apply_sort_to_current_catalog = lambda: CineWindow._apply_sort_to_current_catalog(self.win)
 
     def tearDown(self):
-        if database._cache_conn is not None:
-            try:
-                database._cache_conn.close()
-            except Exception:
-                pass
-        database._cache_conn = self.orig_cache_conn
-        database._cache_db_initialized = self.orig_cache_initialized
+        # Background fetchers hold _cache_db_lock while running statements;
+        # closing the connection underneath them segfaults libsqlite3.
+        with database._cache_db_lock:
+            if database._cache_conn is not None:
+                try:
+                    database._cache_conn.close()
+                except Exception:
+                    pass
+            database._cache_conn = self.orig_cache_conn
+            database._cache_db_initialized = self.orig_cache_initialized
         database.CONFIG_DIR = self.orig_config_dir
         database.BASE_DIR = self.orig_base_dir
         database.DB_FILE = self.orig_db_file
@@ -467,6 +472,297 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
 
         self.win.discover_scrolled.set_child.assert_called_once_with(cached_box)
         self.win._load_next_discover_batch.assert_not_called()
+
+
+class TestCountryCatalogFetch(unittest.TestCase):
+    def test_fetch_country_catalog_queries_tmdb_origin_country(self):
+        calls = []
+
+        def fake_request(url, *args, **kwargs):
+            calls.append(url)
+            if "/discover/movie?" in url:
+                return {"results": [{
+                    "id": 11, "title": "Indian Movie", "poster_path": "/m.jpg",
+                    "release_date": "2024-03-01", "vote_average": 7.4,
+                    "genre_ids": [18], "popularity": 5.0, "original_language": "hi",
+                }]}
+            return {"results": [{
+                "id": 22, "name": "Indian Show", "poster_path": "/s.jpg",
+                "first_air_date": "2023-06-01", "vote_average": 8.1,
+                "genre_ids": [18], "popularity": 9.0, "original_language": "hi",
+            }]}
+
+        with patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_request):
+            items = tmdb_helper.fetch_country_catalog(
+                "India", media_type="all", genre="Drama", year="2024", sort_mode="Recent", limit=36
+            )
+
+        country_pages = [u for u in calls if "with_origin_country=IN" in u]
+        self.assertEqual(len(country_pages), 2)
+        for url in calls:
+            self.assertIn("with_genres=18", url)
+        movie_url = next(u for u in country_pages if "/discover/movie?" in u)
+        tv_url = next(u for u in country_pages if "/discover/tv?" in u)
+        self.assertIn("primary_release_year=2024", movie_url)
+        self.assertIn("first_air_date_year=2024", tv_url)
+
+        self.assertEqual({it["type"] for it in items}, {"movie", "series"})
+        for it in items:
+            self.assertEqual(it["country"], "India")
+            self.assertEqual(it["countries"], ["India"])
+            self.assertTrue(it["id"].startswith("tmdb:"))
+            self.assertTrue(it["poster"].startswith("https://image.tmdb.org/"))
+
+    def test_fetch_country_catalog_fans_out_over_multi_language_countries(self):
+        """India's titles are labelled per cinema, so language pages complement the origin-country page."""
+        calls = []
+
+        def fake_request(url, *args, **kwargs):
+            calls.append(url)
+            return {"results": []}
+
+        with patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_request):
+            tmdb_helper.fetch_country_catalog("India", media_type="all")
+
+        by_country = [u for u in calls if "with_origin_country=IN" in u]
+        by_language = [u for u in calls if "with_origin_country" not in u]
+        self.assertEqual(len(by_country), 2)
+        self.assertEqual(len(by_language), 6)
+        self.assertEqual(
+            sorted({u.split("with_original_language=")[1][:2] for u in by_language}),
+            ["hi", "ta", "te"],
+        )
+        for url in by_language:
+            self.assertNotIn("with_origin_country", url)
+
+    def test_fetch_country_catalog_skips_fanout_for_single_language_country(self):
+        """Japanese titles are already complete through with_origin_country, so no extra pages."""
+        calls = []
+
+        def fake_request(url, *args, **kwargs):
+            calls.append(url)
+            return {"results": []}
+
+        with patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_request):
+            tmdb_helper.fetch_country_catalog("Japan", media_type="all")
+
+        self.assertEqual(len(calls), 2)
+        for url in calls:
+            self.assertIn("with_origin_country=JP", url)
+            self.assertNotIn("with_original_language", url)
+
+    def test_fetch_country_catalog_unknown_country_makes_no_request(self):
+        with patch.object(tmdb_helper, "_get_cached_request") as request:
+            items = tmdb_helper.fetch_country_catalog("Wakanda", media_type="all")
+        self.assertEqual(items, [])
+        request.assert_not_called()
+
+    def test_fetch_country_catalog_page_deepens_instead_of_fanning_out(self):
+        """Page 2 asks the primary query once per media type and reports the depth."""
+        calls = []
+
+        def fake_request(url, *args, **kwargs):
+            calls.append(url)
+            return {"results": [], "total_pages": 47}
+
+        with patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_request):
+            items, total_pages = tmdb_helper.fetch_country_catalog_page("India", media_type="all", page=2)
+
+        self.assertEqual(items, [])
+        self.assertEqual(total_pages, tmdb_helper._MAX_DISCOVER_PAGES)
+        self.assertEqual(len(calls), 2)
+        for url in calls:
+            self.assertIn("page=2", url)
+            self.assertIn("with_origin_country=IN", url)
+            self.assertNotIn("with_original_language", url)
+
+    def test_fetch_country_catalog_page_stops_at_the_depth_cap(self):
+        """Browsing is capped so a long scroll cannot turn into a load test on TMDb."""
+        with patch.object(tmdb_helper, "_get_cached_request") as request:
+            result = tmdb_helper.fetch_country_catalog_page(
+                "India", media_type="all", page=tmdb_helper._MAX_DISCOVER_PAGES + 1
+            )
+        self.assertEqual(result, ([], 0))
+        request.assert_not_called()
+
+    def test_fetch_country_catalog_page_browses_past_the_old_five_page_cap(self):
+        """A long scroll keeps fetching; five pages x 36 cards used to be the ceiling."""
+        calls = []
+
+        def fake_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0, *args, **kwargs):
+            if cache_only:
+                return None
+            calls.append(url)
+            return {"results": [{
+                "id": 100 + len(calls), "title": f"Deep {len(calls)}", "poster_path": "/d.jpg",
+                "release_date": "2024-01-01", "original_language": "hi",
+            }], "total_pages": 30}
+
+        with patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_request):
+            items, total_pages = tmdb_helper.fetch_country_catalog_page("Japan", media_type="movie", page=8)
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("page=8", calls[0])
+        self.assertTrue(items)
+        self.assertEqual(total_pages, tmdb_helper._MAX_DISCOVER_PAGES)
+
+    def test_fetch_country_catalog_page_never_re_requests_a_cached_page(self):
+        """A page the filter already has is served from disk and stays off the wire."""
+        asked = []
+
+        def fake_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0, *args, **kwargs):
+            asked.append((url, cache_only))
+            if cache_only and "/discover/tv?" in url:
+                return {"results": [{
+                    "id": 9, "name": "Saved Show", "poster_path": "/s.jpg",
+                    "first_air_date": "2023-05-01", "original_language": "ta", "popularity": 4.0,
+                }], "total_pages": 2}
+            if cache_only:
+                return None
+            if "/discover/movie?" in url:
+                return {"results": [{
+                    "id": 5, "title": "Fresh Movie", "poster_path": "/m.jpg",
+                    "release_date": "2024-04-01", "original_language": "hi", "popularity": 9.0,
+                }], "total_pages": 2}
+            return {"results": [], "total_pages": 2}
+
+        with patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_request):
+            items, total_pages = tmdb_helper.fetch_country_catalog_page("India", media_type="all", page=2)
+
+        # Both media types answer, whichever way their page arrived.
+        self.assertEqual({it["id"] for it in items}, {"tmdb:9", "tmdb:5"})
+        # The cached TV page is never fetched again; the movie page, which was
+        # missing, is asked for exactly once.
+        self.assertNotIn("/discover/tv?", [url for url, cache_only in asked if not cache_only])
+        self.assertEqual(len([url for url, cache_only in asked
+                              if not cache_only and "/discover/movie?" in url]), 1)
+
+    def test_fetch_country_catalog_page_with_nothing_to_fetch_stays_off_the_network(self):
+        """A filter the user has already browsed fills the row without one request."""
+        asked = []
+
+        def fake_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0, *args, **kwargs):
+            asked.append(cache_only)
+            if not cache_only:
+                return None
+            return {"results": [{
+                "id": 1, "title": "Stored", "poster_path": "/a.jpg",
+                "release_date": "2024-01-01", "original_language": "hi", "popularity": 3.0,
+            }], "total_pages": 3}
+
+        with patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_request):
+            items, total_pages = tmdb_helper.fetch_country_catalog_page("India", media_type="all", page=1)
+
+        self.assertTrue(asked, "the cache was never consulted")
+        self.assertNotIn(False, asked, "a fully cached filter still went out to TMDb")
+        self.assertEqual([it["id"] for it in items], ["tmdb:1"])
+
+    def test_a_year_old_catalog_row_still_fills_the_row(self):
+        """Cards already stored are shown forever: a row from last year renders
+        without a request, which is the point of keeping them."""
+        key = "discover:https://v3-cinemeta.strem.io/manifest.json:top:movie:row36"
+        database.save_cached_catalog(key, [{
+            "id": "tmdb:1", "title": "Stored last year",
+            "medium_cover_image": "https://image.tmdb.org/t/p/w300/a.jpg",
+        }])
+        with database._cache_db_lock:
+            conn = database._get_cache_db()
+            conn.execute("UPDATE catalog_cache SET updated_at = ? WHERE cache_key = ?",
+                         (time.time() - 400 * 24 * 3600, key))
+            conn.commit()
+        with database._MEM_CATALOG_LOCK:
+            database._MEM_CATALOG_CACHE.clear()
+
+        def fail(url, *args, **kwargs):
+            raise AssertionError("a stored catalog row went out to the network")
+
+        with patch.object(api, "_get_cached_request", side_effect=fail):
+            rows = database.get_cached_catalog(key, max_age_hours=database.CATALOG_CACHE_HOURS)
+
+        self.assertEqual([row["id"] for row in (rows or [])], ["tmdb:1"])
+
+    def test_fetch_country_catalog_pages_are_read_without_an_expiry(self):
+        """Discover rows are card metadata: a page stored last month is as good as
+        one stored a minute ago, so no read of this path may declare an expiry."""
+        seen_ttl = []
+
+        def fake_request(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0, *args, **kwargs):
+            seen_ttl.append(max_age_hours)
+            return {"results": [{
+                "id": 1, "title": "Stored", "poster_path": "/a.jpg",
+                "release_date": "2024-01-01", "original_language": "hi", "popularity": 3.0,
+            }], "total_pages": 3}
+
+        with patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_request):
+            items, _ = tmdb_helper.fetch_country_catalog_page("India", media_type="all", page=1)
+
+        self.assertTrue(seen_ttl, "the fan-out never read the cache")
+        self.assertEqual(set(seen_ttl), {api.METADATA_CACHE_HOURS},
+                         "a discover page was read with an expiry, so the same cards "
+                         "would be asked of TMDb again once it lapsed")
+
+    def test_fetch_country_catalog_page_skips_ids_the_view_already_showed(self):
+        """Deeper pages return new titles, not the ones the first page rendered."""
+        def fake_request(url, *args, **kwargs):
+            return {"results": [
+                {"id": 1, "title": "Seen", "poster_path": "/a.jpg", "release_date": "2024-01-01", "original_language": "hi"},
+                {"id": 2, "title": "Fresh", "poster_path": "/b.jpg", "release_date": "2024-02-01", "original_language": "ta"},
+            ], "total_pages": 3}
+
+        with patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_request):
+            items, total_pages = tmdb_helper.fetch_country_catalog_page(
+                "India", media_type="movie", page=2, exclude_ids={"tmdb:1"}
+            )
+        self.assertEqual([it["id"] for it in items], ["tmdb:2"])
+        self.assertEqual(total_pages, 3)
+        self.assertEqual(items[0]["language"], "Tamil")
+
+    def test_fetch_country_catalog_page_handles_language_without_country(self):
+        """A language alone is a complete discover query; the country field stays empty."""
+        calls = []
+
+        def fake_request(url, *args, **kwargs):
+            calls.append(url)
+            return {"results": [
+                {"id": 7, "title": "Tamil Film", "poster_path": "/t.jpg", "release_date": "2024-05-05", "original_language": "ta"},
+            ], "total_pages": 1}
+
+        with patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_request):
+            items, total_pages = tmdb_helper.fetch_country_catalog_page(language="Tamil", media_type="movie")
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("with_original_language=ta", calls[0])
+        self.assertNotIn("with_origin_country", calls[0])
+        self.assertEqual(total_pages, 1)
+        self.assertEqual(items[0]["country"], "")
+        self.assertEqual(items[0]["language"], "Tamil")
+
+    def test_fetch_country_catalog_page_keeps_both_filters_for_country_and_language(self):
+        """India + Tamil is an AND query; dropping the country would show every Tamil title's origin."""
+        calls = []
+
+        def fake_request(url, *args, **kwargs):
+            calls.append(url)
+            return {"results": [], "total_pages": 1}
+
+        with patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_request):
+            tmdb_helper.fetch_country_catalog_page(country="India", language="Tamil", media_type="movie")
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("with_origin_country=IN", calls[0])
+        self.assertIn("with_original_language=ta", calls[0])
+
+    def test_fetch_country_catalog_page_without_filter_makes_no_request(self):
+        with patch.object(tmdb_helper, "_get_cached_request") as request:
+            result = tmdb_helper.fetch_country_catalog_page(media_type="movie")
+        self.assertEqual(result, ([], 0))
+        request.assert_not_called()
+
+    def test_get_country_iso_code(self):
+        self.assertEqual(database.get_country_iso_code("India"), "IN")
+        self.assertEqual(database.get_country_iso_code("us"), "US")
+        self.assertEqual(database.get_country_iso_code("United Kingdom"), "GB")
+        self.assertIsNone(database.get_country_iso_code("Wakanda"))
 
 
 if __name__ == "__main__":

@@ -3,7 +3,10 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Pango", "1.0")
 from gi.repository import Gtk, GObject, GLib, Gdk, GdkPixbuf, Gio, Pango
 import urllib.request
+import urllib.error
 import os
+import time
+import weakref
 import hashlib
 import json
 import re
@@ -14,6 +17,11 @@ from . import database
 def _get_cached_request(*args, **kwargs):
     from .api import _get_cached_request as req
     return req(*args, **kwargs)
+
+# Poster and backdrop URLs come from meta responses, and a title's picture does
+# not change often enough to re-fetch. Mirrors api.METADATA_CACHE_HOURS, restated
+# here because importing api at module level would be circular.
+METADATA_CACHE_HOURS = None
 
 if os.environ.get("FLATPAK_ID"):
     BASE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "popcorn-box")
@@ -40,24 +48,166 @@ _MEMORY_PIXBUF_CACHE = {}
 _MEMORY_PIXBUF_LOCK = threading.Lock()
 _MAX_MEMORY_PIXBUFS = 500
 
+# url -> Event for image downloads currently in progress. Grids frequently
+# show the same poster in several rows; without this, each card downloaded it.
+_IMAGE_INFLIGHT = {}
+_IMAGE_INFLIGHT_LOCK = threading.Lock()
+
 _FAILED_IMAGE_LOCK = threading.Lock()
-FAILED_IMAGE_URLS = set()
+# url -> unix time of the last failed download. A permanent ban is what made
+# blank tiles stay blank for the rest of the session: one CDN timeout during a
+# fast scroll marked a poster dead forever, even though the same URL fetched fine
+# a minute later. Failures now expire, and the repair tick below re-tries the
+# tiles that are still empty.
+FAILED_IMAGE_URLS = {}
+_FAILED_IMAGE_RETRY_SECONDS = 30 * 60
 
 def _is_image_failed(url):
+    now = time.time()
     with _FAILED_IMAGE_LOCK:
-        return url in FAILED_IMAGE_URLS
+        failed_at = FAILED_IMAGE_URLS.get(url)
+        if failed_at is None:
+            return False
+        if now - failed_at >= _FAILED_IMAGE_RETRY_SECONDS:
+            FAILED_IMAGE_URLS.pop(url, None)
+            return False
+        return True
 
 def _mark_image_failed(url):
     with _FAILED_IMAGE_LOCK:
-        FAILED_IMAGE_URLS.add(url)
+        if len(FAILED_IMAGE_URLS) >= 4096:
+            oldest = min(FAILED_IMAGE_URLS, key=FAILED_IMAGE_URLS.get)
+            FAILED_IMAGE_URLS.pop(oldest, None)
+        FAILED_IMAGE_URLS[url] = time.time()
 
 def _mark_image_success(url):
     with _FAILED_IMAGE_LOCK:
-        FAILED_IMAGE_URLS.discard(url)
+        FAILED_IMAGE_URLS.pop(url, None)
 
 def _clear_failed_images():
     with _FAILED_IMAGE_LOCK:
         FAILED_IMAGE_URLS.clear()
+
+# Tiles that came back empty -- the host's image window closed, the CDN timed
+# out, the card had no poster URL yet. They are remembered here and the tick
+# below re-issues the fetch a while later, so a card is not stuck blank until
+# the user happens to rebuild the grid. Entries hold weak references: a card the
+# flowbox has already thrown away is dropped, not kept alive by its own repair.
+_BLANK_TILES = []
+_BLANK_TILES_LOCK = threading.Lock()
+_MAX_BLANK_TILES = 400
+_BLANK_TILE_REPAIR_SECONDS = 20
+_BLANK_TILE_MAX_TRIES = 3
+_BLANK_TILE_TICK_ARMED = False
+
+def _cancel_blank_tile_repairs():
+    global _BLANK_TILE_TICK_ARMED
+    with _BLANK_TILES_LOCK:
+        _BLANK_TILES.clear()
+        _BLANK_TILE_TICK_ARMED = False
+
+def _note_blank_tile(picture_widget, url, width, height, crop, unresolved=None):
+    """Queue one more polite attempt at a tile that is still showing nothing.
+
+    The attempt count lives on the tile itself, so however many paths report the
+    same failure a card is retried a bounded number of times in total. `url` is
+    the picture to re-ask for; `unresolved` is the card whose poster URL is still
+    unknown, which the tick sends through the metadata fallback instead.
+    """
+    global _BLANK_TILE_TICK_ARMED
+    if picture_widget is None or (not url and not unresolved):
+        return
+    if url and getattr(picture_widget, "_popcornbox_image_url", None) != url:
+        return
+    attempts = getattr(picture_widget, "_popcornbox_blank_attempts", 0)
+    if not isinstance(attempts, int):
+        attempts = 0
+    attempts += 1
+    if attempts > _BLANK_TILE_MAX_TRIES:
+        return
+    picture_widget._popcornbox_blank_attempts = attempts
+    if unresolved:
+        # The tick only re-asks a tile that still carries this card's stamp, so
+        # the identity is written where the queue entry is created.
+        picture_widget._popcornbox_blank_item_id = str(unresolved[0])
+    with _BLANK_TILES_LOCK:
+        if len(_BLANK_TILES) >= _MAX_BLANK_TILES:
+            return
+        if any(entry["pic"]() is picture_widget for entry in _BLANK_TILES):
+            return
+        _BLANK_TILES.append({
+            "pic": weakref.ref(picture_widget),
+            "url": url,
+            "width": width,
+            "height": height,
+            "crop": crop,
+            "unresolved": unresolved,
+        })
+        armed = _BLANK_TILE_TICK_ARMED
+        _BLANK_TILE_TICK_ARMED = True
+    if not armed:
+        try:
+            GLib.timeout_add_seconds(_BLANK_TILE_REPAIR_SECONDS, _blank_tile_repair_tick)
+        except Exception:
+            with _BLANK_TILES_LOCK:
+                _BLANK_TILE_TICK_ARMED = False
+
+def _blank_tile_repair_tick():
+    """Re-issue the oldest blank tiles, a slice at a time, from the main loop.
+
+    Only queue bookkeeping and one submit per tile happen here; the fetch itself
+    still runs on the image or metadata pool, behind the polite windows.
+    """
+    global _BLANK_TILE_TICK_ARMED
+    with _BLANK_TILES_LOCK:
+        batch, _BLANK_TILES[:] = _BLANK_TILES[:8], _BLANK_TILES[8:]
+    for entry in batch:
+        picture = entry["pic"]()
+        # A card the flowbox already threw away, or one that filled itself in the
+        # meantime: nothing to do, and it leaves the queue for good.
+        if picture is None:
+            continue
+        try:
+            if picture.get_paintable() is not None:
+                continue
+        except Exception:
+            continue
+        unresolved = entry.get("unresolved")
+        if unresolved is not None:
+            item_id, item_type, title, task_gen = unresolved
+            if task_gen is not None and not is_image_generation_active(task_gen):
+                continue
+            # The tile stamps the card it is waiting for; a recycled tile belongs
+            # to somebody else now and must not be painted with this poster.
+            if getattr(picture, "_popcornbox_blank_item_id", None) != str(item_id):
+                continue
+            try:
+                _meta_fallback_pool.submit(
+                    fetch_fallback_poster, item_id, item_type, picture, title,
+                    entry["width"], entry["height"], None, task_gen,
+                )
+            except RuntimeError:
+                pass
+            # It notes itself again if the lookup still finds nothing.
+            continue
+        # A poster still inside its failure window: leave it blank for now.
+        if _is_image_failed(entry["url"]):
+            continue
+        if getattr(picture, "_popcornbox_image_url", None) != entry["url"]:
+            continue
+        try:
+            load_image_into_picture(
+                entry["url"], picture,
+                width=entry["width"], height=entry["height"], crop=entry["crop"],
+            )
+        except Exception:
+            pass
+        # A retry that comes back empty notes itself again; adding it here too
+        # would let one tile hold two queue slots.
+    with _BLANK_TILES_LOCK:
+        keep_running = bool(_BLANK_TILES)
+        _BLANK_TILE_TICK_ARMED = keep_running
+    return keep_running
 
 _IMAGE_GEN_LOCK = threading.Lock()
 _IMAGE_GENERATION_ID = 0
@@ -67,6 +217,7 @@ def cancel_pending_image_downloads():
     with _IMAGE_GEN_LOCK:
         _IMAGE_GENERATION_ID += 1
     _clear_failed_images()
+    _cancel_blank_tile_repairs()
 
 def is_image_generation_active(gen_id):
     with _IMAGE_GEN_LOCK:
@@ -142,42 +293,109 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                 if os.path.exists(cache_file):
                     try: os.remove(cache_file)
                     except Exception: pass
-                req = urllib.request.Request(
-                    url,
-                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-                )
-                for attempt in range(2):
-                    if not is_priority and not is_image_generation_active(task_gen):
+
+                # Only one worker may download a given URL; the others wait
+                # and reuse the cache file it writes.
+                owner = False
+                inflight = None
+                with _IMAGE_INFLIGHT_LOCK:
+                    inflight = _IMAGE_INFLIGHT.get(url)
+                    if inflight is None:
+                        inflight = threading.Event()
+                        _IMAGE_INFLIGHT[url] = inflight
+                        owner = True
+
+                if not owner:
+                    inflight.wait(timeout=8.0)
+                    with _MEMORY_PIXBUF_LOCK:
+                        cached_pixbuf = _MEMORY_PIXBUF_CACHE.get(mem_key)
+                    if cached_pixbuf:
+                        if is_priority or is_image_generation_active(task_gen):
+                            GLib.idle_add(_apply_pixbuf, picture_widget, cached_pixbuf, url)
                         return
+                    if os.path.exists(cache_file) and os.path.getsize(cache_file) > 0:
+                        try:
+                            with open(cache_file, 'rb') as f:
+                                data = f.read()
+                        except OSError:
+                            data = None
+                else:
                     try:
-                        from .api import _SSL_CONTEXT
-                        with urllib.request.urlopen(req, timeout=3.5, context=_SSL_CONTEXT) as response:
-                            data = response.read()
-                            if data:
-                                temp_file = f"{cache_file}.{os.getpid()}.{threading.get_ident()}.tmp"
-                                try:
-                                    with open(temp_file, 'wb') as f:
-                                        f.write(data)
-                                    os.replace(temp_file, cache_file)
-                                except Exception:
+                        req = urllib.request.Request(
+                            url,
+                            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+                        )
+
+                        def _polite_image_get():
+                            """One paced image GET through the host's window.
+                            None means the window was closed, not that the image
+                            is missing: the tile stays empty and no failure is
+                            recorded, so a later scroll can still fetch it."""
+                            from .api import _SSL_CONTEXT, _acquire_image_window, _get_provider_host
+                            with _acquire_image_window(
+                                _get_provider_host(url),
+                                is_cancelled=lambda: not is_priority and not is_image_generation_active(task_gen),
+                            ) as window_open:
+                                if not window_open:
+                                    return None  # callers below queue a retry
+                                with urllib.request.urlopen(req, timeout=3.5, context=_SSL_CONTEXT) as response:
+                                    return response.read()
+
+                        for attempt in range(2):
+                            if not is_priority and not is_image_generation_active(task_gen):
+                                return
+                            try:
+                                fetched = _polite_image_get()
+                                if fetched is None:
+                                    _note_blank_tile(picture_widget, url, width, height, crop)
+                                    return
+                                data = fetched
+                                if data:
+                                    temp_file = f"{cache_file}.{os.getpid()}.{threading.get_ident()}.tmp"
                                     try:
-                                        if os.path.exists(temp_file):
-                                            os.remove(temp_file)
+                                        with open(temp_file, 'wb') as f:
+                                            f.write(data)
+                                        os.replace(temp_file, cache_file)
                                     except Exception:
-                                        pass
-                                _mark_image_success(url)
-                            break
-                    except Exception as e:
-                        if attempt == 1:
-                            _mark_image_failed(url)
-                        else:
-                            import time
-                            time.sleep(0.3)
+                                        try:
+                                            if os.path.exists(temp_file):
+                                                os.remove(temp_file)
+                                        except Exception:
+                                            pass
+                                    _mark_image_success(url)
+                                break
+                            except urllib.error.HTTPError as e:
+                                try:
+                                    e.close()
+                                except Exception:
+                                    pass
+                                if e.code == 429:
+                                    # The CDN told this host to slow down for the whole
+                                    # app: cool it so the other tiles stop queueing for it.
+                                    from .api import set_provider_cooldown, _retry_after_seconds
+                                    set_provider_cooldown(
+                                        url,
+                                        duration_seconds=_retry_after_seconds(e.headers, default=120, floor=30),
+                                        reason="HTTP 429 on an image request",
+                                    )
+                                    _mark_image_failed(url)
+                                    return
+                                if attempt == 1:
+                                    _mark_image_failed(url)
+                                else:
+                                    import time
+                                    time.sleep(0.3)
+                    finally:
+                        with _IMAGE_INFLIGHT_LOCK:
+                            if _IMAGE_INFLIGHT.get(url) is inflight:
+                                del _IMAGE_INFLIGHT[url]
+                        inflight.set()
                 
             if not is_priority and not is_image_generation_active(task_gen):
                 return
 
             if not data:
+                _note_blank_tile(picture_widget, url, width, height, crop)
                 if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
                     GLib.idle_add(on_error)
                 return
@@ -253,10 +471,12 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                 if is_priority or is_image_generation_active(task_gen):
                     GLib.idle_add(_apply_pixbuf, picture_widget, pixbuf, url)
             else:
+                _note_blank_tile(picture_widget, url, width, height, crop)
                 if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
                     GLib.idle_add(on_error)
         except Exception as e:
             print(f"Failed to load image {url}: {e}")
+            _note_blank_tile(picture_widget, url, width, height, crop)
             if on_error and getattr(picture_widget, "_popcornbox_image_url", None) == url:
                 GLib.idle_add(on_error)
     if os.path.exists(cache_file) and os.path.getsize(cache_file) > 0:
@@ -348,10 +568,10 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
     if str(item_id).startswith("tt") and (not found_poster or not found_title or not is_adult):
         try:
             url = f"https://v3-cinemeta.strem.io/meta/{item_type}/{item_id}.json"
-            meta_data = _get_cached_request(url, max_age_hours=168, timeout=1.5)
+            meta_data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS, timeout=1.5)
             if not meta_data:
                 alt_url = f"https://cinemeta-live.strem.io/meta/{item_type}/{item_id}.json"
-                meta_data = _get_cached_request(alt_url, max_age_hours=168, timeout=1.5)
+                meta_data = _get_cached_request(alt_url, max_age_hours=METADATA_CACHE_HOURS, timeout=1.5)
             if meta_data and isinstance(meta_data.get("meta"), dict):
                 cm = meta_data["meta"]
                 from . import api
@@ -417,6 +637,17 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
 
     if on_meta_resolved and (found_title or found_year or found_poster or is_adult):
         GLib.idle_add(on_meta_resolved, found_title, found_year, found_poster, is_adult)
+
+    # A card with no poster anywhere in its chain of lookups is the other half of
+    # the permanently-blank grid: no URL means no download, so no download can
+    # fail and report itself. Queue it as unresolved so the repair tick asks for
+    # its metadata again later, when the addon or CDN that had nothing may answer.
+    if poster_widget is not None and not found_poster and not is_adult:
+        try:
+            _note_blank_tile(poster_widget, "", width, height, True,
+                             unresolved=(item_id, item_type, title, task_gen))
+        except Exception:
+            pass
 
 class MovieWidget(Gtk.Box):
     def __init__(self, movie_data, click_callback, on_remove_clicked=None):
@@ -637,7 +868,17 @@ class MovieWidget(Gtk.Box):
                     self.year_label.set_halign(Gtk.Align.START)
                     self.year_label.add_css_class("pt-card-year")
                     self.append(self.year_label)
-            if poster_url and (not self.movie_data.get("medium_cover_image") or not self.movie_data.get("poster")):
+            # A card can also arrive with a poster URL that simply does not work.
+            # If the tile is still blank and hydration found a different picture for
+            # the same title, that is the fix the user is waiting on -- paint it.
+            # A tile that already shows something is never repainted.
+            shown_url = self.movie_data.get("medium_cover_image") or self.movie_data.get("poster")
+            tile_is_blank = False
+            try:
+                tile_is_blank = self.poster_image.get_paintable() is None
+            except Exception:
+                pass
+            if poster_url and poster_url != shown_url and (not shown_url or tile_is_blank):
                 self.movie_data["medium_cover_image"] = poster_url
                 self.movie_data["poster"] = poster_url
                 if hasattr(self, "poster_image") and self.poster_image:

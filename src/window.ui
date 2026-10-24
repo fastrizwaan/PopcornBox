@@ -553,14 +553,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="GtkSpinner" id="discover_spinner">
-                                    <property name="valign">3</property>
-                                    <property name="spinning">false</property>
-                                    <property name="visible">false</property>
-                                    <property name="tooltip-text" translatable="yes">Loading...</property>
-                                  </object>
-                                </child>
-                                <child>
                                   <object class="GtkToggleButton" id="discover_search_btn">
                                     <property name="icon-name">filter-symbolic</property>
                                     <property name="valign">3</property>
@@ -569,6 +561,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                       <class name="flat"/>
                                       <class name="circular"/>
                                     </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkSpinner" id="discover_spinner">
+                                    <property name="valign">3</property>
+                                    <property name="spinning">false</property>
+                                    <property name="tooltip-text" translatable="yes">Loading...</property>
                                   </object>
                                 </child>
                               </object>

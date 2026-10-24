@@ -1,5 +1,6 @@
 import os
 import shutil
+import threading
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Pango', '1.0')
@@ -215,7 +216,9 @@ class DownloadItemRow(Gtk.Box):
             self.magnet,
             file_index=self.file_index,
             item_id=self.download.get("item_id"),
-            media_type=self.download.get("media_type")
+            media_type=self.download.get("media_type"),
+            season=self.download.get("season"),
+            episode=self.download.get("episode"),
         )
         self.update_status()
         
@@ -267,7 +270,10 @@ class DownloadItemRow(Gtk.Box):
     def on_folder_clicked(self, btn):
         if hasattr(self, 'popover'): self.popover.popdown()
         path = os.path.join(player.DOWNLOAD_BASE, self.info_hash)
-        os.makedirs(path, exist_ok=True)
+        # Never create the torrent directory here: an empty folder would make
+        # update_status() report "Paused" for a download that never started.
+        if not os.path.isdir(path):
+            path = player.DOWNLOAD_BASE
         open_uri(GLib.filename_to_uri(path, None), self.get_root())
             
     def on_copy_clicked(self, btn):
@@ -277,15 +283,26 @@ class DownloadItemRow(Gtk.Box):
         
     def on_delete_clicked(self, btn):
         if hasattr(self, 'popover'): self.popover.popdown()
-        player.stop_engine_explicit(self.info_hash)
+        stop_thread = player.stop_engine_explicit(self.info_hash)
         database.remove_download(self.info_hash)
-        path = os.path.join(player.DOWNLOAD_BASE, self.info_hash)
-        if os.path.exists(path):
+
+        # libtorrent releases its file handles asynchronously when stop() runs.
+        # Deleting the directory immediately can fail on the still-open files
+        # and leave orphaned data behind, so wait for the stop to finish first.
+        def _delete_files():
+            if stop_thread is not None:
+                stop_thread.join(timeout=15)
+            # A launch that was still constructing its engine is not in
+            # _engines yet; wait for it to observe the cancel and stop before
+            # removing the directory it would otherwise recreate.
+            player.wait_for_pending_launch(self.info_hash, timeout=15)
+            path = os.path.join(player.DOWNLOAD_BASE, self.info_hash)
             try:
                 shutil.rmtree(path, ignore_errors=True)
-            except Exception:
-                pass
-        
+            except Exception as e:
+                print(f"Error deleting download {self.info_hash}: {e}")
+        threading.Thread(target=_delete_files, daemon=True).start()
+
         # Stop polling before removal
         self.on_destroy()
 

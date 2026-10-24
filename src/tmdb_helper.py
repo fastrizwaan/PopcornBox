@@ -11,8 +11,27 @@ def _get_cached_request(*args, **kwargs):
     from .api import _get_cached_request as req
     return req(*args, **kwargs)
 
+# Every response in this module describes a card (TMDb ids, credits, genres,
+# companies, collections, seasons) or a poster, so all of them are cached
+# forever. Mirrors api.METADATA_CACHE_HOURS, restated here because importing
+# api at module level would be circular.
+METADATA_CACHE_HOURS = None
+
 
 DEFAULT_TMDB_API_KEY = "68e094699525b18a70bab2f86b1fa706"
+
+# Extra per-language discover pages fetched for multi-cinema countries (India,
+# Pakistan, Nigeria). Kept small because every entry costs one request per media
+# type; each result is cached forever, so the cost is paid once per filter.
+_MAX_COUNTRY_LANG_PAGES = 3
+
+# How deep one filter may browse. Each page is one request per media type and
+# api.py paces them through the polite catalog window, so the cap is what keeps a
+# long scroll from turning into a load test on TMDb: 20 pages is at most 40
+# requests per filter, each cached forever and only paid for as the user really
+# scrolls. Five pages were too tight - a discover row renders up to 36 cards, so
+# the grid stopped growing at about 180 cards.
+_MAX_DISCOVER_PAGES = 20
 
 _TMDB_API_KEY_CACHE = {"key": None, "expires": 0.0}
 _TMDB_API_KEY_LOCK = threading.Lock()
@@ -47,6 +66,84 @@ def get_tmdb_api_key():
             pass
         return DEFAULT_TMDB_API_KEY
 
+_PROVIDER_B64_ID_RE = re.compile(r"^dsx:[a-z]+:([A-Za-z0-9+/_=-]+)")
+_TMDB_META_ADDON = "https://94c8cb9f702d-tmdb-addon.baby-beamup.club"
+
+def _decode_provider_item_id(item_id):
+    """Decode provider-specific IDs that embed metadata as base64 JSON.
+
+    DesiFlix IDs look like ``dsx:c:<base64>`` (catalog) or ``dsx:e:<base64>:S:E``
+    (episode). The payload holds the TMDB key (``#m<id>`` for movies, ``#t<id>``
+    for series), a title and, for episodes, the season/episode pair. Without
+    decoding, no IMDb/TMDB ID exists for the item, so addons that only accept
+    ``tt``/``tmdb:`` (Torrentio, TorrentsDB, Pipe, ...) are never queried.
+    """
+    if not item_id:
+        return None
+    match = _PROVIDER_B64_ID_RE.match(str(item_id))
+    if not match:
+        return None
+    b64 = match.group(1)
+    try:
+        padded = b64 + "=" * (-len(b64) % 4)
+        payload = json.loads(base64.b64decode(padded, altchars=b"-_").decode("utf-8", "ignore"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    info = {}
+    key_match = re.match(r"^#([a-z])(\d+)$", str(payload.get("k") or ""))
+    if key_match:
+        info["tmdb_id"] = key_match.group(2)
+        info["tmdb_type"] = "movie" if key_match.group(1) == "m" else "tv"
+
+    title = payload.get("t") or payload.get("o")
+    if isinstance(title, str) and title.strip():
+        info["title"] = title.strip()
+
+    seasons = payload.get("se")
+    if isinstance(seasons, (list, tuple)) and len(seasons) >= 2:
+        try:
+            info["season"] = int(seasons[0])
+            info["episode"] = int(seasons[1])
+        except (TypeError, ValueError):
+            pass
+
+    kind = str(payload.get("s") or "").lower()
+    if info.get("season") is not None or kind in ("web", "series", "tv"):
+        info["media_type"] = "series"
+    elif info.get("tmdb_type") == "movie":
+        info["media_type"] = "movie"
+
+    return info or None
+
+def _tmdb_id_to_imdb(tmdb_id, tmdb_type="movie"):
+    """Map a TMDB numeric ID to an IMDb ``tt`` ID."""
+    if not tmdb_id:
+        return None
+    tmdb_type = "tv" if tmdb_type == "tv" else "movie"
+    api_key = get_tmdb_api_key()
+    if api_key:
+        try:
+            find_url = f"https://api.themoviedb.org/3/{tmdb_type}/{tmdb_id}?api_key={api_key}&append_to_response=external_ids"
+            data = _get_cached_request(find_url, max_age_hours=METADATA_CACHE_HOURS, timeout=3.0)
+            imdb = (data or {}).get("imdb_id") or ((data or {}).get("external_ids") or {}).get("imdb_id")
+            if imdb and str(imdb).startswith("tt"):
+                return str(imdb)
+        except Exception:
+            pass
+    try:
+        c_type = "series" if tmdb_type == "tv" else "movie"
+        addon_url = f"{_TMDB_META_ADDON}/meta/{c_type}/tmdb:{tmdb_id}.json"
+        data = _get_cached_request(addon_url, max_age_hours=METADATA_CACHE_HOURS, timeout=3.0)
+        imdb = ((data or {}).get("meta") or {}).get("imdb_id")
+        if imdb and str(imdb).startswith("tt"):
+            return str(imdb)
+    except Exception:
+        pass
+    return None
+
 def resolve_to_imdb_id(imdb_id, media_type, title=None):
     """
     Resolves a TMDB ID or raw ID to an IMDB ID using multiple fallback strategies.
@@ -78,6 +175,18 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
         if tt_match:
             return tt_match.group(1)
 
+    custom_info = _decode_provider_item_id(imdb_id)
+    if custom_info:
+        media_type = custom_info.get("media_type") or media_type
+        if custom_info.get("tmdb_id"):
+            resolved = _tmdb_id_to_imdb(custom_info["tmdb_id"], custom_info.get("tmdb_type"))
+            if resolved:
+                return resolved
+        # Custom IDs never contain an IMDb id; continue with a title lookup
+        # instead of returning the unhelpful provider ID.
+        title = title or custom_info.get("title")
+        imdb_id = None
+
     is_tmdb = False
     if imdb_id:
         str_id = str(imdb_id).strip()
@@ -104,7 +213,7 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
                 tmdb_type = "tv" if c_type == "series" else "movie"
                 tmdb_url = f"https://api.themoviedb.org/3/{tmdb_type}/{tmdb_id}?api_key={tmdb_api_key}&append_to_response=external_ids"
                 
-                tmdb_data = _get_cached_request(tmdb_url, max_age_hours=168)
+                tmdb_data = _get_cached_request(tmdb_url, max_age_hours=METADATA_CACHE_HOURS)
                 if tmdb_data and "external_ids" in tmdb_data:
                     resolved_id = tmdb_data["external_ids"].get("imdb_id")
         except Exception as e:
@@ -115,7 +224,7 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
             try:
                 tmdb_id = str(imdb_id).split(":")[-1] if ":" in str(imdb_id) else str(imdb_id).split(".")[-1]
                 addon_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/tmdb:{tmdb_id}.json"
-                addon_data = _get_cached_request(addon_url, max_age_hours=168)
+                addon_data = _get_cached_request(addon_url, max_age_hours=METADATA_CACHE_HOURS)
                 if addon_data and "meta" in addon_data:
                     resolved_id = addon_data["meta"].get("imdb_id")
             except Exception:
@@ -125,7 +234,7 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
     if not resolved_id and title and title != "Loading...":
         try:
             search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(title)}.json"
-            search_data = _get_cached_request(search_url, max_age_hours=168)
+            search_data = _get_cached_request(search_url, max_age_hours=METADATA_CACHE_HOURS)
             if search_data and "metas" in search_data:
                 for m in search_data["metas"]:
                     m_id = m.get("imdb_id") or m.get("id", "")
@@ -142,7 +251,7 @@ def resolve_to_imdb_id(imdb_id, media_type, title=None):
 
 def resolve_all_provider_ids(item_id, media_type="movie", title=None):
     """
-    Returns a list of all distinct provider IDs (IMDB tt..., TMDB, DesiFlix dsf:...)
+    Returns a list of all distinct provider IDs (IMDB tt..., TMDB, DesiFlix dsx:...)
     for the given media item so all stream addons (Torrentio, Castle, DesiFlix, etc.) can be queried.
     Optimized to only perform network lookups if at least one installed stream addon requires that ID prefix.
     """
@@ -165,6 +274,19 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
                 elif ":m:" in str_s:
                     media_type = "movie"
 
+    # Decode provider-encoded IDs (e.g. DesiFlix dsx:c:<base64 JSON>) so the
+    # embedded TMDB id can be offered to addons that do not understand dsx:.
+    for single_id in list(ids):
+        info = _decode_provider_item_id(single_id)
+        if not info:
+            continue
+        if info.get("tmdb_id"):
+            ids.add(f"tmdb:{info['tmdb_id']}")
+        if info.get("media_type"):
+            media_type = info["media_type"]
+        if not title and info.get("title"):
+            title = info["title"]
+
     # Determine what prefixes are actually needed by installed stream addons
     installed_addons = [a for a in database.get_addons() if a.get("enabled", True) and not a.get("manifest_url", "").startswith("builtin://")]
     needed_prefixes = set()
@@ -177,12 +299,11 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
             # Addon with no idPrefixes might support any prefix or default tt
             needed_prefixes.add("tt")
 
-    needs_dsf = any(p.startswith("dsf") for p in needed_prefixes)
     needs_tmdb = any(p.startswith("tmdb") for p in needed_prefixes)
     has_tt = any(str(i).startswith("tt") for i in ids)
 
-    # If we already have tt... and don't need dsf or tmdb, return immediately!
-    if has_tt and not needs_dsf and not needs_tmdb:
+    # If we already have tt... and don't need tmdb, return immediately!
+    if has_tt and not needs_tmdb:
         return list(ids)
 
     def task_imdb():
@@ -190,23 +311,22 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
         if isinstance(res, list): return res
         return [res] if res else []
 
-    def task_dsf():
-        if not needs_dsf:
-            return []
-        has_dsf = any(str(i).startswith("dsf:") for i in ids)
-        if not has_dsf and title and title != "Loading...":
-            try:
-                c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
-                search_url = f"https://desiflix.stremioaddon.workers.dev/catalog/{c_type}/desiflix/search={urllib.parse.quote(title)}.json"
-                data = _get_cached_request(search_url, max_age_hours=168, timeout=2.5)
-                if data and "metas" in data:
-                    for m in data["metas"]:
-                        m_id = m.get("id")
-                        if m_id and str(m_id).startswith("dsf:"):
-                            return [str(m_id)]
-            except Exception:
-                pass
-        return []
+    def _title_match(metas, t_lower):
+        # Prefer an exact (case-insensitive) title match so "Escape" does not
+        # resolve to "Escape Room"; only then accept a contained match.
+        contained = None
+        for m in metas:
+            m_id = m.get("imdb_id") or m.get("id", "")
+            if not str(m_id).startswith("tt"):
+                continue
+            m_name = str(m.get("name", "")).strip().lower()
+            if not m_name:
+                continue
+            if m_name == t_lower:
+                return str(m_id)
+            if contained is None and (m_name in t_lower or t_lower in m_name):
+                contained = str(m_id)
+        return contained
 
     def task_tt():
         has_tt_curr = any(str(i).startswith("tt") for i in ids)
@@ -214,12 +334,11 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
             try:
                 c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                 search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(title)}.json"
-                data = _get_cached_request(search_url, max_age_hours=168, timeout=2.5)
+                data = _get_cached_request(search_url, max_age_hours=METADATA_CACHE_HOURS, timeout=3.0)
                 if data and "metas" in data:
-                    for m in data["metas"]:
-                        m_id = m.get("imdb_id") or m.get("id", "")
-                        if str(m_id).startswith("tt"):
-                            return [str(m_id)]
+                    matched = _title_match(data["metas"], str(title).strip().lower())
+                    if matched:
+                        return [matched]
             except Exception:
                 pass
         return []
@@ -236,7 +355,7 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
                 try:
                     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                     meta_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{root_tt_id}.json"
-                    meta_data = _get_cached_request(meta_url, max_age_hours=168, timeout=2.5)
+                    meta_data = _get_cached_request(meta_url, max_age_hours=METADATA_CACHE_HOURS, timeout=3.0)
                     if meta_data and "meta" in meta_data:
                         t_id = meta_data["meta"].get("id")
                         if t_id and str(t_id).startswith("tmdb:"):
@@ -247,7 +366,7 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
                 try:
                     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                     search_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/catalog/{c_type}/tmdb.top/search={urllib.parse.quote(title)}.json"
-                    search_data = _get_cached_request(search_url, max_age_hours=168, timeout=2.5)
+                    search_data = _get_cached_request(search_url, max_age_hours=METADATA_CACHE_HOURS, timeout=3.0)
                     if search_data and "metas" in search_data:
                         for m in search_data["metas"]:
                             m_id = m.get("id")
@@ -259,24 +378,29 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
         return res
 
     try:
-        f1 = _RESOLVER_EXECUTOR.submit(task_imdb)
-        f2 = _RESOLVER_EXECUTOR.submit(task_dsf)
-        f3 = _RESOLVER_EXECUTOR.submit(task_tt)
-
-        for f in [f1, f2, f3]:
-            try:
-                for r in f.result(timeout=1.5):
-                    if r: ids.add(str(r))
-            except Exception:
-                pass
-
+        futures = [_RESOLVER_EXECUTOR.submit(task_imdb), _RESOLVER_EXECUTOR.submit(task_tt)]
         if needs_tmdb and not any(str(i).startswith("tmdb:") for i in ids):
-            f4 = _RESOLVER_EXECUTOR.submit(task_tmdb, list(ids))
+            futures.append(_RESOLVER_EXECUTOR.submit(task_tmdb, list(ids)))
+        # One bounded wait instead of a short per-future timeout: the HTTP
+        # requests themselves allow up to 3s, so a 1.5s result() timeout used
+        # to silently discard slow but successful lookups.
+        done, _pending = concurrent.futures.wait(futures, timeout=5.0)
+        # Apply the exact resolver first: the Cinemeta title search is only a
+        # fallback and must not add a different tt id ("Escape" -> "Escape
+        # Room") when the item's own id already resolved cleanly.
+        for f in futures:
+            if f not in done and not f.done():
+                continue
             try:
-                for r in f4.result(timeout=1.5):
-                    if r: ids.add(str(r))
+                results = f.result()
             except Exception:
-                pass
+                continue
+            for r in results or []:
+                if not r:
+                    continue
+                if f is futures[1] and any(str(i).startswith("tt") for i in ids):
+                    continue
+                ids.add(str(r))
     except RuntimeError:
         pass
 
@@ -334,7 +458,7 @@ def resolve_to_tmdb_id(item_id, media_type="movie", title=None):
     if clean_tt and api_key:
         try:
             find_url = f"https://api.themoviedb.org/3/find/{clean_tt}?api_key={api_key}&external_source=imdb_id"
-            data = _get_cached_request(find_url, max_age_hours=168)
+            data = _get_cached_request(find_url, max_age_hours=METADATA_CACHE_HOURS)
             if data:
                 if c_type == "tv" and data.get("tv_results"):
                     return str(data["tv_results"][0]["id"])
@@ -351,7 +475,7 @@ def resolve_to_tmdb_id(item_id, media_type="movie", title=None):
     if title and title != "Loading..." and api_key:
         try:
             search_url = f"https://api.themoviedb.org/3/search/{c_type}?api_key={api_key}&query={urllib.parse.quote(title)}"
-            data = _get_cached_request(search_url, max_age_hours=168)
+            data = _get_cached_request(search_url, max_age_hours=METADATA_CACHE_HOURS)
             if data and data.get("results"):
                 return str(data["results"][0]["id"])
         except Exception:
@@ -392,7 +516,7 @@ def fetch_credits_and_companies(item_id, media_type="movie", title=None):
     try:
         if c_type == "tv":
             url = f"https://api.themoviedb.org/3/tv/{tmdb_id}?api_key={api_key}&append_to_response=aggregate_credits,credits"
-            data = _get_cached_request(url, max_age_hours=168)
+            data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS)
             if not data:
                 return empty_result
 
@@ -511,7 +635,7 @@ def fetch_credits_and_companies(item_id, media_type="movie", title=None):
         else:
             # Movie credits
             url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={api_key}&append_to_response=credits"
-            data = _get_cached_request(url, max_age_hours=168)
+            data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS)
             if not data:
                 return empty_result
 
@@ -599,7 +723,7 @@ def fetch_person_details(person_id):
 
     try:
         url = f"https://api.themoviedb.org/3/person/{person_id}?api_key={api_key}&append_to_response=combined_credits"
-        data = _get_cached_request(url, max_age_hours=168)
+        data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS)
         if not data:
             return None
 
@@ -709,16 +833,16 @@ def fetch_company_details(entity_id, entity_type="company"):
         info_data = None
         if is_network:
             info_url = f"https://api.themoviedb.org/3/network/{entity_id}?api_key={api_key}"
-            info_data = _get_cached_request(info_url, max_age_hours=168, timeout=5.0)
+            info_data = _get_cached_request(info_url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0)
             if not info_data:
-                info_data = _get_cached_request(f"https://api.themoviedb.org/3/company/{entity_id}?api_key={api_key}", max_age_hours=168, timeout=5.0)
+                info_data = _get_cached_request(f"https://api.themoviedb.org/3/company/{entity_id}?api_key={api_key}", max_age_hours=METADATA_CACHE_HOURS, timeout=5.0)
                 if info_data:
                     is_network = False
         else:
             info_url = f"https://api.themoviedb.org/3/company/{entity_id}?api_key={api_key}"
-            info_data = _get_cached_request(info_url, max_age_hours=168, timeout=5.0)
+            info_data = _get_cached_request(info_url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0)
             if not info_data:
-                info_data = _get_cached_request(f"https://api.themoviedb.org/3/network/{entity_id}?api_key={api_key}", max_age_hours=168, timeout=5.0)
+                info_data = _get_cached_request(f"https://api.themoviedb.org/3/network/{entity_id}?api_key={api_key}", max_age_hours=METADATA_CACHE_HOURS, timeout=5.0)
                 if info_data:
                     is_network = True
 
@@ -732,8 +856,10 @@ def fetch_company_details(entity_id, entity_type="company"):
         raw_tv = {}
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                fut_movies = executor.submit(_get_cached_request, movie_url, 168, None, False, 5.0)
-                fut_tv = executor.submit(_get_cached_request, tv_url, 168, None, False, 5.0)
+                fut_movies = executor.submit(
+                    _get_cached_request, movie_url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0)
+                fut_tv = executor.submit(
+                    _get_cached_request, tv_url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0)
                 raw_movies = fut_movies.result() or {}
                 raw_tv = fut_tv.result() or {}
         except RuntimeError:
@@ -814,6 +940,241 @@ def fetch_company_details(entity_id, entity_type="company"):
         print(f"[TMDB] Failed to fetch company details for {entity_id} ({entity_type}): {e}")
         return None
 
+_TMDB_MOVIE_GENRES = {
+    28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
+    99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
+    27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance",
+    878: "Science Fiction", 10770: "TV Movie", 53: "Thriller", 10752: "War",
+    37: "Western",
+}
+
+_TMDB_TV_GENRES = {
+    10759: "Action", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary",
+    18: "Drama", 10751: "Family", 9648: "Mystery", 10765: "Sci-Fi",
+    10766: "Soap", 10767: "Talk-Show", 10768: "War", 10762: "Family",
+    10763: "News", 10764: "Reality-TV", 37: "Western",
+}
+
+
+def _tmdb_genre_id(genre_name, kind):
+    if not genre_name:
+        return None
+    target = str(genre_name).strip().lower()
+    table = _TMDB_MOVIE_GENRES if kind == "movie" else _TMDB_TV_GENRES
+    for gid, name in table.items():
+        if name.lower() == target:
+            return gid
+    if kind == "tv" and target == "science fiction":
+        return 10765
+    return None
+
+
+def fetch_country_catalog(country, media_type="all", genre=None, year=None,
+                          sort_mode=None, language=None, limit=36, page=1):
+    """Fetch country-specific titles from TMDb's discover endpoint.
+
+    Country filtering in the catalog UI is metadata-based, and most Stremio
+    addons cannot filter by country at all. TMDb can, via
+    ``with_origin_country``. Returns item dicts shaped like the ones produced
+    by ``fetch_company_details``, or ``[]`` when the country has no known ISO
+    code or the requests fail.
+    """
+    items, _total_pages = fetch_country_catalog_page(
+        country=country, media_type=media_type, genre=genre, year=year,
+        sort_mode=sort_mode, language=language, limit=limit, page=page,
+    )
+    return items
+
+
+def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=None,
+                               sort_mode=None, language=None, limit=50, page=1,
+                               exclude_ids=None):
+    """One TMDb discover page for a country and/or an original language.
+
+    Returns ``(items, total_pages)``. The deeper pages are what turn a country or
+    language selection into a real browse instead of a single page of results,
+    and each one costs a request per media type, so the caller only asks for the
+    next page when the user reaches the bottom.
+    """
+    try:
+        page = max(1, int(page or 1))
+    except (TypeError, ValueError):
+        page = 1
+    if page > _MAX_DISCOVER_PAGES:
+        return [], 0
+
+    iso = database.get_country_iso_code(country) if country else None
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return [], 0
+
+    mt = str(media_type or "all").strip().lower()
+    if mt in ("all", "discover", "none", "", "movie_series", "movies_series", "movie+series", "movies+series"):
+        kinds = ["movie", "tv"]
+    elif mt in ("movie", "movies", "film", "films"):
+        kinds = ["movie"]
+    elif mt in ("series", "show", "shows", "tvshow", "tvshows"):
+        kinds = ["tv"]
+    else:
+        return [], 0
+
+    lang_code = database.get_language_code(language) if language else None
+    if genre and not lang_code and database.is_language_genre(genre):
+        lang_code = database.get_language_code(genre)
+        genre = None
+    if not iso and not lang_code:
+        return [], 0
+
+    country_name = (database.normalize_country_name(country) or str(country).strip()) if country else None
+    language_name = language or (database.LANGUAGE_CODE_MAP.get(lang_code) if lang_code else None)
+    skip_ids = set(exclude_ids or ())
+
+    def _sort_by(kind):
+        if sort_mode == "Recent":
+            return "primary_release_date.desc" if kind == "movie" else "first_air_date.desc"
+        if sort_mode == "Featured":
+            return "vote_average.desc"
+        return "popularity.desc"
+
+    def _url(kind, origin_lang=None):
+        params = {
+            "api_key": api_key,
+            "sort_by": _sort_by(kind),
+            "include_adult": "false",
+            "page": page,
+        }
+        if iso and not origin_lang:
+            params["with_origin_country"] = iso
+            if lang_code:
+                params["with_original_language"] = lang_code
+        else:
+            # Language-only request: with_origin_country AND with_original_language
+            # would drop the titles that omit the country field entirely, which is
+            # exactly the gap this fan-out exists to fill.
+            params["with_original_language"] = origin_lang or lang_code
+        gid = _tmdb_genre_id(genre, kind)
+        if gid:
+            params["with_genres"] = gid
+        if year and str(year).strip().isdigit():
+            params["primary_release_year" if kind == "movie" else "first_air_date_year"] = str(year).strip()
+        if sort_mode == "Featured":
+            params["vote_count.gte"] = 100
+        return f"https://api.themoviedb.org/3/discover/{kind}?" + urllib.parse.urlencode(params)
+
+    # Countries whose cinema spans several languages (India, Pakistan, Nigeria)
+    # label titles per language instead of per origin country, so a handful of
+    # extra language-wide pages is what actually fills the grid. Cached forever
+    # upstream, and each filter combination only pays for it once. Deeper pages
+    # stay on the primary query so scrolling never multiplies the requests.
+    fanout_langs = [] if (lang_code or page > 1 or not iso) else database.get_fetch_languages(country)[:_MAX_COUNTRY_LANG_PAGES]
+    requests = [(kind, _url(kind)) for kind in kinds]
+    requests += [(kind, _url(kind, lang)) for lang in fanout_langs for kind in kinds]
+
+    # Cached pages answer first and cost nothing. Read every URL through the
+    # cache before asking for anything, then fetch only the pages this filter does
+    # not already have: a filter the user has browsed fills the row from disk
+    # without opening a single request. A row's own order stays the popularity
+    # sort at the end of this function - "cached before network" is a promise
+    # about when results reach the UI, made in window.py's delivery slices, not
+    # one that should out-rank what TMDb says is most relevant.
+    cached_pages = []
+    missing = []
+    for kind, url in requests:
+        try:
+            page_data = _get_cached_request(
+                url, max_age_hours=METADATA_CACHE_HOURS, cache_only=True, timeout=5.0)
+        except Exception:
+            page_data = None
+        if page_data:
+            cached_pages.append((kind, page_data))
+        else:
+            missing.append((kind, url))
+
+    fetched_pages = []
+    if missing:
+        try:
+            # TMDb answers one filter with up to eight discover URLs. api.py lets a
+            # host keep three requests in flight and paces their starts, so the pool
+            # is sized to that window: enough to finish the fan-out inside the
+            # discover batch deadline, never more than the window allows, and the
+            # two primary URLs are submitted first so they take the first slots.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(missing))) as executor:
+                futures = [
+                    (kind, executor.submit(
+                        _get_cached_request, url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0))
+                    for kind, url in missing]
+                for kind, future in futures:
+                    try:
+                        fetched_pages.append((kind, future.result() or {}))
+                    except Exception:
+                        fetched_pages.append((kind, {}))
+        except RuntimeError:
+            pass
+
+    raw = {}
+    for kind, page_data in cached_pages + fetched_pages:
+        raw.setdefault(kind, []).append(page_data)
+
+    total_pages = 0
+    for pages in raw.values():
+        for page_data in pages:
+            try:
+                total_pages = max(total_pages, int((page_data or {}).get("total_pages") or 0))
+            except (TypeError, ValueError):
+                continue
+    total_pages = min(total_pages, _MAX_DISCOVER_PAGES)
+
+    items = []
+    seen_ids = set()
+    for kind in kinds:
+        app_type = "movie" if kind == "movie" else "series"
+        for page_data in (raw.get(kind) or []):
+            for entry in (page_data or {}).get("results", []) or []:
+                mid = entry.get("id")
+                poster_path = entry.get("poster_path")
+                if not mid or not poster_path or mid in seen_ids:
+                    continue
+                if skip_ids and f"tmdb:{mid}" in skip_ids:
+                    continue
+                seen_ids.add(mid)
+                title = (
+                    entry.get("title") or entry.get("name")
+                    or entry.get("original_title") or entry.get("original_name")
+                    or "Unknown"
+                )
+                rel_date = entry.get("release_date") or entry.get("first_air_date") or ""
+                year_str = rel_date[:4] if len(rel_date) >= 4 else ""
+                poster = f"https://image.tmdb.org/t/p/w300{poster_path}"
+                backdrop_path = entry.get("backdrop_path")
+                genre_ids = [g for g in (entry.get("genre_ids") or []) if g in TMDB_GENRES]
+                vote_average = entry.get("vote_average")
+                items.append({
+                    "id": f"tmdb:{mid}",
+                    "raw_id": mid,
+                    "title": title,
+                    "name": title,
+                    "type": app_type,
+                    "media_type": app_type,
+                    "poster": poster,
+                    "medium_cover_image": poster,
+                    "background": f"https://image.tmdb.org/t/p/w780{backdrop_path}" if backdrop_path else "",
+                    "year": year_str,
+                    "rating": round(float(vote_average), 1) if vote_average else None,
+                    "vote_count": entry.get("vote_count", 0),
+                    "popularity": entry.get("popularity", 0.0),
+                    "release_date": rel_date,
+                    "overview": (entry.get("overview") or "").strip(),
+                    "country": country_name or "",
+                    "countries": [country_name] if country_name else [],
+                    "language": database.LANGUAGE_CODE_MAP.get(str(entry.get("original_language") or "").lower()) or language_name or "",
+                    "genres": [TMDB_GENRES[g] for g in genre_ids],
+                    "genre_ids": genre_ids,
+                    "original_language": entry.get("original_language") or "",
+                })
+
+    items.sort(key=lambda it: (it.get("popularity", 0.0), it.get("vote_count", 0)), reverse=True)
+    return items[:limit], total_pages
+
 TMDB_GENRES = {
     28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
     99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
@@ -833,7 +1194,7 @@ def fetch_collection_details(cid, title=None, poster=None):
     if not api_key:
         return None
     url = f"https://api.themoviedb.org/3/collection/{clean_id}?api_key={api_key}"
-    data = _get_cached_request(url, max_age_hours=168)
+    data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS)
     if not data or not isinstance(data, dict) or not data.get("name"):
         return None
 
@@ -945,7 +1306,7 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None):
     if clean_tt:
         try:
             find_url = f"https://api.themoviedb.org/3/find/{clean_tt}?api_key={api_key}&external_source=imdb_id"
-            data = _get_cached_request(find_url, max_age_hours=168)
+            data = _get_cached_request(find_url, max_age_hours=METADATA_CACHE_HOURS)
             if data:
                 if c_type == "tv" and data.get("tv_results"):
                     result_item = data["tv_results"][0]
@@ -962,7 +1323,7 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None):
             try:
                 tm_type = "tv" if c_type == "tv" else "movie"
                 url = f"https://api.themoviedb.org/3/{tm_type}/{tmdb_id}?api_key={api_key}"
-                data = _get_cached_request(url, max_age_hours=168)
+                data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS)
                 if data:
                     result_item = data
             except Exception:
@@ -1035,7 +1396,7 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
     if not tmdb_id:
         try:
             addon_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{media_type}/{urllib.parse.quote(str(item_id), safe=':')}.json"
-            addon_data = _get_cached_request(addon_url, max_age_hours=168)
+            addon_data = _get_cached_request(addon_url, max_age_hours=METADATA_CACHE_HOURS)
             if addon_data and "meta" in addon_data:
                 meta = addon_data["meta"]
                 return {
@@ -1061,7 +1422,7 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
     if api_key:
         try:
             url = f"https://api.themoviedb.org/3/{c_type}/{tmdb_id}?api_key={api_key}&append_to_response=external_ids,credits,videos,content_ratings,release_dates"
-            data = _get_cached_request(url, max_age_hours=168)
+            data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS)
         except Exception:
             pass
 
@@ -1069,7 +1430,7 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
         # Fallback to public Stremio TMDB addon
         try:
             addon_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{media_type}/tmdb:{tmdb_id}.json"
-            addon_data = _get_cached_request(addon_url, max_age_hours=168)
+            addon_data = _get_cached_request(addon_url, max_age_hours=METADATA_CACHE_HOURS)
             if addon_data and "meta" in addon_data:
                 meta = addon_data["meta"]
                 return {
@@ -1145,7 +1506,7 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
         def _fetch_season_episodes(s_num):
             try:
                 s_url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{s_num}?api_key={api_key}"
-                s_data = _get_cached_request(s_url, max_age_hours=168)
+                s_data = _get_cached_request(s_url, max_age_hours=METADATA_CACHE_HOURS)
                 out = []
                 if s_data and s_data.get("episodes"):
                     for ep in s_data["episodes"]:

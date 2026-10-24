@@ -22,14 +22,14 @@ import os
 import json
 import datetime
 from gettext import gettext as _
-from .utils import logger, is_local_path, idle_add_once, open_uri
+from .utils import logger, is_local_path, idle_add_once
 
 gi.require_version("Adw", "1")
 gi.require_version("Gio", "2.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("GLib", "2.0")
 gi.require_version("Gtk", "4.0")
-from gi.repository import Adw, Gio, Gdk, GLib, Gtk
+from gi.repository import Adw, Gio, Gdk, Gtk
 
 
 @Gtk.Template(resource_path="/io/github/fastrizwaan/PopcornBox/history.ui")
@@ -86,6 +86,8 @@ class HistoryDialog(Adw.Dialog):
                 for line in f:
                     try:
                         entry = json.loads(line)
+                        if not isinstance(entry, dict):
+                            continue
                         file_path = entry.get("path")
                         timestamp = entry.get("time")
                         if not isinstance(timestamp, (int, float)):
@@ -97,7 +99,8 @@ class HistoryDialog(Adw.Dialog):
                         dedup_key = (day_key, file_path)
                         unique_entries.pop(dedup_key, None)
                         unique_entries[dedup_key] = entry
-                    except (json.JSONDecodeError, ValueError, TypeError):
+                    except (json.JSONDecodeError, ValueError, TypeError,
+                            OverflowError, OSError):
                         pass
 
             ordered_entries = list(unique_entries.values())
@@ -131,7 +134,9 @@ class HistoryDialog(Adw.Dialog):
                     group = created_groups[day_key]
 
                 row = Adw.ActionRow(
-                    title=GLib.markup_escape_text(file_title),
+                    # ActionRow.title is plain text unless use-markup is set;
+                    # escaping here would show "&amp;" for titles like "A & B".
+                    title=file_title,
                     title_lines=1,
                     tooltip_text=file_title,
                     activatable=True,
@@ -147,8 +152,8 @@ class HistoryDialog(Adw.Dialog):
 
                 rm_btn.connect(
                     "clicked",
-                    lambda _btn, r=row, p=path, dk=day_key, t=timestamp: (
-                        self._rm_entry_from_hist(r, p, dk, t)
+                    lambda _btn, r=row, p=path, dk=day_key: (
+                        self._rm_entry_from_hist(r, p, dk)
                     ),
                 )
 
@@ -233,11 +238,28 @@ class HistoryDialog(Adw.Dialog):
         elif isinstance(path, str) and path.startswith(("http://", "https://")):
             menu.append(_("Open Stream in Browser"), "row.open_location")
 
+        previously_open = getattr(row, "_context_popover", None)
+        if previously_open is not None:
+            previously_open.popdown()
+            previously_open.unparent()
+
         popover = Gtk.PopoverMenu.new_from_model(menu)
         popover.set_parent(row)
         popover.set_has_arrow(False)
         popover.set_autohide(True)
-        row.connect("unrealize", lambda *_: (popover.unrealize(), popover.unparent()))
+        row._context_popover = popover
+
+        if not getattr(row, "_context_cleanup_connected", False):
+            # Rows are right-clicked repeatedly; only keep one popover parented
+            # per row instead of leaking one per click until the row dies.
+            def _drop_context_popover(*_args):
+                existing = getattr(row, "_context_popover", None)
+                row._context_popover = None
+                if existing is not None:
+                    existing.unparent()
+
+            row.connect("unrealize", _drop_context_popover)
+            row._context_cleanup_connected = True
 
         action_group = Gio.SimpleActionGroup.new()
 
@@ -272,21 +294,29 @@ class HistoryDialog(Adw.Dialog):
             logger.error(f"Error playing {file_path}: {e}")
             idle_add_once(self._show_toast, f"{repr(e)}")
 
-    def _rm_entry_from_hist(self, row, file_path, day_key, timestamp):
+    def _rm_entry_from_hist(self, row, file_path, day_key):
         try:
             updated_lines = []
             with open(self._hist_path, "r", encoding="utf-8") as f:
                 for line in f:
                     try:
                         entry = json.loads(line)
+                        if not isinstance(entry, dict):
+                            updated_lines.append(line)
+                            continue
+                        entry_time = entry.get("time")
                         if (
                             entry.get("path") == file_path
-                            and entry.get("time") == timestamp
+                            and isinstance(entry_time, (int, float))
+                            and datetime.datetime.fromtimestamp(entry_time).strftime("%Y-%m-%d") == day_key
                         ):
+                            # The list shows one deduplicated row per day/path,
+                            # so every matching line must go or the entry
+                            # reappears on the next populate.
                             continue
                         updated_lines.append(line)
                     except json.JSONDecodeError:
-                        pass
+                        updated_lines.append(line)
 
             import tempfile
             hist_dir = os.path.dirname(self._hist_path)

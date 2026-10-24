@@ -110,7 +110,7 @@ class TestPersonPage(unittest.TestCase):
         }
 
         with patch("src.person_page.load_image_into_picture"):
-            page._populate_ui(mock_data)
+            page._populate_ui(mock_data, page._fetch_gen)
 
         self.assertEqual(page.name_label.get_text(), "Sandra Lee")
         self.assertIn("Acting", page.meta_label.get_text())
@@ -145,7 +145,7 @@ class TestPersonPage(unittest.TestCase):
         }
 
         with patch("src.person_page.load_image_into_picture"):
-            page._populate_ui(mock_data)
+            page._populate_ui(mock_data, page._fetch_gen)
 
         # Initially 'all' filter has 3 children
         children_count = 0

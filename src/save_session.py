@@ -26,11 +26,13 @@ from .preferences import settings
 def save_last_playlist_file(win_mpv):
     """Saves the current playlist to a m3u8 file."""
 
+    tmp_name = None
     try:
         win_mpv.write_watch_later_config()
         import tempfile
         playlist_dir = os.path.dirname(LAST_PLAYLIST_FILE)
         with tempfile.NamedTemporaryFile("w", dir=playlist_dir, delete=False, encoding="utf-8", suffix=".tmp") as f:
+            tmp_name = f.name
             if not win_mpv.idle_active:
                 f.write("#EXTM3U\n")
                 for item in win_mpv.playlist:
@@ -46,11 +48,15 @@ def save_last_playlist_file(win_mpv):
 
                     f.write(f"#EXTINF:{-1},{title}\n")
                     f.write(f"{path}\n")
-            tmp_name = f.name
         os.replace(tmp_name, LAST_PLAYLIST_FILE)
 
     except Exception as e:
         logger.error(f"Error saving last playlist file: {e}", exc_info=True)
+        try:
+            if tmp_name and os.path.exists(tmp_name):
+                os.remove(tmp_name)
+        except Exception:
+            pass
 
 
 def restore_last_playlist(window, app, win_mpv):

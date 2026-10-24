@@ -26,6 +26,14 @@ class TestIdentifiedFixes(unittest.TestCase):
     @patch("logging.debug")
     def test_run_metadata_hydration_worker_logging_debug(self, mock_logging_debug):
         """Verify _run_metadata_hydration_worker handles exceptions via logging.debug rather than crashing on NameError."""
+        # The queue is module-global and other tests may have left items in it;
+        # drain it so the first item processed is deterministically ours.
+        while True:
+            try:
+                api._HYDRATION_QUEUE.get_nowait()
+            except Exception:
+                break
+
         # Enqueue an item that causes an exception inside the try block
         with patch.object(database, "get_cached_metadata", side_effect=Exception("DB simulated error")):
             api._HYDRATION_QUEUE.put(("tt_test_error", "movie", {}))
@@ -47,8 +55,11 @@ class TestIdentifiedFixes(unittest.TestCase):
             finally:
                 pass
             mock_logging_debug.assert_called()
-            args, _ = mock_logging_debug.call_args
-            self.assertIn("Metadata hydration error for tt_test_error", args[0])
+            logged = [str(call.args[0]) for call in mock_logging_debug.call_args_list if call.args]
+            self.assertTrue(
+                any("Metadata hydration error for tt_test_error" in message for message in logged),
+                f"expected hydration error for tt_test_error, got {logged}",
+            )
 
     @patch.object(database, "add_addon")
     def test_check_addons_health_background_calls_add_addon(self, mock_add_addon):

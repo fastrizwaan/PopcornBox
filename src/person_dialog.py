@@ -12,6 +12,7 @@ from gi.repository import Gtk, Adw, GLib, Pango
 import threading
 from .movie_widget import MovieWidget, load_image_into_picture
 from .tmdb_helper import fetch_person_details
+from .utils import logger
 
 
 class PersonDetailDialog(Adw.Dialog):
@@ -27,6 +28,8 @@ class PersonDetailDialog(Adw.Dialog):
         self.person_name = person_name
         self.photo_url = photo_url
         self._bio_expanded = False
+        self._closed = False
+        self.connect("closed", self._on_closed)
 
         self.set_title(person_name or "Person Details")
         self.set_content_width(840)
@@ -163,6 +166,9 @@ class PersonDetailDialog(Adw.Dialog):
         # Fetch details asynchronously
         threading.Thread(target=self._fetch_details_thread, daemon=True).start()
 
+    def _on_closed(self, *_args):
+        self._closed = True
+
     def _on_toggle_bio(self, btn):
         self._bio_expanded = not self._bio_expanded
         if self._bio_expanded:
@@ -175,10 +181,17 @@ class PersonDetailDialog(Adw.Dialog):
             btn.set_label("Read more")
 
     def _fetch_details_thread(self):
-        data = fetch_person_details(self.person_id)
+        try:
+            data = fetch_person_details(self.person_id)
+        except Exception as e:
+            logger.error(f"Error fetching person details: {e}", exc_info=True)
+            data = None
         GLib.idle_add(self._populate_ui, data)
 
     def _populate_ui(self, data):
+        if self._closed:
+            return False
+
         self.spinner.stop()
         self.loading_box.set_visible(False)
 

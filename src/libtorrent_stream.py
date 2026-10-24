@@ -58,6 +58,7 @@ class TorrentStreamEngine:
         self.stream_url = None
 
         self.lock = threading.RLock()
+        self._resume_lock = threading.Lock()
         self.ready_event = threading.Event()
         self.stopped = threading.Event()
         self.error = None
@@ -406,7 +407,8 @@ class TorrentStreamEngine:
         self.http_thread.start()
 
     def _metadata_worker(self):
-        loops = 0
+        next_announce_at = time.time() + 5.0
+        announce_interval = 5.0
         try:
             while not self.stopped.is_set():
                 status = self._status()
@@ -451,8 +453,10 @@ class TorrentStreamEngine:
                     from . import database
                     database.add_download(self.info_hash, name, self.magnet_link, self.file_index, self.item_id, self.media_type, getattr(self, 'season', None), getattr(self, 'episode', None))
                     return
-                loops += 1
-                if loops % 20 == 0:  # Every 5 seconds (20 * 0.25s)
+                # Re-announce aggressively right after the magnet is added, but
+                # back off so a slow metadata fetch does not hammer every
+                # tracker every five seconds.
+                if time.time() >= next_announce_at:
                     try:
                         if hasattr(self.handle, 'force_reannounce'):
                             self.handle.force_reannounce(0, -1)
@@ -460,6 +464,8 @@ class TorrentStreamEngine:
                             self.handle.force_dht_announce()
                     except Exception:
                         pass
+                    announce_interval = min(announce_interval * 2, 30.0)
+                    next_announce_at = time.time() + announce_interval
                 time.sleep(0.25)
         except Exception as exc:
             self.error = exc
@@ -1130,6 +1136,12 @@ class TorrentStreamEngine:
     def _save_resume_data(self, timeout=0.5):
         if not self.handle or not self.lt:
             return
+        # The monitor saves periodically while stop() saves on shutdown; two
+        # concurrent saves race on the alert queue and the temp file.
+        with self._resume_lock:
+            self._save_resume_data_locked(timeout)
+
+    def _save_resume_data_locked(self, timeout):
         try:
             flags = getattr(self.lt.resume_data_flags_t, "save_info_dict", 1)
             self.handle.save_resume_data(flags)

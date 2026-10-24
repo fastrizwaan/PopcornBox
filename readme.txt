@@ -164,12 +164,102 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
 8. STREAM & IMAGE HANDLING
 --------------------------------------------------------------------------------
 - Cancel pending image downloads (`cancel_pending_image_downloads()`) whenever
-  switching tabs or navigating views to avoid background network/CPU waste.
+  switching tabs or navigating views to avoid background network/CPU waste. That
+  also drops the pending blank-tile repairs below: a rebuilt grid fetches its own
+  pictures.
+- A CARD WITH NO PICTURE IS A BUG, NOT AN END STATE. `movie_widget` keeps a repair
+  queue of the tiles that ended up empty - the host's image window ran out of
+  patience, the CDN timed out, the response could not be decoded - and one slow
+  GLib tick re-issues them, a slice at a time, through the same polite window.
+  Tiles with no poster URL at all are queued too: `fetch_fallback_poster()` notes
+  the card when every lookup came back empty, and the tick re-runs that lookup, so
+  a title the addons could not answer once gets asked again later. Because it is
+  the same code path, a repair costs cached reads unless the provider really has
+  something new. The attempt count lives on the tile, so a dead URL gets a bounded
+  number of tries and then rests; a tile that filled itself, moved on to another
+  picture or was discarded with its card simply leaves the queue. A re-ask only
+  paints the tile while it still carries the same card's stamp, so a widget the
+  flowbox recycled for another title is never painted with the old poster.
+- FAILED IMAGE URLs EXPIRE. `FAILED_IMAGE_URLS` remembers the last failure per URL
+  for `_FAILED_IMAGE_RETRY_SECONDS`, it is not a process-lifetime ban: one
+  timeout during a fast scroll used to leave that poster blank until the app was
+  restarted. A successful download clears the mark.
+- When the hydrator resolves a poster for a card whose own URL never painted
+  anything, `_apply_resolved_meta` repaints the tile - but only while it is still
+  blank, so a card that already shows a picture is never flickered.
 - Streaming providers and torrent resolution must run asynchronously with clean
   timeouts and failover mechanisms.
 
 --------------------------------------------------------------------------------
-9. TESTING & VERIFICATION
+9. GENTLE FETCHING (DO NOT HAMMER SERVERS)
+--------------------------------------------------------------------------------
+- EVERY REQUEST PACES ITS HOST. Catalog, metadata and manifest traffic goes
+  through `api._acquire_catalog_window(host)` inside `_get_cached_request()`;
+  posters and backdrops go through `api._acquire_image_window(host)` in
+  `src/movie_widget.py`; streams go through `api._acquire_provider_slot(host)`.
+  All three pace themselves on ONE per-host clock (`_PROVIDER_LAST_REQUEST_TIME`),
+  so a host never sees the rates added together. Feature modules must never issue
+  a bare `urlopen`.
+- THE CATALOG WINDOW IS BOUNDED, NOT SERIAL: at most `_CATALOG_HOST_PERMITS` (3)
+  requests in flight per host, starts at least `_CATALOG_MIN_INTERVAL` (250 ms)
+  apart, queueing capped at `_CATALOG_SLOT_WAIT` (4 s). Streams stay stricter at
+  one request per host with 400 ms spacing. Images get their own class: TWO
+  posters per host at a time (`_IMAGE_HOST_PERMITS`), 60 ms spacing, and a
+  generous 15 s queue because a narrow window makes the last tile of a page wait
+  for the whole page. One permit was tried and measured - it serialised a page of
+  posters to ~0.8 s each - so two is the settled size; change the number, do not
+  remove the window. A poster that still misses its slot stays blank and is
+  retried by the repair tick in `src/movie_widget.py` (section 8).
+- DON'T SHRINK THE WINDOW TO "FIX" MISSING CARDS. A serial window was measured
+  against a real addon (1.2 s responses) and it dropped 3 of 6 catalog rows: the
+  polite queue outlived the discover loader's deadline. If a filter needs more
+  results, fetch fewer but DEEPER pages (`_MAX_DISCOVER_PAGES`), cache them, and
+  ask for the next page when the user scrolls - do not widen concurrency.
+- CARD METADATA IS ASKED FOR ONCE, EVER. `api.METADATA_CACHE_HOURS` is `None`:
+  discover pages, meta responses, poster lookups and TMDb id resolutions, plus the
+  `catalog_cache` rows they build (`database.CATALOG_CACHE_HOURS`), never expire,
+  so a card the user has already seen costs the provider nothing a second time.
+  Poster bytes and `metadata_cache` rows were always permanent; this makes the
+  JSON that points at them permanent too. Everything that genuinely changes keeps
+  an explicit TTL: streams and subtitles 24 h, IPTV playlists 24 h, searches 2 h,
+  the addon directory 12 h, manifests a week. `api._prune_disk_cache_if_needed()`
+  therefore no longer deletes files for being old - freshness is the reader's
+  decision - and only trims past `_DISK_CACHE_MAX_BYTES`, least recently read
+  first. Never shorten a metadata TTL to make a grid feel fresher, and never make
+  the pruner age-based again: that is how the same posters get re-requested.
+- A HOST THAT SAYS "SLOW DOWN" IS BELIEVED: HTTP 429 with `Retry-After`, and
+  provider rate-limit notices, set a cooldown via `api.set_provider_cooldown()`.
+  While a host cools, the app serves the disk cache instead of requesting, and
+  cache TTLs are never cut to dodge it or to squeeze out more cards.
+- WAITING IS FOR BACKGROUND THREADS ONLY. The GTK main thread never sleeps for
+  pacing: it makes one non-blocking attempt and is answered from cache (or with
+  nothing). Every fetch belongs on a daemon thread, so reaching that path is a
+  bug in the caller, not a policy to widen.
+- DEPTH OVER BREADTH WHEN A GRID RUNS DRY. `tmdb_helper._MAX_DISCOVER_PAGES` (20)
+  is how deep one filter browses and each discover row renders 36 cards, so a grid
+  reaches roughly 700 cards before TMDb says the filter is over. That costs two
+  paced requests per page, cached forever - measured live at 423 cards over 30
+  requests with a 250 ms gap between starts. When someone reports "fetching
+  stopped", raise this depth; do not raise concurrency to get there faster.
+- CACHED FIRST, NETWORK AFTER. Read the cache before the network and never ask for
+  a page already held fresh. `fetch_country_catalog_page()` probes every URL with
+  `cache_only=True` and fetches only the gaps, so re-browsing a filter costs zero
+  requests. The Unique loader submits the local sources first and appends a
+  network slice behind the cached slices it is waiting on, so the grid fills from
+  what the machine already has. Inside one row the order stays TMDb's popularity
+  sort - cached-before-network is about when results reach the UI, not a ranking.
+- SIZE FAN-OUT POOLS TO THE WINDOW where they are created (see the TMDb
+  country/language fan-out in `src/tmdb_helper.py`), so workers queue on the
+  window instead of piling up behind it, and submit the must-have URLs first so
+  they get the early slots when a shed happens.
+- BUDGET CHECK before adding any fetch: how many requests does one filter, tab
+  switch or scroll make, per host? Stay inside the pacing rate, cache the result
+  (forever for catalog pages and card metadata, 24 h for streams), propagate
+  `is_cancelled` so an abandoned batch stops queuing, and verify against the live
+  endpoint with recorded request times.
+
+--------------------------------------------------------------------------------
+10. TESTING & VERIFICATION
 --------------------------------------------------------------------------------
 - When modifying category menus, discover pages, or catalog logic, always run:
     python3 -m unittest test_category_menus.py test_continue_watching.py test_collections.py

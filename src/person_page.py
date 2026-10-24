@@ -14,7 +14,7 @@ import urllib.parse
 from gettext import gettext as _
 from .movie_widget import MovieWidget, load_image_into_picture, cancel_pending_image_downloads
 from .tmdb_helper import fetch_person_details
-from .utils import open_uri
+from .utils import open_uri, logger
 
 
 class PersonPage(Gtk.Overlay):
@@ -249,9 +249,11 @@ class PersonPage(Gtk.Overlay):
             load_image_into_picture(self.photo_url, self.portrait_pic, width=180, height=260)
             load_image_into_picture(self.photo_url, self.backdrop_pic, width=1280, height=720, crop=False)
 
-        # Fetch details asynchronously
-        self._fetch_thread = threading.Thread(target=self._fetch_details_thread, daemon=True)
-        self._fetch_thread.start()
+        # Fetch details asynchronously. A generation retires responses from
+        # fetches started before a reload, so a slow request cannot overwrite
+        # newer data (and repeated reloads cannot race each other).
+        self._fetch_gen = 0
+        self._start_fetch()
 
     def _on_back_clicked(self):
         self.destroy_page()
@@ -267,7 +269,7 @@ class PersonPage(Gtk.Overlay):
         self.spinner.start()
         self.hero_box.set_visible(False)
         self.filmo_section.set_visible(False)
-        threading.Thread(target=self._fetch_details_thread, daemon=True).start()
+        self._start_fetch()
 
     def _on_toggle_bio(self, btn):
         self._bio_expanded = not self._bio_expanded
@@ -280,13 +282,25 @@ class PersonPage(Gtk.Overlay):
             self.bio_label.set_ellipsize(Pango.EllipsizeMode.END)
             btn.set_label(_("Read more"))
 
-    def _fetch_details_thread(self):
-        data = fetch_person_details(self.person_id)
-        if not self._destroyed:
-            GLib.idle_add(self._populate_ui, data)
+    def _start_fetch(self):
+        self._fetch_gen += 1
+        gen = self._fetch_gen
+        self._fetch_thread = threading.Thread(
+            target=self._fetch_details_thread, args=(gen,), daemon=True
+        )
+        self._fetch_thread.start()
 
-    def _populate_ui(self, data):
-        if self._destroyed:
+    def _fetch_details_thread(self, gen):
+        try:
+            data = fetch_person_details(self.person_id)
+        except Exception as e:
+            logger.error(f"Error fetching person details: {e}", exc_info=True)
+            data = None
+        if not self._destroyed and gen == self._fetch_gen:
+            GLib.idle_add(self._populate_ui, data, gen)
+
+    def _populate_ui(self, data, gen):
+        if self._destroyed or gen != self._fetch_gen:
             return False
 
         self.spinner.stop()

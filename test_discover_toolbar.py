@@ -35,6 +35,18 @@ from src import api, database
 
 class TestDiscoverToolbar(unittest.TestCase):
     def setUp(self):
+        # Rows built here can spawn poster/metadata workers. In the suite those
+        # workers outlive the test and race the SQLite cache being closed and
+        # re-pointed at the next test's temp dir, which crashes the interpreter.
+        # The toolbar itself never needs live network, so neutralise it.
+        self._net_patchers = [
+            patch("src.api.queue_metadata_hydration", return_value=False),
+            patch("src.movie_widget.fetch_fallback_poster"),
+            patch("src.movie_widget.load_image_into_picture"),
+        ]
+        for patcher in self._net_patchers:
+            patcher.start()
+
         self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.orig_config_dir = database.CONFIG_DIR
         self.orig_base_dir = database.BASE_DIR
@@ -45,8 +57,9 @@ class TestDiscoverToolbar(unittest.TestCase):
         database.CONFIG_DIR = Path(self.temp_dir.name)
         database.DB_FILE = database.CONFIG_DIR / "data.json"
         database.reset_json_cache()
-        database._cache_conn = None
-        database._cache_db_initialized = False
+        with database._cache_db_lock:
+            database._cache_conn = None
+            database._cache_db_initialized = False
         api.reset_addon_health_cache()
 
         self.win = MagicMock()
@@ -122,6 +135,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._is_audio_or_live_tv_discover_context = lambda a, ct, ac=None: CineWindow._is_audio_or_live_tv_discover_context(self.win, a, ct, ac)
         self.win._set_discover_filter_dropdowns_visible = lambda v: CineWindow._set_discover_filter_dropdowns_visible(self.win, v)
         self.win.reload_catalog_grid = lambda f=None: CineWindow.reload_catalog_grid(self.win, f)
+        self.win._load_next_discover_batch = lambda req_id, batch_size=4: CineWindow._load_next_discover_batch(self.win, req_id, batch_size)
 
     def tearDown(self):
         if hasattr(self.win, "_content_abort_event") and self.win._content_abort_event:
@@ -144,13 +158,16 @@ class TestDiscoverToolbar(unittest.TestCase):
                 self.win._unique_active_pool.shutdown(wait=True, cancel_futures=True)
             except Exception:
                 pass
-        if database._cache_conn is not None:
-            try:
-                database._cache_conn.close()
-            except Exception:
-                pass
-        database._cache_conn = self.orig_cache_conn
-        database._cache_db_initialized = self.orig_cache_initialized
+        # Background fetchers hold _cache_db_lock while running statements;
+        # closing the connection underneath them segfaults libsqlite3.
+        with database._cache_db_lock:
+            if database._cache_conn is not None:
+                try:
+                    database._cache_conn.close()
+                except Exception:
+                    pass
+            database._cache_conn = self.orig_cache_conn
+            database._cache_db_initialized = self.orig_cache_initialized
         database.CONFIG_DIR = self.orig_config_dir
         database.BASE_DIR = self.orig_base_dir
         database.DB_FILE = self.orig_db_file
@@ -160,6 +177,8 @@ class TestDiscoverToolbar(unittest.TestCase):
         except Exception:
             pass
         api.reset_addon_health_cache()
+        for patcher in getattr(self, "_net_patchers", []):
+            patcher.stop()
 
     def test_initial_toolbar_population(self):
         """Toolbar should initialize with 'All Types', 'All Catalogs', 'All Sections', 'All Genres', 'All Years', 'All Languages'."""
@@ -447,6 +466,361 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["catalog_id"], "top")
         self.assertIn("Popular - Movies", rows[0]["title"])
+
+    def test_get_discover_catalog_list_country_keeps_cached_row(self):
+        """A provider declaring the country as a genre must not suppress the local-cache row.
+
+        Catalogs such as per-country IPTV feeds advertise country names as genre
+        options but return no items for a mismatched genre. Discover used to show
+        only those empty rows while Unique (which always prepends the cached row)
+        still found cards for the same country filter.
+        """
+        self.win.current_genre = None
+        self.win.current_year = None
+        self.win.current_language = None
+        self.win.current_country = "India"
+        self.win.current_sort = "Popular"
+        self.win._discover_catalog_list_cache = {}
+
+        mock_addon = {
+            "name": "TVGarden",
+            "manifest_url": "https://tvgarden.example/manifest.json",
+            "enabled": True,
+            "catalogs": [{
+                "id": "tvgarden:ie",
+                "name": "Ireland",
+                "type": "tv",
+                "extra": [{"name": "genre", "options": ["India", "United States"]}],
+            }],
+        }
+
+        with patch("src.database.get_addons", return_value=[mock_addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+
+        self.assertTrue(rows)
+        self.assertEqual(rows[0].get("_source"), "genre_cache")
+        self.assertEqual(rows[0].get("country"), "India")
+        self.assertEqual(rows[0].get("manifest_url"), None)
+        self.assertTrue(any(r.get("catalog_id") == "tvgarden:ie" for r in rows))
+
+    def test_get_discover_catalog_list_country_keeps_language_catalogs(self):
+        """A country filter keeps the catalogs of that country's languages, not only country-named ones."""
+        self.win.current_genre = None
+        self.win.current_year = None
+        self.win.current_language = None
+        self.win.current_country = "India"
+        self.win.current_sort = "Popular"
+        self.win._discover_catalog_list_cache = {}
+
+        mock_addon = {
+            "name": "Watchstars",
+            "manifest_url": "https://watchstars.example/manifest.json",
+            "enabled": True,
+            "catalogs": [
+                {"id": "watchstars-hi", "name": "Hindi Movies", "type": "movie",
+                 "extra": [{"name": "genre", "options": ["Action", "Drama"]}]},
+                {"id": "watchstars-en", "name": "English Movies", "type": "movie",
+                 "extra": [{"name": "genre", "options": ["Action", "Drama"]}]},
+            ],
+        }
+
+        with patch("src.database.get_addons", return_value=[mock_addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+
+        ids = {r.get("catalog_id") for r in rows}
+        self.assertIn("watchstars-hi", ids)
+        self.assertNotIn("watchstars-en", ids)
+
+    def test_discover_country_row_fetches_through_catalog_language(self):
+        """Selecting India fetches the Hindi section and its cards survive the country filter."""
+        self.win.discover_request_id = 12
+        self.win._discover_is_loading_rows = False
+        self.win._discover_next_row_index = 0
+        self.win._discover_views = {}
+        self.win._discover_abort_event = None
+        self.win._discover_empty_batches = 0
+        self.win._get_discover_view_key = MagicMock(return_value="country_lang_key")
+        self.win.current_genre = None
+        self.win.current_year = None
+        self.win.current_language = None
+        self.win.current_country = "India"
+        self.win.current_sort = "Popular"
+
+        hindi_row = {
+            "title": "Watchstars · Hindi Movies",
+            "media_type": "movie",
+            "catalog_id": "watchstars-hi",
+            "catalog_name": "Hindi Movies",
+            "manifest_url": "https://watchstars.example/manifest.json",
+            "addon_name": "Watchstars",
+            "genres": ["Action", "Drama"],
+        }
+        self.win._discover_catalog_list = [hindi_row]
+        self.win.discover_box = Gtk.Box()
+
+        # No language or country in the payload: the catalog itself is the signal.
+        raw_items = [{"id": f"tt{100 + i}", "title": f"Movie {i}", "type": "movie"} for i in range(5)]
+        fetch_calls = []
+        appended = []
+
+        def fake_fetch(**kwargs):
+            fetch_calls.append(kwargs)
+            return [dict(it) for it in raw_items]
+
+        self.win._populate_discover_row_slot = lambda slot, row_info, items, target_box: appended.append(list(items or []))
+
+        with patch("src.api.fetch_items", side_effect=fake_fetch), \
+             patch("src.database.get_cached_catalog", return_value=None), \
+             patch("src.database.save_cached_catalog"), \
+             patch("src.api.is_addon_online", return_value=True):
+            CineWindow._load_next_discover_batch(self.win, req_id=12, batch_size=1)
+            import time
+            for _ in range(50):
+                time.sleep(0.01)
+                context = GLib.MainContext.default()
+                while context.iteration(False):
+                    pass
+                if not self.win._discover_is_loading_rows:
+                    break
+
+        self.assertEqual(fetch_calls[0]["genre"], "Hindi")
+        self.assertEqual(len(appended), 1)
+        self.assertEqual(len(appended[0]), 5)
+        self.assertTrue(all(it.get("language") == "Hindi" for it in appended[0]))
+
+    def test_get_discover_catalog_list_country_adds_tmdb_row(self):
+        """Selecting a known country must add a TMDb-backed row that fetches cards for it."""
+        self.win.current_genre = None
+        self.win.current_year = None
+        self.win.current_language = None
+        self.win.current_country = "India"
+        self.win.current_sort = "Popular"
+        self.win._discover_catalog_list_cache = {}
+
+        with patch("src.database.get_addons", return_value=[]), \
+             patch("src.api.is_addon_online", return_value=True):
+            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+
+        sources = [r.get("_source") for r in rows]
+        self.assertIn("tmdb_country", sources)
+        tmdb_row = next(r for r in rows if r.get("_source") == "tmdb_country")
+        self.assertEqual(tmdb_row.get("country"), "India")
+        self.assertEqual(tmdb_row.get("manifest_url"), None)
+        self.assertIn("India", tmdb_row.get("title", ""))
+
+        # Addon-scoped Discover must not inject the global country row.
+        with patch("src.database.get_addons", return_value=[]), \
+             patch("src.api.is_addon_online", return_value=True):
+            scoped_rows = CineWindow._get_discover_catalog_list(
+                self.win, filter_media_type="all", filter_addon_url="https://addon.test/manifest.json"
+            )
+        self.assertNotIn("tmdb_country", [r.get("_source") for r in scoped_rows])
+
+    def test_get_discover_catalog_list_country_leads_with_matching_catalogs(self):
+        """Lazy batches are short, so the catalogs that answer the country come first."""
+        self.win.current_genre = None
+        self.win.current_year = None
+        self.win.current_language = None
+        self.win.current_country = "India"
+        self.win.current_sort = "Popular"
+        self.win._discover_catalog_list_cache = {}
+
+        catalogs = [
+            {"id": "global-top", "name": "Global Popular", "type": "movie",
+             "extra": [{"name": "genre", "options": ["Action", "Drama"]}]},
+            {"id": "regional-hi", "name": "Hindi Movies", "type": "movie",
+             "extra": [{"name": "genre", "options": ["Action", "Drama"]}]},
+        ]
+        mock_addon = {"name": "Regional", "manifest_url": "https://regional.example/manifest.json",
+                      "enabled": True, "catalogs": catalogs}
+
+        with patch("src.database.get_addons", return_value=[mock_addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.get_addon_catalogs", return_value=catalogs), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+
+        provider_ids = [r.get("catalog_id") for r in rows if r.get("manifest_url")]
+        self.assertEqual(provider_ids[0], "regional-hi")
+
+    def _scroll_adj(self, val, page_size=600.0, upper=4000.0):
+        adj = MagicMock()
+        adj.get_value.return_value = val
+        adj.get_page_size.return_value = page_size
+        adj.get_upper.return_value = upper
+        return adj
+
+    def _scroll_fixture(self):
+        self.win.library_stack.get_visible_child_name = MagicMock(return_value="discover")
+        self.win._discover_is_loading_rows = False
+        self.win._discover_catalog_list = [{"title": f"Cat {i}"} for i in range(20)]
+        self.win._discover_next_row_index = 6
+        self.win._load_next_discover_batch = MagicMock()
+        self.win._set_discover_spinner_active = MagicMock()
+        # The scroll path extends the view through this method, so the fixture
+        # runs the real one instead of the mock's always-truthy return.
+        self.win._queue_next_discover_tmdb_page = (
+            lambda **kw: CineWindow._queue_next_discover_tmdb_page(self.win, **kw)
+        )
+        return self.win
+
+    def test_discover_scroll_parks_after_empty_batch(self):
+        """A batch that added nothing parks lazy loading; the spinner stops instead of cycling."""
+        win = self._scroll_fixture()
+        win._discover_scroll_parked_rows = 6
+        win._discover_scroll_parked_upper = 4000.0
+
+        CineWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
+        win._load_next_discover_batch.assert_not_called()
+        win._set_discover_spinner_active.assert_called_once_with(False)
+
+        # A taller viewport means something did appear, so the park lifts.
+        CineWindow._on_discover_scroll(win, self._scroll_adj(4600.0, upper=5200.0))
+        win._load_next_discover_batch.assert_called_once()
+        self.assertIsNone(win._discover_scroll_parked_rows)
+
+    def test_discover_scroll_park_releases_when_scrolled_away(self):
+        """Leaving the bottom edge re-arms lazy loading for the next trip down."""
+        win = self._scroll_fixture()
+        win._discover_scroll_parked_rows = 6
+        win._discover_scroll_parked_upper = 4000.0
+
+        CineWindow._on_discover_scroll(win, self._scroll_adj(500.0))
+        self.assertIsNone(win._discover_scroll_parked_rows)
+        win._load_next_discover_batch.assert_not_called()
+
+        CineWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
+        win._load_next_discover_batch.assert_called_once()
+
+    def test_discover_empty_batch_hands_its_slot_to_a_tmdb_page(self):
+        """Rows that answer nothing do not dead-end the view — the network row takes the slot."""
+        win = self._scroll_fixture()
+        win._load_next_discover_batch = (
+            lambda req_id, batch_size=4: CineWindow._load_next_discover_batch(win, req_id, batch_size)
+        )
+        win.discover_request_id = 10
+        win._discover_is_loading_rows = False
+        win._discover_empty_batches = 0
+        win._discover_auto_fill_count = 0
+        win._discover_scroll_parked_rows = None
+        win._discover_scroll_parked_upper = None
+        win._discover_abort_event = None
+        win._get_discover_view_key = MagicMock(return_value="handoff_key")
+        win.discover_box = Gtk.Box()
+        adjustment = MagicMock()
+        adjustment.get_value.return_value = 1000.0
+        adjustment.get_page_size.return_value = 600.0
+        adjustment.get_upper.return_value = 4000.0
+        win.discover_scrolled = MagicMock()
+        win.discover_scrolled.get_vadjustment.return_value = adjustment
+
+        provider_row = {
+            "title": "Silent Addon", "media_type": "movie", "catalog_id": "silent",
+            "manifest_url": "https://silent.addon/manifest.json", "addon_name": "Silent", "genres": [],
+        }
+        other_silent = dict(provider_row, title="Silent Addon 2", catalog_id="silent2")
+        tmdb_row = {
+            "title": "Popular in India", "_source": "tmdb_country", "media_type": "all",
+            "catalog_id": None, "manifest_url": None, "country": "India",
+            "tmdb_page": 1, "tmdb_total_pages": 3, "supports_pagination": True,
+        }
+        # Page 1 is already on screen; the two provider rows behind it answer
+        # nothing, and the next batch has to bring something or the view dies.
+        win._discover_catalog_list = [tmdb_row, provider_row, other_silent]
+        win._discover_next_row_index = 1
+
+        cards = [{"id": "tmdb:9", "title": "Network Card", "type": "movie", "country": "India",
+                  "poster": "https://image.tmdb.org/t/p/w300/x.jpg"}]
+        import time
+        with patch("src.api.fetch_items", return_value=[]), \
+             patch("src.database.get_cached_catalog", return_value=None), \
+             patch("src.database.save_cached_catalog"), \
+             patch("src.tmdb_helper.fetch_country_catalog_page", return_value=(cards, 3)) as tmdb_fetch:
+            CineWindow._load_next_discover_batch(win, 10, batch_size=1)
+            for _ in range(120):
+                time.sleep(0.01)
+                context = GLib.MainContext.default()
+                while context.iteration(False):
+                    pass
+                if (not win._discover_is_loading_rows
+                        and win._discover_next_row_index >= 3):
+                    break
+
+        # The batch that added nothing queued the next network page right behind
+        # the TMDb rows, instead of parking the lazy loader.
+        self.assertIsNone(win._discover_scroll_parked_rows)
+        queued = win._discover_catalog_list[2]
+        self.assertEqual(queued["_source"], "tmdb_country")
+        self.assertEqual(queued["tmdb_page"], 2)
+        self.assertEqual(queued["title"], "Popular in India · more")
+        self.assertGreaterEqual(len(win._discover_catalog_list), 4)
+        pages_asked = [call.kwargs["page"] for call in tmdb_fetch.call_args_list]
+        self.assertIn(2, pages_asked)
+        self.assertGreaterEqual(win._discover_next_row_index, 3)
+
+    def test_discover_tmdb_page_is_queued_when_rows_run_out(self):
+        """At the bottom with no rows left, the TMDb row extends the view by one page."""
+        win = self._scroll_fixture()
+        tmdb_row = {
+            "_source": "tmdb_country",
+            "title": "Popular in India",
+            "catalog_name": "Popular in India",
+            "country": "India",
+            "tmdb_page": 1,
+            "tmdb_total_pages": 3,
+        }
+        win._discover_catalog_list = [tmdb_row]
+        win._discover_next_row_index = 1
+
+        CineWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
+
+        win._load_next_discover_batch.assert_called_once()
+        queued = win._discover_catalog_list[1]
+        self.assertEqual(queued["tmdb_page"], 2)
+        self.assertEqual(queued["title"], "Popular in India · more")
+        self.assertEqual(tmdb_row["tmdb_page"], 1)
+
+    def test_discover_tmdb_page_respects_reported_depth(self):
+        """TMDb says this filter has one page, so no further request is made."""
+        win = self._scroll_fixture()
+        win._discover_catalog_list = [{
+            "_source": "tmdb_country",
+            "title": "Popular in Japan",
+            "country": "Japan",
+            "tmdb_page": 1,
+            "tmdb_total_pages": 1,
+        }]
+        win._discover_next_row_index = 1
+
+        CineWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
+
+        self.assertEqual(len(win._discover_catalog_list), 1)
+        win._load_next_discover_batch.assert_not_called()
+        win._set_discover_spinner_active.assert_called_once_with(False)
+
+    def test_discover_tmdb_page_stops_at_an_empty_page(self):
+        """A page that came back empty ends the browse; scrolling there again is free."""
+        win = self._scroll_fixture()
+        win._discover_catalog_list = [{
+            "_source": "tmdb_country",
+            "title": "Popular in India",
+            "country": "India",
+            "tmdb_page": 1,
+            "tmdb_total_pages": 5,
+            "tmdb_exhausted": True,
+        }]
+        win._discover_next_row_index = 1
+
+        CineWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
+
+        self.assertEqual(len(win._discover_catalog_list), 1)
+        win._load_next_discover_batch.assert_not_called()
 
     def test_get_discover_catalog_list_with_year_only(self):
         """When only year is selected, year catalogs are prioritized first and other catalogs are kept."""
@@ -1094,6 +1468,61 @@ class TestDiscoverToolbar(unittest.TestCase):
         # Only the successful slot should remain appended with content, failed slot removed
         self.assertEqual(self.win._discover_empty_batches, 0)
         self.assertFalse(self.win._discover_is_loading_rows)
+
+    def test_discover_spinner_stays_lit_while_rows_remain(self):
+        """Chained lazy batches must not blink the toolbar spinner between batches."""
+        self.win.discover_request_id = 10
+        self.win._discover_is_loading_rows = False
+        self.win._discover_next_row_index = 0
+        self.win._discover_views = {}
+        self.win._discover_abort_event = None
+        self.win._discover_empty_batches = 0
+        self.win._discover_auto_fill_count = 0
+        self.win._get_discover_view_key = MagicMock(return_value="spinner_key")
+        self.win._discover_catalog_list = [
+            {
+                "title": f"Catalog {i}",
+                "media_type": "movie",
+                "catalog_id": f"cat{i}",
+                "manifest_url": "https://only.addon/manifest.json",
+                "addon_name": "Only",
+                "genres": [],
+            }
+            for i in range(2)
+        ]
+        self.win.discover_box = Gtk.Box()
+
+        # A viewport that is not yet filled: the loader keeps fetching.
+        adjustment = MagicMock()
+        adjustment.get_value.return_value = 0.0
+        adjustment.get_page_size.return_value = 600.0
+        adjustment.get_upper.return_value = 200.0
+        self.win.discover_scrolled = MagicMock()
+        self.win.discover_scrolled.get_vadjustment.return_value = adjustment
+
+        spinner_calls = []
+        self.win._set_discover_spinner_active = lambda active: spinner_calls.append(bool(active))
+
+        with patch("src.api.fetch_items", return_value=[{"id": "tt1", "title": "One", "type": "movie"}]), \
+             patch("src.database.get_cached_catalog", return_value=None), \
+             patch("src.database.save_cached_catalog"), \
+             patch("src.api.is_addon_online", return_value=True):
+            CineWindow._load_next_discover_batch(self.win, req_id=10, batch_size=1)
+            import time
+            for _ in range(80):
+                time.sleep(0.01)
+                context = GLib.MainContext.default()
+                while context.iteration(False):
+                    pass
+                if not self.win._discover_is_loading_rows and self.win._discover_next_row_index >= 2:
+                    break
+
+        self.assertEqual(self.win._discover_next_row_index, 2)
+        self.assertIn(True, spinner_calls)
+        # The spinner is only switched off after the final batch, never
+        # between the two batches.
+        self.assertEqual(spinner_calls[-1], False)
+        self.assertNotIn(False, spinner_calls[:-1])
 
     def test_get_discover_catalog_list_excludes_tv_channels_when_year_selected(self):
         """When a release year is selected, live TV channel catalogs are excluded."""

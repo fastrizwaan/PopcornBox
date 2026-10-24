@@ -81,7 +81,8 @@ class TestEpisodeStreamReliability(unittest.TestCase):
         }
 
         with patch("src.database.get_addons", return_value=[mock_addon]), \
-             patch("src.api.get_torrents_streamed"):
+             patch("src.api.get_torrents_streamed"), \
+             patch.object(MovieDetailsPage, "load_details_async"):
             page = MovieDetailsPage(movie_stub, on_back=lambda: None)
             model = page.provider_dropdown.get_model()
             self.assertIsNotNone(model)
@@ -97,7 +98,8 @@ class TestEpisodeStreamReliability(unittest.TestCase):
             "type": "series"
         }
         with patch("src.database.get_addons", return_value=[]), \
-             patch("src.api.get_torrents_streamed"):
+             patch("src.api.get_torrents_streamed"), \
+             patch.object(MovieDetailsPage, "load_details_async"):
             page = MovieDetailsPage(movie_stub, on_back=lambda: None)
             page.current_t_list = []
             page._fetching_streams = True

@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 import sqlite3
+import tempfile
 import time
 import logging
 import re
@@ -13,6 +14,15 @@ _db_lock = threading.RLock()
 _cache_db_lock = threading.RLock()
 _db_corrupted = False
 
+# Continue-watching writes are the only ones that fire on a timer during
+# playback. They go through a single background worker so the fsync-backed
+# data.json rewrite never blocks the GTK thread. The generation counter makes
+# any pending async write obsolete as soon as a newer sync write (close player,
+# dismissal, episode advance) happens, preserving write order.
+_cw_write_gen_lock = threading.Lock()
+_cw_write_gen = 0
+_cw_save_executor = None
+
 # In-memory cache for data.json to avoid repeated file reads
 _json_cache = None
 _json_cache_valid = False
@@ -20,6 +30,7 @@ _json_cache_valid = False
 # Persistent SQLite connection (reused across all cache calls)
 _cache_conn = None
 _cache_db_initialized = False
+_test_cache_dir = None
 
 def _is_testing():
     return (
@@ -353,18 +364,29 @@ def reset_json_cache():
         _json_cache = None
         _json_cache_valid = False
 
+def _under_user_data(path):
+    """True when writing here would touch the real user data directories."""
+    text = str(path)
+    return (str(Path.home() / ".local/share/popcorn-box") in text
+            or ".var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box" in text)
+
 def _write_db(data):
     global _json_cache, _json_cache_valid
     if _db_corrupted:
         print("Database read failed previously. Refusing to write to avoid overwriting with defaults.")
         return False
-    if _is_testing() and ("io.github.fastrizwaan.PopcornBox" in str(DB_FILE) or str(DB_FILE) == str(Path.home() / ".var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box/config/data.json")):
-        print(f"[SECURITY] Blocked unittests from writing to user database: {DB_FILE}")
+    # Read the destination once. Tests re-point DB_FILE between suites while a
+    # writer from an earlier one is still running, and reading it twice made the
+    # temp file land in the user's real config directory while the rename aimed at
+    # the test's copy: a cross-device move that failed and left debris behind.
+    target = DB_FILE
+    if _is_testing() and _under_user_data(target):
+        print(f"[SECURITY] Blocked unittests from writing to user database: {target}")
         return False
     with _db_lock:
         _ensure_db()
         unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
-        temp_file = DB_FILE.with_name(f"data{unique_suffix}")
+        temp_file = target.with_name(f"data{unique_suffix}")
         try:
             clean_data = _sanitize_for_json(data)
             with open(temp_file, "w") as f:
@@ -374,7 +396,7 @@ def _write_db(data):
                 # leaving a truncated data.json behind.
                 f.flush()
                 os.fsync(f.fileno())
-            temp_file.replace(DB_FILE)
+            temp_file.replace(target)
             # Update in-memory cache with the data we just wrote
             _json_cache = clean_data
             _json_cache_valid = True
@@ -757,6 +779,9 @@ def save_continue_watching(item, sync_to_remote=True):
     item_id = item.get("id") or item.get("imdb_id")
     if not item_id:
         return
+    global _cw_write_gen
+    with _cw_write_gen_lock:
+        _cw_write_gen += 1
     updated_item = None
     with _db_lock:
         db = _read_db()
@@ -857,8 +882,43 @@ def save_continue_watching(item, sync_to_remote=True):
         except Exception:
             pass
 
+def save_continue_watching_async(item, sync_to_remote=True):
+    """Queue a continue-watching save on a single ordered background worker.
+
+    Called from the playback progress tick every few seconds; the underlying
+    save rewrites data.json with fsync, which must stay off the GTK thread.
+    """
+    global _cw_write_gen, _cw_save_executor
+    if not item or not isinstance(item, dict):
+        return
+    snapshot = dict(item)
+    with _cw_write_gen_lock:
+        _cw_write_gen += 1
+        gen = _cw_write_gen
+        if _cw_save_executor is None:
+            import concurrent.futures
+            _cw_save_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="CWSave"
+            )
+        executor = _cw_save_executor
+
+    def _write():
+        with _cw_write_gen_lock:
+            if gen != _cw_write_gen:
+                # Superseded by a newer save or a removal; drop the stale write.
+                return
+        save_continue_watching(snapshot, sync_to_remote=sync_to_remote)
+
+    try:
+        executor.submit(_write)
+    except RuntimeError:
+        _write()
+
 def remove_continue_watching(item_id, blacklist=True, user_action=False, sync_to_remote=True):
     """Remove an item from continue_watching."""
+    global _cw_write_gen
+    with _cw_write_gen_lock:
+        _cw_write_gen += 1
     if not item_id:
         return
     target_ids = _extract_all_item_ids(item_id)
@@ -1514,7 +1574,7 @@ def is_addon_streams_enabled(addon):
 
 def _get_cache_db():
     """Return persistent SQLite connection, initializing schema once."""
-    global _cache_conn, _cache_db_initialized
+    global _cache_conn, _cache_db_initialized, _test_cache_dir
     if _cache_conn is not None and _cache_db_initialized:
         return _cache_conn
     with _cache_db_lock:
@@ -1522,6 +1582,14 @@ def _get_cache_db():
             return _cache_conn
         _ensure_db()
         db_path = CONFIG_DIR / "cache.db"
+        if _is_testing() and _under_user_data(db_path):
+            # A suite that never re-pointed CONFIG_DIR still must not open the
+            # user's cache for writing, and must not read rows the real app put
+            # there: give the process its own throwaway database instead.
+            if _test_cache_dir is None:
+                _test_cache_dir = Path(tempfile.mkdtemp(prefix="popcornbox-test-cache-"))
+            print(f"[SECURITY] Redirected unittest cache database away from {db_path}")
+            db_path = _test_cache_dir / "cache.db"
         _cache_conn = sqlite3.connect(str(db_path), check_same_thread=False)
         _cache_conn.execute("PRAGMA journal_mode=WAL;")
         _cache_conn.execute("""
@@ -1671,7 +1739,6 @@ def _get_cache_db():
             cur.execute("SELECT item_id, genre, year FROM item_genres WHERE year IS NOT NULL AND (length(year) != 4 OR year NOT GLOB '[1-2][0-9][0-9][0-9]')")
             bad_rows = cur.fetchall()
             for iid, g, yr in bad_rows:
-                import re
                 clean_y = ""
                 m = re.search(r'\b(19\d\d|20\d\d)\b', str(yr or ""))
                 if m:
@@ -2639,6 +2706,150 @@ COUNTRY_ALIASES = {
     "pk": "Pakistan",
 }
 
+# Canonical country name -> ISO 3166-1 alpha-2 code, used for TMDb's
+# with_origin_country discover filter. Only countries listed here can produce
+# a country-specific TMDb row.
+COUNTRY_ISO_CODES = {
+    "united states": "US", "united kingdom": "GB", "india": "IN", "japan": "JP",
+    "south korea": "KR", "france": "FR", "germany": "DE", "canada": "CA",
+    "australia": "AU", "spain": "ES", "italy": "IT", "china": "CN",
+    "hong kong": "HK", "taiwan": "TW", "russia": "RU", "brazil": "BR",
+    "mexico": "MX", "sweden": "SE", "denmark": "DK", "norway": "NO",
+    "finland": "FI", "netherlands": "NL", "belgium": "BE", "ireland": "IE",
+    "new zealand": "NZ", "turkey": "TR", "poland": "PL", "thailand": "TH",
+    "indonesia": "ID", "philippines": "PH", "argentina": "AR", "colombia": "CO",
+    "south africa": "ZA", "egypt": "EG", "nigeria": "NG", "pakistan": "PK",
+    "chile": "CL", "peru": "PE", "venezuela": "VE", "austria": "AT",
+    "switzerland": "CH", "portugal": "PT", "greece": "GR", "israel": "IL",
+    "iran": "IR", "iraq": "IQ", "saudi arabia": "SA", "united arab emirates": "AE",
+    "malaysia": "MY", "singapore": "SG", "vietnam": "VN", "ukraine": "UA",
+    "romania": "RO", "hungary": "HU", "czech republic": "CZ", "czechia": "CZ",
+    "bulgaria": "BG", "croatia": "HR", "serbia": "RS", "slovakia": "SK",
+    "slovenia": "SI", "lithuania": "LT", "latvia": "LV", "estonia": "EE",
+    "iceland": "IS", "luxembourg": "LU", "morocco": "MA", "algeria": "DZ",
+    "tunisia": "TN", "kenya": "KE", "ghana": "GH", "ethiopia": "ET",
+    "bangladesh": "BD", "sri lanka": "LK", "nepal": "NP", "afghanistan": "AF",
+    "myanmar": "MM", "cambodia": "KH", "mongolia": "MN", "kazakhstan": "KZ",
+    "lebanon": "LB", "jordan": "JO", "kuwait": "KW", "qatar": "QA",
+    "cuba": "CU", "puerto rico": "PR", "uruguay": "UY", "ecuador": "EC",
+    "bolivia": "BO", "paraguay": "PY", "costa rica": "CR", "guatemala": "GT",
+    "dominican republic": "DO", "panama": "PA", "jamaica": "JM",
+}
+
+_ISO_CODE_BY_NAME = {name.lower(): code for name, code in COUNTRY_ISO_CODES.items()}
+_ISO_NAME_BY_CODE = {code.lower(): name for name, code in reversed(list(COUNTRY_ISO_CODES.items()))}
+
+def get_country_iso_code(name):
+    """Return the ISO 3166-1 alpha-2 code for a country name or code, if known."""
+    if not name:
+        return None
+    clean = str(name).strip()
+    if len(clean) == 2 and clean.isalpha():
+        return clean.upper()
+    norm = normalize_country_name(clean)
+    return _ISO_CODE_BY_NAME.get(str(norm).strip().lower())
+
+
+# Canonical country -> ISO 639-1 codes of the languages its films and series are
+# actually made in. Providers label most non-US titles by language rather than
+# by country, so a single-language lookup such as TMDb's with_origin_country=IN
+# misses Tamil, Telugu or Malayalam releases that carry no origin country.
+# Pan-continental languages (English) are never used to guess a country and are
+# filtered out when the reverse index below is built; Spanish, Arabic, Chinese
+# and Portuguese are simply not listed as primary keys for the same reason.
+COUNTRY_LANGUAGES = {
+    "india": ["hi", "ta", "te", "ml", "kn", "bn", "mr", "gu", "pa", "ur"],
+    "pakistan": ["ur", "pa", "ps", "sd"],
+    "bangladesh": ["bn"],
+    "sri lanka": ["si", "ta"],
+    "nepal": ["ne"],
+    "nigeria": ["yo", "ha", "ig"],
+    "canada": ["fr"],
+    "belgium": ["nl", "fr"],
+    "switzerland": ["de", "fr", "it"],
+    "japan": ["ja"],
+    "south korea": ["ko"],
+    "hong kong": ["zh", "yue"],
+    "thailand": ["th"],
+    "vietnam": ["vi"],
+    "indonesia": ["id"],
+    "turkey": ["tr"],
+    "iran": ["fa"],
+    "israel": ["he"],
+    "poland": ["pl"],
+    "czech republic": ["cs"],
+    "hungary": ["hu"],
+    "romania": ["ro"],
+    "greece": ["el"],
+    "netherlands": ["nl"],
+    "sweden": ["sv"],
+    "denmark": ["da"],
+    "norway": ["no"],
+    "finland": ["fi"],
+    "france": ["fr"],
+    "germany": ["de"],
+    "italy": ["it"],
+    "brazil": ["pt"],
+    "portugal": ["pt"],
+    "russia": ["ru"],
+    "ukraine": ["uk"],
+}
+
+# Languages produced all over the world; attributing an unlabelled title to a
+# country through them would match almost anything.
+AMBIGUOUS_COUNTRY_LANGUAGES = {"en", "es", "ar", "zh", "pt", "fr", "de", "it", "nl"}
+
+
+def _build_language_to_countries():
+    index = {}
+    for country, codes in COUNTRY_LANGUAGES.items():
+        for code in codes:
+            if code in AMBIGUOUS_COUNTRY_LANGUAGES:
+                continue
+            index.setdefault(code, []).append(country)
+    return index
+
+
+LANGUAGE_TO_COUNTRIES = _build_language_to_countries()
+
+
+def _country_key(name):
+    if not name:
+        return ""
+    clean = str(name).strip()
+    if len(clean) == 2 and clean.isalpha():
+        return _ISO_NAME_BY_CODE.get(clean.lower(), "")
+    return str(normalize_country_name(clean)).strip().lower()
+
+
+def get_country_languages(country):
+    """Return the ISO 639-1 codes of the languages titles from this country are made in."""
+    return list(COUNTRY_LANGUAGES.get(_country_key(country), []))
+
+
+def get_fetch_languages(country):
+    """Codes worth extra TMDb discover calls because this country spans several cinemas.
+
+    Single-language countries already come back complete through with_origin_country,
+    so fan-out there would only add requests.
+    """
+    codes = [c for c in get_country_languages(country) if c not in AMBIGUOUS_COUNTRY_LANGUAGES]
+    if len(codes) < 2:
+        return []
+    return codes
+
+
+def get_countries_for_language(lang):
+    """Countries an unlabelled title is assumed to come from, given its language."""
+    if not lang:
+        return []
+    low = str(lang).strip().lower()
+    code = get_language_code(low) or low
+    if code in AMBIGUOUS_COUNTRY_LANGUAGES:
+        return []
+    return LANGUAGE_TO_COUNTRIES.get(code, [])
+
+
 def normalize_country_name(name):
     """Normalize raw country strings/codes to canonical country name."""
     if not name:
@@ -3136,6 +3347,7 @@ _GENRES_CACHE = {}
 _SORT_OPTIONS_CACHE = {}
 _YEARS_CACHE = {}
 _COUNTRIES_CACHE = {}
+_LANGUAGES_CACHE = {}
 
 def invalidate_dropdown_caches():
     with _DROPDOWN_CACHE_LOCK:
@@ -3143,6 +3355,7 @@ def invalidate_dropdown_caches():
         _SORT_OPTIONS_CACHE.clear()
         _YEARS_CACHE.clear()
         _COUNTRIES_CACHE.clear()
+        _LANGUAGES_CACHE.clear()
 
 DEFAULT_CANONICAL_COUNTRIES = [
     "United States", "United Kingdom", "India", "Japan", "South Korea",
@@ -3224,6 +3437,10 @@ def get_available_languages():
     Falls back to the canonical language set so the language filter is always
     usable, even before any item metadata has been cached locally.
     """
+    with _DROPDOWN_CACHE_LOCK:
+        if "all" in _LANGUAGES_CACHE:
+            return list(_LANGUAGES_CACHE["all"])
+
     languages = set(ALL_LANGUAGE_GENRES)
 
     def add_language(value):
@@ -3261,7 +3478,10 @@ def get_available_languages():
     except Exception as e:
         print(f"Error reading available languages: {e}")
 
-    return sorted(languages, key=lambda language: (language.lower() != "english", language.lower()))
+    result = sorted(languages, key=lambda language: (language.lower() != "english", language.lower()))
+    with _DROPDOWN_CACHE_LOCK:
+        _LANGUAGES_CACHE["all"] = list(result)
+    return result
 
 def get_available_genres(media_type=None, include_years=False):
     """
@@ -3466,7 +3686,18 @@ def delete_cached_subtitles(cache_key):
 _MEM_CATALOG_CACHE = {}
 _MEM_CATALOG_LOCK = threading.Lock()
 
-def get_cached_catalog(cache_key, max_age_hours=24):
+# Catalog rows are the cards themselves -- title, year, poster URL, genres,
+# countries -- so they are kept forever, matching api.METADATA_CACHE_HOURS.
+# Re-reading a stored row is free; re-asking an addon or TMDb for the same page
+# costs the provider a request and the user a wait. Streams, subtitles and
+# trailer resolvers below keep their explicit 24 h TTLs because those do change.
+CATALOG_CACHE_HOURS = None
+
+def _cache_row_is_fresh(age_hours, max_age_hours):
+    """False only when the row has a declared TTL and has aged past it."""
+    return max_age_hours is None or age_hours < max_age_hours
+
+def get_cached_catalog(cache_key, max_age_hours=CATALOG_CACHE_HOURS):
     if not cache_key:
         return None
     now = time.time()
@@ -3475,7 +3706,7 @@ def get_cached_catalog(cache_key, max_age_hours=24):
     with _MEM_CATALOG_LOCK:
         if cache_key in _MEM_CATALOG_CACHE:
             data, ts = _MEM_CATALOG_CACHE[cache_key]
-            if (now - ts) / 3600 < max_age_hours:
+            if _cache_row_is_fresh((now - ts) / 3600, max_age_hours):
                 found_data = data
             else:
                 del _MEM_CATALOG_CACHE[cache_key]
@@ -3497,7 +3728,7 @@ def get_cached_catalog(cache_key, max_age_hours=24):
             row = cursor.fetchone()
             if row and row[0]:
                 updated_at = row[1]
-                if (now - updated_at) / 3600 < max_age_hours:
+                if _cache_row_is_fresh((now - updated_at) / 3600, max_age_hours):
                     raw_json = row[0]
 
         if raw_json:

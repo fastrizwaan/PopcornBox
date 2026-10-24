@@ -144,6 +144,13 @@ def _extract_active_discover_query(win) -> str:
 def _find_best_matching_stream(target_stream, candidate_streams, preferred_provider=None, preferred_quality=None):
     return api.find_best_matching_stream(target_stream, candidate_streams, preferred_provider=preferred_provider, preferred_quality=preferred_quality)
 
+def _stream_link_changed(refreshed, previous):
+    """True when a refresh actually produced a different playable link."""
+    if not isinstance(refreshed, dict) or not refreshed:
+        return False
+    old = previous if isinstance(previous, dict) else {}
+    return (refreshed.get("url") or refreshed.get("magnet")) != (old.get("url") or old.get("magnet"))
+
 def _normalize_stream_quality(stream):
     if not stream:
         return None
@@ -2264,7 +2271,8 @@ class MovieDetailsPage(Gtk.Overlay):
                         self.stream_ep_title_label.set_visible(True)
                     self.update_continue_btn()
                     self.render_episodes_list()
-                    self.fetch_torrents_async(force=False)
+                    if not getattr(self, "_suppress_stream_reload", False):
+                        self.fetch_torrents_async(force=False)
                 
             self._on_episode_dropdown_changed = on_episode_changed
             self._ep_dropdown_hid = self.episode_dropdown.connect("notify::selected", on_episode_changed)
@@ -2357,7 +2365,8 @@ class MovieDetailsPage(Gtk.Overlay):
                         self.selected_video = unique_eps[default_ep_idx]
                     self.update_continue_btn()
                     self.render_episodes_list()
-                    self.fetch_torrents_async(force=False)
+                    if not getattr(self, "_suppress_stream_reload", False):
+                        self.fetch_torrents_async(force=False)
                 
             self._season_dropdown_hid = self.season_dropdown.connect("notify::selected", on_season_changed)
             
@@ -2763,6 +2772,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 self._auto_play_on_streams_loaded = False
                 if self.window:
                     self.window.hide_player_loading()
+                    self.window._next_episode_transition_in_progress = False
                 if hasattr(self, 'progress_label') and self.progress_label:
                     self.progress_label.set_text("No streams available.")
             elif ready_for_auto_play and getattr(self, '_auto_play_next', False):
@@ -2772,6 +2782,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 self._auto_play_next = False
                 if self.window:
                     self.window.hide_player_loading()
+                    self.window._next_episode_transition_in_progress = False
                 if hasattr(self, 'progress_label') and self.progress_label:
                     self.progress_label.set_text("No streams available.")
             return False
@@ -3210,10 +3221,15 @@ class MovieDetailsPage(Gtk.Overlay):
             self.window.mpv.stop()
         from . import player
         item_id = self.movie_stub.get("id")
+        to_stop = []
         with player._engines_lock:
             for h, eng in list(player._engines.items()):
                 if eng.is_alive() and eng.item_id == item_id:
-                    player.stop_engine_explicit(h)
+                    to_stop.append(h)
+        # stop_engine_explicit() takes _engines_lock itself; calling it while
+        # holding the lock deadlocks the UI thread.
+        for h in to_stop:
+            player.stop_engine_explicit(h)
 
     def on_watch_clicked(self, btn=None):
         raw_t_list = getattr(self, 'current_t_list', []) or []
@@ -4108,6 +4124,9 @@ class CineWindow(Adw.ApplicationWindow):
         self.is_inactive: bool = False
         self.next_ep_dismissed: bool = False
         self.next_ep_auto_triggered: bool = False
+        self._next_episode_transition_in_progress: bool = False
+        self._pending_seek_position = None
+        self._next_ep_prefetch_lock = threading.Lock()
         self.stream_queue = []
         self.stream_queue_index = 0
         self.stream_request_id = 0
@@ -4815,7 +4834,6 @@ class CineWindow(Adw.ApplicationWindow):
             self.visible_dialog.spinner.set_visible(True)
 
     def _on_search_addons(self, *args):
-        from . import api
         dialog = Adw.Window(title="Search Addons", default_width=600, default_height=500)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         dialog.set_content(box)
@@ -4836,47 +4854,88 @@ class CineWindow(Adw.ApplicationWindow):
         box.append(search_entry)
         box.append(scrolled)
         
+        search_state = {"req_id": 0, "timeout_id": None}
+
+        def _apply_results(items, req_id):
+            if req_id != search_state["req_id"]:
+                return False
+            list_box.remove_all()
+            for item in items:
+                row = Gtk.ListBoxRow()
+                lbl = Gtk.Label(label=f"{item.get('title', 'Unknown')} ({item.get('year', '')})")
+                lbl.set_halign(Gtk.Align.START)
+                lbl.set_margin_top(10)
+                lbl.set_margin_bottom(10)
+                lbl.set_margin_start(10)
+                row.set_child(lbl)
+                row.item_data = item
+                list_box.append(row)
+            return False
+
+        def _run_search(query, req_id):
+            search_state["timeout_id"] = None
+            def worker():
+                from . import api
+                try:
+                    items = api.fetch_items(query=query)
+                except Exception as e:
+                    print(f"Search error: {e}")
+                    items = []
+                GLib.idle_add(_apply_results, items, req_id)
+            threading.Thread(target=worker, daemon=True).start()
+            return False
+
         def on_search_changed(entry):
-            query = entry.get_text()
-            if not query: return
-            try:
-                items = api.fetch_items(query=query)
+            query = entry.get_text().strip()
+            if search_state["timeout_id"]:
+                GLib.source_remove(search_state["timeout_id"])
+                search_state["timeout_id"] = None
+            if not query:
+                search_state["req_id"] += 1
                 list_box.remove_all()
-                for item in items:
-                    row = Gtk.ListBoxRow()
-                    lbl = Gtk.Label(label=f"{item.get('title', 'Unknown')} ({item.get('year', '')})")
-                    lbl.set_halign(Gtk.Align.START)
-                    lbl.set_margin_top(10)
-                    lbl.set_margin_bottom(10)
-                    lbl.set_margin_start(10)
-                    row.set_child(lbl)
-                    row.item_data = item
-                    list_box.append(row)
-            except Exception as e:
-                print(f"Search error: {e}")
+                return
+            search_state["req_id"] += 1
+            req_id = search_state["req_id"]
+            # Debounce: search-changed fires per keystroke and each search is a
+            # full provider round-trip.
+            search_state["timeout_id"] = GLib.timeout_add(
+                350, lambda: _run_search(query, req_id)
+            )
 
         search_entry.connect("search-changed", on_search_changed)
         
         def on_row_activated(lb, row):
-            try:
-                item = row.item_data
-                details = api.fetch_movie_details(item["id"], media_type=item.get("type", "movie"), title=item["title"])
-                streams = api.get_torrents_streamed(details["id"], media_type=item.get("type", "movie"), title=item.get("title") or details.get("name"))
-                
-                direct_stream = None
-                for s in streams:
-                    if s.get("is_http") and s.get("url"):
-                        direct_stream = s["url"]
-                        break
-                
-                if direct_stream:
-                    dialog.close()
-                    self.mpv.loadfile(direct_stream, "replace")
-                    self.mpv.pause = False
-                else:
-                    print("No direct HTTP stream found for this item.")
-            except Exception as e:
-                print(f"Playback error: {e}")
+            item = getattr(row, "item_data", None)
+            if not item:
+                return
+
+            def worker():
+                from . import api
+                try:
+                    item_type = item.get("type", "movie")
+                    details = api.fetch_movie_details(item["id"], media_type=item_type, title=item.get("title"))
+                    if not details:
+                        print("No details returned for selected item.")
+                        return
+                    streams = api.get_torrents_streamed(details["id"], media_type=item_type, title=item.get("title") or details.get("name"))
+                    direct_stream = next(
+                        (s["url"] for s in streams if s.get("is_http") and s.get("url")),
+                        None,
+                    )
+                    if not direct_stream:
+                        print("No direct HTTP stream found for this item.")
+                        return
+
+                    def play():
+                        dialog.close()
+                        self.mpv.loadfile(direct_stream, "replace")
+                        self.mpv.pause = False
+                        return False
+                    GLib.idle_add(play)
+                except Exception as e:
+                    print(f"Playback error: {e}")
+
+            threading.Thread(target=worker, daemon=True).start()
                 
         list_box.connect("row-activated", on_row_activated)
         dialog.set_transient_for(self)
@@ -4932,17 +4991,18 @@ class CineWindow(Adw.ApplicationWindow):
             idle_add_once(self._show_toast, _("Session Saved"))
 
     def _on_clear_session(self, *args):
-        try:
-            if os.path.exists(LAST_PLAYLIST_FILE):
-                os.remove(LAST_PLAYLIST_FILE)
-            
-            watch_later_dir = os.path.join(CONFIG_DIR, "watch_later")
-            if os.path.exists(watch_later_dir):
-                shutil.rmtree(watch_later_dir)
-                
-            self._show_toast(_("Saved session cleared"))
-        except Exception as e:
-            logger.error(f"Error clearing session: {e}")
+        def _clear_worker():
+            try:
+                if os.path.exists(LAST_PLAYLIST_FILE):
+                    os.remove(LAST_PLAYLIST_FILE)
+                watch_later_dir = os.path.join(CONFIG_DIR, "watch_later")
+                if os.path.exists(watch_later_dir):
+                    shutil.rmtree(watch_later_dir)
+                idle_add_once(self._show_toast, _("Saved session cleared"))
+            except Exception as e:
+                logger.error(f"Error clearing session: {e}")
+
+        threading.Thread(target=_clear_worker, daemon=True, name="ClearSessionWorker").start()
 
     def _on_open_url(self, *args, add=False):
         mode = "append-play" if add else "replace"
@@ -5277,11 +5337,12 @@ class CineWindow(Adw.ApplicationWindow):
                 not is_trailer
                 and auto_play_enabled
                 and not getattr(self, "next_ep_dismissed", False)
+                and not getattr(self, "_next_episode_transition_in_progress", False)
                 and remaining > 0
                 and remaining <= self._NEXT_EPISODE_PREFETCH_LEAD_SECONDS
             ):
                 self._prefetch_next_episode_streams()
-            if not is_trailer and auto_play_enabled and not getattr(self, "next_ep_dismissed", False) and duration > 30 and remaining <= 30 and remaining > 0 and self._has_next_episode():
+            if not is_trailer and auto_play_enabled and not getattr(self, "next_ep_dismissed", False) and not getattr(self, "_next_episode_transition_in_progress", False) and duration > 30 and remaining <= 30 and remaining > 0 and self._has_next_episode():
                 rem_sec = max(1, int(remaining))
                 next_ep_label = getattr(self, "next_ep_label", None)
                 if callable(getattr(next_ep_label, "set_text", None)):
@@ -5312,8 +5373,17 @@ class CineWindow(Adw.ApplicationWindow):
                 now = time.time()
                 if now - last_cw_save >= 4:
                     self._last_cw_save_time = now
+                    # Local saves stay frequent so a crash resumes close to the
+                    # playback position, but pushing every local save to Stremio
+                    # would be one remote write every few seconds. Rate-limit the
+                    # remote scrobble; closing the player still syncs the final
+                    # position.
+                    last_remote_sync = getattr(self, "_last_cw_remote_sync", 0.0)
+                    sync_remote = (now - last_remote_sync) >= 30.0
+                    if sync_remote:
+                        self._last_cw_remote_sync = now
                     from . import database
-                    database.save_continue_watching(self._current_playing_item)
+                    database.save_continue_watching_async(self._current_playing_item, sync_to_remote=sync_remote)
                     if hasattr(self, "_update_continue_watching_section"):
                         curr_stack = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
                         if curr_stack != "player":
@@ -6132,6 +6202,7 @@ class CineWindow(Adw.ApplicationWindow):
         def on_files_loaded(_event):
             def update():
                 try:
+                    self._next_episode_transition_in_progress = False
                     self.hide_player_loading()
                     self.spinner.set_visible(False)
                     if hasattr(self, "gl_area"):
@@ -6266,10 +6337,16 @@ class CineWindow(Adw.ApplicationWindow):
             def update_playing_item():
                 try:
                     prev_p = self.playlist_prev_pos
-                    prev_obj = cast(PlaylistItemObj, self.playlist_ls.get_item(prev_p))
+                    # pos is -1 while idle: get_item(-1) yields None, and an
+                    # exception there used to skip marking the new item as
+                    # playing for the whole first track.
+                    if prev_p != pos:
+                        prev_obj = cast(PlaylistItemObj, self.playlist_ls.get_item(prev_p))
+                        if prev_obj is not None:
+                            prev_obj.playing = False
                     curr_obj = cast(PlaylistItemObj, self.playlist_ls.get_item(pos))
-                    prev_obj.playing = False
-                    curr_obj.playing = True
+                    if curr_obj is not None:
+                        curr_obj.playing = True
                 except (AttributeError, OverflowError):
                     pass
                 finally:
@@ -7098,12 +7175,12 @@ class CineWindow(Adw.ApplicationWindow):
         action = Gio.SimpleAction.new("switch-to-anime", None)
         def on_switch_anime(action, parameter):
             from . import api
+            self._cancel_all_background_fetching()
             if not getattr(self, "anime_supported", False):
                 self.category_btn_stack.set_visible_child_name("home")
                 self.library_stack.set_visible_child_name("discover")
                 self._refresh_discover_page(filter_media_type="all")
                 return
-            self._cancel_all_background_fetching()
             self._set_discover_results_search_visible(False)
             self._set_discover_spinner_active(True)
             self.category_btn_stack.set_visible_child_name("anime")
@@ -7296,10 +7373,15 @@ class CineWindow(Adw.ApplicationWindow):
 
                     addon_info = res.get("addons") or {}
                     if addon_info.get("pulled_addons", 0) > 0:
+                        # Pulled addons mutate the installed list, so the same
+                        # invalidation as a manual addon change is required --
+                        # otherwise _ensure_all_menus_built() no-ops because
+                        # _menus_built is still True and the new addons never
+                        # show up in the category menus.
+                        if hasattr(self, "_on_addons_changed"):
+                            self._on_addons_changed()
                         if hasattr(self, "_populate_addons"):
                             self._populate_addons()
-                        if hasattr(self, "_ensure_all_menus_built"):
-                            self._ensure_all_menus_built()
             stremio_sync.sync_in_background(callback=on_sync_finished, force=force)
         except Exception as e:
             logger.debug(f"Stremio sync trigger error: {e}")
@@ -8034,11 +8116,18 @@ class CineWindow(Adw.ApplicationWindow):
             self._syncing_discover_toolbar = False
 
     def _set_discover_spinner_active(self, active: bool):
+        is_act = bool(active)
+        # Batches toggle the indicator constantly; repeated start()/stop() calls
+        # make the animation stutter, so only a real state change is applied.
+        if getattr(self, "_discover_spinner_active", None) == is_act:
+            return
+        self._discover_spinner_active = is_act
+
         def _apply():
             spinner = getattr(self, "discover_spinner", None)
-            if spinner is not None and hasattr(spinner, "set_visible"):
-                is_act = bool(active)
-                spinner.set_visible(is_act)
+            if spinner is not None and hasattr(spinner, "start"):
+                # The widget stays visible so its toolbar slot never grows or
+                # shrinks; only the animation turns on and off.
                 if is_act:
                     spinner.start()
                 else:
@@ -9396,6 +9485,37 @@ class CineWindow(Adw.ApplicationWindow):
                 "sort_mode": getattr(self, "current_sort", None) if isinstance(getattr(self, "current_sort", None), str) else None,
             })
 
+        # Country or language cards from TMDb's discover endpoint. Local caches can
+        # only offer titles some addon happened to tag with this filter, which is
+        # why selecting e.g. India in Unique mode showed almost nothing; TMDb
+        # filters by origin country and by the country's own languages.
+        tmdb_target = selected_country or selected_lang
+        tmdb_target_code = (
+            database.get_country_iso_code(selected_country) if selected_country
+            else database.get_language_code(selected_lang)
+        )
+        if (
+            tmdb_target and tmdb_target_code and not active_query
+            and not filter_addon and not section_scope
+            and (filter_type or "all") in ("all", "movie", "series")
+            and not any(c.get("_source") == "tmdb_country" for c in catalogs)
+        ):
+            catalogs.insert(0, {
+                "_source": "tmdb_country",
+                "addon_name": "",
+                "media_type": filter_type or "all",
+                "catalog_id": "tmdb_country",
+                "catalog_name": f"{tmdb_target} · TMDb",
+                "manifest_url": None,
+                "genre": selected_genre,
+                "language": selected_lang,
+                "country": selected_country,
+                "year": getattr(self, "current_year", None) if isinstance(getattr(self, "current_year", None), str) else None,
+                "sort_mode": getattr(self, "current_sort", None) if isinstance(getattr(self, "current_sort", None), str) else None,
+                "supports_pagination": True,
+                "tmdb_total_pages": 0,
+            })
+
         # In Discover, Unique means remove duplicates within the selected
         # section. Without this scope it aggregates every sibling catalog from
         # the selected addon (for example, showing sports networks while the
@@ -9507,12 +9627,14 @@ class CineWindow(Adw.ApplicationWindow):
             cur_empty += 1
             self._unique_empty_batches = cur_empty
             self.is_fetching_unique = False
-            self._set_discover_spinner_active(False)
             if not has_more:
+                self._set_discover_spinner_active(False)
                 self.has_more_unique = False
                 if hasattr(self, "unique_flowbox"):
                     CineWindow._update_flowbox_empty_state(self, self.unique_flowbox)
             else:
+                # Keep the indicator running over the short gap before the
+                # next batch instead of blinking on every page.
                 GLib.timeout_add(100, self._load_next_unique_batch)
             return
 
@@ -9542,12 +9664,13 @@ class CineWindow(Adw.ApplicationWindow):
                 return False
 
             self.is_fetching_unique = False
-            self._set_discover_spinner_active(False)
             if not has_more and not items:
                 self.has_more_unique = False
             # Check if viewport needs more cards to fill the window
             if getattr(self, "has_more_unique", True) and hasattr(self, "unique_scrolled") and self.unique_scrolled is not None:
                 self._on_unique_scroll(self.unique_scrolled.get_vadjustment())
+            if not getattr(self, "is_fetching_unique", False):
+                self._set_discover_spinner_active(False)
             return False
 
         GLib.idle_add(_deliver_next_slice, 0)
@@ -9613,6 +9736,15 @@ class CineWindow(Adw.ApplicationWindow):
                             break
 
                         batch_cats = []
+                        # Deeper TMDb pages repeat what page 1 already showed, so
+                        # they are fetched against a snapshot of this view's TMDb
+                        # ids; workers never touch the live set. ids are plain here
+                        # but addon-prefixed when dedupe is off, hence the lstrip.
+                        unique_tmdb_seen = {
+                            str(sid).lstrip(":")
+                            for sid in self.unique_seen_ids
+                            if "tmdb:" in str(sid)
+                        }
                         # Advance catalog search sources through their first five
                         # pages before spending the batch on ordinary catalog pages.
                         pending_search_cats = []
@@ -9692,7 +9824,7 @@ class CineWindow(Adw.ApplicationWindow):
                             database.hydrate_items_from_metadata(items, media_type=m_type)
                             api.hydrate_missing_catalog_items(items, media_type=m_type)
                             debug_log(f"unique query cache: '{cat_info.get('query')}' -> {len(items)} items (page {page})")
-                            return (key, page, items, raw_count)
+                            return (key, page, items, raw_count, True)
 
                         if cat_info.get("_source") == "genre_cache":
                             req_country = cat_info.get("country") or cur_country
@@ -9725,7 +9857,54 @@ class CineWindow(Adw.ApplicationWindow):
                             if database.is_adult_content_hidden():
                                 items = [it for it in items if not api.is_adult_item(it)]
                             debug_log(f"unique genre cache: '{cat_info.get('genre') or req_country}' -> {len(items)} items (page {page})")
-                            return (key, page, items, raw_count)
+                            return (key, page, items, raw_count, True)
+
+                        if cat_info.get("_source") == "tmdb_country":
+                            from . import tmdb_helper
+                            req_country = cat_info.get("country") or cur_country
+                            req_lang = cat_info.get("language") or cur_lang
+                            # Discover answers a country, a language, or both; with
+                            # neither there is nothing to ask TMDb for.
+                            if not (req_country or req_lang):
+                                return (key, page, [], 0, False)
+                            known_pages = int(cat_info.get("tmdb_total_pages") or 0)
+                            if page > tmdb_helper._MAX_DISCOVER_PAGES or (known_pages and page > known_pages):
+                                return (key, page, [], 0, False)
+                            tmdb_key = (
+                                f"tmdb-country:{req_country or ''}:{m_type}:{cat_info.get('genre') or ''}:"
+                                f"{cat_info.get('year') or ''}:{cat_info.get('sort_mode') or ''}:"
+                                f"{req_lang or ''}:p{page}:unique50"
+                            )
+                            items = database.get_cached_catalog(tmdb_key, max_age_hours=database.CATALOG_CACHE_HOURS)
+                            if not items:
+                                items, total_pages = tmdb_helper.fetch_country_catalog_page(
+                                    country=req_country,
+                                    media_type=m_type,
+                                    genre=cat_info.get("genre"),
+                                    year=cat_info.get("year"),
+                                    sort_mode=cat_info.get("sort_mode"),
+                                    language=req_lang,
+                                    limit=50,
+                                    page=page,
+                                    exclude_ids=unique_tmdb_seen,
+                                )
+                                if total_pages:
+                                    cat_info["tmdb_total_pages"] = total_pages
+                                if items and not _is_event_set(abort_ev):
+                                    database.save_cached_catalog(tmdb_key, items)
+                            if _is_event_set(abort_ev):
+                                return None
+                            items = items or []
+                            raw_count = len(items)
+                            if cur_lang:
+                                items = api.filter_items_by_genre(items, cur_lang, media_type=m_type)
+                            if cur_country:
+                                items = api.filter_items_by_country(items, cur_country, media_type=m_type)
+                            if database.is_adult_content_hidden():
+                                items = [it for it in items if not api.is_adult_item(it)]
+                            debug_log(f"unique tmdb: '{req_country or req_lang}' -> {len(items)} items (page {page})",
+                                      f"TMDb reports {cat_info.get('tmdb_total_pages') or '?'} pages")
+                            return (key, page, items, raw_count, False)
 
                         if cat_info.get("_source") == "catalog_search":
                             query = cat_info.get("query", "")
@@ -9771,21 +9950,28 @@ class CineWindow(Adw.ApplicationWindow):
                                 f"unique catalog search '{c_name}' ({m_type}): '{query}' "
                                 f"-> {len(filtered)} filtered items from {raw_count} search matches (page {page})"
                             )
-                            return (key, page, filtered, raw_count)
+                            return (key, page, filtered, raw_count, False)
 
-                        if cur_genre and not api.catalog_supports_genre(cat_info, cur_genre):
-                            return (key, page, [], 0)
+                        if cur_genre and not api.catalog_supports_filter(cat_info, cur_genre):
+                            return (key, page, [], 0, False)
 
-                        if cur_lang and not api.catalog_supports_genre(cat_info, cur_lang):
-                            return (key, page, [], 0)
+                        if cur_lang and not api.catalog_supports_filter(cat_info, cur_lang):
+                            return (key, page, [], 0, False)
 
+                        country_lang = None
                         if cur_country and not api.catalog_supports_genre(cat_info, cur_country):
-                            return (key, page, [], 0)
+                            # Same as the discover rows: a country is served by the
+                            # catalogs of its languages, which manifests do declare.
+                            country_lang = api.catalog_language_for_country(cat_info, cur_country)
+                            if not country_lang and not cur_lang:
+                                return (key, page, [], 0, False)
+
+                        effective_lang = cur_lang or country_lang
 
                         fetch_genre = cur_genre
-                        if not cur_genre and cur_lang:
-                            if api.catalog_supports_genre(cat_info, cur_lang):
-                                fetch_genre = cur_lang
+                        if not cur_genre and effective_lang:
+                            if api.catalog_supports_filter(cat_info, effective_lang):
+                                fetch_genre = effective_lang
                         elif not cur_genre and cur_country:
                             if api.catalog_supports_genre(cat_info, cur_country):
                                 fetch_genre = cur_country
@@ -9802,7 +9988,7 @@ class CineWindow(Adw.ApplicationWindow):
                         # mistake that shorter page for the section's full set.
                         cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}{country_suffix}:unique50:p{page}"
 
-                        cached = database.get_cached_catalog(cache_key, max_age_hours=24)
+                        cached = database.get_cached_catalog(cache_key, max_age_hours=database.CATALOG_CACHE_HOURS)
 
                         if _is_event_set(abort_ev):
                             return None
@@ -9817,10 +10003,10 @@ class CineWindow(Adw.ApplicationWindow):
                                 if not it.get("manifest_url"): it["manifest_url"] = m_url
                             database.hydrate_items_from_metadata(cached, media_type=m_type)
                             api.hydrate_missing_catalog_items(cached, media_type=m_type)
-                            if cur_lang and api.catalog_supports_genre(cat_info, cur_lang):
+                            if effective_lang and api.catalog_supports_filter(cat_info, effective_lang):
                                 for it in cached:
-                                    it.setdefault("language", cur_lang)
-                            if cur_country and api.catalog_supports_genre(cat_info, cur_country):
+                                    it.setdefault("language", effective_lang)
+                            if cur_country and (api.catalog_supports_genre(cat_info, cur_country) or country_lang):
                                 for it in cached:
                                     it.setdefault("country", cur_country)
                             filtered = cached
@@ -9828,13 +10014,13 @@ class CineWindow(Adw.ApplicationWindow):
                                 filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
                             elif filtered and m_type and m_type not in ("all", "discover"):
                                 filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
-                            if filtered and cur_lang:
-                                filtered = api.filter_items_by_genre(filtered, cur_lang, media_type=m_type)
+                            if filtered and effective_lang:
+                                filtered = api.filter_items_by_genre(filtered, effective_lang, media_type=m_type)
                             if filtered and cur_country:
                                 filtered = api.filter_items_by_country(filtered, cur_country, media_type=m_type)
                             if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
                                 filtered = [it for it in filtered if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(cur_year)]
-                            return (key, page, filtered, len(cached))
+                            return (key, page, filtered, len(cached), True)
 
                         if _is_event_set(abort_ev):
                             return None
@@ -9863,10 +10049,10 @@ class CineWindow(Adw.ApplicationWindow):
                                     if not it.get("manifest_url"): it["manifest_url"] = m_url
                                 database.hydrate_items_from_metadata(items, media_type=m_type)
                                 api.hydrate_missing_catalog_items(items, media_type=m_type)
-                                if cur_lang and api.catalog_supports_genre(cat_info, cur_lang):
+                                if effective_lang and api.catalog_supports_filter(cat_info, effective_lang):
                                     for it in items:
-                                        it.setdefault("language", cur_lang)
-                                if cur_country and api.catalog_supports_genre(cat_info, cur_country):
+                                        it.setdefault("language", effective_lang)
+                                if cur_country and (api.catalog_supports_genre(cat_info, cur_country) or country_lang):
                                     for it in items:
                                         it.setdefault("country", cur_country)
                                 if not _is_event_set(abort_ev):
@@ -9876,23 +10062,35 @@ class CineWindow(Adw.ApplicationWindow):
                                 filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
                             elif filtered and m_type and m_type not in ("all", "discover"):
                                 filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
-                            if filtered and cur_lang:
-                                filtered = api.filter_items_by_genre(filtered, cur_lang, media_type=m_type)
+                            if filtered and effective_lang:
+                                filtered = api.filter_items_by_genre(filtered, effective_lang, media_type=m_type)
                             if filtered and cur_country:
                                 filtered = api.filter_items_by_country(filtered, cur_country, media_type=m_type)
                             if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
                                 filtered = [it for it in filtered if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(cur_year)]
                             raw_count = len(raw_items) if raw_items is not None else -1
-                            return (key, page, filtered, raw_count)
+                            return (key, page, filtered, raw_count, False)
                         except Exception as e:
                             logger.debug(f"Unique worker catalog fetch error: {e}")
-                            return (key, page, None, -1)
+                            return (key, page, None, -1, False)
 
                     if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
                         return
 
                     pass_added = 0
+                    # Cached answers are listed first: results that had to come off
+                    # the network are held in this pile and appended after the pass,
+                    # so the grid fills from what this machine already has before it
+                    # fills from what it just asked for.
+                    saw_cached_slice = False
+                    pending_network = []
                     try:
+                        # Sources that answer from this machine are submitted first, so
+                        # no network answer can be handed to the UI before them.
+                        batch_cats = sorted(
+                            batch_cats,
+                            key=lambda ckp: 0 if ckp[0].get("_source") in ("query_cache", "genre_cache") else 1,
+                        )
                         futures = [pool.submit(_fetch_cat, c, k, p) for c, k, p in batch_cats]
                         # Allow each paginated catalog request time to try both URL forms
                         # before this page can be issued again.
@@ -9902,7 +10100,7 @@ class CineWindow(Adw.ApplicationWindow):
                             res = f.result()
                             if not res:
                                 continue
-                            cat_key, page, items, raw_count = res
+                            cat_key, page, items, raw_count, from_cache = res
                             # Process results under lock to prevent state corruption
                             with unique_lock:
                                 if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
@@ -9955,7 +10153,17 @@ class CineWindow(Adw.ApplicationWindow):
                                         self.unique_productive_catalogs = []
                                     if cat_key not in self.unique_productive_catalogs:
                                         self.unique_productive_catalogs.append(cat_key)
-                                    GLib.idle_add(self._append_unique_slice_to_ui, unique_new, req_id)
+                                    if from_cache:
+                                        saw_cached_slice = True
+                                        GLib.idle_add(self._append_unique_slice_to_ui, unique_new, req_id)
+                                    elif saw_cached_slice:
+                                        # A cached slice is already on its way to the UI,
+                                        # so this one goes behind it instead of cutting in.
+                                        pending_network.extend(unique_new)
+                                    else:
+                                        # Nothing local has answered this pass; keep
+                                        # streaming instead of holding every card back.
+                                        GLib.idle_add(self._append_unique_slice_to_ui, unique_new, req_id)
                                 else:
                                     # Providers can repeat pages or return items that
                                     # do not pass the active filters. Allow a few pages
@@ -9969,6 +10177,15 @@ class CineWindow(Adw.ApplicationWindow):
 
                     except (concurrent.futures.TimeoutError, RuntimeError):
                         pass
+                    finally:
+                        # Whatever was held back belongs after the cached slices, so it
+                        # goes out when the pass ends rather than being dropped: these
+                        # items are already marked as seen and would never return.
+                        with unique_lock:
+                            if pending_network:
+                                if req_id == getattr(self, "unique_request_id", 0) and not _is_event_set(abort_ev):
+                                    GLib.idle_add(self._append_unique_slice_to_ui, list(pending_network), req_id)
+                                pending_network = []
 
                     if pass_added and len(collected) >= target_batch_count and not pending_catalog_searches:
                         break
@@ -9991,16 +10208,20 @@ class CineWindow(Adw.ApplicationWindow):
                 def _finish_unique_batch():
                     if req_id == getattr(self, "unique_request_id", 0):
                         self.is_fetching_unique = False
-                        self._set_discover_spinner_active(False)
                     if _is_event_set(abort_ev) or req_id != getattr(self, "unique_request_id", 0):
+                        self._set_discover_spinner_active(False)
                         return False
                     
                     if collected:
                         def check_fill():
                             if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
+                                self._set_discover_spinner_active(False)
                                 return False
                             if not getattr(self, "has_more_unique", True) or getattr(self, "is_fetching_unique", False):
+                                if not getattr(self, "is_fetching_unique", False):
+                                    self._set_discover_spinner_active(False)
                                 return False
+                            loaded = False
                             if hasattr(self, "unique_scrolled") and self.unique_scrolled is not None:
                                 adj = self.unique_scrolled.get_vadjustment()
                                 if adj and hasattr(adj, "get_page_size"):
@@ -10014,12 +10235,18 @@ class CineWindow(Adw.ApplicationWindow):
                                         if auto_fill_count < 2:
                                             self._unique_auto_fill_count = auto_fill_count + 1
                                             self._load_next_unique_batch()
+                                            loaded = True
                                     elif page_size > 0 and value + page_size >= upper - 800:
                                         # Scroll signals can arrive while a batch is loading
                                         # and be ignored. Recheck the bottom after it finishes.
                                         self._load_next_unique_batch()
+                                        loaded = True
+                            if not loaded and not getattr(self, "is_fetching_unique", False):
+                                self._set_discover_spinner_active(False)
                             return False
                         GLib.timeout_add(250, check_fill)
+                    elif not getattr(self, "is_fetching_unique", False):
+                        self._set_discover_spinner_active(False)
                     return False
                 GLib.idle_add(_finish_unique_batch)
 
@@ -10278,9 +10505,9 @@ class CineWindow(Adw.ApplicationWindow):
                     return
 
                 # Cache-first: show instantly if we have a recent result
-                cached = database.get_cached_catalog(cache_key, max_age_hours=6)
+                cached = database.get_cached_catalog(cache_key, max_age_hours=database.CATALOG_CACHE_HOURS)
                 if not cached and page_to_fetch == 1 and genre:
-                    base_cached = database.get_cached_catalog(f"discover:{cat_url}:{cat_id}:{active_discover_type}{year_suffix}{lang_suffix}", max_age_hours=6)
+                    base_cached = database.get_cached_catalog(f"discover:{cat_url}:{cat_id}:{active_discover_type}{year_suffix}{lang_suffix}", max_age_hours=database.CATALOG_CACHE_HOURS)
                     if base_cached:
                         cached = base_cached
                 if _is_event_set(abort_ev):
@@ -10595,6 +10822,11 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _on_continue_watching_clicked(self, item_data):
         if not item_data: return
+        # Each click supersedes any in-flight stale-stream refresh. Without this,
+        # a slow refresh for a previously clicked card can start playing after
+        # the user has already chosen something else.
+        self._cw_play_request_id = getattr(self, "_cw_play_request_id", 0) + 1
+        request_id = self._cw_play_request_id
         p_id = item_data.get("id") or item_data.get("imdb_id")
         season = item_data.get("season")
         episode = item_data.get("episode")
@@ -10627,7 +10859,7 @@ class CineWindow(Adw.ApplicationWindow):
                         old_stream=cur_ws,
                         provider=target_prov
                     )
-                    if refreshed and isinstance(refreshed, dict):
+                    if _stream_link_changed(refreshed, cur_ws):
                         cur_ws = refreshed
                         database.save_working_stream(p_id, season, episode, refreshed)
                         cur_item["selected_torrent"] = refreshed
@@ -10640,11 +10872,18 @@ class CineWindow(Adw.ApplicationWindow):
                 except Exception as e:
                     logger.error(f"Error refreshing stale stream on continue click: {e}")
 
-                GLib.idle_add(lambda: self._finish_continue_watching_play(cur_item, cur_ws, title, p_id, position))
+                def _finish_on_main():
+                    if request_id != getattr(self, "_cw_play_request_id", 0):
+                        return
+                    self._finish_continue_watching_play(cur_item, cur_ws, title, p_id, position)
+
+                GLib.idle_add(_finish_on_main)
 
             threading.Thread(target=_refresh_and_play, daemon=True).start()
             return
 
+        if request_id != getattr(self, "_cw_play_request_id", 0):
+            return
         self._finish_continue_watching_play(item_data, working_stream, title, p_id, position)
 
     def _finish_continue_watching_play(self, item_data, working_stream, title, p_id, position):
@@ -10784,6 +11023,52 @@ class CineWindow(Adw.ApplicationWindow):
                     if box:
                         box.remove(grandparent)
 
+    def _queue_discover_manifest_fetch(self, manifest_url):
+        """Fetch an addon manifest's catalogs in the background for the addon view."""
+        if not manifest_url:
+            return
+        inflight = getattr(self, "_discover_manifest_inflight", None)
+        if inflight is None:
+            inflight = self._discover_manifest_inflight = set()
+        if manifest_url in inflight:
+            return
+        inflight.add(manifest_url)
+        self._discover_manifest_pending = manifest_url
+
+        def _fetch_worker():
+            found = False
+            try:
+                from . import api, database
+                for addon in database.get_addons():
+                    if addon.get("manifest_url") == manifest_url:
+                        found = bool(api.get_addon_catalogs(addon, cache_only=False))
+                        break
+            except Exception as e:
+                logger.debug(f"Discover manifest fetch failed for {manifest_url}: {e}")
+
+            def _apply():
+                inflight.discard(manifest_url)
+                if getattr(self, "_discover_manifest_pending", None) == manifest_url:
+                    self._discover_manifest_pending = None
+                try:
+                    on_discover = (
+                        hasattr(self, "library_stack")
+                        and self.library_stack.get_visible_child_name() == "discover"
+                    )
+                except Exception:
+                    on_discover = False
+                if found and on_discover and getattr(self, "_current_discover_addon", None) == manifest_url:
+                    self._refresh_discover_page(
+                        filter_media_type=getattr(self, "_current_discover_type", "all") or "all",
+                        filter_addon_url=manifest_url,
+                        force_refresh=True,
+                    )
+                return False
+
+            GLib.idle_add(_apply)
+
+        threading.Thread(target=_fetch_worker, daemon=True, name="DiscoverManifestFetch").start()
+
     def _get_discover_catalog_list(self, filter_media_type=None, filter_addon_url=None, force_refresh=False):
         cur_sort = getattr(self, "current_sort", "Popular")
         if not isinstance(cur_sort, str):
@@ -10855,7 +11140,10 @@ class CineWindow(Adw.ApplicationWindow):
                 
             catalogs = api.get_addon_catalogs(addon, cache_only=True)
             if not catalogs and filter_addon_url:
-                catalogs = api.get_addon_catalogs(addon, cache_only=False)
+                # Manifest fetch is network I/O: never do it on the GTK thread.
+                # Queue it in the background and refresh the view when it lands.
+                self._queue_discover_manifest_fetch(m_url)
+                continue
             if not catalogs:
                 continue
                 
@@ -10868,13 +11156,13 @@ class CineWindow(Adw.ApplicationWindow):
                 if cur_genre and cat_media_kind in ("tv", "channel", "live", "music", "radio", "podcast"):
                     continue
 
-                if cur_genre and not filter_addon_url and not api.catalog_supports_genre(cat, cur_genre):
+                if cur_genre and not filter_addon_url and not api.catalog_supports_filter(cat, cur_genre):
                     continue
 
-                if cur_lang and not filter_addon_url and not api.catalog_supports_genre(cat, cur_lang):
+                if cur_lang and not filter_addon_url and not api.catalog_supports_filter(cat, cur_lang):
                     continue
 
-                if cur_country and not filter_addon_url and not api.catalog_supports_genre(cat, cur_country):
+                if cur_country and not filter_addon_url and not api.catalog_supports_genre(cat, cur_country) and not api.catalog_language_for_country(cat, cur_country):
                     continue
 
                 if cur_year and cur_year not in ("All Years", _("All Years"), "All"):
@@ -10983,9 +11271,16 @@ class CineWindow(Adw.ApplicationWindow):
         # the local metadata database instead of leaving Discover empty. When a
         # provider does support the genre/language/country, keep provider rows only so the list
         # is not duplicated with a synthetic cached-results row.
+        #
+        # Country is different: its options come from local metadata, and a
+        # catalog that happens to declare the country as a genre option (for
+        # example a per-country IPTV feed queried with genre="India") can still
+        # return nothing. Never let such a catalog suppress the cached row, or
+        # Discover ends up empty while Unique (which always prepends that row)
+        # shows results for the same filter.
         if (cur_genre or cur_lang or cur_country) and not filter_addon_url and not any(r.get("_source") == "genre_cache" for r in rows):
             match_target = cur_genre or cur_lang or cur_country
-            if not rows or not any(api.catalog_supports_genre(r, match_target) for r in rows):
+            if cur_country or not rows or not any(api.catalog_supports_genre(r, match_target) for r in rows):
                 parts = [p for p in (cur_genre, cur_lang, cur_country) if isinstance(p, str) and p]
                 title_label = " · ".join(parts) if parts else "Cached"
                 rows.insert(0, {
@@ -11002,6 +11297,43 @@ class CineWindow(Adw.ApplicationWindow):
                     "sort_mode": cur_sort,
                     "title": f"{title_label} — Cached Results",
                 })
+
+        # Country and language cards straight from TMDb's discover endpoint. Most
+        # Stremio addons cannot filter by country at all (the country list is
+        # metadata-derived) and only some expose a language section, so this is the
+        # row that actually fetches cards for the selection — and the only one that
+        # can browse deeper than its first page.
+        tmdb_target = cur_country or cur_lang
+        tmdb_target_code = (database.get_country_iso_code(cur_country) if cur_country
+                            else database.get_language_code(cur_lang))
+        if (tmdb_target and tmdb_target_code and not filter_addon_url and (filter_media_type or "all") in (
+            "all", "movie_series", "movie", "series"
+        )):
+            prefix = {"Recent": "Recent", "Featured": "Top Rated"}.get(cur_sort, "Popular")
+            tmdb_label = f"{prefix} in {tmdb_target}"
+            if cur_genre:
+                tmdb_label = f"{cur_genre} · {tmdb_label}"
+            if cur_year:
+                tmdb_label = f"{tmdb_label} ({cur_year})"
+            rows.insert(0, {
+                "_source": "tmdb_country",
+                "addon_name": "",
+                "media_type": filter_media_type or "all",
+                "catalog_id": None,
+                "catalog_name": tmdb_label,
+                "manifest_url": None,
+                "genre": cur_genre,
+                "language": cur_lang,
+                "country": cur_country,
+                "year": cur_year,
+                "sort_mode": cur_sort,
+                # Load-more state: the page this row stands for, and how many
+                # TMDb reported when it was fetched.
+                "tmdb_page": 1,
+                "tmdb_total_pages": 0,
+                "supports_pagination": True,
+                "title": tmdb_label,
+            })
 
         # Deduplicate row titles to avoid GTK "duplicate child name" warnings
         seen_titles = {}
@@ -11038,6 +11370,12 @@ class CineWindow(Adw.ApplicationWindow):
                 return 2
 
         def row_type_priority(row):
+            # Local cached results lead the list, matching Unique; otherwise an
+            # "all" media type would sort them behind every provider row.
+            if row.get("_source") == "genre_cache":
+                return -2
+            if row.get("_source") == "tmdb_country":
+                return -1
             row_type = str(row.get("media_type") or row.get("raw_type") or "").strip().lower()
             if row_type in ("movie", "movies", "film", "films"):
                 return 0
@@ -11052,8 +11390,23 @@ class CineWindow(Adw.ApplicationWindow):
             return 5
 
         # Keep entertainment catalogs first in both Home and Discover, with
-        # live TV and audio catalogs grouped after movies/series.
-        rows.sort(key=lambda row: (row_type_priority(row), catalog_priority_key(row)))
+        # live TV and audio catalogs grouped after movies/series. When a country
+        # or language is selected, the catalogs that can actually answer it lead
+        # the list: lazy batches are four rows deep, so burying them behind
+        # providers that get skipped locally means nothing ever loads.
+        def row_filter_priority(row):
+            if not (cur_country or cur_lang):
+                return 0
+            if row.get("_source"):
+                return 0
+            if cur_lang and api.catalog_supports_filter(row, cur_lang):
+                return 0
+            if cur_country and (api.catalog_supports_genre(row, cur_country)
+                                or api.catalog_language_for_country(row, cur_country)):
+                return 0
+            return 1
+
+        rows.sort(key=lambda row: (row_filter_priority(row), row_type_priority(row), catalog_priority_key(row)))
 
         if not hasattr(self, "_discover_catalog_list_cache"):
             self._discover_catalog_list_cache = {}
@@ -11099,9 +11452,11 @@ class CineWindow(Adw.ApplicationWindow):
         if getattr(self, "_cw_bg_refresh_running", False):
             return
         self._last_cw_bg_refresh_time = _time.time()
+        # Claim the flag before the thread starts; otherwise two calls in the
+        # tiny window before the worker runs can both launch refreshes.
+        self._cw_bg_refresh_running = True
 
         def _worker():
-            self._cw_bg_refresh_running = True
             try:
                 from . import database, api
                 items = cw_items if cw_items is not None else database.get_continue_watching()
@@ -11131,7 +11486,7 @@ class CineWindow(Adw.ApplicationWindow):
                             old_stream=working_st,
                             provider=target_prov
                         )
-                        if refreshed and isinstance(refreshed, dict):
+                        if _stream_link_changed(refreshed, working_st):
                             database.save_working_stream(item_id, item.get("season"), item.get("episode"), refreshed)
                             item["selected_torrent"] = refreshed
                             item["stream_url"] = refreshed.get("url") or refreshed.get("magnet")
@@ -11463,8 +11818,28 @@ class CineWindow(Adw.ApplicationWindow):
         self._discover_next_row_index = 0
         self._discover_empty_batches = 0
         self._discover_auto_fill_count = 0
+        self._discover_scroll_parked_rows = None
+        self._discover_scroll_parked_upper = None
 
         if not self._discover_catalog_list:
+            if filter_addon_url and getattr(self, "_discover_manifest_pending", None) == filter_addon_url:
+                # The addon's manifest is being fetched in the background;
+                # show a spinner rather than a premature "no catalogs" state.
+                loading_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+                loading_box.set_valign(Gtk.Align.CENTER)
+                loading_box.set_halign(Gtk.Align.CENTER)
+                loading_box.set_margin_top(60)
+                spinner = Gtk.Spinner()
+                spinner.start()
+                loading_box.append(spinner)
+                loading_lbl = Gtk.Label(label=_("Loading catalogs…"))
+                loading_lbl.add_css_class("dim-label")
+                loading_box.append(loading_lbl)
+                new_box.append(loading_box)
+                self._set_discover_spinner_active(False)
+                debug_log(f"_refresh_discover_page waiting for manifest of {filter_addon_url}")
+                return
+
             if filter_addon_url:
                 self._current_discover_addon = None
 
@@ -11563,6 +11938,10 @@ class CineWindow(Adw.ApplicationWindow):
         self._set_discover_spinner_active(True)
         
         target_box = getattr(self, "discover_box", None)
+        # Deeper TMDb pages repeat titles the fan-out of the first page already
+        # showed, so the ids rendered in this view are snapshotted here on the
+        # main thread; workers read the copy instead of a shared live set.
+        tmdb_seen_snapshot = set(getattr(target_box, "_tmdb_seen_ids", ()) or ())
         start_idx = self._discover_next_row_index
         end_idx = min(start_idx + batch_size, len(self._discover_catalog_list))
         self._discover_next_row_index = end_idx
@@ -11635,6 +12014,61 @@ class CineWindow(Adw.ApplicationWindow):
                             debug_log(f"discover genre cache: '{row_info.get('genre') or row_info.get('language') or req_country}' -> {len(items)} items")
                             return (row_info, items)
 
+                        if row_info.get("_source") == "tmdb_country":
+                            from . import tmdb_helper
+                            req_country = row_info.get("country") or getattr(self, "current_country", None)
+                            req_genre = row_info.get("genre")
+                            req_lang = row_info.get("language")
+                            req_year = row_info.get("year")
+                            req_sort = row_info.get("sort_mode")
+                            try:
+                                req_page = max(1, int(row_info.get("tmdb_page") or 1))
+                            except (TypeError, ValueError):
+                                req_page = 1
+                            tmdb_key = (
+                                f"tmdb-country:{req_country}:{m_type}:{req_genre or ''}:"
+                                f"{req_year or ''}:{req_sort or ''}:{req_lang or ''}:p{req_page}:row36"
+                            )
+                            items = database.get_cached_catalog(tmdb_key, max_age_hours=database.CATALOG_CACHE_HOURS)
+                            total_pages = int(row_info.get("tmdb_total_pages") or 0)
+                            if not items:
+                                items, page_total = tmdb_helper.fetch_country_catalog_page(
+                                    country=req_country,
+                                    media_type=m_type,
+                                    genre=req_genre,
+                                    year=req_year,
+                                    sort_mode=req_sort,
+                                    language=req_lang,
+                                    limit=36,
+                                    page=req_page,
+                                    exclude_ids=tmdb_seen_snapshot,
+                                )
+                                total_pages = max(total_pages, int(page_total or 0))
+                                if items and not _is_event_set(abort_ev):
+                                    database.save_cached_catalog(tmdb_key, items)
+                            # The row carries the cursor the next page is queued
+                            # from; the main thread only reads it after this batch.
+                            if not items:
+                                # Nothing this deep, so stop offering further pages
+                                # instead of probing to the cap on every scroll.
+                                row_info["tmdb_exhausted"] = True
+                            row_info["tmdb_total_pages"] = total_pages
+                            if req_genre:
+                                items = api.filter_items_by_genre(items, req_genre, media_type=m_type)
+                            if req_lang:
+                                items = api.filter_items_by_genre(items, req_lang, media_type=m_type)
+                            if req_country:
+                                items = api.filter_items_by_country(items, req_country, media_type=m_type)
+                            if req_year and str(req_year).strip().isdigit():
+                                items = [
+                                    it for it in items
+                                    if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(req_year).strip())
+                                ]
+                            if database.is_adult_content_hidden():
+                                items = [it for it in items if not api.is_adult_item(it)]
+                            debug_log(f"discover tmdb page {req_page}: '{req_country or req_lang}' -> {len(items) if items else 0} items", f"TMDb reports {total_pages} pages")
+                            return (row_info, items)
+
                         current_g = getattr(self, "current_genre", None)
                         if not isinstance(current_g, str) or current_g in ("All Genres", _("All Genres"), "All"):
                             current_g = None
@@ -11648,7 +12082,7 @@ class CineWindow(Adw.ApplicationWindow):
                         if not isinstance(current_c, str) or current_c in ("All Countries", _("All Countries"), "All"):
                             current_c = None
 
-                        if current_g and not api.catalog_supports_genre(row_info, current_g):
+                        if current_g and not api.catalog_supports_filter(row_info, current_g):
                             debug_log(f"discover row SKIPPED: '{row_title}' — genre '{current_g}' not supported")
                             return (row_info, [])
 
@@ -11656,24 +12090,32 @@ class CineWindow(Adw.ApplicationWindow):
                             debug_log(f"discover row SKIPPED: '{row_title}' — narrative genres do not apply to {m_type}")
                             return (row_info, [])
 
-                        if current_l and not api.catalog_supports_genre(row_info, current_l):
+                        if current_l and not api.catalog_supports_filter(row_info, current_l):
                             # The provider cannot filter by this language, so
                             # every result would be discarded by the local
                             # language filter. Skip it without a network call.
                             debug_log(f"discover row SKIPPED: '{row_title}' — language '{current_l}' not supported")
                             return (row_info, [])
 
+                        country_lang = None
                         if current_c and not api.catalog_supports_genre(row_info, current_c):
-                            debug_log(f"discover row SKIPPED: '{row_title}' — country '{current_c}' not supported")
-                            return (row_info, [])
+                            # Manifests expose sections per cinema (Hindi, Tamil,
+                            # Telugu…) but almost never a country, so the country is
+                            # fetched through its own languages instead of dropped.
+                            country_lang = api.catalog_language_for_country(row_info, current_c)
+                            if not country_lang and not current_l:
+                                debug_log(f"discover row SKIPPED: '{row_title}' — country '{current_c}' not supported")
+                                return (row_info, [])
+
+                        effective_lang = current_l or country_lang
 
                         fetch_genre = current_g
-                        if not current_g and current_l:
+                        if not current_g and effective_lang:
                             # Send language to providers that declare support;
                             # otherwise fetch normally and filter using local
                             # metadata after the response arrives.
-                            if api.catalog_supports_genre(row_info, current_l):
-                                fetch_genre = current_l
+                            if api.catalog_supports_filter(row_info, effective_lang):
+                                fetch_genre = effective_lang
                         elif not current_g and current_c:
                             if api.catalog_supports_genre(row_info, current_c):
                                 fetch_genre = current_c
@@ -11685,9 +12127,9 @@ class CineWindow(Adw.ApplicationWindow):
                         lang_suffix = f":l{current_l}" if current_l else ""
                         country_suffix = f":c{current_c}" if current_c else ""
                         cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}{country_suffix}:row36"
-                        cached = database.get_cached_catalog(cache_key, max_age_hours=48)
+                        cached = database.get_cached_catalog(cache_key, max_age_hours=database.CATALOG_CACHE_HOURS)
                         if not cached and fetch_genre:
-                            base_cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{year_suffix}{lang_suffix}{country_suffix}:row36", max_age_hours=48)
+                            base_cached = database.get_cached_catalog(f"discover:{m_url}:{c_id}:{m_type}{year_suffix}{lang_suffix}{country_suffix}:row36", max_age_hours=database.CATALOG_CACHE_HOURS)
                             if base_cached:
                                 cached = api.filter_items_by_genre(base_cached, fetch_genre, media_type=m_type)
                         if _is_event_set(abort_ev):
@@ -11695,18 +12137,18 @@ class CineWindow(Adw.ApplicationWindow):
                         if cached:
                             database.hydrate_items_from_metadata(cached, media_type=m_type)
                             api.hydrate_missing_catalog_items(cached, media_type=m_type)
-                            if current_l and api.catalog_supports_genre(row_info, current_l):
+                            if effective_lang and api.catalog_supports_filter(row_info, effective_lang):
                                 for it in cached:
-                                    it.setdefault("language", current_l)
-                            if current_c and api.catalog_supports_genre(row_info, current_c):
+                                    it.setdefault("language", effective_lang)
+                            if current_c and (api.catalog_supports_genre(row_info, current_c) or country_lang):
                                 for it in cached:
                                     it.setdefault("country", current_c)
                             if current_g:
                                 cached = api.filter_items_by_genre(cached, current_g, media_type=m_type)
                             elif cached and m_type:
                                 cached = [it for it in cached if api.is_item_type_compatible(it, m_type)]
-                            if cached and current_l:
-                                cached = api.filter_items_by_genre(cached, current_l, media_type=m_type)
+                            if cached and effective_lang:
+                                cached = api.filter_items_by_genre(cached, effective_lang, media_type=m_type)
                             if cached and current_c:
                                 cached = api.filter_items_by_country(cached, current_c, media_type=m_type)
                             if cached and current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
@@ -11738,10 +12180,10 @@ class CineWindow(Adw.ApplicationWindow):
                         if items:
                             database.hydrate_items_from_metadata(items, media_type=m_type)
                             api.hydrate_missing_catalog_items(items, media_type=m_type)
-                            if current_l and api.catalog_supports_genre(row_info, current_l):
+                            if effective_lang and api.catalog_supports_filter(row_info, effective_lang):
                                 for it in items:
-                                    it.setdefault("language", current_l)
-                            if current_c and api.catalog_supports_genre(row_info, current_c):
+                                    it.setdefault("language", effective_lang)
+                            if current_c and (api.catalog_supports_genre(row_info, current_c) or country_lang):
                                 for it in items:
                                     it.setdefault("country", current_c)
                             if not _is_event_set(abort_ev):
@@ -11750,8 +12192,8 @@ class CineWindow(Adw.ApplicationWindow):
                                 items = api.filter_items_by_genre(items, current_g, media_type=m_type)
                             elif m_type:
                                 items = [it for it in items if api.is_item_type_compatible(it, m_type)]
-                            if current_l:
-                                items = api.filter_items_by_genre(items, current_l, media_type=m_type)
+                            if effective_lang:
+                                items = api.filter_items_by_genre(items, effective_lang, media_type=m_type)
                             if current_c:
                                 items = api.filter_items_by_country(items, current_c, media_type=m_type)
                             if current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
@@ -11832,7 +12274,6 @@ class CineWindow(Adw.ApplicationWindow):
                         return False
 
                     self._discover_is_loading_rows = False
-                    self._set_discover_spinner_active(False)
                     debug_log(f"discover batch finished for req_id={req_id} (added {added_count} rows)")
 
                     if added_count == 0:
@@ -11842,13 +12283,44 @@ class CineWindow(Adw.ApplicationWindow):
 
                     has_content = bool(target_box and target_box.get_first_child())
                     more_catalogs = self._discover_next_row_index < len(self._discover_catalog_list)
+                    if not more_catalogs:
+                        # Hiding only once the list is exhausted keeps the
+                        # indicator steady while lazy batches chain together.
+                        self._set_discover_spinner_active(False)
+                        self._discover_scroll_parked_rows = None
+                        self._discover_scroll_parked_upper = None
+
+                    if added_count == 0 and more_catalogs:
+                        # Nothing appeared. Before parking, hand the network source
+                        # the slot the provider rows just vacated: a filter most
+                        # addons cannot answer is exactly when TMDb should fetch.
+                        if self._queue_next_discover_tmdb_page(insert_at=self._discover_next_row_index):
+                            self._discover_scroll_parked_rows = None
+                            self._discover_scroll_parked_upper = None
+                            debug_log(f"discover lazy load continues with a TMDb page at row {self._discover_next_row_index}",
+                                      f"{len(self._discover_catalog_list) - self._discover_next_row_index} catalog rows left, none answered this filter")
+                            self._load_next_discover_batch(req_id, batch_size=1)
+                        else:
+                            # Still nothing to show, so the viewport did not grow and
+                            # the same bottom-edge condition stays true forever. Park
+                            # lazy loading until rows are consumed elsewhere or the
+                            # user scrolls away and back.
+                            adj = self.discover_scrolled.get_vadjustment() if hasattr(self, "discover_scrolled") else None
+                            self._discover_scroll_parked_rows = self._discover_next_row_index
+                            self._discover_scroll_parked_upper = adj.get_upper() if adj else 0
+                            debug_log(f"discover lazy load PARKED at row {self._discover_next_row_index}", f"{len(self._discover_catalog_list) - self._discover_next_row_index} catalog rows left, none answered this filter")
+                    elif added_count:
+                        self._discover_scroll_parked_rows = None
+                        self._discover_scroll_parked_upper = None
 
                     # Check if viewport still has unfilled room on initial display (bound to max auto-fills)
                     if more_catalogs:
                         def _check_deferred_fill():
                             if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
+                                self._set_discover_spinner_active(False)
                                 return False
                             if not hasattr(self, "discover_scrolled"):
+                                self._set_discover_spinner_active(False)
                                 return False
                             adj = self.discover_scrolled.get_vadjustment()
                             val = adj.get_value()
@@ -11869,6 +12341,8 @@ class CineWindow(Adw.ApplicationWindow):
                             if page_size > 0 and upper <= page_size and auto_fill_count < max_auto and empty_batches < max_empty:
                                 self._discover_auto_fill_count = auto_fill_count + 1
                                 self._load_next_discover_batch(req_id, batch_size=4)
+                            elif not getattr(self, "_discover_is_loading_rows", False):
+                                self._set_discover_spinner_active(False)
                             return False
 
                         if added_count == 0:
@@ -11886,6 +12360,7 @@ class CineWindow(Adw.ApplicationWindow):
                     if not has_content and (not more_catalogs or getattr(self, "_discover_empty_batches", 0) >= limit_empty):
                         # Evict the empty view from _discover_views so it won't be cached as blank
                         v_key = self._get_discover_view_key()
+                        self._set_discover_spinner_active(False)
                         if hasattr(self, "_discover_views") and v_key in self._discover_views:
                             self._discover_views.pop(v_key, None)
 
@@ -12018,6 +12493,14 @@ class CineWindow(Adw.ApplicationWindow):
         sec_row.add_css_class("discover-row-box")
 
         display_items = items[:36]
+        if row_info.get("_source") == "tmdb_country" and target_box is not None:
+            # What this view already showed; the next TMDb page is fetched
+            # against a snapshot of the set taken on the main thread.
+            seen_ids = getattr(target_box, "_tmdb_seen_ids", None)
+            if seen_ids is None:
+                seen_ids = set()
+                target_box._tmdb_seen_ids = seen_ids
+            seen_ids.update(str(it.get("id")) for it in display_items if it.get("id"))
         database.hydrate_items_from_metadata(display_items, media_type=m_type)
         api.hydrate_missing_catalog_items(display_items, media_type=m_type)
         for it in display_items:
@@ -12047,22 +12530,108 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_discover_scroll(self, adj):
         if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "discover":
             return
-        if getattr(self, "_discover_is_loading_rows", False):
-            return
-        if not hasattr(self, "_discover_catalog_list") or getattr(self, "_discover_next_row_index", 0) >= len(self._discover_catalog_list):
-            return
-            
         val = adj.get_value()
         page_size = adj.get_page_size()
         upper = adj.get_upper()
-        
-        # Fetch next batch if user scrolled near the bottom
-        if page_size > 0 and upper > page_size and val + page_size >= upper - 600:
+        at_bottom = page_size > 0 and upper > page_size and val + page_size >= upper - 600
+
+        parked_rows = getattr(self, "_discover_scroll_parked_rows", None)
+        if parked_rows is not None:
+            # Releasing the park needs a real change: more rows were consumed at
+            # another offset, or the viewport grew because something appeared.
+            if self._discover_next_row_index != parked_rows or upper > getattr(self, "_discover_scroll_parked_upper", 0) + 1:
+                self._discover_scroll_parked_rows = None
+                self._discover_scroll_parked_upper = None
+            elif not at_bottom:
+                self._discover_scroll_parked_rows = None
+                self._discover_scroll_parked_upper = None
+            else:
+                self._set_discover_spinner_active(False)
+                return
+
+        if getattr(self, "_discover_is_loading_rows", False):
+            return
+        if not hasattr(self, "_discover_catalog_list"):
+            return
+        if self._discover_next_row_index >= len(self._discover_catalog_list) and at_bottom:
+            # The catalog rows ran out. TMDb is the one source that can hand over
+            # more results, so keep browsing its pages for this filter.
+            if not self._queue_next_discover_tmdb_page():
+                self._set_discover_spinner_active(False)
+                return
+
+        # Fetch next batch if user scrolled near the bottom; a row of cards is
+        # taller than the 600px trigger band, so the growing viewport moves the
+        # edge away and paces the batches itself.
+        if at_bottom:
             debug_log(f"_on_discover_scroll TRIGGERING NEXT BATCH: val={val:.1f}, page_size={page_size:.1f}, upper={upper:.1f}")
             self._load_next_discover_batch(getattr(self, "discover_request_id", 0), batch_size=4)
 
+    def _queue_next_discover_tmdb_page(self, insert_at=None):
+        """Append the next TMDb discover page as a row; True when one was queued.
+
+        Provider rows are what they are, so a filter that outran them would
+        otherwise stop at one page of results. Each extra page is a request per
+        media type and is only spent when the user reaches the bottom, capped by
+        tmdb_helper._MAX_DISCOVER_PAGES. `insert_at` places the page where the
+        lazy loader is about to read next, which is how a network page takes the
+        slot of provider rows that answered nothing.
+        """
+        rows = getattr(self, "_discover_catalog_list", None) or []
+        tmdb_rows = [r for r in rows if r.get("_source") == "tmdb_country"]
+        if not tmdb_rows or any(r.get("tmdb_exhausted") for r in tmdb_rows):
+            if tmdb_rows:
+                debug_log("discover TMDb browse finished", f"{len(tmdb_rows)} page(s) fetched")
+            return False
+        from . import tmdb_helper
+        try:
+            total_pages = max(int(r.get("tmdb_total_pages") or 0) for r in tmdb_rows)
+        except (TypeError, ValueError):
+            total_pages = 0
+        if not total_pages:
+            # A first page served from the 24 h cache never told us how deep this
+            # filter goes, so browse to the cap and stop at the first empty page.
+            total_pages = tmdb_helper._MAX_DISCOVER_PAGES
+        next_page = len(tmdb_rows) + 1
+        if total_pages < next_page:
+            debug_log(f"discover TMDb browse finished", f"{len(tmdb_rows)} of {total_pages} page(s) fetched")
+            return False
+        page_row = dict(tmdb_rows[0])
+        page_row["tmdb_page"] = next_page
+        page_row["tmdb_total_pages"] = 0
+        page_row.pop("tmdb_exhausted", None)
+        base_title = str(tmdb_rows[0].get("title") or "More results")
+        page_row["title"] = f"{base_title} · more" if next_page == 2 else f"{base_title} · more {next_page - 1}"
+        page_row["catalog_name"] = page_row["title"]
+        # Keep the new page adjacent to the pages it extends, and never ahead of
+        # rows the lazy loader already rendered: insert_at is where loading is,
+        # last_tmdb_idx + 1 is where the next page belongs in reading order.
+        last_tmdb_idx = max(i for i, r in enumerate(rows) if r.get("_source") == "tmdb_country")
+        if insert_at is None:
+            position = len(rows)
+        else:
+            position = max(int(insert_at), last_tmdb_idx + 1)
+        rows.insert(max(0, min(position, len(rows))), page_row)
+        # Row titles double as GTK widget names, so keep them unique after the
+        # list has already been built and de-duplicated.
+        titles = [str(r.get("title") or "") for r in rows]
+        if titles.count(page_row["title"]) > 1:
+            page_row["title"] = f"{page_row['title']} ({titles.count(page_row['title'])})"
+            page_row["catalog_name"] = page_row["title"]
+        view_key = self._get_discover_view_key()
+        if getattr(self, "_discover_views", None) and view_key in self._discover_views:
+            self._discover_views[view_key]["catalog_list"] = rows
+        debug_log(f"discover queued TMDb page {next_page}", f"TMDb reported {total_pages} pages")
+        return True
+
     def _prewarm_discover_views(self):
         """Pre-fetch Movie, Series, and Anime discover catalog data in the background into SQLite cache."""
+        # Addon changes can arrive in bursts; without this guard each one queues
+        # a delayed worker that fetches the same uncached rows in parallel.
+        if getattr(self, "_discover_prewarm_running", False):
+            debug_log("_prewarm_discover_views already running, skipping duplicate")
+            return
+        self._discover_prewarm_running = True
         debug_log("_prewarm_discover_views scheduling background prewarm thread")
         def bg_prewarm():
             import time
@@ -12082,7 +12651,7 @@ class CineWindow(Adw.ApplicationWindow):
                         c_id = row_info.get("catalog_id")
                         m_url = row_info.get("manifest_url")
                         cache_key = f"discover:{m_url}:{c_id}:{mt}:row36"
-                        if database.get_cached_catalog(cache_key, max_age_hours=48) is None:
+                        if database.get_cached_catalog(cache_key, max_age_hours=database.CATALOG_CACHE_HOURS) is None:
                             all_uncached.append((mt, c_id, m_url, cache_key))
                 except Exception as e:
                     logger.debug(f"Prewarm error for {m_type}: {e}")
@@ -12108,7 +12677,13 @@ class CineWindow(Adw.ApplicationWindow):
             except (RuntimeError, Exception):
                 pass
 
-        threading.Thread(target=bg_prewarm, daemon=True).start()
+        def _run_prewarm():
+            try:
+                bg_prewarm()
+            finally:
+                self._discover_prewarm_running = False
+
+        threading.Thread(target=_run_prewarm, daemon=True).start()
 
     def _clean_cat_name(self, cat, addon_name, media_type):
         raw_name = cat.get("catalog_name") or cat.get("catalog_id") or "Catalog"
@@ -12476,8 +13051,12 @@ class CineWindow(Adw.ApplicationWindow):
         if not valid_items:
             return
 
+        # Local SQLite cache pass only: it is fast enough for the GTK thread.
+        # Anything still missing is hydrated per card by MovieWidget's polite
+        # background queue (api.queue_metadata_hydration), which pushes results
+        # back through GLib.idle_add. Never run api.hydrate_missing_catalog_items
+        # here -- it blocks on network I/O while the first slice is being built.
         database.hydrate_items_from_metadata(valid_items)
-        api.hydrate_missing_catalog_items(valid_items)
 
         SLICE_SIZE = 12
         slices = [valid_items[i:i + SLICE_SIZE] for i in range(0, len(valid_items), SLICE_SIZE)]
@@ -12508,7 +13087,14 @@ class CineWindow(Adw.ApplicationWindow):
         from . import database
         self._cancel_all_background_fetching()
         print(f"[CARD CLICK Step 2] Canceled all background fetching and image downloads for clean navigation.")
-        database.add_history(movie_data)
+        # add_history rewrites data.json with fsync; keep that disk work off the
+        # GTK thread so the details page opens instantly.
+        threading.Thread(
+            target=database.add_history,
+            args=(dict(movie_data),),
+            daemon=True,
+            name="AddHistoryWorker",
+        ).start()
         
         while child := self.details_box.get_first_child():
             if hasattr(child, "destroy_page"):
@@ -12906,10 +13492,15 @@ class CineWindow(Adw.ApplicationWindow):
             logger.debug(f"Error setting mpv audio-files: {e}")
 
         seek_target = start_time
-        if seek_target is None and getattr(self, "_pending_seek_position", None):
-            seek_target = self._pending_seek_position
+        pending_seek = getattr(self, "_pending_seek_position", None)
+        if pending_seek is not None:
+            # The pending seek belongs to the playback request that set it.
+            # Consume it even when start_time was passed explicitly, otherwise
+            # it leaks into the next episode started by auto play.
             self._pending_seek_position = None
-        elif seek_target is None and getattr(self, "_current_playing_item", None):
+            if seek_target is None:
+                seek_target = pending_seek
+        if seek_target is None and getattr(self, "_current_playing_item", None):
             pos = float(self._current_playing_item.get("position") or 0.0)
             prog = float(self._current_playing_item.get("progress") or 0.0)
             if pos > 5.0 and prog < 0.92:
@@ -13071,7 +13662,11 @@ class CineWindow(Adw.ApplicationWindow):
             if subs:
                 logger.info(f"[SUBS] Found {len(subs)} subtitle(s), downloading...")
                 downloaded_count = 0
-                for idx, s in enumerate(subs):
+                # get_subtitles() returns every release matching the preferred
+                # languages, often dozens of near-identical tracks. Downloading
+                # all of them on each playback hammers the subtitle host; the
+                # list is already ranked, so a few gives mpv usable choices.
+                for idx, s in enumerate(subs[:3]):
                     url = s.get("url")
                     lang = s.get("lang", "en")
                     if url:
@@ -13193,13 +13788,35 @@ class CineWindow(Adw.ApplicationWindow):
         item_title = details.get("title") or stub.get("title") or details.get("name") or stub.get("name") or title
         target_id = imdb_id or details.get("id") or stub.get("id")
         existing_cw = database.get_continue_watching_item(target_id) if target_id else None
-        saved_pos = float(existing_cw.get("position") or 0.0) if existing_cw else 0.0
-        saved_prog = float(existing_cw.get("progress") or 0.01) if existing_cw else 0.01
-        saved_dur = float(existing_cw.get("duration") or 0.0) if existing_cw else 0.0
+        # Continue Watching keeps one row per series, so the stored position can
+        # belong to a different episode than the one being started. Only resume
+        # when the row is for the same episode; otherwise a fresh episode would
+        # inherit the previous episode's timestamp and progress.
+        same_cw_episode = False
+        if existing_cw:
+            if season is None and episode is None:
+                same_cw_episode = (
+                    existing_cw.get("season") is None
+                    and existing_cw.get("episode") is None
+                )
+            else:
+                same_cw_episode = (
+                    str(existing_cw.get("season")) == str(season)
+                    and str(existing_cw.get("episode")) == str(episode)
+                )
+        if same_cw_episode:
+            saved_pos = float(existing_cw.get("position") or 0.0)
+            saved_prog = float(existing_cw.get("progress") or 0.01)
+            saved_dur = float(existing_cw.get("duration") or 0.0)
+        else:
+            saved_pos = 0.0
+            saved_prog = 0.01
+            saved_dur = 0.0
 
-        if getattr(self, "_pending_seek_position", None) and saved_pos <= 0:
-            saved_pos = float(self._pending_seek_position)
-        elif saved_pos > 5.0 and not getattr(self, "_pending_seek_position", None):
+        pending_seek = getattr(self, "_pending_seek_position", None)
+        if pending_seek is not None:
+            saved_pos = max(saved_pos, float(pending_seek))
+        elif saved_pos > 5.0:
             self._pending_seek_position = saved_pos
 
         import time
@@ -13368,19 +13985,35 @@ class CineWindow(Adw.ApplicationWindow):
             file_index = torrent.get("file_index") if isinstance(torrent, dict) else None
             if file_index is None and isinstance(torrent, dict):
                 file_index = torrent.get("fileIdx")
+            failover_handled = [False]
+
             def progress_callback(stats):
                 if request_id != getattr(self, "stream_request_id", 0):
                     return
-                url = stats.get("url") if isinstance(stats, dict) else None
+                if not isinstance(stats, dict):
+                    return
+                url = stats.get("url")
                 if url:
                     t = display_title
-                    if isinstance(stats, dict) and stats.get("filePath"):
+                    if stats.get("filePath"):
                         import os
                         t = os.path.basename(stats.get("filePath"))
                     self._play_stream(url, t, preserve_queue=True)
-                elif isinstance(stats, dict):
-                    text = self.format_stream_stats(stats)
-                    self.update_player_loading(text)
+                    return
+
+                status_text = str(stats.get("status") or "")
+                # play_magnet reports engine death and startup failures only
+                # through this callback. Without handling them the loading
+                # screen stays up forever and the queue never advances.
+                if stats.get("closed") or (stats.get("ready") is False and status_text.startswith("Error")):
+                    if not failover_handled[0]:
+                        failover_handled[0] = True
+                        self._show_toast(status_text or _("Stream engine failed. Trying next stream..."))
+                        self._try_next_stream_in_queue()
+                    return
+
+                text = self.format_stream_stats(stats)
+                self.update_player_loading(text)
             page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
             q_season = getattr(self, "stream_queue_season", None)
             if q_season is None and getattr(self, "_current_playing_item", None):
@@ -13845,6 +14478,10 @@ class CineWindow(Adw.ApplicationWindow):
                 load_msg = f"Loading {next_title or f'Part {target_episode}'}..."
             
         self._show_toast(msg)
+        # From here until the next file reports file-loaded, the progress
+        # observer may still deliver the old episode's clock. Block a second
+        # auto-advance in that window so an episode cannot be skipped.
+        self._next_episode_transition_in_progress = True
         self.main_stack.set_visible_child_name("player")
         self.show_player_loading(load_msg)
         if hasattr(self, 'mpv'):
@@ -14019,22 +14656,44 @@ class CineWindow(Adw.ApplicationWindow):
             if hasattr(self, "_update_continue_watching_section"):
                 self._update_continue_watching_section()
         
-        if target_season != current_season:
-            seasons = sorted(list(set([v.get("season", 1) for v in videos])))
-            if target_season in seasons:
-                idx = seasons.index(target_season)
-                if hasattr(page, 'season_dropdown'):
-                    page.season_dropdown.set_selected(idx)
-        else:
-            if not hasattr(page, 'current_episodes') or not page.current_episodes:
-                return False
-            ep_nums = [e.get('episode') for e in page.current_episodes]
-            if target_episode in ep_nums:
-                idx = ep_nums.index(target_episode)
-                prev_idx = page.episode_dropdown.get_selected()
-                page.episode_dropdown.set_selected(idx)
-                if prev_idx == idx and hasattr(page, '_on_episode_dropdown_changed'):
-                    page._on_episode_dropdown_changed(page.episode_dropdown)
+        # Keep the page selection in sync before driving the dropdowns. The
+        # season callback derives the default episode from selected_episode, so
+        # without this it would keep the old episode number in the new season.
+        page.selected_season = target_season
+        page.selected_episode = target_episode
+        page.selected_video = next_v
+
+        # When a warmed/reused stream is available, the dropdown callbacks must
+        # not start another provider lookup for the episode being played.
+        page._suppress_stream_reload = bool(reused_stream)
+        try:
+            if target_season != current_season:
+                seasons = sorted(list(set([v.get("season", 1) for v in videos])))
+                if target_season in seasons:
+                    idx = seasons.index(target_season)
+                    if hasattr(page, 'season_dropdown'):
+                        page.season_dropdown.set_selected(idx)
+            else:
+                ep_nums = [e.get('episode') for e in (getattr(page, 'current_episodes', None) or [])]
+                if target_episode in ep_nums:
+                    idx = ep_nums.index(target_episode)
+                    prev_idx = page.episode_dropdown.get_selected()
+                    page.episode_dropdown.set_selected(idx)
+                    if prev_idx == idx and hasattr(page, '_on_episode_dropdown_changed'):
+                        page._on_episode_dropdown_changed(page.episode_dropdown)
+                elif not reused_stream and hasattr(page, 'fetch_torrents_async'):
+                    page.fetch_torrents_async(force=False)
+        finally:
+            page._suppress_stream_reload = False
+
+        if reused_stream:
+            # The dropdown callbacks reset selected_torrent from remembered
+            # state; restore the stream that is actually about to play.
+            page.selected_torrent = reused_stream
+            page.remembered_working_stream = reused_stream
+            self.selected_torrent = reused_stream
+            self.remembered_working_stream = reused_stream
+            page._auto_play_next = False
 
         if reused_stream:
             display_title = next_title or (f"Season {target_season} Episode {target_episode}" if getattr(page, 'media_type', '') in ["series", "anime", "tv"] else f"Part {target_episode}")
@@ -14065,11 +14724,18 @@ class CineWindow(Adw.ApplicationWindow):
                 abort_fn()
             except Exception:
                 pass
-        self._next_ep_prefetch_abort = None
-        self._next_ep_prefetch_source = None
-        self._next_ep_prefetch_key = None
-        self._next_ep_prefetch_at = 0.0
-        self._next_ep_prefetched = None
+        lock = getattr(self, "_next_ep_prefetch_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._next_ep_prefetch_lock = lock
+        # The worker stages its result under the same lock, so a result that
+        # arrives while cancelling cannot repopulate the cleared stage.
+        with lock:
+            self._next_ep_prefetch_abort = None
+            self._next_ep_prefetch_source = None
+            self._next_ep_prefetch_key = None
+            self._next_ep_prefetch_at = 0.0
+            self._next_ep_prefetched = None
 
     def _rank_direct_streams_for_playback(self, streams):
         """Order direct HTTP streams so the provider/quality being watched comes first."""
@@ -14168,6 +14834,15 @@ class CineWindow(Adw.ApplicationWindow):
 
         target = self._get_next_episode_target()
         if not target:
+            # A loaded episode list with a selected episode but no later entry
+            # is a definitive "no next episode". Remember it for the throttle
+            # window so the progress observer does not re-walk the episode list
+            # (and hit the metadata cache) on every tick of the final two
+            # minutes.
+            videos = self._get_videos_for_current_page(page)
+            if videos and getattr(page, 'selected_episode', None) is not None:
+                self._next_ep_prefetch_source = source
+                self._next_ep_prefetch_at = now
             return False
         target_season, target_episode, next_title = target
 
@@ -14185,6 +14860,10 @@ class CineWindow(Adw.ApplicationWindow):
         except Exception:
             return False
 
+        lock = getattr(self, "_next_ep_prefetch_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._next_ep_prefetch_lock = lock
         self._cancel_next_episode_prefetch()
         abort_event = threading.Event()
         self._next_ep_prefetch_abort = abort_event
@@ -14210,12 +14889,18 @@ class CineWindow(Adw.ApplicationWindow):
             if abort_event.is_set() or self._next_ep_prefetch_abort is not abort_event:
                 return
             direct = self._rank_direct_streams_for_playback(streams)
-            self._next_ep_prefetched = {
+            staged = {
                 "key": cache_key,
                 "season": target_season,
                 "episode": target_episode,
                 "streams": direct,
             }
+            with lock:
+                # Re-check under the lock: cancel/restart clears the stage while
+                # the ranking above may still be running.
+                if abort_event.is_set() or self._next_ep_prefetch_abort is not abort_event:
+                    return
+                self._next_ep_prefetched = staged
             logger.debug(
                 f"[PREFETCH] next episode S{target_season}E{target_episode} ready: "
                 f"{len(streams or [])} cards, {len(direct)} direct"
@@ -14225,6 +14910,8 @@ class CineWindow(Adw.ApplicationWindow):
         return True
 
     def _close_player(self, *args, remove_torrent=True):
+        self._next_episode_transition_in_progress = False
+        self._pending_seek_position = None
         self.hide_player_loading()
         self._clear_stream_failover()
         self._cancel_next_episode_prefetch()
@@ -14294,7 +14981,21 @@ class CineWindow(Adw.ApplicationWindow):
 
         self._current_playing_item = None
         from . import player
-        player.stop_player(remove_torrent=remove_torrent, is_series=is_series, season=curr_season)
+        # stop_player inspects torrent stats, hits the disk and may wait on the
+        # trailer process. Run it off the GTK thread; pinning info_hash keeps it
+        # from racing a stream started right after this close.
+        stream_hash = getattr(player, "_streaming_hash", None)
+        threading.Thread(
+            target=player.stop_player,
+            kwargs={
+                "remove_torrent": remove_torrent,
+                "is_series": is_series,
+                "season": curr_season,
+                "info_hash": stream_hash,
+            },
+            daemon=True,
+            name="PlayerStopWorker",
+        ).start()
         self.stream_queue = []
         self.stream_queue_index = 0
         if hasattr(self, "_update_continue_watching_section"):
@@ -14507,6 +15208,11 @@ class CineWindow(Adw.ApplicationWindow):
         self._addons_dirty = False
 
     def _update_search_catalog_dropdown(self):
+        # Addon changes can start a second build while the first is still
+        # fetching; only the newest result may update the dropdown.
+        req_id = getattr(self, "_search_catalog_req_id", 0) + 1
+        self._search_catalog_req_id = req_id
+
         def _bg_worker():
             from . import api, database
             movie_cats = api.get_available_search_catalogs("movie", only_working=True)
@@ -14532,6 +15238,8 @@ class CineWindow(Adw.ApplicationWindow):
             search_cat_names = [c["display_name"] for c in new_list]
 
             def _apply_ui():
+                if getattr(self, "_search_catalog_req_id", 0) != req_id:
+                    return False
                 self.search_catalogs_list = new_list
                 if hasattr(self, "search_catalog_dropdown"):
                     self.search_catalog_dropdown.set_model(Gtk.StringList.new(search_cat_names))
@@ -14706,7 +15414,6 @@ class CineWindow(Adw.ApplicationWindow):
             self.addons_listbox.remove(self.addons_listbox.get_first_child())
 
         from . import database, api
-        import urllib.request
         addons = database.get_addons()
         debug_log(f"_populate_installed_addons DB returned {len(addons)} addons")
         target_row = None
@@ -14739,19 +15446,7 @@ class CineWindow(Adw.ApplicationWindow):
 
             def check_online(url, lbl, aname=addon.get("name", "Unknown")):
                 from . import api
-                import urllib.request
-                if url.startswith("builtin:"):
-                    is_on = True
-                else:
-                    try:
-                        headers = {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                        }
-                        req = urllib.request.Request(url, headers=headers)
-                        with urllib.request.urlopen(req, timeout=3) as resp:
-                            is_on = resp.getcode() == 200
-                    except Exception:
-                        is_on = False
+                is_on = api.check_addon_manifest_online(url)
                 api.set_addon_online_status(url, is_on)
                 if is_on:
                     api.reset_addon_session_status(url)
@@ -15155,40 +15850,37 @@ class CineWindow(Adw.ApplicationWindow):
         url = self._normalize_addon_url(raw_url)
         if not url: return
         from . import database, api
-        import urllib.request, json
         
         self.addon_url_entry.set_text("")
         self._show_toast(_("Installing addon..."))
 
         def fetch_and_add():
             try:
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'application/json'
-                }
-                req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    manifest = json.loads(resp.read().decode('utf-8'))
-                    manifest["manifest_url"] = url
-                    if not manifest.get("id"):
-                        addon_id = urllib.parse.urlparse(url).netloc
-                        manifest["id"] = f"custom.{addon_id}"
-                    addon_name = manifest.get("name") or manifest.get("id")
-                    database.add_addon(manifest)
-                    api.set_addon_online_status(url, True)
-                    api.reset_addon_session_status(url)
-                    
-                    def on_success():
-                        is_catalog_addon = bool(manifest.get("addonCatalogs") or "addon_catalog" in manifest.get("resources", []))
-                        if is_catalog_addon:
-                            self._update_addon_catalog_dropdown(select_id=manifest.get("id"))
-                            if hasattr(self, "addon_catalog_dropdown"):
-                                self._on_addon_catalog_selected(self.addon_catalog_dropdown, None)
-                        else:
-                            self._populate_addons(scroll_to_url=url)
-                        self._on_addons_changed()
-                        self._show_toast(_(f"Installed addon: {addon_name}"))
-                    GLib.idle_add(on_success)
+                # Force a fresh fetch but let the shared cache store it, so the
+                # status check that follows does not hit the addon again.
+                manifest = api._get_cached_request(url, max_age_hours=0, timeout=8.0)
+                if not isinstance(manifest, dict):
+                    raise ValueError("Invalid manifest")
+                manifest["manifest_url"] = url
+                if not manifest.get("id"):
+                    addon_id = urllib.parse.urlparse(url).netloc
+                    manifest["id"] = f"custom.{addon_id}"
+                addon_name = manifest.get("name") or manifest.get("id")
+                database.add_addon(manifest)
+                api.set_addon_online_status(url, True)
+                api.reset_addon_session_status(url)
+
+                def on_success():
+                    is_catalog_addon = bool(manifest.get("addonCatalogs") or "addon_catalog" in manifest.get("resources", []))
+                    if is_catalog_addon:
+                        self._update_addon_catalog_dropdown(select_id=manifest.get("id"))
+                        if hasattr(self, "addon_catalog_dropdown"):
+                            self._on_addon_catalog_selected(self.addon_catalog_dropdown, None)
+                    else:
+                        self._populate_addons(scroll_to_url=url)
+                    self._on_addons_changed()
+                    self._show_toast(_(f"Installed addon: {addon_name}"))
+                GLib.idle_add(on_success)
             except Exception as e:
                 logger.error(f"Failed to add addon: {e}")
                 def show_force_add_dialog():
@@ -15530,18 +16222,34 @@ class CineWindow(Adw.ApplicationWindow):
             try:
                 file = dialog.open_finish(result)
                 if not file: return
-                import json
-                with open(file.get_path(), "r") as f:
-                    addons = json.load(f)
-                from . import database
-                imported_count = 0
-                for a in addons:
-                    if isinstance(a, dict) and (a.get("manifest_url") or a.get("id")):
-                        database.add_addon(a)
-                        imported_count += 1
-                self._populate_addons()
-                self._on_addons_changed()
-                self._show_toast(_(f"Imported {imported_count} addon(s)"))
+                path = file.get_path()
+
+                def _import_worker():
+                    from . import database
+                    import json
+                    imported_count = 0
+                    try:
+                        with open(path, "r") as f:
+                            addons = json.load(f)
+                        for a in addons:
+                            if isinstance(a, dict) and (a.get("manifest_url") or a.get("id")):
+                                # One remote sync at the end instead of one per addon
+                                database.add_addon(a, sync_to_remote=False)
+                                imported_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to import addons: {e}")
+                        idle_add_once(self._show_toast, _("Failed to import addons"))
+                        return
+
+                    def _apply_import():
+                        self._populate_addons()
+                        self._on_addons_changed()
+                        self._show_toast(_(f"Imported {imported_count} addon(s)"))
+                        return False
+
+                    GLib.idle_add(_apply_import)
+
+                threading.Thread(target=_import_worker, daemon=True, name="AddonImportWorker").start()
             except Exception as e:
                 logger.error(f"Failed to import addons: {e}")
                 self._show_toast(_("Failed to import addons"))
@@ -15553,12 +16261,23 @@ class CineWindow(Adw.ApplicationWindow):
             try:
                 file = dialog.save_finish(result)
                 if not file: return
+                path = file.get_path()
                 from . import database
-                import json
+                # get_addons() is served from the in-memory DB cache; only the
+                # file write needs to leave the GTK thread.
                 addons = database.get_addons()
-                with open(file.get_path(), "w") as f:
-                    json.dump(addons, f, indent=4)
-                self._show_toast(_("Exported addons successfully"))
+
+                def _export_worker():
+                    import json
+                    try:
+                        with open(path, "w") as f:
+                            json.dump(addons, f, indent=4)
+                        idle_add_once(self._show_toast, _("Exported addons successfully"))
+                    except Exception as e:
+                        logger.error(f"Failed to export addons: {e}")
+                        idle_add_once(self._show_toast, _("Failed to export addons"))
+
+                threading.Thread(target=_export_worker, daemon=True, name="AddonExportWorker").start()
             except Exception as e:
                 logger.error(f"Failed to export addons: {e}")
                 self._show_toast(_("Failed to export addons"))

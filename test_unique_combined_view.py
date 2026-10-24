@@ -563,13 +563,29 @@ class TestUniqueCombinedView(unittest.TestCase):
     def test_query_cache_meta_search_when_title_only_disabled(self):
         """When Title Only is disabled, SQLite query searches metadata fields (title, name, description, genres)."""
         from src import database
-        # Test that searching with title_only=False searches meta and returns results
-        items = database.get_cached_items_by_search("final", title_only=False, limit=60)
-        self.assertIsInstance(items, list)
+        # Seed our own entry instead of relying on whatever other tests left in
+        # the shared cache; the full suite runs against the same database.
+        token = "zqxmetasearchtoken"
+        seeded = [{
+            "id": "tt9900001",
+            "type": "movie",
+            "name": "Seed Title",
+            "title": "Seed Title",
+            "description": f"A story about {token}.",
+            "genres": ["Drama"],
+        }]
+        database.save_cached_catalog(f"unit-test-meta-search-{token}", seeded)
+
+        items = database.get_cached_items_by_search(token, title_only=False, limit=60)
         self.assertTrue(len(items) > 0)
-        # Verify first item is a title match due to prioritization
-        first_title = str(items[0].get("title") or items[0].get("name") or "").lower()
-        self.assertIn("final", first_title)
+        self.assertTrue(
+            any(token in str(item.get("description", "")).lower() for item in items),
+            "metadata search should match the description",
+        )
+        # The token is not in any title, so a title-only search must miss it.
+        self.assertEqual(
+            database.get_cached_items_by_search(token, title_only=True, limit=60), []
+        )
 
     def test_empty_filter_box_has_clear_button(self):
         """Empty filter box includes clear button when active query is set."""
@@ -619,6 +635,310 @@ class TestUniqueCombinedView(unittest.TestCase):
                 has_empty = True
             ch = ch.get_next_sibling()
         self.assertFalse(has_empty)
+
+    def test_refresh_unique_adds_tmdb_country_catalog(self):
+        """Country filters get a TMDb page in Unique too; no provider catalog filters by country."""
+        win = MagicMock()
+        win.unique_flowbox = Gtk.FlowBox()
+        win.unique_seen_ids = set()
+        win.unique_seen_keys = set()
+        win.unique_page_per_catalog = {}
+        win.unique_exhausted_catalogs = set()
+        win.category_btn_stack.get_visible_child_name.return_value = "movies"
+        win._current_discover_type = "movie"
+        win._current_discover_addon = None
+        win.current_country = "India"
+        win.current_catalog = None
+        win._unique_section_scope = None
+        win._get_discover_catalog_list.return_value = []
+
+        with patch("src.window.cancel_pending_image_downloads", create=True):
+            CineWindow._refresh_unique_combined_view(win)
+
+        sources = [c.get("_source") for c in win.unique_catalogs]
+        self.assertIn("tmdb_country", sources)
+        country_cat = next(c for c in win.unique_catalogs if c.get("_source") == "tmdb_country")
+        self.assertEqual(country_cat["country"], "India")
+        # (manifest_url, catalog_id, media_type) keys page and exhaust sources,
+        # so the synthetic rows must not collide with the local-cache row.
+        self.assertEqual(country_cat["catalog_id"], "tmdb_country")
+        self.assertTrue(country_cat["supports_pagination"])
+        self.assertEqual(country_cat["tmdb_total_pages"], 0)
+        keys = [(c.get("manifest_url"), c.get("catalog_id"), c.get("media_type")) for c in win.unique_catalogs]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_refresh_unique_adds_tmdb_language_catalog(self):
+        """A language alone gets its own TMDb page; most addons do not offer one."""
+        win = MagicMock()
+        win.unique_flowbox = Gtk.FlowBox()
+        win.unique_seen_ids = set()
+        win.unique_seen_keys = set()
+        win.unique_page_per_catalog = {}
+        win.unique_exhausted_catalogs = set()
+        win.category_btn_stack.get_visible_child_name.return_value = "movies"
+        win._current_discover_type = "movie"
+        win._current_discover_addon = None
+        win.current_country = None
+        win.current_language = "Tamil"
+        win.current_catalog = None
+        win._unique_section_scope = None
+        win._get_discover_catalog_list.return_value = []
+
+        with patch("src.window.cancel_pending_image_downloads", create=True):
+            CineWindow._refresh_unique_combined_view(win)
+
+        tmdb_cats = [c for c in win.unique_catalogs if c.get("_source") == "tmdb_country"]
+        self.assertEqual(len(tmdb_cats), 1)
+        self.assertIsNone(tmdb_cats[0]["country"])
+        self.assertEqual(tmdb_cats[0]["language"], "Tamil")
+
+    def test_unique_fetches_tmdb_country_cards(self):
+        """The TMDb country page supplies India cards without querying provider catalogs."""
+        import threading
+        import time
+        win = MagicMock()
+        win.unique_request_id = 1
+        win.is_fetching_unique = False
+        win.has_more_unique = True
+        win.current_country = "India"
+        win.current_genre = None
+        win.current_language = None
+        win.current_year = None
+        win._unique_abort_event = None
+        win._unique_lock = threading.Lock()
+        win.unique_seen_ids = set()
+        win.unique_seen_keys = set()
+        win.unique_page_per_catalog = {}
+        win.unique_exhausted_catalogs = set()
+        win.unique_truly_empty_catalogs = set()
+        win.unique_productive_catalogs = []
+        win.unique_empty_streak = {}
+        win.unique_catalog_idx = 0
+        win.unique_flowbox = Gtk.FlowBox()
+
+        country_cat = {
+            "_source": "tmdb_country",
+            "addon_name": "",
+            "manifest_url": None,
+            "catalog_id": "tmdb_country",
+            "catalog_name": "India · TMDb",
+            "media_type": "movie",
+            "country": "India",
+            "supports_pagination": True,
+            "tmdb_total_pages": 1,
+        }
+        cat_key = (None, "tmdb_country", "movie")
+        win.unique_catalogs = [country_cat]
+        win.unique_catalogs_by_key = {cat_key: country_cat}
+
+        cards = [
+            {"id": "tmdb:1", "title": "Kantara", "type": "movie", "country": "India"},
+            {"id": "tmdb:2", "title": "Jai Bhim", "type": "movie", "country": "India"},
+        ]
+
+        idle_calls = []
+        with patch("gi.repository.GLib.idle_add", side_effect=lambda fn, *args: idle_calls.append((fn, args))), \
+             patch("src.database.get_cached_catalog", return_value=None), \
+             patch("src.database.save_cached_catalog") as save_mock, \
+             patch("src.tmdb_helper.fetch_country_catalog_page", return_value=(cards, 1)) as fetch_mock, \
+             patch("src.api.fetch_items") as provider_fetch:
+            CineWindow._load_next_unique_batch(win)
+            time.sleep(0.2)
+
+        fetch_mock.assert_called_once()
+        self.assertEqual(fetch_mock.call_args.kwargs["country"], "India")
+        self.assertEqual(fetch_mock.call_args.kwargs["limit"], 50)
+        self.assertEqual(fetch_mock.call_args.kwargs["page"], 1)
+        provider_fetch.assert_not_called()
+        save_mock.assert_called_once()
+        # TMDb reported a single page, so the row is finished and cannot be asked
+        # for a page 2.
+        self.assertIn(cat_key, win.unique_exhausted_catalogs)
+        self.assertEqual(country_cat.get("tmdb_total_pages"), 1)
+
+        delivered = [
+            args[0] for fn, args in idle_calls
+            if fn == win._append_unique_slice_to_ui and args
+        ]
+        self.assertEqual(len(delivered), 1)
+        self.assertEqual([it["title"] for it in delivered[0]], ["Kantara", "Jai Bhim"])
+
+    def test_unique_browses_tmdb_pages_past_the_first(self):
+        """A country with deeper results keeps fetching until TMDb says it is over."""
+        import threading
+        import time
+        win = MagicMock()
+        win.unique_request_id = 1
+        win.is_fetching_unique = False
+        win.has_more_unique = True
+        win.current_country = "India"
+        win.current_genre = None
+        win.current_language = None
+        win.current_year = None
+        win._unique_abort_event = None
+        win._unique_lock = threading.Lock()
+        win.unique_seen_ids = set()
+        win.unique_seen_keys = set()
+        win.unique_page_per_catalog = {}
+        win.unique_exhausted_catalogs = set()
+        win.unique_truly_empty_catalogs = set()
+        win.unique_productive_catalogs = []
+        win.unique_empty_streak = {}
+        win.unique_catalog_idx = 0
+        win.unique_flowbox = Gtk.FlowBox()
+
+        country_cat = {
+            "_source": "tmdb_country",
+            "addon_name": "",
+            "manifest_url": None,
+            "catalog_id": "tmdb_country",
+            "catalog_name": "India · TMDb",
+            "media_type": "movie",
+            "country": "India",
+            "supports_pagination": True,
+            "tmdb_total_pages": 0,
+        }
+        cat_key = (None, "tmdb_country", "movie")
+        win.unique_catalogs = [country_cat]
+        win.unique_catalogs_by_key = {cat_key: country_cat}
+
+        asked_pages = []
+
+        def fake_page(country=None, page=1, exclude_ids=None, **kwargs):
+            asked_pages.append((int(page), set(exclude_ids or ())))
+            if page > 2:
+                return [], 0
+            cards = [{
+                "id": f"tmdb:{page}-{i}",
+                "title": f"India card {page}-{i}",
+                "type": "movie",
+                "country": "India",
+            } for i in range(50)]
+            return cards, 2
+
+        # The real dedupe records the ids a view has shown; the snapshot the next
+        # TMDb page is fetched against is built from them.
+        def record_item(item):
+            win.unique_seen_ids.add(str(item.get("id")))
+            return True
+
+        win._is_unique_item = record_item
+
+        idle_calls = []
+        with patch("gi.repository.GLib.idle_add", side_effect=lambda fn, *args: idle_calls.append((fn, args))), \
+             patch("src.database.get_cached_catalog", return_value=None), \
+             patch("src.database.save_cached_catalog"), \
+             patch("src.tmdb_helper.fetch_country_catalog_page", side_effect=fake_page), \
+             patch("src.api.fetch_items") as provider_fetch:
+            CineWindow._load_next_unique_batch(win)
+            time.sleep(0.3)
+            win.is_fetching_unique = False
+            CineWindow._load_next_unique_batch(win)
+            time.sleep(0.3)
+            win.is_fetching_unique = False
+            CineWindow._load_next_unique_batch(win)
+            time.sleep(0.3)
+
+        provider_fetch.assert_not_called()
+        # The first page has nothing to exclude; each later batch advances the
+        # cursor and is fetched against the ids the view already rendered.
+        self.assertEqual([page for page, _seen in asked_pages], [1, 2])
+        self.assertEqual(asked_pages[0][1], set())
+        self.assertEqual(len(asked_pages[1][1]), 50)
+        # TMDb reported two pages, so the third batch is refused from the row's
+        # cursor without spending another request.
+        self.assertEqual(country_cat["tmdb_total_pages"], 2)
+        self.assertIn(cat_key, win.unique_exhausted_catalogs)
+
+
+    def test_unique_lists_cached_cards_before_network_cards(self):
+        """What this machine already has reaches the grid first; a catalog that has
+        to be fetched is appended behind it instead of cutting in."""
+        import threading
+        import time
+
+        win = MagicMock()
+        win.unique_request_id = 1
+        win.is_fetching_unique = False
+        win.has_more_unique = True
+        win.current_country = None
+        win.current_genre = None
+        win.current_language = None
+        win.current_year = None
+        win._unique_abort_event = None
+        win._unique_lock = threading.Lock()
+        win.unique_seen_ids = set()
+        win.unique_seen_keys = set()
+        win.unique_page_per_catalog = {}
+        win.unique_exhausted_catalogs = set()
+        win.unique_truly_empty_catalogs = set()
+        win.unique_productive_catalogs = []
+        win.unique_empty_streak = {}
+        win.unique_catalog_idx = 0
+        win.unique_flowbox = Gtk.FlowBox()
+
+        cached_cat = {
+            "addon_name": "Cached Addon",
+            "manifest_url": "https://cached.test/manifest.json",
+            "catalog_id": "top",
+            "catalog_name": "Saved Page",
+            "media_type": "movie",
+        }
+        network_cat = {
+            "addon_name": "Slow Addon",
+            "manifest_url": "https://slow.test/manifest.json",
+            "catalog_id": "top",
+            "catalog_name": "Live Page",
+            "media_type": "movie",
+        }
+        win.unique_catalogs = [network_cat, cached_cat]
+        win.unique_catalogs_by_key = {
+            ("https://cached.test/manifest.json", "top", "movie"): cached_cat,
+            ("https://slow.test/manifest.json", "top", "movie"): network_cat,
+        }
+        stored_cards = [
+            {"id": "tt:cached1", "title": "Cached One", "type": "movie"},
+            {"id": "tt:cached2", "title": "Cached Two", "type": "movie"},
+        ]
+        live_cards = [
+            {"id": "tt:live1", "title": "Fetched One", "type": "movie"},
+            {"id": "tt:live2", "title": "Fetched Two", "type": "movie"},
+        ]
+
+        def fake_cached_catalog(cache_key, *args, **kwargs):
+            # The catalog cache answers one of the two catalogs; the other one has
+            # to go to the network, which answers slowly.
+            if "cached.test" in cache_key:
+                return list(stored_cards)
+            return None
+
+        def slow_fetch(*args, **kwargs):
+            time.sleep(0.4)
+            return list(live_cards)
+
+        idle_calls = []
+        with patch("gi.repository.GLib.idle_add",
+                   side_effect=lambda fn, *args: idle_calls.append((fn, args))), \
+             patch("src.database.get_cached_catalog", side_effect=fake_cached_catalog), \
+             patch("src.database.save_cached_catalog"), \
+             patch("src.database.hydrate_items_from_metadata"), \
+             patch("src.api.hydrate_missing_catalog_items"), \
+             patch("src.api.fetch_items", side_effect=slow_fetch):
+            CineWindow._load_next_unique_batch(win)
+            time.sleep(1.2)
+
+        delivered = [
+            [it["title"] for it in args[0]]
+            for fn, args in idle_calls
+            if fn == win._append_unique_slice_to_ui and args
+        ]
+        self.assertEqual(delivered[0], ["Cached One", "Cached Two"])
+        self.assertIn(["Fetched One", "Fetched Two"], delivered)
+        self.assertLess(
+            delivered.index(["Cached One", "Cached Two"]),
+            delivered.index(["Fetched One", "Fetched Two"]),
+            "a network slice was listed before the cached one",
+        )
 
 
 if __name__ == "__main__":

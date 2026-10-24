@@ -351,18 +351,19 @@ template $CineWindow: Adw.ApplicationWindow {
                   tooltip-text: _("Deduplicate media across multiple provider streams/catalogs");
                 }
 
-                Spinner discover_spinner {
-                  valign: center;
-                  spinning: false;
-                  visible: false;
-                  tooltip-text: _("Loading...");
-                }
-
                 ToggleButton discover_search_btn {
                   icon-name: "filter-symbolic";
                   valign: center;
                   tooltip-text: _("Filter loaded results");
                   styles ["flat", "circular"]
+                }
+
+                // Always allocated so the toolbar never reflows; it only
+                // animates while a discover or unique page is loading.
+                Spinner discover_spinner {
+                  valign: center;
+                  spinning: false;
+                  tooltip-text: _("Loading...");
                 }
               }
             }

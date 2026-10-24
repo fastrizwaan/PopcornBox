@@ -21,6 +21,14 @@ _engines = {}
 _launching_engines = set()
 _streaming_hash = None
 _engines_lock = threading.Lock()
+# Per-torrent generation for the progress poller. Reusing an engine for the
+# next episode calls launch_player_only() again; the previous poll loop must
+# notice it has been superseded and exit instead of polling forever.
+_progress_poll_gen = {}
+# Bumped by stop_engine_explicit(). Launches snapshot the value and abort if it
+# changed while the engine was starting, so a pause/delete issued during launch
+# cannot be undone by the launch registering and unpausing the download.
+_launch_cancel_gen = {}
 
 _trailer_process = None
 _trailer_lock = threading.Lock()
@@ -32,14 +40,20 @@ else:
     DOWNLOAD_BASE = os.path.expanduser("~/.var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box/torrents")
 os.makedirs(DOWNLOAD_BASE, exist_ok=True)
 
-def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, season=None):
-    """Stop the currently streaming video, unless it's fully downloaded, keep_downloading is True, or it's part of a season."""
+def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, season=None, info_hash=None):
+    """Stop the currently streaming video, unless it's fully downloaded, keep_downloading is True, or it's part of a season.
+
+    ``info_hash`` pins the cleanup to a specific torrent so the call can run on a
+    worker thread without racing a newly started stream that reassigns the
+    module-level ``_streaming_hash``.
+    """
     global _streaming_hash, _trailer_process
     from . import database
     
     with _engines_lock:
-        if _streaming_hash:
-            engine = _engines.get(_streaming_hash)
+        stream_hash = info_hash or _streaming_hash
+        if stream_hash:
+            engine = _engines.get(stream_hash)
             if engine and engine.is_alive():
                 stats = engine.stats()
                 prog = stats.get("progress", 0)
@@ -74,7 +88,7 @@ def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, sea
                 dl_record = None
                 try:
                     for d in database.get_downloads():
-                        if d.get("info_hash") == _streaming_hash:
+                        if d.get("info_hash") == stream_hash:
                             dl_record = d
                             if d.get("finished", False):
                                 is_completed = True
@@ -85,7 +99,7 @@ def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, sea
                 # Check on disk if target file exists and has full expected length
                 if not is_completed and stats.get("filePath"):
                     try:
-                        hash_dir = os.path.join(DOWNLOAD_BASE, _streaming_hash)
+                        hash_dir = os.path.join(DOWNLOAD_BASE, stream_hash)
                         target_path = os.path.join(hash_dir, stats.get("filePath"))
                         tot_len = stats.get("totalLength", 0)
                         if isinstance(tot_len, (int, float)) and tot_len > 0 and os.path.exists(target_path):
@@ -95,7 +109,7 @@ def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, sea
                         pass
 
                 if is_completed:
-                    database.set_download_finished(_streaming_hash, True)
+                    database.set_download_finished(stream_hash, True)
 
                 # 2. Determine if the torrent is part of a season / series
                 is_part_of_season = bool(is_series)
@@ -120,7 +134,7 @@ def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, sea
                         files = []
                 if not files:
                     try:
-                        files = database.get_torrent_files(_streaming_hash)
+                        files = database.get_torrent_files(stream_hash)
                     except Exception:
                         files = []
 
@@ -155,7 +169,7 @@ def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, sea
 
                 if not has_downloaded_file and video_files:
                     try:
-                        hash_dir = os.path.join(DOWNLOAD_BASE, _streaming_hash)
+                        hash_dir = os.path.join(DOWNLOAD_BASE, stream_hash)
                         if os.path.exists(hash_dir):
                             for f in video_files:
                                 f_sz = f.get("size", 0)
@@ -178,15 +192,21 @@ def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, sea
                 )
 
                 if should_delete:
-                    print(f"Stopping and deleting incomplete separate torrent: {_streaming_hash}")
-                    info_hash_to_delete = _streaming_hash
+                    print(f"Stopping and deleting incomplete separate torrent: {stream_hash}")
+                    info_hash_to_delete = stream_hash
+                    # Abort any background launch still starting for this hash;
+                    # otherwise it can re-register the torrent and recreate the
+                    # directory this block is about to delete.
+                    _launch_cancel_gen[info_hash_to_delete] = _launch_cancel_gen.get(info_hash_to_delete, 0) + 1
                     threading.Thread(target=engine.stop, daemon=True).start()
                     del _engines[info_hash_to_delete]
+                    _progress_poll_gen.pop(info_hash_to_delete, None)
                     
                     database.remove_download(info_hash_to_delete)
                     
                     def _delete_files():
                         time.sleep(1.5) # Wait for libtorrent to release file locks
+                        wait_for_pending_launch(info_hash_to_delete, timeout=15)
                         path = os.path.join(DOWNLOAD_BASE, info_hash_to_delete)
                         if os.path.exists(path):
                             try:
@@ -195,12 +215,12 @@ def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, sea
                                 print(f"Error deleting partial torrent {info_hash_to_delete}: {e}")
                     threading.Thread(target=_delete_files, daemon=True).start()
                 else:
-                    print(f"Leaving engine running / keeping torrent: {_streaming_hash} (progress={prog:.2f}, remove_torrent={remove_torrent}, is_download_only={is_dl_only}, completed={is_completed}, season={is_part_of_season}, has_completed_file={has_downloaded_file})")
+                    print(f"Leaving engine running / keeping torrent: {stream_hash} (progress={prog:.2f}, remove_torrent={remove_torrent}, is_download_only={is_dl_only}, completed={is_completed}, season={is_part_of_season}, has_completed_file={has_downloaded_file})")
                     if is_completed or prog >= 1.0:
-                        database.set_download_finished(_streaming_hash, True)
+                        database.set_download_finished(stream_hash, True)
                     elif remove_torrent and hasattr(engine, 'set_download_limit'):
                         engine.set_download_limit(2 * 1024 * 1024)
-            if remove_torrent:
+            if remove_torrent and _streaming_hash == stream_hash:
                 _streaming_hash = None
 
     with _trailer_lock:
@@ -218,13 +238,39 @@ def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, sea
 
 def stop_engine_explicit(info_hash):
     """Explicitly stop a background download."""
+    global _streaming_hash
     from . import database
     with _engines_lock:
+        # Cancel any launch still in flight for this hash, otherwise it can
+        # register its engine and unpause the download after this stop.
+        _launch_cancel_gen[info_hash] = _launch_cancel_gen.get(info_hash, 0) + 1
         eng = _engines.pop(info_hash, None)
+        _progress_poll_gen.pop(info_hash, None)
+        if _streaming_hash == info_hash:
+            _streaming_hash = None
         if eng:
             print(f"Explicitly stopping engine: {info_hash}")
-            threading.Thread(target=eng.stop, daemon=True).start()
+            stop_thread = threading.Thread(target=eng.stop, daemon=True)
+            stop_thread.start()
+        else:
+            stop_thread = None
     database.set_download_paused(info_hash, True)
+    return stop_thread
+
+def wait_for_pending_launch(info_hash, timeout=15.0):
+    """Block until any in-flight launch for info_hash has finished starting.
+
+    A launch that is still constructing its engine is not yet in _engines, so
+    stop_engine_explicit() cannot join it. Deleting the download directory
+    before that launch aborts would let the engine reopen it and recreate files.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with _engines_lock:
+            if info_hash not in _launching_engines:
+                return True
+        time.sleep(0.05)
+    return False
 
 def exit_player():
     from . import database
@@ -352,8 +398,11 @@ def download_magnet_background(magnet_link, file_index=None, item_id=None, media
         if info_hash in _launching_engines:
             return
         _launching_engines.add(info_hash)
+        launch_gen = _launch_cancel_gen.get(info_hash, 0)
             
     def launch():
+        global _streaming_hash
+        engine = None
         try:
             engine = TorrentStreamEngine(magnet_link, DOWNLOAD_BASE, file_index, item_id, media_type, season, episode)
             engine.is_download_only = True
@@ -364,19 +413,57 @@ def download_magnet_background(magnet_link, file_index=None, item_id=None, media
                 engine.set_download_limit(2 * 1024 * 1024)
                 
             with _engines_lock:
-                _engines[info_hash] = engine
-            database.set_download_paused(info_hash, False)
-            import time
+                cancelled = _launch_cancel_gen.get(info_hash, 0) != launch_gen
+                existing = _engines.get(info_hash)
+                superseded = existing is not None and existing is not engine
+                if not cancelled and not superseded:
+                    _engines[info_hash] = engine
+                    # Unpause under the same lock that stop_engine_explicit()
+                    # uses, so a stop cannot be overwritten by this launch.
+                    database.set_download_paused(info_hash, False)
+            if cancelled:
+                print(f"Background engine {info_hash} launch was cancelled by an explicit stop; stopping it")
+                engine.stop()
+                return
+            if superseded:
+                # Playback or another launcher claimed this torrent while the
+                # background engine was starting. Stop it instead of clobbering
+                # the registered engine (which would leave an orphan torrent).
+                print(f"Background engine {info_hash} superseded before registration; stopping it")
+                engine.stop()
+                return
             time.sleep(5.0) # Wait for fast-resume data to load
             if engine.is_alive():
                 stats = engine.stats()
                 if stats.get("progress", 0) >= 1.0 and stats.get("ratio", 0) >= 1.5:
-                    print(f"Background engine {info_hash} already reached 1.5x ratio. Pausing.")
-                    engine.stop()
-                    database.set_download_paused(info_hash, True)
+                    with _engines_lock:
+                        # Playback may have reused this engine (clearing
+                        # is_download_only) while we slept; never auto-pause an
+                        # engine that is now streaming.
+                        auto_pause = (
+                            _engines.get(info_hash) is engine
+                            and getattr(engine, "is_download_only", False)
+                            and _streaming_hash != info_hash
+                        )
+                        if auto_pause:
+                            _engines.pop(info_hash, None)
+                    if auto_pause:
+                        print(f"Background engine {info_hash} already reached 1.5x ratio. Pausing.")
+                        engine.stop()
+                        database.set_download_paused(info_hash, True)
                 
         except Exception as e:
             print(f"Error launching background download: {e}")
+            with _engines_lock:
+                if engine is not None and _engines.get(info_hash) is engine:
+                    _engines.pop(info_hash, None)
+                    if _streaming_hash == info_hash:
+                        _streaming_hash = None
+            if engine is not None:
+                try:
+                    engine.stop()
+                except Exception:
+                    pass
         finally:
             with _engines_lock:
                 _launching_engines.discard(info_hash)
@@ -388,6 +475,36 @@ def download_magnet_background(magnet_link, file_index=None, item_id=None, media
             _launching_engines.discard(info_hash)
         raise
 
+def _start_progress_poller(info_hash, progress_callback):
+    """Start the single active stats poller for an engine.
+
+    Bumping the generation retires any poller started for a previous
+    playback of the same torrent (season-pack episode reuse).
+    """
+    with _engines_lock:
+        poll_gen = _progress_poll_gen.get(info_hash, 0) + 1
+        _progress_poll_gen[info_hash] = poll_gen
+
+    def poll():
+        while True:
+            with _engines_lock:
+                if _progress_poll_gen.get(info_hash) != poll_gen:
+                    return
+                eng = _engines.get(info_hash)
+            if not eng or not eng.is_alive() or _streaming_hash != info_hash:
+                return
+            try:
+                stats = eng.stats()
+                if stats:
+                    stats["status"] = "Downloading"
+                    if progress_callback: GLib.idle_add(progress_callback, stats)
+            except Exception:
+                return
+            time.sleep(1)
+
+    threading.Thread(target=poll, daemon=True).start()
+
+
 def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=None, item_id=None, media_type=None, season=None, episode=None, is_download=False):
     global _streaming_hash
     import gi
@@ -397,8 +514,16 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
     
     info_hash = info_hash_from_magnet(magnet_link)
     if not info_hash: return
+
+    with _engines_lock:
+        # Snapshot before doing any launch work so an explicit stop issued
+        # while the engine is starting is observed when it finishes.
+        launch_gen = _launch_cancel_gen.get(info_hash, 0)
     
     def launch_player_only(engine):
+        with _engines_lock:
+            if _engines.get(info_hash) is not engine:
+                return
         if progress_callback: GLib.idle_add(progress_callback, {"status": "Launching media player..."})
         if not engine or not engine.is_alive():
             if progress_callback: GLib.idle_add(progress_callback, {"status": "Engine died. Retrying...", "closed": True})
@@ -431,23 +556,8 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                 
         if progress_callback:
             GLib.idle_add(progress_callback, {"status": "Playing!", "url": media_url, "sub_file": sub_file})
-        
-        def poll():
-            while True:
-                with _engines_lock:
-                    eng = _engines.get(info_hash)
-                if not eng or not eng.is_alive() or _streaming_hash != info_hash:
-                    break
-                try:
-                    stats = eng.stats()
-                    if stats:
-                        stats["status"] = "Downloading"
-                        if progress_callback: GLib.idle_add(progress_callback, stats)
-                except Exception:
-                    break
-                time.sleep(1)
-                    
-        threading.Thread(target=poll, daemon=True).start()
+
+        _start_progress_poller(info_hash, progress_callback)
 
     stop_player(remove_torrent=False)
 
@@ -474,6 +584,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                 pass
             if h in _engines:
                 del _engines[h]
+            _progress_poll_gen.pop(h, None)
 
         global _streaming_hash
         _streaming_hash = info_hash
@@ -526,7 +637,8 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                     last_nonzero_time = time.time()
                     for i in range(1500):
                         with _engines_lock:
-                            if _streaming_hash != info_hash: return
+                            if _streaming_hash != info_hash or _engines.get(info_hash) is not engine:
+                                return
                         if not engine or not engine.is_alive():
                             return
                         try:
@@ -571,7 +683,8 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                         last_nonzero_time = time.time()
                         for i in range(300):
                             with _engines_lock:
-                                if _streaming_hash != info_hash: return
+                                if _streaming_hash != info_hash or _engines.get(info_hash) is not engine:
+                                    return
                             if not engine or not engine.is_alive():
                                 return
                             try:
@@ -600,12 +713,16 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                     if progress_callback: GLib.idle_add(progress_callback, {"status": "Resuming stream..."})
                     return
                 else:
-                    engine.stop()
+                    # stop() can block for seconds on HTTP shutdown and resume
+                    # data; run it off the UI thread instead of holding the
+                    # engines lock across it.
+                    threading.Thread(target=engine.stop, daemon=True).start()
                     del _engines[info_hash]
                     engine = None
 
     def launch(attempt=1):
         global _streaming_hash
+        engine = None
         try:
             if progress_callback: GLib.idle_add(progress_callback, {"status": f"Initializing stream engine (Attempt {attempt})..."})
             engine = TorrentStreamEngine(magnet_link, DOWNLOAD_BASE, file_index, item_id, media_type, season, episode)
@@ -613,10 +730,26 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                 engine.is_download_only = True
             engine.start()
             
+            previous = None
             with _engines_lock:
-                _engines[info_hash] = engine
-                _streaming_hash = info_hash
-            database.set_download_paused(info_hash, False)
+                cancelled = _launch_cancel_gen.get(info_hash, 0) != launch_gen
+                if not cancelled:
+                    previous = _engines.get(info_hash)
+                    _engines[info_hash] = engine
+                    _streaming_hash = info_hash
+                    # Keep the unpause atomic with respect to
+                    # stop_engine_explicit(), which bumps launch_gen under this
+                    # same lock before writing paused=True.
+                    database.set_download_paused(info_hash, False)
+            if cancelled:
+                print(f"Playback launch for {info_hash} was cancelled by an explicit stop; stopping it")
+                engine.stop()
+                return
+            if previous is not None and previous is not engine:
+                # A new playback launch owns this hash now; retire the old
+                # session so it cannot keep downloading in the background.
+                print(f"Stopping superseded engine for {info_hash}")
+                threading.Thread(target=previous.stop, daemon=True).start()
                 
             def monitor_ready():
                 if progress_callback: GLib.idle_add(progress_callback, {"status": "Fetching metadata..."})
@@ -666,7 +799,27 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
             
         except Exception as e:
             print(f"Error launching player: {e}")
-            if progress_callback: GLib.idle_add(progress_callback, {"status": f"Error: {e}"})
+            with _engines_lock:
+                if engine is not None and _engines.get(info_hash) is engine:
+                    del _engines[info_hash]
+                # Only clear shared playback state when no engine (including a
+                # newer launch for the same info hash) is registered.
+                if info_hash not in _engines:
+                    _progress_poll_gen.pop(info_hash, None)
+                    if _streaming_hash == info_hash:
+                        _streaming_hash = None
+            if engine is not None:
+                try:
+                    threading.Thread(target=engine.stop, daemon=True).start()
+                except Exception:
+                    pass
+                try:
+                    database.set_download_paused(info_hash, True)
+                except Exception:
+                    pass
+            # "ready": False lets the window fail over to the next stream;
+            # without it the loading screen would stay up forever.
+            if progress_callback: GLib.idle_add(progress_callback, {"status": f"Error: {e}", "ready": False})
 
     threading.Thread(target=launch, daemon=True).start()
     return None

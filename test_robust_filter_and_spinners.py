@@ -63,15 +63,33 @@ class TestRobustFilterAndSpinners(unittest.TestCase):
         self.mock_window.reload_catalog_grid.assert_called_once_with({"genre": "Animation", "query": ""})
 
     def test_discover_spinner_active_toggle(self):
-        """_set_discover_spinner_active starts/stops the spinner and toggles visibility."""
+        """The discover spinner animates on/off but keeps its toolbar slot, so the dropdowns never reflow."""
         spinner = Gtk.Spinner()
+        spinner.set_visible(True)
         self.mock_window.discover_spinner = spinner
 
         CineWindow._set_discover_spinner_active(self.mock_window, True)
         self.assertTrue(spinner.get_visible())
 
         CineWindow._set_discover_spinner_active(self.mock_window, False)
-        self.assertFalse(spinner.get_visible())
+        self.assertTrue(spinner.get_visible())
+
+    def test_discover_spinner_repeated_state_is_not_reapplied(self):
+        """Batch after batch reports the same loading state; the animation must not restart."""
+        spinner = MagicMock()
+        spinner.start = MagicMock()
+        spinner.stop = MagicMock()
+        window = MagicMock()
+        window.discover_spinner = spinner
+        window._discover_spinner_active = None
+
+        for _ in range(5):
+            CineWindow._set_discover_spinner_active(window, True)
+        spinner.start.assert_called_once()
+
+        for _ in range(5):
+            CineWindow._set_discover_spinner_active(window, False)
+        spinner.stop.assert_called_once()
 
     def test_movie_details_provider_spinner(self):
         """MovieDetailsPage._set_provider_spinner_active manages provider_spinner visibility and state."""

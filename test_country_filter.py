@@ -113,6 +113,53 @@ class TestCountryFilter(unittest.TestCase):
         self.assertEqual(len(res_us), 1)
         self.assertEqual(res_us[0]["id"], "2")
 
+    def test_filter_items_by_country_uses_language_of_country(self):
+        """Titles labelled only by language still count as Indian, but English/Spanish prove nothing."""
+        items = [
+            {"id": "1", "title": "Kantara", "type": "movie", "language": "Kannada"},
+            {"id": "2", "title": "Ponniyin", "type": "movie", "original_language": "ta"},
+            {"id": "3", "title": "Dune", "type": "movie", "language": "English"},
+            {"id": "4", "title": "Amour", "type": "movie", "language": "French"},
+        ]
+        res_india = api.filter_items_by_country(items, "India")
+        self.assertEqual(sorted(it["id"] for it in res_india), ["1", "2"])
+
+        res_japan = api.filter_items_by_country([{"id": "5", "title": "Godzilla", "type": "movie", "original_language": "ja"}], "Japan")
+        self.assertEqual([it["id"] for it in res_japan], ["5"])
+
+    def test_get_country_languages_and_fetch_set(self):
+        """India spans several cinemas, so extra language pages are fetched; Japan does not."""
+        self.assertEqual(
+            database.get_country_languages("India"),
+            ["hi", "ta", "te", "ml", "kn", "bn", "mr", "gu", "pa", "ur"],
+        )
+        self.assertEqual(database.get_fetch_languages("India")[:3], ["hi", "ta", "te"])
+        self.assertEqual(database.get_fetch_languages("Japan"), [])
+        self.assertEqual(database.get_countries_for_language("Telugu"), ["india"])
+        self.assertEqual(database.get_countries_for_language("English"), [])
+
+    def test_catalog_language_for_country_reads_declaration_and_dedicated_sections(self):
+        """Country filters are answered by language sections, even those that declare genre options."""
+        # Declares narrative genres only, but its very name says what it serves.
+        named = {"id": "watchstars-hi", "name": "Hindi Movies", "type": "movie",
+                 "extra": [{"name": "genre", "options": ["Action", "Drama"]}]}
+        self.assertFalse(api.catalog_supports_genre(named, "Hindi"))
+        self.assertTrue(api.catalog_supports_filter(named, "Hindi"))
+        self.assertEqual(api.catalog_language_for_country(named, "India"), "Hindi")
+
+        # Slug ids ("te_series", "tamilmv-now") are language sections too, and the
+        # language the section is named for wins over one it merely lists.
+        slug = {"id": "tamilmv-now", "name": "Tamilmv Recent", "type": "movie",
+                "extra": [{"name": "genre", "options": ["Tamil", "Hindi", "Malayalam"]}]}
+        self.assertEqual(api.catalog_language_for_country(slug, "India"), "Tamil")
+
+        # A country section whose id reuses a language code (gu = Guam/Gujarati)
+        # is not a language catalog, and catalogs of no Indian cinema stay out.
+        country_only = {"id": "tvgarden:gu", "name": "Guam", "type": "series",
+                        "extra": [{"name": "genre", "options": ["Action"]}]}
+        self.assertIsNone(api.catalog_language_for_country(country_only, "India"))
+        self.assertIsNone(api.catalog_language_for_country({"id": "top", "name": "Popular"}, "India"))
+
     def test_hydrate_items_from_metadata_country(self):
         """hydrate_items_from_metadata hydrates country from DB."""
         details = {

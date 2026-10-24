@@ -103,8 +103,9 @@ class Playlist(Adw.Dialog):
             path = obj.item.get("filename") or ""
             name_with_ext = os.path.basename(path) if path else ""
             file_title = os.path.splitext(name_with_ext)[0] if name_with_ext else ""
-            file_title = GLib.markup_escape_text(file_title)
-            title = obj.item.get("title") or obj.title or file_title
+            # Match against the raw title: obj.title is markup-escaped for the
+            # tooltip, so searching for "&" or "<" would never find it.
+            title = obj.item.get("title") or file_title
             title = remove_diacritics(title).lower()
 
             return query in title
@@ -257,7 +258,11 @@ class Playlist(Adw.Dialog):
             if content_type == "inode/directory":
                 icon_name = "cine-folder-symbolic"
                 file_title = name_with_ext
-                if not os.listdir(path):
+                try:
+                    is_empty = not os.listdir(path)
+                except OSError:
+                    is_empty = False
+                if is_empty:
                     list_item.icon.set_opacity(0.5)
                     list_item.title.set_opacity(0.5)
             elif content_type:
@@ -286,7 +291,9 @@ class Playlist(Adw.Dialog):
             row = list_item.get_child()
             if obj.playing:
                 row.add_css_class("playing-item-playlist")
-                set_item(self.mpv.playlist[obj.position])
+                playlist = self.mpv.playlist
+                if 0 <= obj.position < len(playlist):
+                    set_item(playlist[obj.position])
             else:
                 row.remove_css_class("playing-item-playlist")
 
@@ -298,7 +305,10 @@ class Playlist(Adw.Dialog):
     @Gtk.Template.Callback()
     def _on_factory_unbind(self, _factory, list_item):
         obj = list_item.get_item()
-        obj.disconnect(list_item.handler_id)
+        handler_id = getattr(list_item, "handler_id", None)
+        if obj is not None and handler_id is not None:
+            obj.disconnect(handler_id)
+            list_item.handler_id = None
 
     def _on_drop_enter(self, target, _x, _y):
         self.drop_indicator_revealer.set_reveal_child(True)
@@ -311,11 +321,15 @@ class Playlist(Adw.Dialog):
         def on_read_done(source, result):
             try:
                 source.read_value_finish(result)
-                self.spinner.set_visible(True)
             except GLib.Error as e:
                 toast = Adw.Toast.new(_("File Error") + f": {e.message}")
                 self.toast_overlay.add_toast(toast)
                 return
+            # The read may finish after the pointer already left the dialog;
+            # showing the spinner then would leave it stuck visible.
+            if target.get_current_drop() is None:
+                return
+            self.spinner.set_visible(True)
 
         drop.read_value_async(target_type, GLib.PRIORITY_DEFAULT, None, on_read_done)
 
@@ -333,37 +347,42 @@ class Playlist(Adw.Dialog):
         elif isinstance(value, str):
             items = [value]
 
-        for item in items:
-            if isinstance(item, Gio.File):
-                path = item.get_path() or item.get_uri()
+        try:
+            for item in items:
+                if isinstance(item, Gio.File):
+                    path = item.get_path() or item.get_uri()
 
-                is_url = not is_local_path(path)  # URL Thumbnail
+                    is_url = not is_local_path(path)  # URL Thumbnail
 
-                if is_url:
-                    self.mpv.loadfile(path, "append-play")
-                    continue
-                else:
-                    info = item.query_info(
-                        "standard::content-type,standard::type",
-                        Gio.FileQueryInfoFlags.NONE,
-                        None,
-                    )
+                    if is_url:
+                        self.mpv.loadfile(path, "append-play")
+                        continue
+                    try:
+                        info = item.query_info(
+                            "standard::content-type,standard::type",
+                            Gio.FileQueryInfoFlags.NONE,
+                            None,
+                        )
+                    except Exception:
+                        # File vanished or is unreadable; skip it without
+                        # aborting the rest of the drop.
+                        continue
 
-                file_type = info.get_file_type()
-                mime_type = info.get_content_type() or ""
+                    file_type = info.get_file_type()
+                    mime_type = info.get_content_type() or ""
 
-                if file_type == Gio.FileType.DIRECTORY:
-                    self.mpv.loadfile(path, "append-play")
-                    continue
+                    if file_type == Gio.FileType.DIRECTORY:
+                        self.mpv.loadfile(path, "append-play")
+                        continue
 
-                valid_types = ("video/", "audio/", "image/")
-                if mime_type.startswith(valid_types):
-                    self.mpv.loadfile(path, "append-play")
+                    valid_types = ("video/", "audio/", "image/")
+                    if mime_type.startswith(valid_types):
+                        self.mpv.loadfile(path, "append-play")
 
-            elif isinstance(item, str):  # URL string
-                self.mpv.loadfile(item, "append-play")
-
-        self.spinner.set_visible(False)
+                elif isinstance(item, str):  # URL string
+                    self.mpv.loadfile(item, "append-play")
+        finally:
+            self.spinner.set_visible(False)
 
     def _on_row_drag_prepare(self, _source, _x, _y, list_item):
         index = list_item.get_item().position

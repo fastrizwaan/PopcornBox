@@ -4,6 +4,7 @@ import tempfile
 import os
 import shutil
 import threading
+import time
 
 from src import player
 from src import database
@@ -53,6 +54,42 @@ class TestTorrentCleanupPolicy(unittest.TestCase):
 
         self.assertIsInstance(engine.error, RuntimeError)
         self.assertTrue(engine.ready_event.is_set())
+
+    def test_resume_save_is_serialized(self):
+        from src.libtorrent_stream import TorrentStreamEngine
+
+        engine = object.__new__(TorrentStreamEngine)
+        engine.handle = MagicMock()
+        engine.lt = MagicMock()
+        engine._resume_lock = threading.Lock()
+
+        active = 0
+        peak = 0
+        guard = threading.Lock()
+
+        def fake_save(_timeout):
+            nonlocal active, peak
+            with guard:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.05)
+            with guard:
+                active -= 1
+
+        engine._save_resume_data_locked = fake_save
+
+        threads = [
+            threading.Thread(target=engine._save_resume_data, args=(0.05,))
+            for _ in range(2)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # The monitor and stop() can save at the same time; overlapping saves
+        # steal each other's libtorrent alerts and corrupt the temp file.
+        self.assertEqual(peak, 1)
 
     @patch("src.database.remove_download")
     @patch("src.database.set_download_finished")

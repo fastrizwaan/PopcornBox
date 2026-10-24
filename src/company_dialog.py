@@ -12,6 +12,7 @@ from gi.repository import Gtk, Adw, GLib, Pango
 import threading
 from .movie_widget import MovieWidget, load_image_into_picture
 from .tmdb_helper import fetch_company_details
+from .utils import logger
 
 
 class CompanyDetailDialog(Adw.Dialog):
@@ -31,6 +32,8 @@ class CompanyDetailDialog(Adw.Dialog):
         self._desc_expanded = False
         self._current_filter = "all"
         self._catalog_data = None
+        self._closed = False
+        self.connect("closed", self._on_closed)
 
         self.set_title(self.entity_name)
         self.set_content_width(860)
@@ -192,6 +195,9 @@ class CompanyDetailDialog(Adw.Dialog):
         # Start background fetch
         threading.Thread(target=self._fetch_details_thread, daemon=True).start()
 
+    def _on_closed(self, *_args):
+        self._closed = True
+
     def _on_toggle_desc(self, btn):
         self._desc_expanded = not self._desc_expanded
         if self._desc_expanded:
@@ -204,10 +210,17 @@ class CompanyDetailDialog(Adw.Dialog):
             btn.set_label("Read more")
 
     def _fetch_details_thread(self):
-        data = fetch_company_details(self.entity_id, self.entity_type)
+        try:
+            data = fetch_company_details(self.entity_id, self.entity_type)
+        except Exception as e:
+            logger.error(f"Error fetching company details: {e}", exc_info=True)
+            data = None
         GLib.idle_add(self._populate_ui, data)
 
     def _populate_ui(self, data):
+        if self._closed:
+            return False
+
         self.spinner.stop()
         self.loading_box.set_visible(False)
 

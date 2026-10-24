@@ -87,7 +87,8 @@ try:
                 pass
 
     if os.path.exists(OLD_PL_FILE):
-        shutil.move(OLD_PL_FILE, LAST_PLAYLIST_FILE if not os.path.isdir(PLAYLIST_DIR) else os.path.join(PLAYLIST_DIR, os.path.basename(OLD_PL_FILE)))
+        # PLAYLIST_DIR was created above, so the old file always moves there.
+        shutil.move(OLD_PL_FILE, os.path.join(PLAYLIST_DIR, os.path.basename(OLD_PL_FILE)))
 except Exception as e:
     logger.error(f"Error creating files/folders: {e}", exc_info=True)
 

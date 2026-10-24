@@ -130,6 +130,12 @@ class MPRIS:
             GLib.Variant("(sa{sv}as)", (MEDIAPLAYER2_PLAYER, changed_props, [])),
         )
 
+    def _playback_status(self):
+        p = self._mpv
+        if not p or p.idle_active:
+            return "Stopped"
+        return "Paused" if p.pause else "Playing"
+
     def _update_props(self, *args):
         """Notifies D-Bus that properties have changed."""
         if not self._con:
@@ -143,7 +149,7 @@ class MPRIS:
         )
 
         if self._mpv:
-            status = "Paused" if self._mpv.pause else "Playing"
+            status = self._playback_status()
             vol = self._mpv.volume
             loop = self._get_loop_status()
 
@@ -206,6 +212,9 @@ class MPRIS:
 
     def _update_playback_status(self, paused):
         status = "Paused" if paused else "Playing"
+        p = self._mpv
+        if p and p.idle_active:
+            status = "Stopped"
         self._emit_props_changed({"PlaybackStatus": GLib.Variant("s", status)})
 
     def _update_volume(self, value):
@@ -338,8 +347,7 @@ class MPRIS:
                     vol = getattr(p, "volume") / 100.0 if p else 0.0
                     return GLib.Variant("d", float(vol))
                 elif prop == "PlaybackStatus":
-                    status = "Paused" if (p and p.pause) else "Playing"
-                    return GLib.Variant("s", status)
+                    return GLib.Variant("s", self._playback_status())
                 elif prop == "LoopStatus":
                     return GLib.Variant("s", self._get_loop_status())
                 elif prop == "Position":
@@ -404,7 +412,6 @@ class MPRIS:
 
                 if prop == "Shuffle":
                     new_shuffle = value.get_boolean()
-                    p._shuffle = new_shuffle
                     win = self._app.props.active_window
                     if win and hasattr(win, "shuffle_toggle_btn"):
                         idle_add_once(setattr, win.shuffle_toggle_btn.props, "active", new_shuffle)

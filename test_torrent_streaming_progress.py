@@ -192,6 +192,43 @@ class TestTorrentStreamingProgress(unittest.TestCase):
         self.assertIn("0123456789abcdef0123456789abcdef01234567", args[0])
         self.assertIsNotNone(kwargs.get("progress_callback"))
 
+    def _capture_torrent_progress_callback(self):
+        torrent_item = {
+            "name": "Big Buck Bunny",
+            "infoHash": "0123456789abcdef0123456789abcdef01234567",
+            "magnet": "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+            "sources": ["tracker:udp://tracker.opentrackr.org:1337/announce"],
+            "file_index": 0,
+        }
+        self.win.stream_queue = [torrent_item]
+        self.win.stream_queue_index = 0
+        self.win.stream_request_id = 42
+        self.win._show_toast = MagicMock()
+        self.win._try_next_stream_in_queue = MagicMock()
+        with patch("src.player.play_magnet") as mock_play_magnet:
+            self.win._play_current_stream_from_queue(42)
+        return mock_play_magnet.call_args.kwargs["progress_callback"]
+
+    def test_engine_death_advances_queue_once(self):
+        callback = self._capture_torrent_progress_callback()
+        dead = {"status": "Engine died. Trying next stream...", "closed": True}
+        # play_magnet can report the same failure repeatedly while the engine
+        # tears down; each duplicate must not skip another queue entry.
+        callback(dead)
+        callback(dead)
+        self.win._try_next_stream_in_queue.assert_called_once()
+
+    def test_engine_startup_error_advances_queue(self):
+        callback = self._capture_torrent_progress_callback()
+        callback({"status": "Error: failed to start engine", "ready": False})
+        self.win._try_next_stream_in_queue.assert_called_once()
+
+    def test_stale_progress_callback_ignores_engine_failure(self):
+        callback = self._capture_torrent_progress_callback()
+        self.win.stream_request_id = 43
+        callback({"status": "Engine died. Trying next stream...", "closed": True})
+        self.win._try_next_stream_in_queue.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

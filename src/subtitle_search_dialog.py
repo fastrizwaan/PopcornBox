@@ -1,5 +1,6 @@
 import os
 import time
+import uuid
 import logging
 import threading
 from gettext import gettext as _
@@ -205,6 +206,12 @@ class SubtitleSearchDialog(Adw.Dialog):
         self.series_box.set_visible(is_series)
 
     def _start_search(self):
+        # The button is disabled while searching, but pressing Enter in the
+        # entry bypasses that; without this guard each Enter fires another
+        # concurrent OpenSubtitles/addon request.
+        if self._is_searching:
+            return
+
         query = self.search_entry.get_text().strip()
         is_series = self.type_dropdown.get_selected() == 1
         media_type = "series" if is_series else "movie"
@@ -261,6 +268,10 @@ class SubtitleSearchDialog(Adw.Dialog):
             if selected_code == "all":
                 filtered.append(s)
             else:
+                # Unknown language must not match: "eng".startswith("") is
+                # True, which would leak every unlabelled result into the list.
+                if not lang_code:
+                    continue
                 if lang_code == selected_code or lang_code.startswith(selected_code) or selected_code.startswith(lang_code):
                     filtered.append(s)
                 elif selected_code == "eng" and lang_code in ["en", "eng", "english"]:
@@ -357,7 +368,10 @@ class SubtitleSearchDialog(Adw.Dialog):
         clean_name = "".join([c for c in raw_name if c.isalnum() or c in (" ", "-", "_", ".")]).rstrip()
 
         def download_worker():
-            filename = f"opensub_{int(time.time())}_{lang}_{clean_name[:40]}.srt"
+            # Second-resolution names collide when two subtitles are applied
+            # in quick succession, so include a unique suffix.
+            unique = uuid.uuid4().hex[:8]
+            filename = f"opensub_{int(time.time())}_{unique}_{lang}_{clean_name[:40]}.srt"
             file_path = api.download_subtitle(url, filename)
 
             def on_download_done():

@@ -256,6 +256,13 @@ class OptionsMenuButton(Gtk.MenuButton):
         w = cast(int, self.win.mpv._get_property("video-params/w"))
         h = cast(int, self.win.mpv._get_property("video-params/h"))
 
+        # video-params is empty for audio-only or while no file is loaded;
+        # dividing by it would raise ZeroDivisionError or TypeError.
+        if not w or not h:
+            self.crop_dropdown.set_selected(0)
+            self.crop_reset_btn.set_sensitive(False)
+            return
+
         target_ratio = RATIOS[idx]
         current_ratio = w / h
 

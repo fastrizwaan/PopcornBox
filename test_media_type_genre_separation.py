@@ -47,18 +47,22 @@ class TestMediaTypeGenreSeparation(unittest.TestCase):
         database.CONFIG_DIR = Path(self.temp_dir.name)
         database.DB_FILE = database.CONFIG_DIR / "data.json"
         database.reset_json_cache()
-        database._cache_conn = None
-        database._cache_db_initialized = False
+        with database._cache_db_lock:
+            database._cache_conn = None
+            database._cache_db_initialized = False
         api.reset_addon_health_cache()
 
     def tearDown(self):
-        if database._cache_conn is not None:
-            try:
-                database._cache_conn.close()
-            except Exception:
-                pass
-        database._cache_conn = self.orig_cache_conn
-        database._cache_db_initialized = self.orig_cache_initialized
+        # Background fetchers hold _cache_db_lock while running statements;
+        # closing the connection underneath them segfaults libsqlite3.
+        with database._cache_db_lock:
+            if database._cache_conn is not None:
+                try:
+                    database._cache_conn.close()
+                except Exception:
+                    pass
+            database._cache_conn = self.orig_cache_conn
+            database._cache_db_initialized = self.orig_cache_initialized
         database.CONFIG_DIR = self.orig_config_dir
         database.BASE_DIR = self.orig_base_dir
         database.DB_FILE = self.orig_db_file

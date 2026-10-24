@@ -49,6 +49,12 @@ os.environ["GSK_RENDERER"] = "gl"
 # Set the icon shown in gnome sound settings
 os.environ["PIPEWIRE_PROPS"] = '{application.icon-name="io.github.fastrizwaan.PopcornBox"}'
 
+_SIDECAR_EXTENSIONS = ('.torrent', '.srt', '.sub', '.txt', '.nfo', '.json')
+
+
+def _is_sidecar_file(name):
+    return str(name or "").lower().endswith(_SIDECAR_EXTENSIONS)
+
 
 
 class CineApplication(Adw.Application):
@@ -193,7 +199,7 @@ class CineApplication(Adw.Application):
             f_type = info.get_file_type()
 
             if f_type == Gio.FileType.REGULAR:
-                if not path.lower().endswith(('.torrent', '.srt', '.sub', '.txt', '.nfo', '.json')):
+                if not _is_sidecar_file(path):
                     return path
 
             if f_type == Gio.FileType.DIRECTORY:
@@ -204,17 +210,30 @@ class CineApplication(Adw.Application):
                 )
 
                 subdirectories = []
-                for child in enumerator:
-                    child_type = child.get_file_type()
-                    name = child.get_name()
+                first_file = None
+                try:
+                    for child in enumerator:
+                        child_type = child.get_file_type()
+                        name = child.get_name()
 
-                    if name.startswith("."):
-                        continue
+                        if name.startswith("."):
+                            continue
 
-                    if child_type == Gio.FileType.REGULAR:
-                        return gfile.get_child(name).get_path()
-                    elif child_type == Gio.FileType.DIRECTORY:
-                        subdirectories.append(gfile.get_child(name))
+                        if child_type == Gio.FileType.REGULAR:
+                            if _is_sidecar_file(name):
+                                continue
+                            first_file = gfile.get_child(name).get_path()
+                            break
+                        elif child_type == Gio.FileType.DIRECTORY:
+                            subdirectories.append(gfile.get_child(name))
+                finally:
+                    try:
+                        enumerator.close(None)
+                    except Exception:
+                        pass
+
+                if first_file:
+                    return first_file
 
                 for folder in subdirectories:
                     found = self.find_first_file(folder, visited)
