@@ -4,6 +4,7 @@ import tempfile
 import os
 import subprocess
 import time
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -208,6 +209,206 @@ class TestHomeCatalogPopulation(unittest.TestCase):
         self.win._discover_batch_timer_id = GLib.timeout_add(500, lambda: False)
         CineWindow._cancel_all_background_fetching(self.win)
         self.assertIsNone(self.win._discover_batch_timer_id)
+
+    def test_home_catalogs_exclude_tv_radio_music(self):
+        """Home feed must strictly include movie, series, and anime catalogs, excluding tv, radio, and music."""
+        mixed_addon = {
+            "name": "Entertainment Addon",
+            "manifest_url": "https://entertainment.test/manifest.json",
+            "enabled": True,
+            "catalogs": [
+                {"id": "c_movie", "name": "Popular Movies", "type": "movie"},
+                {"id": "c_series", "name": "Trending Series", "type": "series"},
+                {"id": "c_anime", "name": "Anime Hits", "type": "anime"},
+                {"id": "c_tv", "name": "Live TV Channels", "type": "tv"},
+                {"id": "c_channel", "name": "News Channels", "type": "channel"},
+                {"id": "c_radio", "name": "FM Radio", "type": "radio"},
+                {"id": "c_music", "name": "Top Songs", "type": "music"},
+                {"id": "c_podcast", "name": "Talk Podcasts", "type": "podcast"},
+            ]
+        }
+
+        with patch("src.database.get_addons", return_value=[mixed_addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.is_catalog_provider", return_value=True), \
+             patch("src.api.get_addon_catalogs", side_effect=lambda a, cache_only=False: a.get("catalogs", [])), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            home_rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=True)
+
+        home_cat_ids = {r["catalog_id"] for r in home_rows}
+        self.assertEqual(home_cat_ids, {"c_movie", "c_series", "c_anime"})
+        for r in home_rows:
+            self.assertIn(r["media_type"], ("movie", "series", "anime"))
+            self.assertNotIn(r["media_type"], ("tv", "channel", "radio", "music", "podcast"))
+
+    def test_discover_catalogs_include_tv_radio_music(self):
+        """Discover view (is_home=False) retains tv, channel, radio, and music catalogs."""
+        mixed_addon = {
+            "name": "Entertainment Addon",
+            "manifest_url": "https://entertainment.test/manifest.json",
+            "enabled": True,
+            "catalogs": [
+                {"id": "c_movie", "name": "Popular Movies", "type": "movie"},
+                {"id": "c_series", "name": "Trending Series", "type": "series"},
+                {"id": "c_anime", "name": "Anime Hits", "type": "anime"},
+                {"id": "c_tv", "name": "Live TV Channels", "type": "tv"},
+                {"id": "c_channel", "name": "News Channels", "type": "channel"},
+                {"id": "c_radio", "name": "FM Radio", "type": "radio"},
+                {"id": "c_music", "name": "Top Songs", "type": "music"},
+            ]
+        }
+
+        with patch("src.database.get_addons", return_value=[mixed_addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.is_catalog_provider", return_value=True), \
+             patch("src.api.get_addon_catalogs", side_effect=lambda a, cache_only=False: a.get("catalogs", [])), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            discover_rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=False)
+
+        disc_cat_ids = {r["catalog_id"] for r in discover_rows}
+        self.assertIn("c_tv", disc_cat_ids)
+        self.assertIn("c_channel", disc_cat_ids)
+        self.assertIn("c_radio", disc_cat_ids)
+        self.assertIn("c_music", disc_cat_ids)
+        self.assertIn("c_movie", disc_cat_ids)
+        self.assertIn("c_series", disc_cat_ids)
+        self.assertIn("c_anime", disc_cat_ids)
+
+    def test_home_and_discover_cache_isolation(self):
+        """Home and Discover catalog list cache entries are isolated and never overwrite each other."""
+        self.win._discover_catalog_list_cache = {}
+        addon = {
+            "name": "AllInOne",
+            "manifest_url": "https://allinone.test/manifest.json",
+            "enabled": True,
+            "catalogs": [
+                {"id": "m1", "name": "Movie 1", "type": "movie"},
+                {"id": "tv1", "name": "Live TV 1", "type": "tv"},
+            ]
+        }
+        with patch("src.database.get_addons", return_value=[addon]), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.api.is_catalog_provider", return_value=True), \
+             patch("src.api.get_addon_catalogs", side_effect=lambda a, cache_only=False: a.get("catalogs", [])), \
+             patch("src.api.is_catalog_browsable", return_value=True):
+            home_rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=True)
+            discover_rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=False)
+
+        self.assertEqual(len(home_rows), 1)
+        self.assertEqual(home_rows[0]["catalog_id"], "m1")
+        self.assertEqual(len(discover_rows), 2)
+        # Both cache keys exist independently
+        home_key = ("home", "all", "", "Popular", "", "", "", "")
+        disc_key = ("all", "", "Popular", "", "", "", "")
+        self.assertIn(home_key, self.win._discover_catalog_list_cache)
+        self.assertIn(disc_key, self.win._discover_catalog_list_cache)
+        self.assertEqual(len(self.win._discover_catalog_list_cache[home_key]), 1)
+        self.assertEqual(len(self.win._discover_catalog_list_cache[disc_key]), 2)
+
+    def test_row_horizontal_scrollbar_hidden(self):
+        """Every discover row and continue watching row must have PolicyType.EXTERNAL and hidden horizontal scrollbar."""
+        slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        row_info = {"title": "Test Row", "media_type": "movie", "catalog_id": "test", "manifest_url": "https://test/manifest.json"}
+        items = [{"id": f"tt{i}", "title": f"Movie {i}", "type": "movie"} for i in range(10)]
+
+        CineWindow._populate_discover_row_slot(self.win, slot, row_info, items, self.win.discover_box)
+        sec_scroll = slot.get_first_child().get_next_sibling()
+        self.assertIsInstance(sec_scroll, Gtk.ScrolledWindow)
+        h_policy, v_policy = sec_scroll.get_policy()
+        self.assertEqual(h_policy, Gtk.PolicyType.EXTERNAL)
+        self.assertEqual(v_policy, Gtk.PolicyType.NEVER)
+        h_sb = sec_scroll.get_hscrollbar()
+        if h_sb:
+            self.assertFalse(h_sb.get_visible())
+
+    def test_home_initial_batch_loads_all_catalogs_upfront(self):
+        """Home feed dispatches all non-tv/music/radio catalogs upfront so all sections are ready without appearing on scroll."""
+        catalogs = [
+            {"title": f"Cat {i}", "media_type": "movie", "catalog_id": f"c{i}", "manifest_url": f"https://addon{i}/manifest.json"}
+            for i in range(12)
+        ]
+        self.win._discover_catalog_list = catalogs
+        self.win._load_next_discover_batch = MagicMock()
+
+        self.win._get_discover_catalog_list = MagicMock(return_value=catalogs)
+        self.win.category_btn_stack.set_visible_child_name("home")
+        CineWindow._refresh_discover_page(self.win, filter_media_type="all")
+
+        # Initial batch must be all 12 catalogs, not capped at 6
+        self.win._load_next_discover_batch.assert_called_once()
+        args, kwargs = self.win._load_next_discover_batch.call_args
+        batch_size = kwargs.get("batch_size") or (args[1] if len(args) > 1 else None)
+        self.assertEqual(batch_size, 12)
+
+    def test_duplicate_refresh_while_loading_does_not_abort_worker(self):
+        """Redundant in-flight _refresh_discover_page call for the same view does not abort the active worker."""
+        self.win.category_btn_stack.set_visible_child_name("home")
+        view_key = "home|all|all|all|all|all|all|Popular"
+        self.win._get_discover_view_key = MagicMock(return_value=view_key)
+        self.win._active_discover_view_key = view_key
+        self.win._discover_is_loading_rows = True
+        self.win.discover_request_id = 42
+        self.win._load_next_discover_batch = MagicMock()
+
+        CineWindow._refresh_discover_page(self.win, filter_media_type="all")
+
+        # Request ID must not be bumped, and no new batch dispatched
+        self.assertEqual(self.win.discover_request_id, 42)
+        self.win._load_next_discover_batch.assert_not_called()
+
+    def test_cache_hit_with_zero_rendered_rows_resumes_loading(self):
+        """If a cached view has 0 rendered catalog rows, next_row_index resets to 0 and loads remaining."""
+        self.win.category_btn_stack.set_visible_child_name("home")
+        view_key = "home|all|all|all|all|all|all|Popular"
+        self.win._get_discover_view_key = MagicMock(return_value=view_key)
+        
+        cached_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        # Add continue watching header and scroll (so has_valid_content is true)
+        cw_hdr = Gtk.Box()
+        cw_hdr.add_css_class("continue-watching-header")
+        cached_box.append(cw_hdr)
+
+        catalogs = [{"title": f"Cat {i}"} for i in range(10)]
+        self.win._discover_views = {
+            view_key: {
+                "box": cached_box,
+                "catalog_list": catalogs,
+                "next_row_index": 10,  # Falsely advanced previously
+                "request_id": 1,
+            }
+        }
+        self.win._load_next_discover_batch = MagicMock()
+
+        CineWindow._refresh_discover_page(self.win, filter_media_type="all")
+
+        # Must have reset next_row_index to 0 because 0 catalog rows were rendered
+        self.assertEqual(self.win._discover_views[view_key]["next_row_index"], 0)
+        self.assertEqual(self.win._discover_next_row_index, 0)
+        self.assertIsNotNone(self.win._discover_batch_timer_id)
+
+    def test_aborted_batch_cleans_empty_slots(self):
+        """An aborted batch removes unpopulated placeholder slots so no dead widgets linger in discover_box."""
+        catalogs = [{"title": f"Cat {i}", "media_type": "movie", "catalog_id": f"c{i}"} for i in range(5)]
+        self.win._discover_catalog_list = catalogs
+        self.win._discover_next_row_index = 0
+
+        # Simulate abort event already set
+        abort_ev = threading.Event()
+        abort_ev.set()
+        self.win._discover_abort_event = abort_ev
+        self.win.discover_request_id = 99
+
+        CineWindow._load_next_discover_batch(self.win, req_id=99, batch_size=5)
+
+        self._drain_glib(10)
+
+        # No empty slot children left behind in discover_box
+        child = self.win.discover_box.get_first_child()
+        count = 0
+        while child:
+            count += 1
+            child = child.get_next_sibling()
+        self.assertEqual(count, 0)
 
 
 if __name__ == "__main__":

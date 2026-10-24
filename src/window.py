@@ -101,6 +101,18 @@ from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject, Pango
 
 DISCOVER_ROW_CARD_LIMIT = 30
 
+HOME_ALLOWED_MEDIA_TYPES = {
+    "movie", "movies", "film", "films",
+    "series", "tvshow", "tv_series", "tvshows",
+    "anime",
+}
+
+HOME_EXCLUDED_MEDIA_TYPES = {
+    "tv", "channel", "channels", "tvchannel", "tvchannels",
+    "live", "livetv", "iptv",
+    "music", "radio", "radios", "podcast", "podcasts", "audio",
+}
+
 def _streams_match(s1, s2):
     return api.streams_match(s1, s2)
 
@@ -6775,6 +6787,11 @@ class CineWindow(Adw.ApplicationWindow):
         # Action: Switch to Home (landing feed with hidden dropdowns & unique checkbox)
         action = Gio.SimpleAction.new("switch-to-home", None)
         def on_switch_home(action, parameter):
+            curr_cat = self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else None
+            curr_lib = self.library_stack.get_visible_child_name() if hasattr(self, "library_stack") else None
+            if curr_cat == "home" and curr_lib == "discover" and getattr(self, "_discover_is_loading_rows", False):
+                debug_log("on_switch_home IGNORED: already on home and actively loading")
+                return
             self._cancel_all_background_fetching()
             self._set_discover_results_search_visible(False)
             self._set_discover_spinner_active(True)
@@ -7441,6 +7458,7 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             self._discover_active_pool = None
+        self._active_discover_view_key = None
 
         # 4. Content catalog view (single catalog grid)
         self.content_request_id = getattr(self, "content_request_id", 0) + 1
@@ -9128,6 +9146,7 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             self._discover_active_pool = None
+        self._active_discover_view_key = None
 
     def _on_unique_toggled(self, button):
         if getattr(self, "_syncing_unique_check", False) is True:
@@ -11086,7 +11105,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         threading.Thread(target=_fetch_worker, daemon=True, name="DiscoverManifestFetch").start()
 
-    def _get_discover_catalog_list(self, filter_media_type=None, filter_addon_url=None, force_refresh=False):
+    def _get_discover_catalog_list(self, filter_media_type=None, filter_addon_url=None, force_refresh=False, is_home=False):
         cur_sort = getattr(self, "current_sort", "Popular")
         if not isinstance(cur_sort, str):
             cur_sort = "Popular"
@@ -11102,7 +11121,11 @@ class CineWindow(Adw.ApplicationWindow):
         cur_country = getattr(self, "current_country", None)
         if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "All"):
             cur_country = None
-        cache_key = (filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "")
+        cache_key = (
+            ("home", filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "")
+            if is_home else
+            (filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "")
+        )
         if not force_refresh and hasattr(self, "_discover_catalog_list_cache") and cache_key in self._discover_catalog_list_cache:
             cached_res = list(self._discover_catalog_list_cache[cache_key])
             if cached_res:
@@ -11170,6 +11193,9 @@ class CineWindow(Adw.ApplicationWindow):
                     continue
 
                 cat_media_kind = str(cat.get("type") or "").strip().lower()
+                if is_home and cat_media_kind in HOME_EXCLUDED_MEDIA_TYPES:
+                    continue
+
                 if cur_genre and cat_media_kind in ("tv", "channel", "live", "music", "radio", "podcast"):
                     continue
 
@@ -11230,6 +11256,14 @@ class CineWindow(Adw.ApplicationWindow):
                             c_type = 'anime'
                         elif api.is_catalog_type_match(cat, 'tv', addon_name):
                             c_type = 'tv'
+
+                    if is_home:
+                        norm_c_type = str(c_type).strip().lower()
+                        norm_raw_type = str(raw_type).strip().lower()
+                        if norm_c_type in HOME_EXCLUDED_MEDIA_TYPES or norm_raw_type in HOME_EXCLUDED_MEDIA_TYPES:
+                            continue
+                        if norm_c_type not in HOME_ALLOWED_MEDIA_TYPES and norm_raw_type not in HOME_ALLOWED_MEDIA_TYPES:
+                            continue
                     
                     row_key = (m_url, c_id, c_type)
                     if row_key in seen_row_keys:
@@ -11639,15 +11673,22 @@ class CineWindow(Adw.ApplicationWindow):
 
         if not existing_scroll:
             cw_scroll = Gtk.ScrolledWindow()
-            cw_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+            cw_scroll.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
             cw_scroll.set_hexpand(True)
             cw_scroll.add_css_class("discover-row-scroll")
             cw_scroll.add_css_class("continue-watching-scroll")
             cw_scroll._is_cw_scroll = True
+            h_sb = cw_scroll.get_hscrollbar()
+            if h_sb:
+                h_sb.set_visible(False)
             target_box.insert_child_after(cw_scroll, cw_header)
             existing_scroll = cw_scroll
         else:
             cw_scroll = existing_scroll
+            cw_scroll.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
+            h_sb = cw_scroll.get_hscrollbar()
+            if h_sb:
+                h_sb.set_visible(False)
             cw_scroll.add_css_class("continue-watching-scroll")
             cw_scroll._is_cw_scroll = True
 
@@ -11743,10 +11784,17 @@ class CineWindow(Adw.ApplicationWindow):
             self._refresh_unique_combined_view()
             return
         from . import database
+
+        view_key = self._get_discover_view_key()
+        if not force_refresh and getattr(self, "_active_discover_view_key", None) == view_key:
+            if getattr(self, "_discover_is_loading_rows", False):
+                debug_log(f"_refresh_discover_page IGNORED: view '{view_key}' is already actively loading")
+                return
         
         # Increment request ID to cancel any pending background loaders from previous tab
         self.discover_request_id = getattr(self, "discover_request_id", 0) + 1
         req_id = self.discover_request_id
+        self._active_discover_view_key = view_key
         self._discover_is_loading_rows = False
         self._discover_auto_fill_count = 0
         self._discover_empty_batches = 0
@@ -11766,8 +11814,6 @@ class CineWindow(Adw.ApplicationWindow):
         
         if not hasattr(self, "_discover_views"):
             self._discover_views = {}
-            
-        view_key = self._get_discover_view_key()
 
         is_home = (getattr(self, "category_btn_stack", None) and hasattr(self.category_btn_stack, "get_visible_child_name") and self.category_btn_stack.get_visible_child_name() == "home")
         cur_lang = getattr(self, "current_language", None)
@@ -11784,11 +11830,24 @@ class CineWindow(Adw.ApplicationWindow):
         if not force_refresh and view_key in self._discover_views:
             view_data = self._discover_views[view_key]
             target_box = view_data.get("box")
+
+            rendered_rows = 0
+            if target_box:
+                c = target_box.get_first_child()
+                while c:
+                    if getattr(c, "_is_catalog_row", False):
+                        rendered_rows += 1
+                    c = c.get_next_sibling()
+
             has_valid_content = bool(target_box and target_box.get_first_child() and getattr(target_box, "_has_empty_label", False) is not True)
+            total_catalogs = len(view_data.get("catalog_list", []))
+            if rendered_rows == 0 and total_catalogs > 0:
+                view_data["next_row_index"] = 0
+
             if has_valid_content:
-                debug_log(f"_refresh_discover_page INSTANT CACHE HIT for view '{view_key}'")
+                debug_log(f"_refresh_discover_page INSTANT CACHE HIT for view '{view_key}' (rendered_rows={rendered_rows})")
                 self._discover_catalog_list = view_data["catalog_list"]
-                self._discover_next_row_index = view_data["next_row_index"]
+                self._discover_next_row_index = view_data.get("next_row_index", 0)
                 view_data["request_id"] = req_id
                 
                 if hasattr(self, "discover_scrolled") and self.discover_scrolled.get_child() != target_box:
@@ -11815,9 +11874,10 @@ class CineWindow(Adw.ApplicationWindow):
                             return False
                         if getattr(self, "_discover_is_loading_rows", False):
                             return False
-                        self._load_next_discover_batch(req_id, batch_size=4)
+                        resume_batch = len(self._discover_catalog_list) if is_home else 4
+                        self._load_next_discover_batch(req_id, batch_size=resume_batch)
                         return False
-                    self._discover_batch_timer_id = GLib.timeout_add(120, _resume_load)
+                    self._discover_batch_timer_id = GLib.timeout_add(10 if is_home else 120, _resume_load)
                 else:
                     self._set_discover_spinner_active(False)
                 return
@@ -11843,7 +11903,7 @@ class CineWindow(Adw.ApplicationWindow):
             self._update_continue_watching_section()
 
         # Setup Sequential Row Loading List
-        self._discover_catalog_list = self._get_discover_catalog_list(filter_media_type=filter_media_type, filter_addon_url=filter_addon_url, force_refresh=force_refresh)
+        self._discover_catalog_list = self._get_discover_catalog_list(filter_media_type=filter_media_type, filter_addon_url=filter_addon_url, force_refresh=force_refresh, is_home=is_home)
         self._discover_next_row_index = 0
         self._discover_empty_batches = 0
         self._discover_auto_fill_count = 0
@@ -11944,10 +12004,12 @@ class CineWindow(Adw.ApplicationWindow):
             "request_id": req_id
         }
         
-        # Load initial batch of 6 rows to cleanly fill viewport without flooding (lazy load rest on scroll)
-        debug_log(f"_refresh_discover_page dispatching initial batch of 6 rows (req_id={req_id})")
+        # On Home, load all catalogs upfront so all sections are ready without appearing only on scroll.
+        # In Discover view, load initial batch of 6 rows and lazily load more on scroll.
+        initial_batch = len(self._discover_catalog_list) if is_home else 6
+        debug_log(f"_refresh_discover_page dispatching initial batch of {initial_batch} rows (req_id={req_id}, is_home={is_home})")
         self._set_discover_spinner_active(True)
-        self._load_next_discover_batch(req_id, batch_size=6)
+        self._load_next_discover_batch(req_id, batch_size=initial_batch)
         debug_log(f"_refresh_discover_page DONE")
 
     def _load_next_discover_batch(self, req_id, batch_size=4):
@@ -11974,19 +12036,16 @@ class CineWindow(Adw.ApplicationWindow):
         tmdb_seen_snapshot = set(getattr(target_box, "_tmdb_seen_ids", ()) or ())
         start_idx = self._discover_next_row_index
         end_idx = min(start_idx + batch_size, len(self._discover_catalog_list))
-        self._discover_next_row_index = end_idx
         batch_items = self._discover_catalog_list[start_idx:end_idx]
         
         debug_log(f"_load_next_discover_batch START (req_id={req_id}, rows {start_idx}..{end_idx} of {len(self._discover_catalog_list)})", f"Titles: {[b.get('title') for b in batch_items]}")
         
-        view_key = self._get_discover_view_key()
-        if hasattr(self, "_discover_views") and view_key in self._discover_views:
-            self._discover_views[view_key]["next_row_index"] = end_idx
-
         row_slots = []
         if target_box:
             for _slot_item in batch_items:
                 slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+                slot._is_populated = False
+                slot._is_catalog_row = False
                 target_box.append(slot)
                 row_slots.append(slot)
 
@@ -11995,6 +12054,12 @@ class CineWindow(Adw.ApplicationWindow):
             import concurrent.futures
             if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
                 self._discover_is_loading_rows = False
+                def _cleanup_early():
+                    for s in row_slots:
+                        if target_box and s.get_parent() == target_box and not getattr(s, "_is_populated", False):
+                            target_box.remove(s)
+                    return False
+                GLib.idle_add(_cleanup_early)
                 return
             debug_log(f"discover worker START (req_id={req_id}, batch {start_idx}..{end_idx})")
             try:
@@ -12244,8 +12309,9 @@ class CineWindow(Adw.ApplicationWindow):
 
                 # Fetch all rows in this batch in parallel and stream completed rows immediately
                 results = [None] * len(batch_items)
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(batch_items), 6))
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(max(len(batch_items), 1), 8))
                 self._discover_active_pool = executor
+                batch_timeout = max(10.0, len(batch_items) * 1.5)
                 try:
                     try:
                         future_to_idx = {executor.submit(_fetch_single_row, ri): idx for idx, ri in enumerate(batch_items)}
@@ -12253,7 +12319,7 @@ class CineWindow(Adw.ApplicationWindow):
                         # Executor or Python interpreter shutting down
                         return
                     try:
-                        for future in concurrent.futures.as_completed(future_to_idx, timeout=5.0):
+                        for future in concurrent.futures.as_completed(future_to_idx, timeout=batch_timeout):
                             if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
                                 executor.shutdown(wait=False, cancel_futures=True)
                                 break
@@ -12264,6 +12330,10 @@ class CineWindow(Adw.ApplicationWindow):
                                 if res and res[1]:
                                     def _render_slot(slot_idx=idx, r_data=res):
                                         if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
+                                            if slot_idx < len(row_slots):
+                                                s = row_slots[slot_idx]
+                                                if target_box and s.get_parent() == target_box and not getattr(s, "_is_populated", False):
+                                                    target_box.remove(s)
                                             return False
                                         if slot_idx < len(row_slots):
                                             self._populate_discover_row_slot(row_slots[slot_idx], r_data[0], r_data[1], target_box)
@@ -12271,11 +12341,9 @@ class CineWindow(Adw.ApplicationWindow):
                                     GLib.idle_add(_render_slot)
                                 else:
                                     def _remove_slot(slot_idx=idx):
-                                        if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
-                                            return False
                                         if slot_idx < len(row_slots):
                                             slot = row_slots[slot_idx]
-                                            if target_box and slot.get_parent() == target_box:
+                                            if target_box and slot.get_parent() == target_box and not getattr(slot, "_is_populated", False):
                                                 target_box.remove(slot)
                                         return False
                                     GLib.idle_add(_remove_slot)
@@ -12284,18 +12352,13 @@ class CineWindow(Adw.ApplicationWindow):
                     except concurrent.futures.TimeoutError:
                         debug_log(f"discover batch timeout reached for req_id={req_id} (batch {start_idx}..{end_idx})")
                 finally:
-                    # Clean up any uncompleted slots whose futures timed out or failed
-                    for unfin_idx, r in enumerate(results):
-                        if r is None:
-                            def _clean_unfin_slot(slot_idx=unfin_idx):
-                                if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
-                                    return False
-                                if slot_idx < len(row_slots):
-                                    slot = row_slots[slot_idx]
-                                    if target_box and slot.get_parent() == target_box:
-                                        target_box.remove(slot)
-                                return False
-                            GLib.idle_add(_clean_unfin_slot)
+                    # Clean up any uncompleted slots whose futures timed out, failed, or were aborted
+                    def _clean_unfin_slots():
+                        for s in row_slots:
+                            if target_box and s.get_parent() == target_box and not getattr(s, "_is_populated", False):
+                                target_box.remove(s)
+                        return False
+                    GLib.idle_add(_clean_unfin_slots)
 
                     executor.shutdown(wait=False, cancel_futures=True)
                     if getattr(self, "_discover_active_pool", None) is executor:
@@ -12304,19 +12367,40 @@ class CineWindow(Adw.ApplicationWindow):
                 rows_added_in_batch = sum(1 for r in results if r and r[1])
 
                 def _finish_batch(added_count=rows_added_in_batch):
-                    if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
+                    is_aborted = (req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev))
+                    if is_aborted:
                         self._discover_is_loading_rows = False
                         self._set_discover_spinner_active(False)
+                        for s in row_slots:
+                            if target_box and s.get_parent() == target_box and not getattr(s, "_is_populated", False):
+                                target_box.remove(s)
+                        rendered_count = 0
+                        if target_box:
+                            c = target_box.get_first_child()
+                            while c:
+                                if getattr(c, "_is_catalog_row", False):
+                                    rendered_count += 1
+                                c = c.get_next_sibling()
+                        self._discover_next_row_index = min(start_idx + rendered_count, len(self._discover_catalog_list))
+                        v_key = self._get_discover_view_key()
+                        if hasattr(self, "_discover_views") and v_key in self._discover_views:
+                            self._discover_views[v_key]["next_row_index"] = self._discover_next_row_index
                         return False
 
+                    self._discover_next_row_index = end_idx
+                    v_key = self._get_discover_view_key()
+                    if hasattr(self, "_discover_views") and v_key in self._discover_views:
+                        self._discover_views[v_key]["next_row_index"] = end_idx
+
                     self._discover_is_loading_rows = False
-                    debug_log(f"discover batch finished for req_id={req_id} (added {added_count} rows)")
+                    debug_log(f"discover batch finished for req_id={req_id} (added {added_count} rows, next_idx={end_idx})")
 
                     if added_count == 0:
                         self._discover_empty_batches = getattr(self, "_discover_empty_batches", 0) + 1
                     else:
                         self._discover_empty_batches = 0
 
+                    is_home = (getattr(self, "category_btn_stack", None) and hasattr(self.category_btn_stack, "get_visible_child_name") and self.category_btn_stack.get_visible_child_name() == "home")
                     has_content = bool(target_box and target_box.get_first_child())
                     more_catalogs = self._discover_next_row_index < len(self._discover_catalog_list)
 
@@ -12345,7 +12429,7 @@ class CineWindow(Adw.ApplicationWindow):
                         self._set_discover_spinner_active(False)
                         self._discover_scroll_parked_rows = None
                         self._discover_scroll_parked_upper = None
-                    elif has_content or getattr(self, "_discover_empty_batches", 0) < limit_empty:
+                    elif is_home or has_content or getattr(self, "_discover_empty_batches", 0) < limit_empty:
                         def _schedule_next_batch():
                             self._discover_batch_timer_id = None
                             if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
@@ -12353,7 +12437,8 @@ class CineWindow(Adw.ApplicationWindow):
                                 return False
                             if getattr(self, "_discover_is_loading_rows", False):
                                 return False
-                            self._load_next_discover_batch(req_id, batch_size=4)
+                            next_batch_size = len(self._discover_catalog_list) if is_home else 4
+                            self._load_next_discover_batch(req_id, batch_size=next_batch_size)
                             return False
 
                         self._cancel_discover_batch_timer()
@@ -12361,7 +12446,7 @@ class CineWindow(Adw.ApplicationWindow):
                         page_size = adj.get_page_size() if adj else 0
                         upper = adj.get_upper() if adj else 0
                         is_screen_filled = bool(page_size > 0 and upper > page_size)
-                        batch_delay = 120 if is_screen_filled else 40
+                        batch_delay = 10 if is_home else (120 if is_screen_filled else 40)
                         self._discover_batch_timer_id = GLib.timeout_add(batch_delay, _schedule_next_batch)
                     else:
                         self._set_discover_spinner_active(False)
@@ -12493,9 +12578,12 @@ class CineWindow(Adw.ApplicationWindow):
         sec_header.append(see_all_btn)
 
         sec_scroll = Gtk.ScrolledWindow()
-        sec_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        sec_scroll.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
         sec_scroll.set_hexpand(True)
         sec_scroll.add_css_class("discover-row-scroll")
+        h_sb = sec_scroll.get_hscrollbar()
+        if h_sb:
+            h_sb.set_visible(False)
 
         sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         sec_row.add_css_class("discover-row-box")
@@ -12533,6 +12621,8 @@ class CineWindow(Adw.ApplicationWindow):
         sec_scroll.set_child(sec_row)
         slot.append(sec_header)
         slot.append(sec_scroll)
+        slot._is_populated = True
+        slot._is_catalog_row = True
         debug_log(f"_populate_discover_row_slot appended row: '{row_title}' ({len(display_items)} cards)")
 
     def _on_discover_scroll(self, adj):
