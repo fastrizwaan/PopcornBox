@@ -345,6 +345,19 @@ template $CineWindow: Adw.ApplicationWindow {
                   tooltip-text: _("All Countries");
                 }
 
+                DropDown network_dropdown {
+                  valign: center;
+                  enable-search: true;
+                  tooltip-text: _("Network");
+                }
+
+                Button discover_reset_btn {
+                  label: _("Reset");
+                  valign: center;
+                  tooltip-text: _("Reset all Discover filters");
+                  styles ["flat"]
+                }
+
                 CheckButton unique_check {
                   label: _("Unique");
                   valign: center;

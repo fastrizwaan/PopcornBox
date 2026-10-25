@@ -2632,6 +2632,100 @@ def filter_items_by_genre(items, genre, media_type=None):
 
     return filtered
 
+def hydrate_network_metadata(items, media_type=None, timeout=20.0):
+    """Wait briefly for provider metadata on this visible batch before filtering it."""
+    if not items:
+        return
+    pending = {}
+    by_id = {}
+    by_type = {}
+    for item in items:
+        if not isinstance(item, dict) or item.get("networks"):
+            continue
+        if str(item.get("type") or media_type or "").lower() not in ("series", "anime", "tv", "tvshow"):
+            continue
+        candidates = [item.get("imdb_id"), item.get("id")]
+        item_id = next((str(value).strip() for value in candidates if is_imdb_id(value)), None)
+        if item_id:
+            by_id.setdefault(item_id, []).append(item)
+            item_type = str(item.get("type") or media_type or "movie").lower()
+            by_type.setdefault(item_type, []).append(item)
+    if not by_id:
+        return
+
+    for item_id, matched_items in by_id.items():
+        done = threading.Event()
+
+        def _on_ready(_title=None, _year=None, _poster=None, event=done, targets=matched_items, hydration_id=item_id):
+            cached = database.get_cached_metadata(hydration_id)
+            if cached:
+                for target in targets:
+                    for field in ("networks", "production_companies"):
+                        if not target.get(field) and cached.get(field):
+                            target[field] = list(cached[field])
+            event.set()
+
+        pending[item_id] = (done, _on_ready)
+        register_hydration_listener(item_id, _on_ready)
+
+    try:
+        for item_type, typed_items in by_type.items():
+            hydrate_missing_catalog_items(typed_items, media_type=item_type)
+        for item_id, (event, _callback) in pending.items():
+            cached = database.get_cached_metadata(item_id)
+            if cached and (cached.get("networks") or cached.get("production_companies")):
+                for target in by_id[item_id]:
+                    for field in ("networks", "production_companies"):
+                        if not target.get(field) and cached.get(field):
+                            target[field] = list(cached[field])
+                event.set()
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        for event, _callback in pending.values():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            event.wait(remaining)
+    finally:
+        for item_id, (_event, callback) in pending.items():
+            unregister_hydration_listener(item_id, callback)
+
+
+def filter_items_by_network(items, network, media_type=None, metadata_timeout=20.0):
+    """Filter catalog items by TMDB TV network; production studios are not networks."""
+    if not network or str(network).casefold() in ("all", "all networks"):
+        return items
+    hydrate_network_metadata(items, media_type=media_type, timeout=metadata_timeout)
+    target = str(network).strip().casefold()
+    aliases = {
+        "amazon prime": {"amazon prime", "amazon prime video"},
+        "amazon prime video": {"amazon prime", "amazon prime video"},
+        "prime video": {"amazon prime video", "prime video"},
+        "hbo": {"hbo", "home box office"},
+        "max": {"hbo max", "max"},
+        "apple": {"apple tv+", "apple tv plus"},
+        "apple tv+": {"apple tv+", "apple tv plus"},
+        "netflix": {"netflix", "netflix originals"},
+        "disney+": {"disney", "walt disney"},
+        "paramount+": {"paramount"},
+        "hulu": {"hulu"},
+        "peacock": {"peacock", "nbcuniversal"},
+    }
+    accepted = aliases.get(target, {target})
+    result = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        names = set()
+        for entry in item.get("networks", []) or []:
+            name = entry.get("name") if isinstance(entry, dict) else entry
+            if name:
+                names.add(str(name).strip().casefold())
+        if names & accepted or any(any(alias in name for alias in accepted) for name in names):
+            result.append(item)
+    return result
+
+
 def filter_items_by_country(items, country, media_type=None):
     """
     Strictly filter items by the specified country and media type.
@@ -3381,10 +3475,12 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
     return []
 
 # --- Polite Background Metadata Hydration Queue ---
-_HYDRATION_QUEUE = queue.Queue(maxsize=300)
+_HYDRATION_QUEUE = queue.Queue(maxsize=10000)
+_HYDRATION_BACKFILL_QUEUE = queue.Queue(maxsize=10000)
 _HYDRATION_SEEN = set()
 _HYDRATION_LOCK = threading.Lock()
 _HYDRATION_THREAD = None
+_HYDRATION_BOOTSTRAP_DONE = False
 _HYDRATION_LISTENERS_LOCK = threading.Lock()
 _HYDRATION_LISTENERS = {}
 
@@ -3449,26 +3545,63 @@ def is_imdb_id(value):
         return False
     return bool(_IMDB_ID_RE.match(str(value).strip()))
 
-def queue_metadata_hydration(item_id, media_type="movie", item_dict=None):
+
+def _promote_metadata_backfill(key):
+    """Move a queued catch-up lookup ahead of background work when a view needs it."""
+    with _HYDRATION_BACKFILL_QUEUE.mutex:
+        for index, job in enumerate(_HYDRATION_BACKFILL_QUEUE.queue):
+            if (str(job[0]), str(job[1])) != key:
+                continue
+            del _HYDRATION_BACKFILL_QUEUE.queue[index]
+            _HYDRATION_BACKFILL_QUEUE.unfinished_tasks -= 1
+            if _HYDRATION_BACKFILL_QUEUE.unfinished_tasks == 0:
+                _HYDRATION_BACKFILL_QUEUE.all_tasks_done.notify_all()
+            promoted_job = (*job[:4], _HYDRATION_QUEUE)
+            try:
+                _HYDRATION_QUEUE.put_nowait(promoted_job)
+            except queue.Full:
+                _HYDRATION_BACKFILL_QUEUE.queue.append(job)
+                _HYDRATION_BACKFILL_QUEUE.unfinished_tasks += 1
+                _HYDRATION_BACKFILL_QUEUE.not_empty.notify()
+                return False
+            return True
+    return False
+
+def queue_metadata_hydration(item_id, media_type="movie", item_dict=None, force_refresh=False):
     """Queue an item for polite, rate-limited background metadata hydration from Cinemeta."""
     if not is_imdb_id(item_id):
         return False
-    global _HYDRATION_THREAD
+    global _HYDRATION_THREAD, _HYDRATION_BOOTSTRAP_DONE
+    with _HYDRATION_LOCK:
+        bootstrap = not _HYDRATION_BOOTSTRAP_DONE
+        _HYDRATION_BOOTSTRAP_DONE = True
+    if bootstrap:
+        try:
+            for stale_id, stale_type in database.get_metadata_needing_hydration(limit=10000, min_age_days=0):
+                live_item = item_dict if str(stale_id) == str(item_id) else None
+                queue_metadata_hydration(stale_id, stale_type, item_dict=live_item, force_refresh=True)
+        except Exception:
+            logging.debug("Could not enqueue startup metadata catch-up", exc_info=True)
     iid = str(item_id).strip()
     m_type = str(media_type or "movie").strip().lower()
     key = (iid, m_type)
+    backfill = bool(force_refresh and item_dict is None)
+    target_queue = _HYDRATION_BACKFILL_QUEUE if backfill else _HYDRATION_QUEUE
     with _HYDRATION_LOCK:
         if key in _HYDRATION_SEEN:
+            if not backfill:
+                _promote_metadata_backfill(key)
             return False
-        if len(_HYDRATION_SEEN) >= 2000:
-            _HYDRATION_SEEN.clear()
         _HYDRATION_SEEN.add(key)
-        if _HYDRATION_QUEUE.full():
+        if target_queue.full():
             try:
-                _HYDRATION_QUEUE.get_nowait()
+                dropped = target_queue.get_nowait()
+                dropped_id, dropped_type = dropped[0], dropped[1]
+                _HYDRATION_SEEN.discard((str(dropped_id), str(dropped_type)))
+                target_queue.task_done()
             except Exception:
                 pass
-        _HYDRATION_QUEUE.put((iid, m_type, item_dict))
+        target_queue.put((iid, m_type, item_dict, bool(force_refresh), target_queue))
         if _HYDRATION_THREAD is None or not _HYDRATION_THREAD.is_alive():
             _HYDRATION_THREAD = threading.Thread(target=_run_metadata_hydration_worker, daemon=True, name="MetadataHydrator")
             _HYDRATION_THREAD.start()
@@ -3478,14 +3611,37 @@ def _run_metadata_hydration_worker():
     """Background daemon worker that hydrates metadata politely at <=2.5 req/sec."""
     while True:
         try:
-            item_id, m_type, item_dict = _HYDRATION_QUEUE.get(timeout=30)
+            try:
+                hydration_job = _HYDRATION_QUEUE.get_nowait()
+                job_queue = _HYDRATION_QUEUE
+            except queue.Empty:
+                job_queue = _HYDRATION_BACKFILL_QUEUE
+                hydration_job = job_queue.get(timeout=30)
+            if len(hydration_job) == 3:
+                item_id, m_type, item_dict = hydration_job
+                force_refresh = False
+            else:
+                item_id, m_type, item_dict, force_refresh = hydration_job[:4]
+                job_queue = hydration_job[4] if len(hydration_job) > 4 else job_queue
         except (queue.Empty, Exception):
             break
 
         try:
             # 1. Fast check if already cached in SQLite (another thread or previous view populated it)
             cached = database.get_cached_metadata(item_id, m_type)
-            if cached and (cached.get("genres") or cached.get("description") or cached.get("year")):
+            networks_checked = float(cached.get("networks_checked_at") or 0) if cached else 0
+            needs_network_retry = (
+                bool(cached)
+                and m_type in ("series", "anime", "tv", "tvshow")
+                and not cached.get("networks")
+                and time.time() - networks_checked > 7 * 24 * 3600
+            )
+            cached_cover = (cached.get("medium_cover_image") or cached.get("poster")) if cached else None
+            cached_title = (cached.get("title") or cached.get("name")) if cached else None
+            cached_complete = bool(cached and cached_title and cached.get("genres") and cached.get("year") and (cached.get("description") or cached.get("overview")) and cached_cover and cached.get("language"))
+            metadata_checked = float(cached.get("metadata_checked_at") or 0) if cached else 0
+            needs_metadata_retry = bool(cached) and not cached_complete and time.time() - metadata_checked > 7 * 24 * 3600
+            if cached and not force_refresh and (cached_complete or not needs_metadata_retry) and not needs_network_retry:
                 if item_dict is not None and isinstance(item_dict, dict):
                     if not item_dict.get("genres") and cached.get("genres"):
                         item_dict["genres"] = list(cached["genres"])
@@ -3502,6 +3658,9 @@ def _run_metadata_hydration_worker():
                         item_dict["background"] = cached["background"]
                     if not item_dict.get("cast") and cached.get("cast"):
                         item_dict["cast"] = list(cached["cast"])
+                    for field in ("networks", "production_companies"):
+                        if not item_dict.get(field) and cached.get(field):
+                            item_dict[field] = list(cached[field])
                     if not item_dict.get("videos") and cached.get("videos"):
                         item_dict["videos"] = cached["videos"]
                     # Covers belong here too: this branch is what lets a card that
@@ -3524,13 +3683,15 @@ def _run_metadata_hydration_worker():
 
             # 4. Fetch metadata from Cinemeta (keep forever)
             c_url = f"https://v3-cinemeta.strem.io/meta/{m_type}/{item_id}.json"
-            meta_res = _get_cached_request(c_url, max_age_hours=METADATA_CACHE_HOURS, timeout=3.0)
+            refresh_age = 0 if force_refresh else 168
+            meta_res = _get_cached_request(c_url, max_age_hours=refresh_age, timeout=3.0)
             if not meta_res or not isinstance(meta_res.get("meta"), dict):
                 alt_url = f"https://cinemeta-live.strem.io/meta/{m_type}/{item_id}.json"
-                meta_res = _get_cached_request(alt_url, max_age_hours=METADATA_CACHE_HOURS, timeout=3.0)
+                meta_res = _get_cached_request(alt_url, max_age_hours=refresh_age, timeout=3.0)
 
             if meta_res and isinstance(meta_res.get("meta"), dict):
                 meta_dict = meta_res["meta"]
+                meta_dict["metadata_checked_at"] = time.time()
                 title_str = meta_dict.get("name") or meta_dict.get("title") or item_id
                 clean_year_val = database.extract_clean_year(meta_dict)
                 if clean_year_val and not meta_dict.get("year"):
@@ -3538,10 +3699,16 @@ def _run_metadata_hydration_worker():
                 genres_list = meta_dict.get("genres") or []
 
                 # Fallback to TMDB if Cinemeta has no genres or no language or no country
-                if not genres_list or not meta_dict.get("language") or not meta_dict.get("country"):
+                if (
+                    not genres_list
+                    or not meta_dict.get("language")
+                    or not meta_dict.get("country")
+                    or not (meta_dict.get("networks") or meta_dict.get("production_companies"))
+                    or needs_network_retry
+                ):
                     try:
                         from . import tmdb_helper
-                        tmdb_data = tmdb_helper.fetch_title_language_and_genres(item_id, media_type=m_type, title=title_str)
+                        tmdb_data = tmdb_helper.fetch_title_language_and_genres(item_id, media_type=m_type, title=title_str, force_refresh=force_refresh)
                         if tmdb_data:
                             if not genres_list and tmdb_data.get("genres"):
                                 meta_dict["genres"] = tmdb_data["genres"]
@@ -3555,6 +3722,12 @@ def _run_metadata_hydration_worker():
                                     meta_dict["country"] = tmdb_data["country"]
                             if tmdb_data.get("countries"):
                                 meta_dict["countries"] = tmdb_data["countries"]
+                            if tmdb_data.get("production_companies"):
+                                meta_dict["production_companies"] = tmdb_data["production_companies"]
+                            if tmdb_data.get("networks"):
+                                meta_dict["networks"] = tmdb_data["networks"]
+                            if tmdb_data is not None:
+                                meta_dict["networks_checked_at"] = time.time()
                             if not clean_year_val and tmdb_data.get("release_date"):
                                 clean_year_val = database.extract_clean_year(tmdb_data["release_date"])
                                 if clean_year_val:
@@ -3605,6 +3778,9 @@ def _run_metadata_hydration_worker():
                         item_dict["background"] = meta_dict["background"]
                     if not item_dict.get("cast") and meta_dict.get("cast"):
                         item_dict["cast"] = list(meta_dict["cast"])
+                    for field in ("networks", "production_companies"):
+                        if not item_dict.get(field) and meta_dict.get(field):
+                            item_dict[field] = list(meta_dict[field])
                     if not item_dict.get("videos") and meta_dict.get("videos"):
                         item_dict["videos"] = meta_dict["videos"]
                     if clean_tr and not item_dict.get("trailer"):
@@ -3616,8 +3792,14 @@ def _run_metadata_hydration_worker():
         except Exception as e:
             logging.debug(f"Metadata hydration error for {item_id}: {e}")
         finally:
+            # Do not permanently suppress an item after a transient failure or
+            # a provider response that was still incomplete. A later catalog
+            # visit can retry it; successful results short-circuit from SQLite.
+            with _HYDRATION_LOCK:
+                _HYDRATION_SEEN.discard((str(item_id), str(m_type)))
+            _notify_hydration_listeners(item_id, item_dict if isinstance(item_dict, dict) else {})
             try:
-                _HYDRATION_QUEUE.task_done()
+                job_queue.task_done()
             except Exception:
                 pass
 
@@ -3661,6 +3843,7 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
         is_missing_cover = not m.get("medium_cover_image") and not m.get("poster")
         is_missing_desc = not m.get("description") and not m.get("overview")
         is_missing_language = not m.get("language")
+        is_missing_networks = m_type in ("series", "anime", "tv", "tvshow") and not m.get("networks")
 
         candidates = [str(m_id)]
         if m.get("imdb_id") and str(m["imdb_id"]) not in candidates:
@@ -3673,7 +3856,7 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
         if not has_known_key:
             continue
 
-        if is_missing_title or is_missing_genres or is_missing_year or is_missing_cover or is_missing_desc or is_missing_language:
+        if is_missing_title or is_missing_genres or is_missing_year or is_missing_cover or is_missing_desc or is_missing_language or is_missing_networks:
             c_meta = None
             for cid in candidates:
                 c_meta = database.get_cached_metadata(cid, m_type)
@@ -3740,6 +3923,12 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
                 if not m.get("videos") and c_meta.get("videos"):
                     m["videos"] = c_meta["videos"]
                     updated = True
+                for field in ("networks", "production_companies"):
+                    if not m.get(field) and c_meta.get(field):
+                        m[field] = list(c_meta[field])
+                        if field == "networks":
+                            is_missing_networks = False
+                        updated = True
                 if c_meta.get("adult") or c_meta.get("isAdult"):
                     m["adult"] = True
                 if item_hydrated:
@@ -3753,7 +3942,7 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
 
         if is_missing_title:
             missing_titles.append(m)
-        elif (is_missing_genres or is_missing_year or is_missing_desc or is_missing_cover) and tt_id:
+        if (is_missing_title or is_missing_genres or is_missing_year or is_missing_desc or is_missing_cover or is_missing_language or is_missing_networks) and tt_id:
             missing_metadata.append((m, tt_id))
 
     if local_hydrated_count > 0:

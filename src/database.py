@@ -2049,6 +2049,80 @@ def get_cached_metadata(item_id, media_type=None):
         print(f"Error reading metadata cache: {e}")
     return None
 
+
+def get_metadata_needing_hydration(limit=150, min_age_days=7):
+    """Find cached IMDb records with missing core/provider fields due for retry."""
+    now = time.time()
+    cutoff = now - max(0, int(min_age_days)) * 24 * 3600
+    pending = []
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            rows = conn.execute(
+                "SELECT id, media_type, data FROM metadata_cache "
+                "WHERE id LIKE 'tt%' AND data IS NOT NULL AND data != '' "
+                "ORDER BY updated_at ASC"
+            ).fetchall()
+            catalog_rows = conn.execute(
+                "SELECT data FROM catalog_cache WHERE data IS NOT NULL AND data != '' "
+                "ORDER BY updated_at ASC"
+            ).fetchall()
+        for item_id, media_type, raw in rows:
+            try:
+                meta = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(meta, dict):
+                continue
+            basics_missing = not (
+                (meta.get("title") or meta.get("name"))
+                and meta.get("genres")
+                and meta.get("year")
+                and (meta.get("description") or meta.get("overview"))
+                and (meta.get("medium_cover_image") or meta.get("poster"))
+                and meta.get("language")
+            )
+            needs_tv_network = str(media_type or "movie").lower() in ("series", "anime", "tv", "tvshow")
+            providers_missing = needs_tv_network and not meta.get("networks")
+            stale_basics = basics_missing and float(meta.get("metadata_checked_at") or 0) < cutoff
+            stale_providers = providers_missing and float(meta.get("networks_checked_at") or 0) < cutoff
+            if stale_basics or stale_providers:
+                pending.append((str(item_id), str(media_type or "movie")))
+                if len(pending) >= max(1, int(limit)):
+                    break
+        pending_ids = {item_id for item_id, _ in pending}
+        for (raw,) in catalog_rows:
+            try:
+                items = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("imdb_id") or item.get("id") or "").strip()
+                if not item_id.startswith("tt") or item_id in pending_ids:
+                    continue
+                basics_missing = not (
+                    (item.get("title") or item.get("name"))
+                    and item.get("genres")
+                    and item.get("year")
+                    and (item.get("description") or item.get("overview"))
+                    and (item.get("medium_cover_image") or item.get("poster"))
+                    and item.get("language")
+                )
+                needs_tv_network = str(item.get("type") or "movie").lower() in ("series", "anime", "tv", "tvshow")
+                providers_missing = needs_tv_network and not item.get("networks")
+                if basics_missing or providers_missing:
+                    pending.append((item_id, str(item.get("type") or "movie")))
+                    pending_ids.add(item_id)
+                    if len(pending) >= max(1, int(limit)):
+                        return pending
+    except Exception as e:
+        print(f"Error locating incomplete metadata: {e}")
+    return pending
+
 def hydrate_items_from_metadata(items, media_type=None):
     """
     Fast batch-hydrate catalog items in-place using SQLite metadata_cache and item_genres.
@@ -2161,7 +2235,10 @@ def hydrate_items_from_metadata(items, media_type=None):
                             it_updated = True
                         if not it.get("cast") and meta.get("cast"):
                             it["cast"] = list(meta["cast"])
-                            it_updated = True
+                        for field in ("networks", "production_companies"):
+                            if not it.get(field) and meta.get(field):
+                                it[field] = list(meta[field])
+                                it_updated = True
                         if not it.get("videos") and meta.get("videos"):
                             it["videos"] = meta["videos"]
                             it_updated = True
@@ -3338,6 +3415,31 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
     if items:
         hydrate_items_from_metadata(items, media_type=media_type)
     return items
+
+def get_stored_networks(media_type=None):
+    """Return TV network names present in permanent metadata, excluding studios."""
+    names = set()
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            query = "SELECT data FROM metadata_cache WHERE data IS NOT NULL AND data != ''"
+            params = ()
+            if media_type in ("movie", "series", "anime", "tv"):
+                query += " AND media_type IN (?, ?)"
+                params = ("movie", media_type) if media_type == "movie" else ("series", media_type)
+            for (raw,) in conn.execute(query, params).fetchall():
+                try:
+                    meta = json.loads(raw)
+                except Exception:
+                    continue
+                for entity in meta.get("networks", []) or []:
+                    name = entity.get("name") if isinstance(entity, dict) else entity
+                    if name and str(name).strip():
+                        names.add(str(name).strip())
+    except Exception as e:
+        print(f"Error reading stored networks: {e}")
+    return sorted(names, key=str.casefold)
+
 
 def get_stored_years(media_type=None):
     """Return distinct 4-digit release years stored in item_genres (not exceeding current year)."""

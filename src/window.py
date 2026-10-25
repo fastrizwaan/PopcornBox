@@ -100,6 +100,7 @@ gi.require_version("GObject", "2.0")
 from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject, Pango
 
 DISCOVER_ROW_CARD_LIMIT = 30
+MAX_ADDON_SEARCH_PAGES = 500
 
 HOME_ALLOWED_MEDIA_TYPES = {
     "movie", "movies", "film", "films",
@@ -3875,6 +3876,8 @@ class CineWindow(Adw.ApplicationWindow):
     year_dropdown: Gtk.DropDown = Gtk.Template.Child()
     language_dropdown: Gtk.DropDown = Gtk.Template.Child()
     country_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    network_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    discover_reset_btn: Gtk.Button = Gtk.Template.Child()
     unique_check: Gtk.CheckButton = Gtk.Template.Child()
     discover_spinner: Gtk.Spinner = Gtk.Template.Child()
     filter_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
@@ -6844,11 +6847,36 @@ class CineWindow(Adw.ApplicationWindow):
             self.current_year = None
             self.current_language = None
             self.current_country = None
+            self.current_network = None
+            self.current_sort = "Popular"
+            self.current_discover_search_query = ""
+            self.current_search_query = ""
+            self._unique_section_scope = None
             self._unique_was_content_page = False
             self.current_catalog = None
             self._current_discover_type = "all"
             self._current_discover_addon = None
             self.library_stack.set_visible_child_name("discover")
+            # Home is the unfiltered landing feed. Reset every Discover toolbar
+            # model while signals are suppressed so stale selections (especially
+            # Network) cannot leak into the Home view or its cached view key.
+            self._syncing_discover_toolbar = True
+            try:
+                all_type_index = next(
+                    (i for i, item in enumerate(getattr(self, "_discover_type_items", [])) if item[1] == "all"),
+                    0,
+                )
+                if getattr(self, "type_dropdown", None):
+                    self.type_dropdown.set_selected(all_type_index)
+                self._populate_discover_catalog_dropdown("all")
+                self._populate_discover_section_dropdown(None, "all")
+                self._populate_discover_genre_dropdown(None, "all", None)
+                self._populate_discover_year_dropdown(None, "all", None)
+                self._populate_discover_language_dropdown(None, "all", None)
+                self._populate_discover_country_dropdown(None, "all", None)
+                self._populate_discover_network_dropdown("all")
+            finally:
+                self._syncing_discover_toolbar = False
             self._refresh_discover_page(filter_media_type="all")
         action.connect("activate", on_switch_home)
         self.add_action(action)
@@ -8124,6 +8152,7 @@ class CineWindow(Adw.ApplicationWindow):
                 getattr(self, "year_dropdown", None),
                 getattr(self, "language_dropdown", None),
                 getattr(self, "country_dropdown", None),
+                getattr(self, "network_dropdown", None),
             ]:
                 if dd is not None and hasattr(dd, "set_expression"):
                     dd.set_expression(expr)
@@ -8138,6 +8167,7 @@ class CineWindow(Adw.ApplicationWindow):
             self._populate_discover_year_dropdown(None, "all", None)
             self._populate_discover_language_dropdown(None, "all", None)
             self._populate_discover_country_dropdown(None, "all", None)
+            self._populate_discover_network_dropdown("all")
 
             if hasattr(self, "type_dropdown") and self.type_dropdown:
                 self.type_dropdown.connect("notify::selected", self._on_discover_type_changed)
@@ -8153,6 +8183,10 @@ class CineWindow(Adw.ApplicationWindow):
                 self.language_dropdown.connect("notify::selected", self._on_discover_language_changed)
             if hasattr(self, "country_dropdown") and self.country_dropdown:
                 self.country_dropdown.connect("notify::selected", self._on_discover_country_changed)
+            if hasattr(self, "network_dropdown") and self.network_dropdown:
+                self.network_dropdown.connect("notify::selected", self._on_discover_network_changed)
+            if getattr(self, "discover_reset_btn", None):
+                self.discover_reset_btn.connect("clicked", self._reset_discover_filters)
             if hasattr(self, "unique_check") and self.unique_check:
                 self.unique_check.connect("toggled", self._on_discover_unique_toggled)
             if hasattr(self, "discover_search_entry") and self.discover_search_entry:
@@ -8568,7 +8602,7 @@ class CineWindow(Adw.ApplicationWindow):
         return True
 
     def _set_discover_filter_dropdowns_visible(self, visible):
-        for attr in ("genre_dropdown", "year_dropdown", "language_dropdown", "country_dropdown"):
+        for attr in ("genre_dropdown", "year_dropdown", "language_dropdown", "country_dropdown", "network_dropdown"):
             dropdown = getattr(self, attr, None)
             if dropdown is not None:
                 if not visible:
@@ -8753,6 +8787,39 @@ class CineWindow(Adw.ApplicationWindow):
             self.country_dropdown.set_sensitive(bool(countries))
             self.country_dropdown.set_visible(bool(countries))
 
+    def _populate_discover_network_dropdown(self, chosen_type):
+        common = ["Netflix", "Amazon Prime", "Amazon Prime Video", "HBO", "Apple TV+", "Disney+", "Hulu", "Paramount+", "Peacock", "BBC", "Showtime", "Starz"]
+        options = ["All Networks"] + sorted(common, key=str.casefold)
+        self._discover_network_items = options
+        if getattr(self, "network_dropdown", None):
+            self.network_dropdown.set_model(Gtk.StringList.new(options))
+            self.network_dropdown.set_selected(0)
+            self.network_dropdown.set_sensitive(len(options) > 1)
+            self.network_dropdown.set_visible(chosen_type not in ("channel", "live", "music", "radio", "podcast"))
+
+    def _reset_discover_filters(self, *_args):
+        """Reset all Discover dropdowns and the Unique filter to their defaults."""
+        self._syncing_discover_toolbar = True
+        try:
+            if getattr(self, "type_dropdown", None):
+                self.type_dropdown.set_selected(0)
+            self._populate_discover_catalog_dropdown("all")
+            self._populate_discover_section_dropdown(None, "all")
+            self._populate_discover_genre_dropdown(None, "all", None)
+            self._populate_discover_year_dropdown(None, "all", None)
+            self._populate_discover_language_dropdown(None, "all", None)
+            self._populate_discover_country_dropdown(None, "all", None)
+            self._populate_discover_network_dropdown("all")
+            if getattr(self, "unique_check", None):
+                self.unique_check.set_active(False)
+        finally:
+            self._syncing_discover_toolbar = False
+        self.current_genre = self.current_year = self.current_language = None
+        self.current_country = self.current_network = None
+        self._current_discover_type = "all"
+        self._current_discover_addon = None
+        self._on_discover_filter_changed()
+
     def _restore_dropdown_selection(self, dropdown, items, target_str):
         if not dropdown or not target_str or not items:
             return
@@ -8768,6 +8835,13 @@ class CineWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_discover_type_items") or sel < 0 or sel >= len(self._discover_type_items):
             return
         chosen_type = self._discover_type_items[sel][1]
+        prior = {}
+        for key, dd_name in (("genre", "genre_dropdown"), ("year", "year_dropdown"),
+                             ("language", "language_dropdown"), ("country", "country_dropdown"),
+                             ("network", "network_dropdown")):
+            dd = getattr(self, dd_name, None)
+            selected = dd.get_selected_item() if dd else None
+            prior[key] = selected.get_string() if selected else None
         self._syncing_discover_toolbar = True
         try:
             self._populate_discover_catalog_dropdown(chosen_type)
@@ -8776,6 +8850,13 @@ class CineWindow(Adw.ApplicationWindow):
             self._populate_discover_year_dropdown(None, chosen_type, None)
             self._populate_discover_language_dropdown(None, chosen_type, None)
             self._populate_discover_country_dropdown(None, chosen_type, None)
+            self._populate_discover_network_dropdown(chosen_type)
+            for key, dd_name, items_name in (("genre", "genre_dropdown", "_discover_genre_items"),
+                                             ("year", "year_dropdown", "_discover_year_items"),
+                                             ("language", "language_dropdown", "_discover_language_items"),
+                                             ("country", "country_dropdown", "_discover_country_items"),
+                                             ("network", "network_dropdown", "_discover_network_items")):
+                self._restore_dropdown_selection(getattr(self, dd_name, None), getattr(self, items_name, []), prior.get(key))
         finally:
             self._syncing_discover_toolbar = False
         self._on_discover_filter_changed()
@@ -8869,6 +8950,18 @@ class CineWindow(Adw.ApplicationWindow):
             return
         self._on_discover_filter_changed()
 
+    def _on_discover_network_changed(self, dropdown, pspec):
+        if getattr(self, "_syncing_discover_toolbar", False):
+            return
+        self._on_discover_filter_changed()
+
+    def _open_network_see_all(self):
+        """Open the paginated TMDb network results in the full Discover grid."""
+        if not self._is_unique_mode_active():
+            self.unique_check.set_active(True)
+        else:
+            self._refresh_unique_combined_view()
+
     def _on_discover_unique_toggled(self, button):
         if getattr(self, "_syncing_unique_check", False) is True or getattr(self, "_syncing_discover_toolbar", False) is True:
             return
@@ -8916,6 +9009,10 @@ class CineWindow(Adw.ApplicationWindow):
         c_country_str = c_country_item.get_string() if c_country_item else None
         country = c_country_str if c_country_str and c_country_str not in ("All Countries", _("All Countries"), "All") else None
 
+        network_item = self.network_dropdown.get_selected_item() if getattr(self, "network_dropdown", None) else None
+        network_str = network_item.get_string() if network_item else None
+        network = network_str if network_str and network_str not in ("All Networks", _("All Networks"), "All") else None
+
         unique_only = self._is_unique_mode_active()
         query = self._discover_result_search_query()
 
@@ -8927,6 +9024,7 @@ class CineWindow(Adw.ApplicationWindow):
             "year": year,
             "language": language,
             "country": country,
+            "network": network,
             "unique_only": unique_only,
             "addon_url": addon_url,
             "query": query,
@@ -8956,6 +9054,7 @@ class CineWindow(Adw.ApplicationWindow):
         year = filters.get("year")
         language = filters.get("language")
         country = filters.get("country")
+        network = filters.get("network")
         raw_query = filters.get("query") if "query" in filters else self._discover_result_search_query()
         query = raw_query.strip() if isinstance(raw_query, str) else ""
         self.current_discover_search_query = query
@@ -8998,6 +9097,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.current_year = year
         self.current_language = language
         self.current_country = country
+        self.current_network = network
         self.current_discover_search_query = query
         self.current_search_query = query
 
@@ -9636,6 +9736,19 @@ class CineWindow(Adw.ApplicationWindow):
         if genre_cache_idx not in (None, 0):
             catalogs.insert(0, catalogs.pop(genre_cache_idx))
 
+        selected_network = getattr(self, "current_network", None)
+        if (
+            selected_network
+            and not active_query
+            and not section_scope
+        ):
+            network_catalogs = [c for c in catalogs if c.get("_source") == "tmdb_network"]
+            if network_catalogs:
+                # The TMDb catalog is already filtered by the selected network.
+                # Use it as the Unique source instead of scanning every addon and
+                # waiting on metadata hydration for each provider page.
+                catalogs = network_catalogs
+
         self.unique_catalogs = catalogs
         self.unique_catalogs_by_key = {
             (c.get("manifest_url"), c.get("catalog_id"), c.get("media_type")): c
@@ -9770,6 +9883,9 @@ class CineWindow(Adw.ApplicationWindow):
         cur_country = getattr(self, "current_country", None)
         if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "All"):
             cur_country = None
+        cur_network = getattr(self, "current_network", None)
+        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
+            cur_network = None
         unique_lock = self._unique_lock
 
         def worker():
@@ -9935,6 +10051,29 @@ class CineWindow(Adw.ApplicationWindow):
                             debug_log(f"unique TMDb title search '{query}' -> {raw_count} items (page {page})",
                                       f"TMDb reports {cat_info.get('tmdb_total_pages') or '?'} pages")
                             return (key, page, items, raw_count, False)
+
+                        if cat_info.get("_source") == "tmdb_network":
+                            from . import tmdb_helper
+                            network_name = cat_info.get("network") or cur_network
+                            network_key = str(network_name or "").casefold()
+                            network_cache_key = (f"tmdb-network:{network_key}:{m_type}:{cur_genre or ''}:"
+                                                 f"{cur_year or ''}:{cur_lang or ''}:{cur_country or ''}:p{page}:unique50")
+                            items = database.get_cached_catalog(
+                                network_cache_key, max_age_hours=database.CATALOG_CACHE_HOURS
+                            )
+                            if not items:
+                                items, total_pages = tmdb_helper.fetch_network_catalog_page(
+                                    network_name, media_type=m_type, page=page, limit=50,
+                                    genre=cur_genre, year=cur_year, language=cur_lang,
+                                    country=cur_country,
+                                )
+                                cat_info["tmdb_total_pages"] = max(
+                                    int(cat_info.get("tmdb_total_pages") or 0), int(total_pages or 0)
+                                )
+                                if items and not _is_event_set(abort_ev):
+                                    database.save_cached_catalog(network_cache_key, items)
+                            raw_count = len(items or [])
+                            return (key, page, items or [], raw_count, True)
 
                         if cat_info.get("_source") == "genre_cache":
                             req_country = cat_info.get("country") or cur_country
@@ -10211,6 +10350,21 @@ class CineWindow(Adw.ApplicationWindow):
                             if not res:
                                 continue
                             cat_key, page, items, raw_count, from_cache = res
+                            # Network metadata may still be arriving. Keep its
+                            # bounded wait outside the Unique state lock so the
+                            # GTK callbacks and other catalog results stay responsive.
+                            cat_info = self.unique_catalogs_by_key.get(cat_key, {})
+                            if cur_network and cat_info.get("_source") != "tmdb_network":
+                                network_media_type = (
+                                    cat_info.get("media_type")
+                                    or getattr(self, "_current_unique_media_type", None)
+                                    or "all"
+                                )
+                                items = api.filter_items_by_network(
+                                    items or [], cur_network,
+                                    media_type=network_media_type,
+                                    metadata_timeout=0.5,
+                                )
                             # Process results under lock to prevent state corruption
                             with unique_lock:
                                 if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
@@ -10219,7 +10373,7 @@ class CineWindow(Adw.ApplicationWindow):
                                 source = cat_info.get("_source")
                                 is_catalog_search = source == "catalog_search"
                                 if is_catalog_search and (
-                                    raw_count == -1 or raw_count == 0 or page >= 5
+                                    raw_count == -1 or raw_count == 0 or page >= MAX_ADDON_SEARCH_PAGES
                                     or not cat_info.get("supports_pagination", False)
                                 ):
                                     pending_catalog_searches.discard(cat_key)
@@ -11197,10 +11351,13 @@ class CineWindow(Adw.ApplicationWindow):
         cur_country = getattr(self, "current_country", None)
         if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "All"):
             cur_country = None
+        cur_network = getattr(self, "current_network", None)
+        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
+            cur_network = None
         cache_key = (
-            ("home", filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "")
+            ("home", filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "")
             if is_home else
-            (filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "")
+            (filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "")
         )
         if not force_refresh and hasattr(self, "_discover_catalog_list_cache") and cache_key in self._discover_catalog_list_cache:
             cached_res = list(self._discover_catalog_list_cache[cache_key])
@@ -11462,6 +11619,33 @@ class CineWindow(Adw.ApplicationWindow):
                 "title": tmdb_label,
             })
 
+        # A selected Network gets its own TMDb catalog row. TV results are
+        # queried by network and movie results by the matching production
+        # company, mirroring the catalogs shown by the detail dialog.
+        if cur_network and (filter_media_type or "all") in (
+            "all", "movie_series", "movie", "series"
+        ):
+            network_label = f"{cur_network} · TMDb"
+            rows.insert(0, {
+                "_source": "tmdb_network",
+                "addon_name": "TMDb",
+                "media_type": filter_media_type or "all",
+                "catalog_id": f"tmdb-network:{cur_network.casefold()}",
+                "catalog_name": network_label,
+                "manifest_url": None,
+                "network": cur_network,
+                "tmdb_page": 1,
+                "tmdb_total_pages": 0,
+                "supports_pagination": True,
+                "title": network_label,
+            })
+
+        if cur_network:
+            # A network selection is answered by the TMDb network catalog above.
+            # Most addon pages lack network metadata, so retaining them here only
+            # creates empty rows and repeats expensive metadata work.
+            rows = [row for row in rows if row.get("_source") == "tmdb_network"]
+
         # Deduplicate row titles to avoid GTK "duplicate child name" warnings
         seen_titles = {}
         for row in rows:
@@ -11501,7 +11685,7 @@ class CineWindow(Adw.ApplicationWindow):
             # "all" media type would sort them behind every provider row.
             if row.get("_source") == "genre_cache":
                 return -2
-            if row.get("_source") == "tmdb_country":
+            if row.get("_source") in ("tmdb_country", "tmdb_network"):
                 return -1
             row_type = str(row.get("media_type") or row.get("raw_type") or "").strip().lower()
             if row_type in ("movie", "movies", "film", "films"):
@@ -11840,6 +12024,9 @@ class CineWindow(Adw.ApplicationWindow):
         cur_country = getattr(self, "current_country", None)
         if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "All"):
             cur_country = None
+        cur_network = getattr(self, "current_network", None)
+        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
+            cur_network = None
         cur_genre = getattr(self, "current_genre", None)
         if not isinstance(cur_genre, str) or cur_genre in ("All Genres", _("All Genres"), "All"):
             cur_genre = None
@@ -11849,7 +12036,7 @@ class CineWindow(Adw.ApplicationWindow):
         cur_sort = getattr(self, "current_sort", "Popular")
         if not isinstance(cur_sort, str):
             cur_sort = "Popular"
-        return f"{cat_btn}|{getattr(self, '_current_discover_type', 'all')}|{getattr(self, '_current_discover_addon', None) or 'all'}|{cur_genre or 'all'}|{cur_year or 'all'}|{cur_lang or 'all'}|{cur_country or 'all'}|{cur_sort}"
+        return f"{cat_btn}|{getattr(self, '_current_discover_type', 'all')}|{getattr(self, '_current_discover_addon', None) or 'all'}|{cur_genre or 'all'}|{cur_year or 'all'}|{cur_lang or 'all'}|{cur_country or 'all'}|{cur_network or 'all'}|{cur_sort}"
 
     def _refresh_discover_page(self, filter_media_type=None, filter_addon_url=None, custom_title=None, force_refresh=False):
         debug_log(f"_refresh_discover_page START (media_type={filter_media_type}, addon={filter_addon_url}, force={force_refresh})")
@@ -11898,6 +12085,9 @@ class CineWindow(Adw.ApplicationWindow):
         cur_country = getattr(self, "current_country", None)
         if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "All"):
             cur_country = None
+        cur_network = getattr(self, "current_network", None)
+        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
+            cur_network = None
         cur_genre = getattr(self, "current_genre", None)
         if not isinstance(cur_genre, str) or cur_genre in ("All Genres", _("All Genres"), "All"):
             cur_genre = None
@@ -11931,7 +12121,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.discover_box = target_box
                 self._on_discover_results_search_changed()
                 
-                if is_home and self._current_discover_type in ("all", "movie_series") and not self._current_discover_addon and not cur_genre and not cur_lang and not cur_country:
+                if is_home and self._current_discover_type in ("all", "movie_series") and not self._current_discover_addon and not cur_genre and not cur_lang and not cur_country and not cur_network:
                     self._update_continue_watching_section()
                 elif not is_home and isinstance(target_box, Gtk.Box):
                     # Ensure no continue watching widgets exist in non-home discover boxes
@@ -11975,7 +12165,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.discover_box = new_box
         
         # Continue Watching Section ONLY on Home feed when no filters are active
-        if is_home and (not filter_media_type or filter_media_type in ("all", "movie_series")) and not filter_addon_url and not cur_genre and not cur_lang and not cur_country:
+        if is_home and (not filter_media_type or filter_media_type in ("all", "movie_series")) and not filter_addon_url and not cur_genre and not cur_lang and not cur_country and not cur_network:
             self._update_continue_watching_section()
 
         # Setup Sequential Row Loading List
@@ -12114,6 +12304,9 @@ class CineWindow(Adw.ApplicationWindow):
         start_idx = self._discover_next_row_index
         end_idx = min(start_idx + batch_size, len(self._discover_catalog_list))
         batch_items = self._discover_catalog_list[start_idx:end_idx]
+        cur_network = getattr(self, "current_network", None)
+        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
+            cur_network = None
         
         debug_log(f"_load_next_discover_batch START (req_id={req_id}, rows {start_idx}..{end_idx} of {len(self._discover_catalog_list)})", f"Titles: {[b.get('title') for b in batch_items]}")
         
@@ -12185,6 +12378,38 @@ class CineWindow(Adw.ApplicationWindow):
                                 items = [it for it in items if not api.is_adult_item(it)]
                             debug_log(f"discover genre cache: '{row_info.get('genre') or row_info.get('language') or req_country}' -> {len(items)} items")
                             return (row_info, items)
+
+                        if row_info.get("_source") == "tmdb_network":
+                            from . import tmdb_helper
+                            network_name = row_info.get("network") or cur_network
+                            req_page = max(1, int(row_info.get("tmdb_page") or 1))
+                            network_key = str(network_name or "").casefold()
+                            tmdb_key = (f"tmdb-network:{network_key}:{m_type}:{getattr(self, 'current_genre', None) or ''}:"
+                                        f"{getattr(self, 'current_year', None) or ''}:{getattr(self, 'current_language', None) or ''}:"
+                                        f"{getattr(self, 'current_country', None) or ''}:p{req_page}:row{DISCOVER_ROW_CARD_LIMIT}")
+                            items = database.get_cached_catalog(tmdb_key, max_age_hours=database.CATALOG_CACHE_HOURS)
+                            total_pages = int(row_info.get("tmdb_total_pages") or 0)
+                            if not items:
+                                items, page_total = tmdb_helper.fetch_network_catalog_page(
+                                    network_name, media_type=m_type, page=req_page,
+                                    limit=DISCOVER_ROW_CARD_LIMIT,
+                                    genre=getattr(self, "current_genre", None),
+                                    year=getattr(self, "current_year", None),
+                                    language=getattr(self, "current_language", None),
+                                    country=getattr(self, "current_country", None),
+                                    sort_mode=getattr(self, "current_sort", None),
+                                )
+                                total_pages = max(total_pages, int(page_total or 0))
+                                if items and not _is_event_set(abort_ev):
+                                    database.save_cached_catalog(tmdb_key, items)
+                            row_info["tmdb_total_pages"] = total_pages
+                            if database.is_adult_content_hidden():
+                                items = [it for it in (items or []) if not api.is_adult_item(it)]
+                            debug_log(
+                                f"discover TMDb network page {req_page}: {network_name} -> {len(items or [])} items",
+                                f"TMDb reports {total_pages} pages",
+                            )
+                            return (row_info, items or [])
 
                         if row_info.get("_source") == "tmdb_country":
                             from . import tmdb_helper
@@ -12300,7 +12525,8 @@ class CineWindow(Adw.ApplicationWindow):
                         year_suffix = f":y{current_y}" if current_y else ""
                         lang_suffix = f":l{current_l}" if current_l else ""
                         country_suffix = f":c{current_c}" if current_c else ""
-                        cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}{country_suffix}:row{DISCOVER_ROW_CARD_LIMIT}"
+                        network_suffix = f":n{cur_network}" if cur_network else ""
+                        cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}{country_suffix}{network_suffix}:row{DISCOVER_ROW_CARD_LIMIT}"
                         cached = database.get_cached_catalog(cache_key, max_age_hours=database.CATALOG_CACHE_HOURS)
                         if not cached:
                             cached = database.get_cached_catalog(cache_key.replace(f":row{DISCOVER_ROW_CARD_LIMIT}", ":row36"), max_age_hours=database.CATALOG_CACHE_HOURS)
@@ -12329,9 +12555,11 @@ class CineWindow(Adw.ApplicationWindow):
                                 cached = api.filter_items_by_genre(cached, effective_lang, media_type=m_type)
                             if cached and current_c:
                                 cached = api.filter_items_by_country(cached, current_c, media_type=m_type)
+                            if cached and cur_network:
+                                cached = api.filter_items_by_network(cached, cur_network, media_type=m_type)
                             if cached and current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
                                 cached = [it for it in cached if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(current_y)]
-                            if not cached and (current_g or current_l or current_c):
+                            if not cached and (current_g or current_l or current_c or cur_network):
                                 cached = None
                             if cached:
                                 debug_log(f"discover row CACHE HIT: '{row_title}'", f"{len(cached)} items")
@@ -12374,6 +12602,8 @@ class CineWindow(Adw.ApplicationWindow):
                                 items = api.filter_items_by_genre(items, effective_lang, media_type=m_type)
                             if current_c:
                                 items = api.filter_items_by_country(items, current_c, media_type=m_type)
+                            if cur_network:
+                                items = api.filter_items_by_network(items, cur_network, media_type=m_type)
                             if current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
                                 items = [it for it in items if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(current_y)]
                             if database.is_adult_content_hidden():
@@ -12651,7 +12881,10 @@ class CineWindow(Adw.ApplicationWindow):
             "manifest_url": m_url,
             "display_name": row_title
         }
-        see_all_btn.connect("clicked", lambda *a, cat_dict=cat_obj, m_type_val=m_type, title_val=row_title: getattr(self, "_open_catalog_grid")(m_type_val, cat_dict, title_val))
+        if row_info.get("_source") == "tmdb_network":
+            see_all_btn.connect("clicked", lambda *_a: self._open_network_see_all())
+        else:
+            see_all_btn.connect("clicked", lambda *a, cat_dict=cat_obj, m_type_val=m_type, title_val=row_title: getattr(self, "_open_catalog_grid")(m_type_val, cat_dict, title_val))
         sec_header.append(see_all_btn)
 
         sec_scroll = Gtk.ScrolledWindow()

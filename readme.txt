@@ -54,7 +54,8 @@ Key Source Files (`src/`):
    - Addon catalog rows (Popular, Trending, Top, etc.) loaded lazily in batches.
 2. `"content"`:
    Grid view (`content_flowbox`) with `discover_back_box` header (`< Section Title`).
-   Activated when the user clicks "See All" on any discover catalog or Continue Watching.
+   Activated by See All on regular provider catalogs or Continue Watching.
+   Network See All opens the paginated TMDb network results in the full Discover grid.
 3. `"search_results"`:
    Categorized search grids (Movies, Series, Anime).
 
@@ -67,6 +68,29 @@ UI Spacing & Layout Guidelines:
 - Card sizing: Posters have size request 130x240px (`.pt-card`). Row scroll
   containers have `min-height: 250px`. Padding in `.discover-row-box` (4px top,
   6px bottom) accommodates the 1.04x card hover scale without clipping.
+
+Discover data sources and filters:
+- Regular Popular, Featured, New, and addon-specific rows come from the selected
+  Stremio catalog providers. Cinemeta is one provider and also supplies metadata
+  by IMDb ID; it is not the source for every Discover catalog.
+- TMDb supplies direct country/language-filtered results and direct Network
+  results. Network browsing uses TMDb's TV-network relation for series and the
+  corresponding production-company relation for movies: TMDb movies do not use
+  the TV-network field. The Network dropdown is curated to common streaming and
+  broadcast brands, rather than exposing every production studio.
+- Network, media type, genre, year, original language, and country can be
+  combined. These filters are passed to TMDb Discover when a TMDb Network or
+  country/language catalog is active. A type change keeps other selections if
+  they are still offered; Reset returns dropdowns to their All values and turns
+  off Unique.
+- Network See All opens the full paginated results view. Unique uses the direct
+  TMDb network feed when a network is selected, rather than scanning every addon
+  catalog and waiting for its metadata to hydrate. Pages are fetched as the user
+  scrolls; TMDb's 500-page API ceiling is the hard upper bound, not a number of
+  cards preloaded into GTK at once.
+- A TV series can have a network, a production studio, or both. Only the
+  `networks` field is used to match the Network filter for TV; `production_companies`
+  is retained as separate metadata and is not treated as a network alias.
 
 --------------------------------------------------------------------------------
 3. FLATPAK BUILD & DEVELOPMENT WORKFLOW
@@ -224,18 +248,23 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   Diagnose which limit is reached before changing it. Fetch additional result
   pages as the user approaches the end of the visible results; do not increase
   page depth or concurrency blindly to make a grid feel fuller.
-- CARD METADATA IS ASKED FOR ONCE, EVER. `api.METADATA_CACHE_HOURS` is `None`:
-  discover pages, meta responses, poster lookups and TMDb id resolutions, plus the
-  `catalog_cache` rows they build (`database.CATALOG_CACHE_HOURS`), never expire,
-  so a card the user has already seen costs the provider nothing a second time.
-  Poster bytes and `metadata_cache` rows were always permanent; this makes the
-  JSON that points at them permanent too. Everything that genuinely changes keeps
-  an explicit TTL: streams and subtitles 24 h, IPTV playlists 24 h, searches 2 h,
-  the addon directory 12 h, manifests a week. `api._prune_disk_cache_if_needed()`
-  therefore no longer deletes files for being old - freshness is the reader's
-  decision - and only trims past `_DISK_CACHE_MAX_BYTES`, least recently read
-  first. Never shorten a metadata TTL to make a grid feel fresher, and never make
-  the pruner age-based again: that is how the same posters get re-requested.
+- SUCCESSFUL METADATA AND CATALOG ROWS ARE STORED PERMANENTLY, BUT MISSING FIELDS
+  ARE RETRIED. `database.CATALOG_CACHE_HOURS` is `None`, and metadata is merged
+  into the persistent SQLite `metadata_cache`. A missing title, poster, genre,
+  year, description, language, or TV network remains eligible for hydration;
+  missing records are found in both metadata and catalog caches. When the
+  hydrator is first triggered during startup, it scans those records and queues
+  them for a background retry. This is why a missing item is retried on each app
+  restart instead of waiting a week for the next attempt. During a running
+  session, incomplete cached metadata is eligible again after seven days. A
+  complete record is not periodically refreshed. Cinemeta is tried first, with
+  TMDb enrichment for missing genres, language, country, and network/company
+  fields. TV network checks have their own `networks_checked_at` timestamp.
+  Successful metadata and catalog rows remain permanent; request caches still
+  have explicit freshness rules. Streams and subtitles are 24 h, IPTV playlists
+  24 h, searches 2 h, addon directory 12 h, and manifests a week.
+  `api._prune_disk_cache_if_needed()` only trims past `_DISK_CACHE_MAX_BYTES`,
+  least recently read first; it does not delete cached metadata by age.
 - A HOST THAT SAYS "SLOW DOWN" IS BELIEVED: HTTP 429 with `Retry-After`, and
   provider rate-limit notices, set a cooldown via `api.set_provider_cooldown()`.
   While a host cools, the app serves the disk cache instead of requesting, and
@@ -244,14 +273,13 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   pacing: it makes one non-blocking attempt and is answered from cache (or with
   nothing). Every fetch belongs on a daemon thread, so reaching that path is a
   bug in the caller, not a policy to widen.
-- KEEP FETCHING AND RENDERING BOUNDED. A page limit such as
-  `tmdb_helper._MAX_DISCOVER_PAGES` is a network guard, not a target to exhaust.
-  Do not raise it just because a grid appears sparse: first check whether the
-  provider has more results, whether the UI is materializing too many cards, and
-  whether stale requests are still running. Fetch the next page as the user
-  approaches the end of the visible results. Keep widget creation near the
-  viewport plus a small buffer, and measure scrolling, memory use, and time to
-  first useful content before changing page size or concurrency.
+- KEEP FETCHING AND RENDERING BOUNDED. `tmdb_helper._MAX_DISCOVER_PAGES` limits
+  country/language Discover feeds; `_MAX_NETWORK_PAGES` allows network catalogs
+  up to TMDb's 500-page API ceiling. These are upper bounds, not preload targets.
+  Fetch the next page as the user approaches the end of the visible results.
+  Keep widget creation near the viewport plus a small buffer, and measure
+  scrolling, memory use, and time to first useful content before changing page
+  size or concurrency.
 - CACHED FIRST, NETWORK AFTER. Read the cache before the network and never ask for
   a page already held fresh. `fetch_country_catalog_page()` probes every URL with
   `cache_only=True` and fetches only the gaps, so re-browsing a filter costs zero

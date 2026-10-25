@@ -32,6 +32,9 @@ _MAX_COUNTRY_LANG_PAGES = 3
 # scrolls. Five pages were too tight - a discover row renders up to 36 cards, so
 # the grid stopped growing at about 180 cards.
 _MAX_DISCOVER_PAGES = 20
+# TMDb caps Discover at 500 pages. Network catalogs can be much deeper than the
+# other filtered feeds, so let the user keep scrolling up to the API's limit.
+_MAX_NETWORK_PAGES = 500
 # TMDb's search endpoint allows up to 500 pages. Search pages are requested only
 # as the user scrolls, so keep the provider's full searchable depth available.
 _MAX_TITLE_SEARCH_PAGES = 500
@@ -562,7 +565,7 @@ def resolve_to_tmdb_id(item_id, media_type="movie", title=None):
     if clean_tt and api_key:
         try:
             find_url = f"https://api.themoviedb.org/3/find/{clean_tt}?api_key={api_key}&external_source=imdb_id"
-            data = _get_cached_request(find_url, max_age_hours=METADATA_CACHE_HOURS)
+            data = _get_cached_request(find_url, max_age_hours=168)
             if data:
                 if c_type == "tv" and data.get("tv_results"):
                     return str(data["tv_results"][0]["id"])
@@ -1054,6 +1057,165 @@ def fetch_company_details(entity_id, entity_type="company"):
         print(f"[TMDB] Failed to fetch company details for {entity_id} ({entity_type}): {e}")
         return None
 
+
+_NETWORK_COMPANY_SEARCH_NAMES = {
+    "amazon prime": ("Amazon Studios", "Amazon MGM Studios"),
+    "amazon prime video": ("Amazon Studios", "Amazon MGM Studios"),
+    "apple tv+": ("Apple Studios", "Apple Original Films"),
+    "disney+": ("Walt Disney Pictures", "Disney"),
+    "hbo": ("HBO Films", "HBO"),
+    "bbc": ("BBC Films", "BBC Studios"),
+}
+
+# TMDb network IDs avoid ambiguous text matching for the Network dropdown.
+_NETWORK_TMDB_IDS = {
+    "netflix": 213,
+    "amazon prime": 1024,
+    "amazon prime video": 1024,
+    "hbo": 49,
+    "apple tv+": 2552,
+    "disney+": 2739,
+    "hulu": 453,
+    "paramount+": 4330,
+    "peacock": 3353,
+    "bbc": 4,
+    "showtime": 67,
+    "starz": 318,
+}
+
+_NETWORK_COMPANY_IDS = {
+    "netflix": 178464,
+    "amazon prime": 20580,
+    "amazon prime video": 20580,
+    "hbo": 7429,
+    "apple tv+": 194232,
+    "disney+": 2,
+}
+
+
+def _search_tmdb_entity_id(kind, query):
+    api_key = get_tmdb_api_key()
+    if not api_key or not query:
+        return None
+    params = urllib.parse.urlencode({"api_key": api_key, "query": query})
+    payload = _get_cached_request(
+        f"https://api.themoviedb.org/3/search/{kind}?{params}",
+        max_age_hours=METADATA_CACHE_HOURS,
+        timeout=5.0,
+    ) or {}
+    results = payload.get("results") or []
+    query_folded = query.casefold().strip()
+    for result in results:
+        name = str(result.get("name") or "").casefold().strip()
+        if name == query_folded and result.get("id"):
+            return int(result["id"])
+    return int(results[0]["id"]) if results and results[0].get("id") else None
+
+
+def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
+                              genre=None, year=None, language=None, country=None,
+                              sort_mode=None):
+    """Fetch one network's TMDb catalog page (TV by network, films by company).
+
+    This powers Discover's Network filter from the same TMDb discover catalog
+    used by the company/network detail page. Returns ``(items, total_pages)``.
+    """
+    try:
+        page = max(1, int(page or 1))
+    except (TypeError, ValueError):
+        page = 1
+    if page > _MAX_NETWORK_PAGES:
+        return [], 0
+
+    api_key = get_tmdb_api_key()
+    if not api_key or not network_name:
+        return [], 0
+
+    name = str(network_name).strip()
+    folded = name.casefold()
+    aliases = _NETWORK_COMPANY_SEARCH_NAMES.get(folded, (name,))
+    network_id = _NETWORK_TMDB_IDS.get(folded)
+    company_id = _NETWORK_COMPANY_IDS.get(folded)
+    if not company_id:
+        for company_name in aliases:
+            company_id = _search_tmdb_entity_id("company", company_name)
+            if company_id:
+                break
+
+    mt = str(media_type or "all").strip().lower()
+    if mt in ("all", "movie_series", "movie+series", "movies_series"):
+        kinds = ("movie", "tv")
+    elif mt in ("movie", "movies", "film", "films"):
+        kinds = ("movie",)
+    elif mt in ("series", "show", "shows", "tv", "tvshow", "tvshows", "anime"):
+        kinds = ("tv",)
+    else:
+        return [], 0
+
+    items = []
+    total_pages = 0
+    for kind in kinds:
+        # Movies have production-company credits, not TV-network credits. Keep
+        # the movie lookup on its own company ID; series use the network ID.
+        company_filter = company_id
+        if kind == "tv" and not network_id:
+            continue
+        if kind == "movie" and not company_filter:
+            continue
+        params = {
+            "api_key": api_key,
+            "sort_by": (("first_air_date.desc" if kind == "tv" else "primary_release_date.desc") if sort_mode and str(sort_mode).lower() in ("recent", "new", "latest") else "popularity.desc"),
+            "include_adult": "false",
+            "page": page,
+            "with_networks" if kind == "tv" else "with_companies": network_id if kind == "tv" else company_filter,
+        }
+        genre_id = _tmdb_genre_id(genre, kind) if genre else None
+        if genre_id:
+            params["with_genres"] = genre_id
+        if year:
+            params["first_air_date_year" if kind == "tv" else "primary_release_year"] = year
+        if language:
+            lang_code = database.get_language_code(language)
+            if lang_code:
+                params["with_original_language"] = lang_code
+        if country:
+            country_code = database.get_country_iso_code(country)
+            if country_code:
+                params["with_origin_country"] = country_code
+        payload = _get_cached_request(
+            f"https://api.themoviedb.org/3/discover/{kind}?{urllib.parse.urlencode(params)}",
+            max_age_hours=METADATA_CACHE_HOURS,
+            timeout=5.0,
+        ) or {}
+        total_pages = max(total_pages, int(payload.get("total_pages") or 0))
+        for entry in payload.get("results") or []:
+            tmdb_id = entry.get("id")
+            poster_path = entry.get("poster_path")
+            if not tmdb_id or not poster_path:
+                continue
+            title = entry.get("title") or entry.get("name") or entry.get("original_title") or entry.get("original_name") or "Unknown"
+            released = entry.get("release_date") or entry.get("first_air_date") or ""
+            poster = f"https://image.tmdb.org/t/p/w300{poster_path}"
+            items.append({
+                "id": f"tmdb:{tmdb_id}",
+                "raw_id": tmdb_id,
+                "title": title,
+                "name": title,
+                "type": "movie" if kind == "movie" else "series",
+                "media_type": "movie" if kind == "movie" else "series",
+                "poster": poster,
+                "medium_cover_image": poster,
+                "year": released[:4] if len(released) >= 4 else "",
+                "rating": round(float(entry.get("vote_average") or 0), 1),
+                "vote_count": entry.get("vote_count", 0),
+                "popularity": entry.get("popularity", 0.0),
+                "release_date": released,
+                "overview": (entry.get("overview") or "").strip(),
+                "networks": ([{"id": network_id, "name": name}] if kind == "tv" and network_id else []),
+            })
+    items.sort(key=lambda item: item.get("popularity", 0), reverse=True)
+    return items[:max(1, int(limit or 36))], min(total_pages, _MAX_NETWORK_PAGES)
+
 _TMDB_MOVIE_GENRES = {
     28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
     99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
@@ -1490,7 +1652,7 @@ def fetch_collection_details(cid, title=None, poster=None):
     }
 
 
-def fetch_title_language_and_genres(item_id, media_type="movie", title=None):
+def fetch_title_language_and_genres(item_id, media_type="movie", title=None, force_refresh=False):
     """
     Fetch title language (e.g. 'Hindi') and canonical genres (e.g. ['Thriller', 'Crime', 'Drama'])
     from TMDB.
@@ -1523,7 +1685,7 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None):
     if clean_tt:
         try:
             find_url = f"https://api.themoviedb.org/3/find/{clean_tt}?api_key={api_key}&external_source=imdb_id"
-            data = _get_cached_request(find_url, max_age_hours=METADATA_CACHE_HOURS)
+            data = _get_cached_request(find_url, max_age_hours=0 if force_refresh else 168)
             if data:
                 if c_type == "tv" and data.get("tv_results"):
                     result_item = data["tv_results"][0]
@@ -1540,7 +1702,7 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None):
             try:
                 tm_type = "tv" if c_type == "tv" else "movie"
                 url = f"https://api.themoviedb.org/3/{tm_type}/{tmdb_id}?api_key={api_key}"
-                data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS)
+                data = _get_cached_request(url, max_age_hours=0 if force_refresh else 168)
                 if data:
                     result_item = data
             except Exception:
@@ -1586,12 +1748,36 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None):
                 countries.append(norm_c)
     primary_country = countries[0] if countries else None
 
+    # /find results contain genre IDs but omit the studio/network fields. Fetch
+    # the canonical detail record so Discover can filter by the actual network
+    # (for TV) or production company (for films).
+    production_companies = []
+    networks = []
+    tmdb_id = result_item.get("id")
+    if tmdb_id:
+        try:
+            details_url = f"https://api.themoviedb.org/3/{c_type}/{tmdb_id}?api_key={api_key}"
+            details = _get_cached_request(details_url, max_age_hours=0 if force_refresh else 168)
+            if isinstance(details, dict):
+                for company in details.get("production_companies", []):
+                    if isinstance(company, dict) and company.get("name"):
+                        production_companies.append({"id": company.get("id"), "name": company["name"]})
+                for network in details.get("networks", []):
+                    if isinstance(network, dict) and network.get("name"):
+                        networks.append({"id": network.get("id"), "name": network["name"]})
+                if details.get("production_countries"):
+                    result_item["production_countries"] = details["production_countries"]
+        except Exception:
+            pass
+
     return {
         "language_code": orig_lang,
         "language_name": lang_name,
         "genres": tmdb_genres,
         "country": primary_country,
         "countries": countries,
+        "production_companies": production_companies,
+        "networks": networks,
         "adult": bool(result_item.get("adult", False)),
         "tmdb_id": result_item.get("id")
     }

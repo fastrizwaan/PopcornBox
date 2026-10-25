@@ -546,6 +546,21 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                   </object>
                                 </child>
                                 <child>
+                                  <object class="GtkDropDown" id="network_dropdown">
+                                    <property name="valign">3</property>
+                                    <property name="enable-search">true</property>
+                                    <property name="tooltip-text" translatable="yes">Network</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton" id="discover_reset_btn">
+                                    <property name="label" translatable="yes">Reset</property>
+                                    <property name="valign">3</property>
+                                    <property name="tooltip-text" translatable="yes">Reset all Discover filters</property>
+                                    <style><class name="flat"/></style>
+                                  </object>
+                                </child>
+                                <child>
                                   <object class="GtkCheckButton" id="unique_check">
                                     <property name="label" translatable="yes">Unique</property>
                                     <property name="valign">3</property>
