@@ -11,6 +11,7 @@ import weakref
 import hashlib
 import json
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from .utils import debug_log
 from . import database
@@ -44,7 +45,6 @@ atexit.register(_image_pool.shutdown, wait=False, cancel_futures=True)
 atexit.register(_disk_pool.shutdown, wait=False, cancel_futures=True)
 atexit.register(_meta_fallback_pool.shutdown, wait=False, cancel_futures=True)
 
-import threading
 _MEMORY_PIXBUF_CACHE = {}
 _MEMORY_PIXBUF_LOCK = threading.Lock()
 _MAX_MEMORY_PIXBUFS = 500
@@ -931,7 +931,7 @@ class MovieWidget(Gtk.Box):
                     130,
                     195,
                     self._apply_resolved_meta,
-                    task_gen
+                    task_gen,
                 )
             except RuntimeError:
                 pass

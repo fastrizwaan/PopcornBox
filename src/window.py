@@ -11950,10 +11950,10 @@ class CineWindow(Adw.ApplicationWindow):
                             return False
                         if getattr(self, "_discover_is_loading_rows", False):
                             return False
-                        resume_batch = len(self._discover_catalog_list) if is_home else 4
+                        resume_batch = min(3, len(self._discover_catalog_list) - self._discover_next_row_index) if is_home else 4
                         self._load_next_discover_batch(req_id, batch_size=resume_batch)
                         return False
-                    self._discover_batch_timer_id = GLib.timeout_add(10 if is_home else 120, _resume_load)
+                    self._discover_batch_timer_id = GLib.timeout_add(180 if is_home else 120, _resume_load)
                 else:
                     self._set_discover_spinner_active(False)
                 return
@@ -12080,9 +12080,10 @@ class CineWindow(Adw.ApplicationWindow):
             "request_id": req_id
         }
         
-        # On Home, load all catalogs upfront so all sections are ready without appearing only on scroll.
-        # In Discover view, load initial batch of 6 rows and lazily load more on scroll.
-        initial_batch = len(self._discover_catalog_list) if is_home else 6
+        # Keep Home responsive on slower machines: start with only a few rows and
+        # let the paced background loader fill the rest while the user can browse.
+        # Filtered Discover views keep their larger initial batch.
+        initial_batch = min(3, len(self._discover_catalog_list)) if is_home else 6
         debug_log(f"_refresh_discover_page dispatching initial batch of {initial_batch} rows (req_id={req_id}, is_home={is_home})")
         self._set_discover_spinner_active(True)
         self._load_next_discover_batch(req_id, batch_size=initial_batch)
@@ -12385,7 +12386,7 @@ class CineWindow(Adw.ApplicationWindow):
 
                 # Fetch all rows in this batch in parallel and stream completed rows immediately
                 results = [None] * len(batch_items)
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(max(len(batch_items), 1), 8))
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(max(len(batch_items), 1), 3))
                 self._discover_active_pool = executor
                 batch_timeout = max(10.0, len(batch_items) * 1.5)
                 try:
@@ -12513,7 +12514,7 @@ class CineWindow(Adw.ApplicationWindow):
                                 return False
                             if getattr(self, "_discover_is_loading_rows", False):
                                 return False
-                            next_batch_size = len(self._discover_catalog_list) if is_home else 4
+                            next_batch_size = min(3, len(self._discover_catalog_list) - self._discover_next_row_index) if is_home else 4
                             self._load_next_discover_batch(req_id, batch_size=next_batch_size)
                             return False
 
@@ -12522,7 +12523,7 @@ class CineWindow(Adw.ApplicationWindow):
                         page_size = adj.get_page_size() if adj else 0
                         upper = adj.get_upper() if adj else 0
                         is_screen_filled = bool(page_size > 0 and upper > page_size)
-                        batch_delay = 10 if is_home else (120 if is_screen_filled else 40)
+                        batch_delay = 180 if is_home else (120 if is_screen_filled else 40)
                         self._discover_batch_timer_id = GLib.timeout_add(batch_delay, _schedule_next_batch)
                     else:
                         self._set_discover_spinner_active(False)
@@ -12673,8 +12674,6 @@ class CineWindow(Adw.ApplicationWindow):
                 seen_ids = set()
                 target_box._tmdb_seen_ids = seen_ids
             seen_ids.update(str(it.get("id")) for it in display_items if it.get("id"))
-        database.hydrate_items_from_metadata(display_items, media_type=m_type)
-        api.hydrate_missing_catalog_items(display_items, media_type=m_type)
         for it in display_items:
             if database.is_adult_content_hidden() and api.is_adult_item(it):
                 continue
@@ -13324,6 +13323,12 @@ class CineWindow(Adw.ApplicationWindow):
         self.main_stack.set_visible_child_name("person")
 
     def show_player_loading(self, text="Fetching metadata...", title=None):
+        # Set transition state synchronously. The idle-active observer can run
+        # before the queued UI callback and otherwise briefly reveal the player
+        # welcome page while a stream is being prepared.
+        self.is_loading_stream = True
+        if hasattr(self, "start_page") and hasattr(self.start_page, "set_visible"):
+            self.start_page.set_visible(False)
         self._cancel_all_background_fetching()
         curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
         if curr_page and curr_page != "player":
@@ -13451,6 +13456,14 @@ class CineWindow(Adw.ApplicationWindow):
             self._show_toast(_("Opening in web browser..."))
             open_uri(url, self)
             return
+        # Hide the idle-player welcome screen before switching stacks or asking
+        # MPV to load. show_player_loading() is often queued through GLib, which
+        # can otherwise leave one frame of the Open… page visible after Play.
+        self.is_loading_stream = True
+        if hasattr(self, "start_page") and hasattr(self.start_page, "set_visible"):
+            self.start_page.set_visible(False)
+        if hasattr(self, "gl_area") and hasattr(self.gl_area, "set_visible"):
+            self.gl_area.set_visible(True)
         from . import player
         if url and isinstance(url, str) and not url.startswith("http://127.0.0.1") and not url.startswith("http://localhost") and not url.startswith(player.DOWNLOAD_BASE) and not url.startswith("file://"):
             # Torrent cleanup can inspect files and wait for an engine to stop.
