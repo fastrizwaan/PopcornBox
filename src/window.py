@@ -3343,7 +3343,8 @@ class MovieDetailsPage(Gtk.Overlay):
                         self.window._show_toast("No streams match active filter.")
                     return
 
-        # Save selected stream as working stream
+        # Remember the stream and playback preferences without making the Play
+        # click wait for several fsync-backed JSON database writes.
         from . import database
         primary_id = (
             getattr(self, "movie_details", {}).get("imdb_id")
@@ -3351,8 +3352,11 @@ class MovieDetailsPage(Gtk.Overlay):
             or self.movie_stub.get("imdb_id")
             or self.movie_stub.get("id")
         )
-        database.save_working_stream(primary_id, getattr(self, "selected_season", None), getattr(self, "selected_episode", None), self.selected_torrent)
         self.remembered_working_stream = self.selected_torrent
+        stream_snapshot = dict(self.selected_torrent)
+        stream_season = getattr(self, "selected_season", None)
+        stream_episode = getattr(self, "selected_episode", None)
+        prefs_to_save = []
 
         # Remember stream provider for subsequent episodes
         addon_names = self.selected_torrent.get("addon_names", [])
@@ -3363,14 +3367,14 @@ class MovieDetailsPage(Gtk.Overlay):
                 if self.window:
                     self.window.preferred_direct_provider = prov
                 if primary_id:
-                    database.set_setting(f"preferred_direct_provider_{primary_id}", prov)
-                database.set_setting("last_direct_provider", prov)
+                    prefs_to_save.append((f"preferred_direct_provider_{primary_id}", prov))
+                prefs_to_save.append(("last_direct_provider", prov))
             if self.window:
                 self.window.preferred_provider = prov
             self.preferred_provider = prov
             if primary_id:
-                database.set_setting(f"preferred_provider_{primary_id}", prov)
-            database.set_setting("last_provider", prov)
+                prefs_to_save.append((f"preferred_provider_{primary_id}", prov))
+            prefs_to_save.append(("last_provider", prov))
 
         # Remember quality for subsequent episodes
         chosen_q = _normalize_stream_quality(self.selected_torrent) or getattr(self, 'user_selected_quality', None)
@@ -3379,8 +3383,23 @@ class MovieDetailsPage(Gtk.Overlay):
             if self.window:
                 self.window.user_selected_quality = chosen_q
             if primary_id:
-                database.set_setting(f"preferred_quality_{primary_id}", chosen_q)
-            database.set_setting("preferred_quality", chosen_q)
+                prefs_to_save.append((f"preferred_quality_{primary_id}", chosen_q))
+            prefs_to_save.append(("preferred_quality", chosen_q))
+
+        def _persist_playback_preferences():
+            database.save_playback_preferences(
+                primary_id,
+                stream_season,
+                stream_episode,
+                stream_snapshot,
+                dict(prefs_to_save),
+            )
+
+        threading.Thread(
+            target=_persist_playback_preferences,
+            daemon=True,
+            name="PlaybackPreferenceSave",
+        ).start()
 
         media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
         if self.media_type in ["series", "anime", "tv"] and not self.is_channel and getattr(self, "selected_season", None) is not None:
@@ -13377,7 +13396,15 @@ class CineWindow(Adw.ApplicationWindow):
             return
         from . import player
         if url and isinstance(url, str) and not url.startswith("http://127.0.0.1") and not url.startswith("http://localhost") and not url.startswith(player.DOWNLOAD_BASE) and not url.startswith("file://"):
-            player.stop_player(remove_torrent=False)
+            # Torrent cleanup can inspect files and wait for an engine to stop.
+            # Keep it off the GTK thread so direct playback remains responsive.
+            stream_hash = getattr(player, "_streaming_hash", None)
+            threading.Thread(
+                target=player.stop_player,
+                kwargs={"remove_torrent": False, "info_hash": stream_hash},
+                daemon=True,
+                name="PlayerStopWorker",
+            ).start()
 
         page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
         is_channel_context = bool(
@@ -13466,7 +13493,7 @@ class CineWindow(Adw.ApplicationWindow):
 
             from . import database
             if self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id"):
-                database.save_continue_watching(self._current_playing_item)
+                database.save_continue_watching_async(self._current_playing_item)
                 if not is_download and page and hasattr(page, "update_continue_btn"):
                     page.update_continue_btn()
 
@@ -13833,6 +13860,10 @@ class CineWindow(Adw.ApplicationWindow):
             logger.error(f"[SUBS] Failed to add pending subtitles: {e}")
 
     def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page=None, season=None, episode=None, imdb_id=None, media_type=None, stream_subtitles=None):
+        # Mark playback as loading immediately. This prevents the idle-state
+        # observer from briefly restoring the player’s Open screen while the
+        # playback request is being prepared.
+        self.is_loading_stream = True
         if season is not None:
             self.selected_season = season
         if episode is not None:
@@ -13991,11 +14022,9 @@ class CineWindow(Adw.ApplicationWindow):
 
         if not is_stream_trailer:
             if self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id") or self._current_playing_item.get("title"):
-                database.save_continue_watching(self._current_playing_item)
-                if hasattr(self, "_update_continue_watching_section"):
-                    curr_stack = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
-                    if curr_stack != "player":
-                        self._update_continue_watching_section()
+                # Persist asynchronously; playback startup should not wait for
+                # the JSON database rewrite or remote scrobble work.
+                database.save_continue_watching_async(self._current_playing_item)
 
             logger.info(f"[SUBS] Queued subtitle request for stream: imdb_id={imdb_id}, media_type={media_type}, S{season}E{episode}, title={title}")
             self._pending_subtitle_request = {

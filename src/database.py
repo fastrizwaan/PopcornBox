@@ -1212,6 +1212,25 @@ def save_working_stream(item_id, season=None, episode=None, stream_info=None):
     key = f"working_stream_{item_id}_{s_key}_{e_key}"
     set_setting(key, norm)
 
+def save_playback_preferences(item_id, season=None, episode=None, stream_info=None, settings_values=None):
+    """Persist playback choices in one database write."""
+    settings_values = settings_values or {}
+    normalized = _normalize_stream_for_storage(stream_info) if stream_info else None
+    if normalized and "saved_at" not in normalized:
+        import time as _time
+        normalized["saved_at"] = _time.time()
+
+    with _db_lock:
+        db = _read_db()
+        settings = db.setdefault("settings", {})
+        if normalized and item_id:
+            s_key = f"{season}" if season is not None else ""
+            e_key = f"{episode}" if episode is not None else ""
+            settings[f"working_stream_{item_id}_{s_key}_{e_key}"] = normalized
+        settings.update(settings_values)
+        _write_db(db)
+
+
 def get_working_stream(item_id, season=None, episode=None):
     """Get the remembered working stream/torrent for a movie or series episode."""
     if not item_id:

@@ -102,65 +102,61 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
 --------------------------------------------------------------------------------
 4. CORE PERFORMANCE PHILOSOPHY
 --------------------------------------------------------------------------------
-- PopcornBox must ALWAYS be buttery smooth, fluid, and instantly responsive.
-- ZERO UI freezes, ZERO hangs, ZERO lag, and ZERO CPU spikes.
-- The GTK main thread must remain free to process events and render at 60+ FPS.
-- Users often have 60+ addons installed, resulting in hundreds of catalogs and
-  thousands of potential items. Never assume a small dataset.
+- Prioritize responsive input and scrolling, especially while loading details,
+  starting playback, changing pages, and opening menus.
+- Keep main-thread work bounded so GTK can process events and render between
+  updates. Set performance budgets from measurements on representative hardware;
+  do not promise a fixed frame rate or zero CPU use for every workload.
+- Test with large addon sets and libraries. Avoid assuming the visible dataset is
+  small, but do not materialize every possible result as a widget at once.
 
 --------------------------------------------------------------------------------
 5. UI THREAD HYGIENE & ASYNCHRONOUS WORK
 --------------------------------------------------------------------------------
-- NEVER perform network requests, database queries, disk I/O, or heavy data
-  processing on the GTK main thread.
-- ALWAYS offload data fetching, API communication, and manifest parsing to
-  background daemon threads (`threading.Thread(..., daemon=True)`).
-- Use `GLib.idle_add()` ONLY to deliver prepared results to the UI in small,
-  non-blocking chunks. Do not run heavy loops or computations inside idle callbacks.
+- Keep the GTK main thread free of work that can wait: network requests, torrent
+  shutdown or startup waits, disk writes, fsync, and unbounded parsing or loops.
+  Playback clicks must show the loading/player state promptly, then continue setup
+  without waiting for persistence or cleanup.
+- Use background workers for network and blocking I/O. Prefer existing async
+  database APIs; when several related values must be persisted, batch them into
+  one locked write instead of issuing multiple full-file rewrites.
+- Small, bounded reads from an in-memory cache or indexed local database can stay
+  on the main thread only when they are known to be fast and do not contend with a
+  long write. Move them off-thread if profiling shows lock waits or UI stalls.
+- GTK widgets and view mutations belong on the GTK main thread. Workers should
+  return plain data; apply it with `GLib.idle_add()` in bounded chunks. Idle
+  callbacks still run on the UI thread, so they must not contain blocking I/O or
+  large widget-building loops.
+- Avoid starting duplicate work for the same item. Cancel or invalidate stale
+  requests and coalesce repeated saves/fetches where possible.
 
---------------------------------------------------------------------------------
 6. MENU BUTTONS & GTK MENU MODELS
 --------------------------------------------------------------------------------
-- DO NOT POPULATE MENUS ON CLICK:
-  Attaching or rebuilding a `Gio.Menu` or `GtkPopoverMenu` on click (e.g., inside
-  a `notify::active` callback) causes GTK to synchronously instantiate widgets,
-  parse CSS styling, and recalculate layouts during the click event. This results
-  in an annoying lag, visible freeze, and high CPU spike right when the user clicks.
+- Keep menu models modest and avoid rebuilding them in a click/active callback.
+  Reuse stable models when their contents have not changed.
+- If menu contents depend on slow data, prepare plain menu-item data in a worker.
+  Create and update `Gio.Menu`, GTK widgets, and popovers on the GTK main thread;
+  do that work before the menu is opened and in bounded slices when the menu is
+  large. Do not call GTK APIs from a worker thread.
+- Keep menu hierarchies shallow and avoid repeating large sets of choices under
+  every catalog. Put filters in the dedicated filter controls where practical.
+  Measure the actual menu build and open time; do not rely on fixed item-count
+  percentages or sub-millisecond timing claims.
+- If a menu update completes while its popover is open, defer replacing its model
+  until the popover closes so the active interaction is not torn down.
 
-- PRE-ATTACH MODELS AHEAD OF TIME:
-  Construct `Gio.Menu` models in a background worker thread. Once built, attach
-  them to `GtkMenuButton` widgets via `GLib.idle_add()` across idle slices BEFORE
-  the user interacts with them. When the user clicks the menu button, the menu
-  is already built and attached, opening INSTANTLY on the first click.
-
-- PREVENT MENU BLOAT (KEEP MENU HIERARCHIES SHALLOW):
-  - Do NOT generate deeply nested submenus with hundreds or thousands of leaves
-    (e.g., nesting 20-50 genres under every single catalog in header menus).
-  - PopcornBox already provides dedicated header dropdowns (e.g., `genre_dropdown`)
-    in the content grid view. Category menus (Movies, Series, Anime) must only
-    provide direct navigation: Addon -> Catalogs (e.g., Popular, Top, New).
-  - Streamlining menus from ~1,400 items down to ~200 items reduces widget
-    instantiation overhead by 85-95% and cuts menu build time to <1ms.
-
-- HANDLE ACTIVE STATE SAFELY:
-  If a background update finishes while a user currently has a menu popover open,
-  do NOT replace the model immediately (which tears down the popover). Defer
-  the update until `notify::active` indicates the popover has closed.
-
+7. FAST STARTUP & RESPONSIVE NAVIGATION
 --------------------------------------------------------------------------------
-7. FAST STARTUP & INSTANT TAB SWITCHING
---------------------------------------------------------------------------------
-- FAST LAUNCH:
-  Startup must take milliseconds. During window initialization, assign lightweight
-  placeholder models (`★ All Catalogs`) immediately, and defer full menu builds
-  using `GLib.timeout_add(500, self._ensure_all_menus_built)`.
-- INSTANT TAB SWITCHING:
-  Switching between linked buttons (Discover, Movies, Series, Anime) must be
-  instantaneous. Tab switch handlers (`on_switch_movies`, etc.) must simply change
-  stack pages and trigger discover page refreshes; they must never synchronously
-  construct or re-attach menu models.
+- Keep window construction limited to essential widgets and cached state. Start
+  network refreshes and expensive derived work after the first frame, with clear
+  cancellation when the user changes pages.
+- Do not use a fixed delay as a substitute for measuring startup work. Schedule
+  optional work when the main loop is idle, and keep each main-thread slice small
+  enough to avoid visible stalls.
+- Page switches should update the visible stack promptly. Reuse already-rendered
+  pages where practical, and fetch or build only the data needed for the current
+  page and its near-viewport buffer.
 
---------------------------------------------------------------------------------
 8. STREAM & IMAGE HANDLING
 --------------------------------------------------------------------------------
 - Cancel pending image downloads (`cancel_pending_image_downloads()`) whenever
@@ -223,11 +219,11 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   posters to ~0.8 s each - so two is the settled size; change the number, do not
   remove the window. A poster that still misses its slot stays blank and is
   retried by the repair tick in `src/movie_widget.py` (section 8).
-- DON'T SHRINK THE WINDOW TO "FIX" MISSING CARDS. A serial window was measured
-  against a real addon (1.2 s responses) and it dropped 3 of 6 catalog rows: the
-  polite queue outlived the discover loader's deadline. If a filter needs more
-  results, fetch fewer but DEEPER pages (`_MAX_DISCOVER_PAGES`), cache them, and
-  ask for the next page when the user scrolls - do not widen concurrency.
+- TUNE PAGINATION AND CONCURRENCY SEPARATELY. A missing row can come from the
+  provider page limit, request queue deadline, cancellation, or rendering cost.
+  Diagnose which limit is reached before changing it. Fetch additional result
+  pages as the user approaches the end of the visible results; do not increase
+  page depth or concurrency blindly to make a grid feel fuller.
 - CARD METADATA IS ASKED FOR ONCE, EVER. `api.METADATA_CACHE_HOURS` is `None`:
   discover pages, meta responses, poster lookups and TMDb id resolutions, plus the
   `catalog_cache` rows they build (`database.CATALOG_CACHE_HOURS`), never expire,
@@ -248,12 +244,14 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   pacing: it makes one non-blocking attempt and is answered from cache (or with
   nothing). Every fetch belongs on a daemon thread, so reaching that path is a
   bug in the caller, not a policy to widen.
-- DEPTH OVER BREADTH WHEN A GRID RUNS DRY. `tmdb_helper._MAX_DISCOVER_PAGES` (20)
-  is how deep one filter browses and each discover row renders 36 cards, so a grid
-  reaches roughly 700 cards before TMDb says the filter is over. That costs two
-  paced requests per page, cached forever - measured live at 423 cards over 30
-  requests with a 250 ms gap between starts. When someone reports "fetching
-  stopped", raise this depth; do not raise concurrency to get there faster.
+- KEEP FETCHING AND RENDERING BOUNDED. A page limit such as
+  `tmdb_helper._MAX_DISCOVER_PAGES` is a network guard, not a target to exhaust.
+  Do not raise it just because a grid appears sparse: first check whether the
+  provider has more results, whether the UI is materializing too many cards, and
+  whether stale requests are still running. Fetch the next page as the user
+  approaches the end of the visible results. Keep widget creation near the
+  viewport plus a small buffer, and measure scrolling, memory use, and time to
+  first useful content before changing page size or concurrency.
 - CACHED FIRST, NETWORK AFTER. Read the cache before the network and never ask for
   a page already held fresh. `fetch_country_catalog_page()` probes every URL with
   `cache_only=True` and fetches only the gaps, so re-browsing a filter costs zero
@@ -274,8 +272,10 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
 --------------------------------------------------------------------------------
 10. TESTING & VERIFICATION
 --------------------------------------------------------------------------------
-- When modifying category menus, discover pages, or catalog logic, always run:
-    python3 -m unittest test_category_menus.py test_continue_watching.py test_collections.py
-- Benchmark data preparation and model construction times when touching menu
-  logic to guarantee operations complete in <5ms.
-================================================================================
+- Run focused checks for the behavior changed, plus nearby regression coverage
+  when available. Avoid running unrelated suites as a substitute for profiling.
+- For responsiveness work, measure the user-visible interaction before and after:
+  time to first frame, input-to-response delay, main-thread callback duration, and
+  memory/widget count for representative large libraries. Record the dataset and
+  machine used; use the results to set realistic budgets rather than fixed timing
+  promises that do not account for hardware or workload.
