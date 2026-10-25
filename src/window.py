@@ -10284,10 +10284,12 @@ class CineWindow(Adw.ApplicationWindow):
                                     upper = adj.get_upper()
                                     value = adj.get_value()
                                     if page_size > 0 and upper <= page_size:
-                                        # Fill a short viewport a couple of times without
-                                        # triggering an unbounded startup fetch.
+                                        # Sparse filters may need several source pages
+                                        # before the grid becomes scrollable. Keep this
+                                        # bounded while allowing enough batches to fill
+                                        # a short viewport without a scroll event.
                                         auto_fill_count = getattr(self, "_unique_auto_fill_count", 0)
-                                        if auto_fill_count < 2:
+                                        if auto_fill_count < 8:
                                             self._unique_auto_fill_count = auto_fill_count + 1
                                             self._load_next_unique_batch()
                                             loaded = True
