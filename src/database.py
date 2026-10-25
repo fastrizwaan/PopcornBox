@@ -3279,6 +3279,11 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                     sql += " AND (m.media_type IN ('series', 'tv', 'show') OR m.media_type IS NULL OR m.media_type = '')"
                 elif mt == "anime":
                     sql += " AND (m.media_type = 'anime' OR m.media_type IS NULL OR m.media_type = '')"
+                elif mt in ("movie_series", "movies_series", "movie+series", "movies+series"):
+                    # The Discover "Movies+Series" filter searches these media
+                    # types (and anime when available); don't compare their rows
+                    # against the synthetic filter label itself.
+                    sql += " AND (m.media_type IN ('movie', 'series', 'tv', 'show', 'anime', 'collections') OR m.media_type IS NULL OR m.media_type = '')"
                 else:
                     sql += " AND m.media_type = ?"
                     params.append(mt)

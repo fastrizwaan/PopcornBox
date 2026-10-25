@@ -32,6 +32,9 @@ _MAX_COUNTRY_LANG_PAGES = 3
 # scrolls. Five pages were too tight - a discover row renders up to 36 cards, so
 # the grid stopped growing at about 180 cards.
 _MAX_DISCOVER_PAGES = 20
+# TMDb's search endpoint allows up to 500 pages. Search pages are requested only
+# as the user scrolls, so keep the provider's full searchable depth available.
+_MAX_TITLE_SEARCH_PAGES = 500
 
 _TMDB_API_KEY_CACHE = {"key": None, "expires": 0.0}
 _TMDB_API_KEY_LOCK = threading.Lock()
@@ -1285,6 +1288,109 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
 
     items.sort(key=lambda it: (it.get("popularity", 0.0), it.get("vote_count", 0)), reverse=True)
     return items[:limit], total_pages
+
+
+def fetch_title_search_page(query, media_type="all", page=1, limit=50):
+    """Fetch one cache-first TMDb title-search page for movies and/or series.
+
+    Search results are converted to the app's regular card shape. The caller
+    controls paging so network requests happen only as the user scrolls.
+    """
+    query = str(query or "").strip()
+    if not query:
+        return [], 0
+    try:
+        page = max(1, int(page or 1))
+    except (TypeError, ValueError):
+        page = 1
+    if page > _MAX_TITLE_SEARCH_PAGES:
+        return [], 0
+
+    mt = str(media_type or "all").strip().lower()
+    if mt in ("all", "discover", "none", "", "movie_series", "movies_series", "movie+series", "movies+series"):
+        kinds = [("movie", "movie"), ("tv", "series")]
+    elif mt in ("movie", "movies", "film", "films"):
+        kinds = [("movie", "movie")]
+    elif mt in ("series", "show", "shows", "tvshow", "tvshows"):
+        kinds = [("tv", "series")]
+    else:
+        return [], 0
+
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return [], 0
+    urls = []
+    for kind, app_type in kinds:
+        params = {"api_key": api_key, "query": query, "page": page, "include_adult": "false"}
+        urls.append((kind, app_type, "https://api.themoviedb.org/3/search/"
+                     f"{kind}?{urllib.parse.urlencode(params)}"))
+
+    # Search the response cache first, then request only missing URLs.
+    cached, missing = [], []
+    for kind, app_type, url in urls:
+        try:
+            data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS,
+                                       cache_only=True, timeout=5.0)
+        except Exception:
+            data = None
+        if data:
+            cached.append((kind, app_type, data))
+        else:
+            missing.append((kind, app_type, url))
+
+    fetched = []
+    if missing:
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(missing)) as executor:
+                futures = [(kind, app_type, executor.submit(
+                    _get_cached_request, url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0))
+                    for kind, app_type, url in missing]
+                for kind, app_type, future in futures:
+                    try:
+                        fetched.append((kind, app_type, future.result() or {}))
+                    except Exception:
+                        fetched.append((kind, app_type, {}))
+        except RuntimeError:
+            pass
+
+    total_pages = 0
+    items, seen_ids = [], set()
+    for _kind, app_type, data in cached + fetched:
+        try:
+            total_pages = max(total_pages, int((data or {}).get("total_pages") or 0))
+        except (TypeError, ValueError):
+            pass
+        for entry in (data or {}).get("results", []) or []:
+            tmdb_id = entry.get("id")
+            poster_path = entry.get("poster_path")
+            if not tmdb_id or not poster_path:
+                continue
+            item_id = f"tmdb:{tmdb_id}"
+            if item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            title = (entry.get("title") or entry.get("name") or
+                     entry.get("original_title") or entry.get("original_name") or "Unknown")
+            release_date = entry.get("release_date") or entry.get("first_air_date") or ""
+            backdrop_path = entry.get("backdrop_path")
+            genre_ids = [gid for gid in (entry.get("genre_ids") or []) if gid in TMDB_GENRES]
+            rating = entry.get("vote_average")
+            poster = f"https://image.tmdb.org/t/p/w300{poster_path}"
+            items.append({
+                "id": item_id, "raw_id": tmdb_id, "title": title, "name": title,
+                "type": app_type, "media_type": app_type,
+                "poster": poster, "medium_cover_image": poster,
+                "background": f"https://image.tmdb.org/t/p/w780{backdrop_path}" if backdrop_path else "",
+                "year": release_date[:4] if len(release_date) >= 4 else "",
+                "rating": round(float(rating), 1) if rating else None,
+                "vote_count": entry.get("vote_count", 0), "popularity": entry.get("popularity", 0.0),
+                "release_date": release_date, "overview": (entry.get("overview") or "").strip(),
+                "genres": [TMDB_GENRES[gid] for gid in genre_ids], "genre_ids": genre_ids,
+                "original_language": entry.get("original_language") or "",
+                "language": database.LANGUAGE_CODE_MAP.get(str(entry.get("original_language") or "").lower(), ""),
+            })
+
+    return items[:limit], min(total_pages, _MAX_TITLE_SEARCH_PAGES)
 
 TMDB_GENRES = {
     28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",

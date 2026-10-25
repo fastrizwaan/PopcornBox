@@ -9522,7 +9522,24 @@ class CineWindow(Adw.ApplicationWindow):
                             "year": getattr(self, "current_year", None),
                             "sort_mode": getattr(self, "current_sort", None),
                         })
-            catalogs = [query_cache_cat] + search_catalog_entries
+            tmdb_search_cat = {
+                "_source": "tmdb_search",
+                "addon_name": "TMDb",
+                "media_type": filter_type or "all",
+                "catalog_id": "tmdb_search",
+                "catalog_name": "TMDb Title Search",
+                "manifest_url": None,
+                "query": active_query,
+                "title_only": query_title_only,
+                "genre": selected_genre,
+                "language": selected_lang,
+                "country": selected_country,
+                "year": getattr(self, "current_year", None),
+                "sort_mode": getattr(self, "current_sort", None),
+                "supports_pagination": True,
+                "tmdb_total_pages": 0,
+            }
+            catalogs = [query_cache_cat, tmdb_search_cat] + search_catalog_entries
         elif (selected_genre or selected_lang or selected_country) and not filter_addon and not section_scope and not any(c.get("_source") == "genre_cache" for c in catalogs):
             parts = [p for p in (selected_genre, selected_lang, selected_country) if p]
             cache_title = " · ".join(parts) if parts else "Cached"
@@ -9880,6 +9897,44 @@ class CineWindow(Adw.ApplicationWindow):
                             api.hydrate_missing_catalog_items(items, media_type=m_type)
                             debug_log(f"unique query cache: '{cat_info.get('query')}' -> {len(items)} items (page {page})")
                             return (key, page, items, raw_count, True)
+
+                        if cat_info.get("_source") == "tmdb_search":
+                            from . import tmdb_helper
+                            query = str(cat_info.get("query") or "").strip()
+                            if not query or page > tmdb_helper._MAX_TITLE_SEARCH_PAGES:
+                                return (key, page, [], 0, False)
+                            cache_key = (
+                                f"tmdb-search:{query.casefold()}:{m_type}:"
+                                f"title{int(bool(cat_info.get('title_only')))}:p{page}"
+                            )
+                            items = database.get_cached_catalog(cache_key)
+                            if items is None:
+                                items, total_pages = tmdb_helper.fetch_title_search_page(
+                                    query=query, media_type=m_type, page=page, limit=50)
+                                cat_info["tmdb_total_pages"] = total_pages
+                                if items and not _is_event_set(abort_ev):
+                                    database.save_cached_catalog(cache_key, items)
+                            if _is_event_set(abort_ev):
+                                return None
+                            items = items or []
+                            raw_count = len(items)
+                            if cat_info.get("title_only"):
+                                query_folded = query.casefold()
+                                items = [it for it in items if query_folded in str(
+                                    it.get("title") or it.get("name") or "").casefold()]
+                            if cur_genre:
+                                items = api.filter_items_by_genre(items, cur_genre, media_type=m_type)
+                            if cur_lang:
+                                items = api.filter_items_by_genre(items, cur_lang, media_type=m_type)
+                            if cur_country:
+                                items = api.filter_items_by_country(items, cur_country, media_type=m_type)
+                            if cur_year:
+                                items = [it for it in items if str(it.get("year") or "").startswith(cur_year)]
+                            if database.is_adult_content_hidden():
+                                items = [it for it in items if not api.is_adult_item(it)]
+                            debug_log(f"unique TMDb title search '{query}' -> {raw_count} items (page {page})",
+                                      f"TMDb reports {cat_info.get('tmdb_total_pages') or '?'} pages")
+                            return (key, page, items, raw_count, False)
 
                         if cat_info.get("_source") == "genre_cache":
                             req_country = cat_info.get("country") or cur_country

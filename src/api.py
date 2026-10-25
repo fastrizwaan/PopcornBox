@@ -2615,9 +2615,10 @@ def filter_items_by_genre(items, genre, media_type=None):
                     known_languages.add("japanese")
                 elif re.search(r'[\uAC00-\uD7AF]', title):
                     known_languages.add("korean")
-                else:
-                    known_languages.add("english")
-            if any(does_genre_match_filter(language, g_norm) for language in known_languages):
+                # Latin-script titles do not prove that a title is English:
+                # many Hindi and other-language titles are transliterated. Keep
+                # unknown-language items instead of guessing that they are English.
+            if not known_languages or any(does_genre_match_filter(language, g_norm) for language in known_languages):
                 filtered.append(item)
             continue
 
