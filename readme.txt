@@ -74,10 +74,22 @@ Discover data sources and filters:
   Stremio catalog providers. Cinemeta is one provider and also supplies metadata
   by IMDb ID; it is not the source for every Discover catalog.
 - TMDb supplies direct country/language-filtered results and direct Network
-  results. Network browsing uses TMDb's TV-network relation for series and the
+  results. Broadcast networks use TMDb's TV-network relation for series and the
   corresponding production-company relation for movies: TMDb movies do not use
-  the TV-network field. The Network dropdown is curated to common streaming and
-  broadcast brands, rather than exposing every production studio.
+  the TV-network field. Indian OTT services such as JioHotstar, ZEE5, SonyLIV,
+  Sun NXT, aha, hoichoi, Lionsgate Play, ManoramaMAX, Chaupal, and Hungama Play
+  use TMDb's regional watch-provider availability filters for India where those
+  providers are listed. Provider names are resolved from TMDb's regional
+  provider list rather than relying on stale numeric IDs. These availability
+  catalog pages refresh daily. Some services also have TMDb TV network records:
+  Amazon MX Player (network 7774), MX Player (network 2964), and Eros Now
+  (network 2716) use those for series, while their movie catalogs use
+  production-company IDs. Amazon MX Player and MX Player are separate entries.
+  Chaupal falls back to its production-company relation when TMDb has no
+  matching India watch-provider entry. This avoids treating an OTT service as
+  a production studio or claiming a movie is available from its production
+  company. The dropdown is curated to popular services and networks, rather than
+  exposing every production studio.
 - Network, media type, genre, year, original language, and country can be
   combined. These filters are passed to TMDb Discover when a TMDb Network or
   country/language catalog is active. A type change keeps other selections if

@@ -273,6 +273,7 @@ class CineApplication(Adw.Application):
             issue_url="https://github.com/fastrizwaan/PopcornBox/issues",
             website="https://github.com/fastrizwaan/PopcornBox",
             copyright="© 2026 Mohammed Asif Ali Rizvan",
+            comments=_("This product uses the TMDB API but is not endorsed or certified by TMDB. Streaming availability data is provided by JustWatch through TMDB."),
             license_type=Gtk.License.GPL_3_0,
         )
         about.present(self.props.active_window)

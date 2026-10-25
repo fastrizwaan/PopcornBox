@@ -8788,7 +8788,13 @@ class CineWindow(Adw.ApplicationWindow):
             self.country_dropdown.set_visible(bool(countries))
 
     def _populate_discover_network_dropdown(self, chosen_type):
-        common = ["Netflix", "Amazon Prime", "Amazon Prime Video", "HBO", "Apple TV+", "Disney+", "Hulu", "Paramount+", "Peacock", "BBC", "Showtime", "Starz"]
+        common = [
+            "Netflix", "Amazon Prime", "Amazon Prime Video", "Amazon MX Player", "MX Player",
+            "HBO", "Apple TV+", "Disney+", "JioHotstar", "ZEE5", "SonyLIV",
+            "Sun NXT", "aha", "hoichoi", "Lionsgate Play", "Eros Now",
+            "ManoramaMAX", "Chaupal", "Hungama Play", "Hulu", "Paramount+",
+            "Peacock", "BBC", "Showtime", "Starz",
+        ]
         options = ["All Networks"] + sorted(common, key=str.casefold)
         self._discover_network_items = options
         if getattr(self, "network_dropdown", None):
@@ -10058,8 +10064,9 @@ class CineWindow(Adw.ApplicationWindow):
                             network_key = str(network_name or "").casefold()
                             network_cache_key = (f"tmdb-network:{network_key}:{m_type}:{cur_genre or ''}:"
                                                  f"{cur_year or ''}:{cur_lang or ''}:{cur_country or ''}:p{page}:unique50")
+                            network_cache_age = 24 if tmdb_helper.is_india_watch_provider(network_name) else database.CATALOG_CACHE_HOURS
                             items = database.get_cached_catalog(
-                                network_cache_key, max_age_hours=database.CATALOG_CACHE_HOURS
+                                network_cache_key, max_age_hours=network_cache_age
                             )
                             if not items:
                                 items, total_pages = tmdb_helper.fetch_network_catalog_page(
@@ -10124,7 +10131,8 @@ class CineWindow(Adw.ApplicationWindow):
                                 f"{cat_info.get('year') or ''}:{cat_info.get('sort_mode') or ''}:"
                                 f"{req_lang or ''}:p{page}:unique50"
                             )
-                            items = database.get_cached_catalog(tmdb_key, max_age_hours=database.CATALOG_CACHE_HOURS)
+                            network_cache_age = 24 if tmdb_helper.is_india_watch_provider(network_name) else database.CATALOG_CACHE_HOURS
+                            items = database.get_cached_catalog(tmdb_key, max_age_hours=network_cache_age)
                             if not items:
                                 items, total_pages = tmdb_helper.fetch_country_catalog_page(
                                     country=req_country,
@@ -12387,7 +12395,8 @@ class CineWindow(Adw.ApplicationWindow):
                             tmdb_key = (f"tmdb-network:{network_key}:{m_type}:{getattr(self, 'current_genre', None) or ''}:"
                                         f"{getattr(self, 'current_year', None) or ''}:{getattr(self, 'current_language', None) or ''}:"
                                         f"{getattr(self, 'current_country', None) or ''}:p{req_page}:row{DISCOVER_ROW_CARD_LIMIT}")
-                            items = database.get_cached_catalog(tmdb_key, max_age_hours=database.CATALOG_CACHE_HOURS)
+                            network_cache_age = 24 if tmdb_helper.is_india_watch_provider(network_name) else database.CATALOG_CACHE_HOURS
+                            items = database.get_cached_catalog(tmdb_key, max_age_hours=network_cache_age)
                             total_pages = int(row_info.get("tmdb_total_pages") or 0)
                             if not items:
                                 items, page_total = tmdb_helper.fetch_network_catalog_page(

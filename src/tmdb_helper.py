@@ -1065,6 +1065,10 @@ _NETWORK_COMPANY_SEARCH_NAMES = {
     "disney+": ("Walt Disney Pictures", "Disney"),
     "hbo": ("HBO Films", "HBO"),
     "bbc": ("BBC Films", "BBC Studios"),
+    "amazon mx player": ("Amazon MX Player", "Amazon MiniTV"),
+    "mx player": ("MX Player",),
+    "eros now": ("Eros Now", "Eros International"),
+    "chaupal": ("Chaupal", "Bosna Digital Entertainment"),
 }
 
 # TMDb network IDs avoid ambiguous text matching for the Network dropdown.
@@ -1081,6 +1085,9 @@ _NETWORK_TMDB_IDS = {
     "bbc": 4,
     "showtime": 67,
     "starz": 318,
+    "amazon mx player": 7774,
+    "mx player": 2964,
+    "eros now": 2716,
 }
 
 _NETWORK_COMPANY_IDS = {
@@ -1091,6 +1098,50 @@ _NETWORK_COMPANY_IDS = {
     "apple tv+": 194232,
     "disney+": 2,
 }
+
+# Indian OTT catalogs are availability catalogs, not production-network catalogs.
+# Resolve these names against TMDb's regional watch-provider lists so provider IDs
+# can change without confusing an OTT service with a TV network or studio.
+_INDIA_WATCH_PROVIDER_ALIASES = {
+    "jiohotstar": ("JioHotstar", "Jio Hotstar", "Disney+ Hotstar", "Hotstar"),
+    "zee5": ("ZEE5", "Zee5"),
+    "sonyliv": ("SonyLIV", "Sony Liv", "SonyLIV Amazon Channel"),
+    "sun nxt": ("Sun Nxt", "Sun NXT"),
+    "aha": ("aha", "aha Video"),
+    "hoichoi": ("hoichoi", "Hoichoi"),
+    "lionsgate play": ("Lionsgate Play",),
+    "manoramamax": ("ManoramaMAX", "Manorama Max"),
+    "chaupal": ("Chaupal",),
+    "hungama play": ("Hungama Play", "Hungama"),
+}
+
+
+def _tmdb_india_watch_provider_id(network_name, media_type):
+    """Resolve an Indian OTT provider by current TMDb name for movie or TV."""
+    aliases = _INDIA_WATCH_PROVIDER_ALIASES.get(str(network_name or "").casefold().strip())
+    if not aliases:
+        return None
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return None
+    kind = "tv" if str(media_type or "").lower() in ("tv", "series", "anime", "tvshow") else "movie"
+    params = urllib.parse.urlencode({"api_key": api_key, "watch_region": "IN", "language": "en-US"})
+    payload = _get_cached_request(
+        f"https://api.themoviedb.org/3/watch/providers/{kind}?{params}",
+        max_age_hours=24,
+        timeout=5.0,
+    ) or {}
+    wanted = {str(alias).casefold().strip() for alias in aliases}
+    for provider in payload.get("results") or []:
+        name = str(provider.get("provider_name") or "").casefold().strip()
+        if name in wanted and provider.get("provider_id"):
+            return int(provider["provider_id"])
+    return None
+
+
+def is_india_watch_provider(network_name):
+    """Whether a dropdown option is resolved as an India OTT availability provider."""
+    return str(network_name or "").casefold().strip() in _INDIA_WATCH_PROVIDER_ALIASES
 
 
 def _search_tmdb_entity_id(kind, query):
@@ -1115,10 +1166,10 @@ def _search_tmdb_entity_id(kind, query):
 def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
                               genre=None, year=None, language=None, country=None,
                               sort_mode=None):
-    """Fetch one network's TMDb catalog page (TV by network, films by company).
+    """Fetch one network or Indian OTT provider's TMDb catalog page.
 
-    This powers Discover's Network filter from the same TMDb discover catalog
-    used by the company/network detail page. Returns ``(items, total_pages)``.
+    Broadcast networks use TV-network IDs and movie-company IDs. Indian OTT
+    services use availability providers for region IN. Returns ``(items, pages)``.
     """
     try:
         page = max(1, int(page or 1))
@@ -1136,7 +1187,8 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
     aliases = _NETWORK_COMPANY_SEARCH_NAMES.get(folded, (name,))
     network_id = _NETWORK_TMDB_IDS.get(folded)
     company_id = _NETWORK_COMPANY_IDS.get(folded)
-    if not company_id:
+    use_watch_provider = is_india_watch_provider(name)
+    if not company_id and (not use_watch_provider or folded in _NETWORK_COMPANY_SEARCH_NAMES):
         for company_name in aliases:
             company_id = _search_tmdb_entity_id("company", company_name)
             if company_id:
@@ -1155,20 +1207,35 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
     items = []
     total_pages = 0
     for kind in kinds:
-        # Movies have production-company credits, not TV-network credits. Keep
-        # the movie lookup on its own company ID; series use the network ID.
+        watch_provider_id = (
+            _tmdb_india_watch_provider_id(name, kind)
+            if use_watch_provider else None
+        )
+        use_provider_for_kind = bool(use_watch_provider and watch_provider_id)
+        # TV titles can be linked either to an actual network or to a company.
+        # Movies only have production-company credits in Discover.
         company_filter = company_id
-        if kind == "tv" and not network_id:
+        tv_network_filter = network_id if kind == "tv" else None
+        if not use_provider_for_kind and kind == "tv" and not tv_network_filter and not company_filter:
             continue
-        if kind == "movie" and not company_filter:
+        if not use_provider_for_kind and kind == "movie" and not company_filter:
             continue
         params = {
             "api_key": api_key,
             "sort_by": (("first_air_date.desc" if kind == "tv" else "primary_release_date.desc") if sort_mode and str(sort_mode).lower() in ("recent", "new", "latest") else "popularity.desc"),
             "include_adult": "false",
             "page": page,
-            "with_networks" if kind == "tv" else "with_companies": network_id if kind == "tv" else company_filter,
         }
+        if use_provider_for_kind:
+            params.update({
+                "with_watch_providers": watch_provider_id,
+                "watch_region": "IN",
+            })
+        else:
+            if kind == "tv" and tv_network_filter:
+                params["with_networks"] = tv_network_filter
+            else:
+                params["with_companies"] = company_filter
         genre_id = _tmdb_genre_id(genre, kind) if genre else None
         if genre_id:
             params["with_genres"] = genre_id
@@ -1184,7 +1251,7 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
                 params["with_origin_country"] = country_code
         payload = _get_cached_request(
             f"https://api.themoviedb.org/3/discover/{kind}?{urllib.parse.urlencode(params)}",
-            max_age_hours=METADATA_CACHE_HOURS,
+            max_age_hours=24 if use_watch_provider else METADATA_CACHE_HOURS,
             timeout=5.0,
         ) or {}
         total_pages = max(total_pages, int(payload.get("total_pages") or 0))
@@ -1211,7 +1278,8 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
                 "popularity": entry.get("popularity", 0.0),
                 "release_date": released,
                 "overview": (entry.get("overview") or "").strip(),
-                "networks": ([{"id": network_id, "name": name}] if kind == "tv" and network_id else []),
+                "networks": ([{"id": network_id, "name": name}] if kind == "tv" and network_id and not use_provider_for_kind else []),
+                "watch_providers": ([{"provider_id": watch_provider_id, "provider_name": name, "region": "IN"}] if use_provider_for_kind else []),
             })
     items.sort(key=lambda item: item.get("popularity", 0), reverse=True)
     return items[:max(1, int(limit or 36))], min(total_pages, _MAX_NETWORK_PAGES)
