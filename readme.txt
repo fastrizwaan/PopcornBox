@@ -360,9 +360,29 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
 --------------------------------------------------------------------------------
 10. TESTING & VERIFICATION
 --------------------------------------------------------------------------------
-- Run focused checks for the behavior changed, plus nearby regression coverage
-  when available. Avoid running unrelated suites as a substitute for profiling.
-- For responsiveness work, measure the user-visible interaction before and after:
+- DO NOT RUN ALL UNIT TESTS AT ONCE (`unittest discover` or bulk test runners):
+  PopcornBox tests initialize GTK4, Libadwaita, image loaders, thread pools,
+  and in-memory mock databases. Running the entire test suite simultaneously or
+  in bulk discovery mode exhausts system memory, causes severe swap thrashing,
+  and freezes the host operating system.
+- ALWAYS RUN INDIVIDUAL TESTS SEPARATELY:
+  Only execute the single test file relevant to the modified component, e.g.:
+    python3 test_genre_dropdown.py
+    python3 test_media_type_genre_separation.py
+    python3 test_catalog_filter_empty_recovery.py
+    python3 test_robust_filter_and_spinners.py
+- RUN SPECIFIC METHODS WHEN DEBUGGING:
+  For fast turnaround and minimal memory overhead, isolate specific test cases:
+    python3 -m unittest test_file.py -k TestClass.test_method
+- SERIAL EXECUTION ONLY:
+  Never run multiple unit test files in parallel background jobs or loops. Always
+  wait for one test process to finish cleanly before launching another.
+- RUN FOCUSED CHECKS FOR BEHAVIOR CHANGED:
+  Run focused checks for the specific behavior changed, plus nearby regression
+  coverage when available. Avoid running unrelated suites as a substitute for
+  profiling.
+- MEASURE REAL-WORLD PERFORMANCE:
+  For responsiveness work, measure the user-visible interaction before and after:
   time to first frame, input-to-response delay, main-thread callback duration, and
   memory/widget count for representative large libraries. Record the dataset and
   machine used; use the results to set realistic budgets rather than fixed timing
