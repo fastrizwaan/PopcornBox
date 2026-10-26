@@ -1187,8 +1187,9 @@ class ContinueWatchingWidget(Gtk.Box):
         item_type = item_data.get("type", "movie")
         poster_url = item_data.get("medium_cover_image") or item_data.get("poster") or extract_image_url(item_data)
 
-        # Check metadata cache immediately on construction (fast SQLite WAL read, ~0.05ms)
-        if item_id:
+        # Check metadata cache only if vital fields are missing
+        need_meta = not poster_url or not item_data.get("title") or item_data.get("title") == "Unknown" or not item_data.get("year")
+        if item_id and need_meta:
             try:
                 cached = database.get_cached_metadata(item_id, item_type)
                 if cached:

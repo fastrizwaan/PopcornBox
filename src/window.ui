@@ -26,6 +26,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
           <object class="GtkWindowHandle" id="window_handle">
             <child>
               <object class="AdwViewStack" id="main_stack">
+                <property name="hhomogeneous">false</property>
+                <property name="vhomogeneous">false</property>
                 <child>
                   <object class="AdwViewStackPage" id="page_library">
                     <property name="name">library</property>
@@ -557,7 +559,9 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                     <property name="label" translatable="yes">Reset</property>
                                     <property name="valign">3</property>
                                     <property name="tooltip-text" translatable="yes">Reset all Discover filters</property>
-                                    <style><class name="flat"/></style>
+                                    <style>
+                                      <class name="flat"/>
+                                    </style>
                                   </object>
                                 </child>
                                 <child>
@@ -616,6 +620,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                         </child>
                         <child>
                           <object class="AdwViewStack" id="library_stack">
+                            <property name="hhomogeneous">false</property>
+                            <property name="vhomogeneous">false</property>
                             <child>
                               <object class="AdwViewStackPage">
                                 <property name="name">discover</property>

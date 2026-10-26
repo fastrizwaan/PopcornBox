@@ -21,6 +21,8 @@ template $CineWindow: Adw.ApplicationWindow {
   content: Adw.ToastOverlay toast_overlay {
     WindowHandle window_handle {
       Adw.ViewStack main_stack {
+        hhomogeneous: false;
+        vhomogeneous: false;
         
         Adw.ViewStackPage page_library {
           name: "library";
@@ -404,6 +406,8 @@ template $CineWindow: Adw.ApplicationWindow {
             }
 
             Adw.ViewStack library_stack {
+              hhomogeneous: false;
+              vhomogeneous: false;
               Adw.ViewStackPage {
                 name: "discover";
                 title: _("Discover");

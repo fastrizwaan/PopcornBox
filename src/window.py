@@ -4002,6 +4002,13 @@ class CineWindow(Adw.ApplicationWindow):
 
         Gtk.WindowGroup().add_window(self)
 
+        if hasattr(self, "main_stack") and self.main_stack:
+            self.main_stack.set_hhomogeneous(False)
+            self.main_stack.set_vhomogeneous(False)
+        if hasattr(self, "library_stack") and self.library_stack:
+            self.library_stack.set_hhomogeneous(False)
+            self.library_stack.set_vhomogeneous(False)
+
         for name in ['content_flowbox', 'search_movies_flowbox', 'search_series_flowbox', 'search_anime_flowbox', 'search_tv_flowbox']:
             if hasattr(self, name):
                 fb = getattr(self, name)
@@ -6816,7 +6823,6 @@ class CineWindow(Adw.ApplicationWindow):
                 return
             self._cancel_all_background_fetching()
             self._set_discover_results_search_visible(False)
-            self._set_discover_spinner_active(True)
             self.category_btn_stack.set_visible_child_name("home")
             # Home is a stable landing page: keep its Continue Watching row
             # visible and do not let Discover's Unique mode take over it.
@@ -6857,24 +6863,19 @@ class CineWindow(Adw.ApplicationWindow):
             self._current_discover_type = "all"
             self._current_discover_addon = None
             self.library_stack.set_visible_child_name("discover")
-            # Home is the unfiltered landing feed. Reset every Discover toolbar
-            # model while signals are suppressed so stale selections (especially
-            # Network) cannot leak into the Home view or its cached view key.
+            # Only reset Discover dropdown selections without re-populating all 7 full models from scratch
             self._syncing_discover_toolbar = True
             try:
                 all_type_index = next(
                     (i for i, item in enumerate(getattr(self, "_discover_type_items", [])) if item[1] == "all"),
                     0,
                 )
-                if getattr(self, "type_dropdown", None):
+                if getattr(self, "type_dropdown", None) and hasattr(self.type_dropdown, "get_selected") and self.type_dropdown.get_selected() != all_type_index:
                     self.type_dropdown.set_selected(all_type_index)
-                self._populate_discover_catalog_dropdown("all")
-                self._populate_discover_section_dropdown(None, "all")
-                self._populate_discover_genre_dropdown(None, "all", None)
-                self._populate_discover_year_dropdown(None, "all", None)
-                self._populate_discover_language_dropdown(None, "all", None)
-                self._populate_discover_country_dropdown(None, "all", None)
-                self._populate_discover_network_dropdown("all")
+                for dd_name in ("catalog_dropdown", "section_dropdown", "genre_dropdown", "year_dropdown", "language_dropdown", "country_dropdown", "network_dropdown"):
+                    dd = getattr(self, dd_name, None)
+                    if dd and hasattr(dd, "get_selected") and dd.get_selected() != 0:
+                        dd.set_selected(0)
             finally:
                 self._syncing_discover_toolbar = False
             self._refresh_discover_page(filter_media_type="all")
@@ -11863,18 +11864,29 @@ class CineWindow(Adw.ApplicationWindow):
         from . import database
         from .movie_widget import ContinueWatchingWidget
         
-        is_home = (getattr(self, "category_btn_stack", None) and hasattr(self.category_btn_stack, "get_visible_child_name") and self.category_btn_stack.get_visible_child_name() == "home")
+        ms = getattr(self, "main_stack", None)
+        is_library_visible = True
+        if ms and hasattr(ms, "get_visible_child_name"):
+            child_name = ms.get_visible_child_name()
+            if isinstance(child_name, str) and child_name != "library":
+                is_library_visible = False
+        is_home = (
+            is_library_visible
+            and getattr(self, "category_btn_stack", None)
+            and hasattr(self.category_btn_stack, "get_visible_child_name")
+            and self.category_btn_stack.get_visible_child_name() == "home"
+        )
 
         # Ensure no continue watching widgets exist in non-home discover boxes
         if not is_home:
-            if hasattr(self, "discover_box") and self.discover_box is not None and hasattr(self.discover_box, "get_first_child"):
+            if is_library_visible and hasattr(self, "discover_box") and self.discover_box is not None and hasattr(self.discover_box, "get_first_child"):
                 c = self.discover_box.get_first_child()
                 while c:
                     nxt = c.get_next_sibling()
                     if getattr(c, "_is_cw_header", False) or (hasattr(c, "has_css_class") and c.has_css_class("continue-watching-header")) or getattr(c, "_is_cw_scroll", False) or (hasattr(c, "has_css_class") and c.has_css_class("continue-watching-scroll")):
                         self.discover_box.remove(c)
                     c = nxt
-            debug_log("_update_continue_watching_section SKIPPED (not home)")
+            debug_log("_update_continue_watching_section SKIPPED (not home or library inactive)")
             return
 
         target_box = None
@@ -12179,7 +12191,10 @@ class CineWindow(Adw.ApplicationWindow):
                     
                 debug_log(f"_refresh_discover_page DONE (cache hit)")
                 if self._discover_next_row_index < len(self._discover_catalog_list):
-                    self._set_discover_spinner_active(True)
+                    if not has_valid_content:
+                        self._set_discover_spinner_active(True)
+                    else:
+                        self._set_discover_spinner_active(False)
                     def _resume_load():
                         if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(getattr(self, "_discover_abort_event", None)):
                             return False
@@ -16573,6 +16588,8 @@ class CineWindow(Adw.ApplicationWindow):
                 self._update_sort_dropdown(m_type)
             if getattr(self, "_addons_dirty", False):
                 self._refresh_active_library_view()
+            elif cat_name == "home" and hasattr(self, "_update_continue_watching_section"):
+                self._update_continue_watching_section()
         elif main_page in ["favorites", "history", "watched", "downloads", "continue_watching"]:
             self.main_stack.set_visible_child_name(main_page)
             self._populate_local_db_page(main_page)
