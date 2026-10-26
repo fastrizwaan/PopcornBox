@@ -157,6 +157,8 @@ def _extract_all_item_ids(item_or_id):
 
 def _read_db():
     global _db_corrupted, _json_cache, _json_cache_valid
+    if _json_cache_valid and _json_cache is not None:
+        return _json_cache
     with _db_lock:
         if _json_cache_valid and _json_cache is not None:
             return _json_cache
@@ -360,6 +362,34 @@ def _read_db():
             logging.warning(f"Transient database read failure: {e}")
             return {"favorites": [], "watched": [], "history": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}
 
+_watched_ids_cache = None
+_favorites_ids_cache = None
+
+def _invalidate_id_sets():
+    global _watched_ids_cache, _favorites_ids_cache
+    _watched_ids_cache = None
+    _favorites_ids_cache = None
+
+def _get_watched_ids_set():
+    global _watched_ids_cache
+    if _watched_ids_cache is not None:
+        return _watched_ids_cache
+    s = set()
+    for w in _read_db().get("watched", []):
+        s.update(_extract_all_item_ids(w))
+    _watched_ids_cache = s
+    return s
+
+def _get_favorites_ids_set():
+    global _favorites_ids_cache
+    if _favorites_ids_cache is not None:
+        return _favorites_ids_cache
+    s = set()
+    for f in _read_db().get("favorites", []):
+        s.update(_extract_all_item_ids(f))
+    _favorites_ids_cache = s
+    return s
+
 def reset_json_cache():
     global _json_cache, _json_cache_valid
     # Synchronize with readers/writers: _read_db checks _json_cache_valid and
@@ -367,6 +397,7 @@ def reset_json_cache():
     with _db_lock:
         _json_cache = None
         _json_cache_valid = False
+        _invalidate_id_sets()
 
 def _under_user_data(path):
     """True when writing here would touch the real user data directories."""
@@ -388,11 +419,45 @@ def _write_db(data):
         print(f"[SECURITY] Blocked unittests from writing to user database: {target}")
         return False
     with _db_lock:
+        clean_data = _sanitize_for_json(data)
+        _json_cache = clean_data
+        _json_cache_valid = True
+        _invalidate_id_sets()
+
+        # If called from the GTK main thread in normal usage, offload fsync to
+        # background thread so GUI responsiveness is never stalled by disk I/O.
+        if not _is_testing() and threading.current_thread() is threading.main_thread():
+            def _bg_fsync_worker(target_file, payload):
+                with _db_lock:
+                    _ensure_db()
+                    unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
+                    temp_file = target_file.with_name(f"data{unique_suffix}")
+                    try:
+                        with open(temp_file, "w") as f:
+                            json.dump(payload, f, indent=4, default=str)
+                            f.flush()
+                            os.fsync(f.fileno())
+                        temp_file.replace(target_file)
+                    except Exception as e:
+                        try:
+                            if temp_file.exists():
+                                temp_file.unlink()
+                        except Exception:
+                            pass
+                        logging.error(f"Error writing database in background: {e}")
+
+            threading.Thread(
+                target=_bg_fsync_worker,
+                args=(target, clean_data),
+                daemon=True,
+                name="DbFsyncWorker",
+            ).start()
+            return True
+
         _ensure_db()
         unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
         temp_file = target.with_name(f"data{unique_suffix}")
         try:
-            clean_data = _sanitize_for_json(data)
             with open(temp_file, "w") as f:
                 json.dump(clean_data, f, indent=4, default=str)
                 # Flush to disk before the rename: without fsync a crash can
@@ -401,9 +466,6 @@ def _write_db(data):
                 f.flush()
                 os.fsync(f.fileno())
             temp_file.replace(target)
-            # Update in-memory cache with the data we just wrote
-            _json_cache = clean_data
-            _json_cache_valid = True
             return True
         except Exception as e:
             try:
@@ -478,10 +540,7 @@ def is_favorite(item_or_id):
     target_ids = _extract_all_item_ids(item_or_id)
     if not target_ids:
         return False
-    return any(
-        bool(_extract_all_item_ids(f).intersection(target_ids))
-        for f in _read_db().get("favorites", [])
-    )
+    return bool(target_ids.intersection(_get_favorites_ids_set()))
 
 # --- Watched ---
 
@@ -519,10 +578,7 @@ def is_watched(item_or_id):
     target_ids = _extract_all_item_ids(item_or_id)
     if not target_ids:
         return False
-    return any(
-        bool(_extract_all_item_ids(w).intersection(target_ids))
-        for w in _read_db().get("watched", [])
-    )
+    return bool(target_ids.intersection(_get_watched_ids_set()))
 
 # --- History ---
 

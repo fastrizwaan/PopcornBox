@@ -1826,9 +1826,10 @@ class MovieDetailsPage(Gtk.Overlay):
                     "last_watched": int(_time.time()),
                 }
                 cw_item["selected_torrent"] = playback_stream
-                database.save_continue_watching(cw_item)
-                if hasattr(self, "window") and self.window and hasattr(self.window, "_update_continue_watching_section"):
-                    self.window._update_continue_watching_section()
+                database.save_continue_watching_async(cw_item)
+                ms = getattr(self.window, "main_stack", None) if hasattr(self, "window") and self.window else None
+                if ms and hasattr(ms, "get_visible_child_name") and ms.get_visible_child_name() == "library" and hasattr(self.window, "_update_continue_watching_section"):
+                    GLib.idle_add(self.window._update_continue_watching_section)
 
         working_stream = getattr(self, "remembered_working_stream", None)
         if not working_stream and primary_id:
@@ -7171,14 +7172,25 @@ class CineWindow(Adw.ApplicationWindow):
                 self._syncing_discover_toolbar = True
                 try:
                     self.media_type_dropdown.set_selected(self.media_type_keys.index("movie"))
-                    self._populate_discover_catalog_dropdown("movie")
-                    self._populate_discover_section_dropdown(None, "movie")
-                    self._populate_discover_genre_dropdown(None, "movie", None)
-                    self._populate_discover_year_dropdown(None, "movie", None)
-                    self._populate_discover_language_dropdown(None, "movie", None)
-                    self._populate_discover_country_dropdown(None, "movie", None)
                 finally:
                     self._syncing_discover_toolbar = False
+
+                def _deferred_populate_movies():
+                    if getattr(self, "current_media_type", None) != "movie":
+                        return False
+                    self._syncing_discover_toolbar = True
+                    try:
+                        self._populate_discover_catalog_dropdown("movie")
+                        self._populate_discover_section_dropdown(None, "movie")
+                        self._populate_discover_genre_dropdown(None, "movie", None)
+                        self._populate_discover_year_dropdown(None, "movie", None)
+                        self._populate_discover_language_dropdown(None, "movie", None)
+                        self._populate_discover_country_dropdown(None, "movie", None)
+                    finally:
+                        self._syncing_discover_toolbar = False
+                    return False
+                GLib.idle_add(_deferred_populate_movies)
+
             self._update_sort_dropdown("movie")
             self._update_genre_dropdown("movie")
             if self._is_unique_mode_active() is True:
@@ -7186,7 +7198,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._refresh_unique_combined_view()
             else:
                 self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type="movie", force_refresh=True)
+                self._refresh_discover_page(filter_media_type="movie", force_refresh=False)
         action.connect("activate", on_switch_movies)
         self.add_action(action)
         
@@ -7223,14 +7235,25 @@ class CineWindow(Adw.ApplicationWindow):
                 self._syncing_discover_toolbar = True
                 try:
                     self.media_type_dropdown.set_selected(self.media_type_keys.index("series"))
-                    self._populate_discover_catalog_dropdown("series")
-                    self._populate_discover_section_dropdown(None, "series")
-                    self._populate_discover_genre_dropdown(None, "series", None)
-                    self._populate_discover_year_dropdown(None, "series", None)
-                    self._populate_discover_language_dropdown(None, "series", None)
-                    self._populate_discover_country_dropdown(None, "series", None)
                 finally:
                     self._syncing_discover_toolbar = False
+
+                def _deferred_populate_series():
+                    if getattr(self, "current_media_type", None) != "series":
+                        return False
+                    self._syncing_discover_toolbar = True
+                    try:
+                        self._populate_discover_catalog_dropdown("series")
+                        self._populate_discover_section_dropdown(None, "series")
+                        self._populate_discover_genre_dropdown(None, "series", None)
+                        self._populate_discover_year_dropdown(None, "series", None)
+                        self._populate_discover_language_dropdown(None, "series", None)
+                        self._populate_discover_country_dropdown(None, "series", None)
+                    finally:
+                        self._syncing_discover_toolbar = False
+                    return False
+                GLib.idle_add(_deferred_populate_series)
+
             self._update_sort_dropdown("series")
             self._update_genre_dropdown("series")
             if self._is_unique_mode_active() is True:
@@ -7238,7 +7261,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._refresh_unique_combined_view()
             else:
                 self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type="series", force_refresh=True)
+                self._refresh_discover_page(filter_media_type="series", force_refresh=False)
         action.connect("activate", on_switch_series)
         self.add_action(action)
 
@@ -7280,14 +7303,25 @@ class CineWindow(Adw.ApplicationWindow):
                 self._syncing_discover_toolbar = True
                 try:
                     self.media_type_dropdown.set_selected(self.media_type_keys.index("anime"))
-                    self._populate_discover_catalog_dropdown("anime")
-                    self._populate_discover_section_dropdown(None, "anime")
-                    self._populate_discover_genre_dropdown(None, "anime", None)
-                    self._populate_discover_year_dropdown(None, "anime", None)
-                    self._populate_discover_language_dropdown(None, "anime", None)
-                    self._populate_discover_country_dropdown(None, "anime", None)
                 finally:
                     self._syncing_discover_toolbar = False
+
+                def _deferred_populate_anime():
+                    if getattr(self, "current_media_type", None) != "anime":
+                        return False
+                    self._syncing_discover_toolbar = True
+                    try:
+                        self._populate_discover_catalog_dropdown("anime")
+                        self._populate_discover_section_dropdown(None, "anime")
+                        self._populate_discover_genre_dropdown(None, "anime", None)
+                        self._populate_discover_year_dropdown(None, "anime", None)
+                        self._populate_discover_language_dropdown(None, "anime", None)
+                        self._populate_discover_country_dropdown(None, "anime", None)
+                    finally:
+                        self._syncing_discover_toolbar = False
+                    return False
+                GLib.idle_add(_deferred_populate_anime)
+
             self._update_sort_dropdown("anime")
             self._update_genre_dropdown("anime")
             if self._is_unique_mode_active() is True:
@@ -7295,7 +7329,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._refresh_unique_combined_view()
             else:
                 self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page(filter_media_type="anime", force_refresh=True)
+                self._refresh_discover_page(filter_media_type="anime", force_refresh=False)
         action.connect("activate", on_switch_anime)
         self.add_action(action)
 
@@ -16589,7 +16623,7 @@ class CineWindow(Adw.ApplicationWindow):
             if getattr(self, "_addons_dirty", False):
                 self._refresh_active_library_view()
             elif cat_name == "home" and hasattr(self, "_update_continue_watching_section"):
-                self._update_continue_watching_section()
+                GLib.idle_add(self._update_continue_watching_section)
         elif main_page in ["favorites", "history", "watched", "downloads", "continue_watching"]:
             self.main_stack.set_visible_child_name(main_page)
             self._populate_local_db_page(main_page)
@@ -16674,9 +16708,6 @@ class CineWindow(Adw.ApplicationWindow):
         if current_page == "player":
             self._close_player(remove_torrent=True)
             return
-
-        if hasattr(self, "_update_continue_watching_section"):
-            self._update_continue_watching_section()
 
         if current_page == "person" and hasattr(self, "person_box"):
             while child := self.person_box.get_first_child():
