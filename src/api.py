@@ -2634,7 +2634,7 @@ def filter_items_by_genre(items, genre, media_type=None):
 
 def hydrate_network_metadata(items, media_type=None, timeout=20.0):
     """Wait briefly for provider metadata on this visible batch before filtering it."""
-    if not items:
+    if not database.METADATA_HYDRATION_ENABLED or not items:
         return
     pending = {}
     by_id = {}
@@ -3486,7 +3486,7 @@ _HYDRATION_LISTENERS = {}
 
 def register_hydration_listener(item_id, callback):
     """Register a UI callback to be notified when item_id metadata hydration completes."""
-    if not item_id or not callable(callback):
+    if not database.METADATA_HYDRATION_ENABLED or not item_id or not callable(callback):
         return
     iid = str(item_id).strip()
     with _HYDRATION_LISTENERS_LOCK:
@@ -3569,7 +3569,7 @@ def _promote_metadata_backfill(key):
 
 def queue_metadata_hydration(item_id, media_type="movie", item_dict=None, force_refresh=False):
     """Queue an item for polite, rate-limited background metadata hydration from Cinemeta."""
-    if not is_imdb_id(item_id):
+    if not database.METADATA_HYDRATION_ENABLED or not is_imdb_id(item_id):
         return False
     global _HYDRATION_THREAD, _HYDRATION_BOOTSTRAP_DONE
     with _HYDRATION_LOCK:
@@ -3805,7 +3805,7 @@ def _run_metadata_hydration_worker():
 
 def hydrate_missing_catalog_items(items, media_type="movie"):
     """Batch-hydrates any catalog items missing titles/posters/genres/year using metadata_cache and background hydrator."""
-    if not items:
+    if not database.METADATA_HYDRATION_ENABLED or not items:
         return False
 
     updated = False

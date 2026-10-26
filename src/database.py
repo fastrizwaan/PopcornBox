@@ -14,6 +14,10 @@ _db_lock = threading.RLock()
 _cache_db_lock = threading.RLock()
 _db_corrupted = False
 
+# Metadata hydration is disabled to avoid per-card SQLite enrichment and
+# background metadata work during catalog rendering.
+METADATA_HYDRATION_ENABLED = False
+
 # Continue-watching writes are the only ones that fire on a timer during
 # playback. They go through a single background worker so the fsync-backed
 # data.json rewrite never blocks the GTK thread. The generation counter makes
@@ -2129,7 +2133,7 @@ def hydrate_items_from_metadata(items, media_type=None):
     Takes a list of item dicts and enriches any items missing genres/year/title/cover/desc/lang.
     Returns the number of items that were updated.
     """
-    if not items or not isinstance(items, list):
+    if not METADATA_HYDRATION_ENABLED or not items or not isinstance(items, list):
         return 0
 
     to_hydrate = []

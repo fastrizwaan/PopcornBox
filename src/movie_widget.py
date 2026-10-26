@@ -882,7 +882,7 @@ class MovieWidget(Gtk.Box):
             movie_data["title"] = movie_data["name"]
 
         # Only check metadata cache if essential info (poster or title) is missing, avoiding main thread SQLite lock contention
-        if item_id and (not poster_url or not has_valid_title):
+        if database.METADATA_HYDRATION_ENABLED and item_id and (not poster_url or not has_valid_title):
             try:
                 cached = database.get_cached_metadata(item_id, item_type)
                 if cached:
@@ -986,7 +986,7 @@ class MovieWidget(Gtk.Box):
             tooltip_lines.append(f"\nCatalog: {cat_name}")
         self.set_tooltip_text("\n".join(tooltip_lines))
 
-        # Wire live hydration update callback so card updates in real time when background hydrator finishes
+        # Keep the callback path available if metadata hydration is enabled.
         def _on_card_hydrated(t, y, p):
             try:
                 self._apply_resolved_meta(t, y, p)
@@ -994,7 +994,7 @@ class MovieWidget(Gtk.Box):
                 pass
             return False
 
-        if item_id:
+        if database.METADATA_HYDRATION_ENABLED and item_id:
             try:
                 from . import api
                 api.register_hydration_listener(item_id, _on_card_hydrated)
@@ -1036,7 +1036,7 @@ class MovieWidget(Gtk.Box):
                     self.year_label.add_css_class("pt-card-year")
                     self.append(self.year_label)
             # A card can also arrive with a poster URL that simply does not work.
-            # If the tile is still blank and hydration found a different picture for
+            # If the tile is still blank and fallback found a different picture for
             # the same title, that is the fix the user is waiting on -- paint it.
             # A tile that already shows something is never repainted.
             shown_url = self.movie_data.get("medium_cover_image") or self.movie_data.get("poster")

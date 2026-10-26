@@ -236,9 +236,10 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   images were not fetched" after a details visit. Tiles parked this way never spend
   one of their bounded repair tries. A widget that has no window root yet is a grid
   on its way to the screen and downloads immediately, exactly as before.
-- When the hydrator resolves a poster for a card whose own URL never painted
-  anything, `_apply_resolved_meta` repaints the tile - but only while it is still
-  blank, so a card that already shows a picture is never flickered.
+- The poster fallback resolver can repaint a blank tile through
+  `_apply_resolved_meta`; it does so only while the tile is still blank, so a
+  card that already shows a picture is never flickered. This is separate from
+  metadata hydration, which is disabled.
 - Streaming providers and torrent resolution must run asynchronously with clean
   timeouts and failover mechanisms.
 
@@ -267,21 +268,13 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   Diagnose which limit is reached before changing it. Fetch additional result
   pages as the user approaches the end of the visible results; do not increase
   page depth or concurrency blindly to make a grid feel fuller.
-- SUCCESSFUL METADATA AND CATALOG ROWS ARE STORED PERMANENTLY, BUT MISSING FIELDS
-  ARE RETRIED. `database.CATALOG_CACHE_HOURS` is `None`, and metadata is merged
-  into the persistent SQLite `metadata_cache`. A missing title, poster, genre,
-  year, description, language, or TV network remains eligible for hydration;
-  missing records are found in both metadata and catalog caches. When the
-  hydrator is first triggered during startup, it scans those records and queues
-  them for a background retry. This is why a missing item is retried on each app
-  restart instead of waiting a week for the next attempt. During a running
-  session, incomplete cached metadata is eligible again after seven days. A
-  complete record is not periodically refreshed. Cinemeta is tried first, with
-  TMDb enrichment for missing genres, language, country, and network/company
-  fields. TV network checks have their own `networks_checked_at` timestamp.
-  Successful metadata and catalog rows remain permanent; request caches still
-  have explicit freshness rules. Streams and subtitles are 24 h, IPTV playlists
-  24 h, searches 2 h, addon directory 12 h, and manifests a week.
+- AUTOMATIC METADATA HYDRATION IS DISABLED. Catalog cards use fields supplied by
+  their source; the app does not enrich them from the local metadata cache or
+  queue Cinemeta backfills. Existing metadata remains stored, and explicit
+  metadata/detail requests are separate. Poster fallback and image repair remain
+  active. Request caches still have explicit freshness rules: streams and
+  subtitles are 24 h, IPTV playlists 24 h, searches 2 h, addon directory 12 h,
+  and manifests a week.
   `api._prune_disk_cache_if_needed()` only trims past `_DISK_CACHE_MAX_BYTES`,
   least recently read first; it does not delete cached metadata by age.
 - A HOST THAT SAYS "SLOW DOWN" IS BELIEVED: HTTP 429 with `Retry-After`, and
