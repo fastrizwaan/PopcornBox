@@ -9694,6 +9694,12 @@ class CineWindow(Adw.ApplicationWindow):
                 "tmdb_total_pages": 0,
             })
 
+        # The TMDb row can answer the language and genre filters directly.
+        # Avoid loading the local genre cache in parallel; it is capped per
+        # page and can spend a long time hydrating metadata before it yields.
+        if selected_lang and any(c.get("_source") == "tmdb_country" for c in catalogs):
+            catalogs = [c for c in catalogs if c.get("_source") != "genre_cache"]
+
         # In Discover, Unique means remove duplicates within the selected
         # section. Without this scope it aggregates every sibling catalog from
         # the selected addon (for example, showing sports networks while the
@@ -10040,10 +10046,10 @@ class CineWindow(Adw.ApplicationWindow):
                                 return None
                             items = items or []
                             raw_count = len(items)
-                            if cat_info.get("title_only"):
-                                query_folded = query.casefold()
-                                items = [it for it in items if query_folded in str(
-                                    it.get("title") or it.get("name") or "").casefold()]
+                            # TMDb title search is already scoped to titles and
+                            # can return typo-tolerant matches (e.g. "trublood"
+                            # -> "True Blood"). An exact local substring check
+                            # here would discard those valid title-only results.
                             if cur_genre:
                                 items = api.filter_items_by_genre(items, cur_genre, media_type=m_type)
                             if cur_lang:
@@ -10131,8 +10137,9 @@ class CineWindow(Adw.ApplicationWindow):
                                 f"{cat_info.get('year') or ''}:{cat_info.get('sort_mode') or ''}:"
                                 f"{req_lang or ''}:p{page}:unique50"
                             )
-                            network_cache_age = 24 if tmdb_helper.is_india_watch_provider(network_name) else database.CATALOG_CACHE_HOURS
-                            items = database.get_cached_catalog(tmdb_key, max_age_hours=network_cache_age)
+                            items = database.get_cached_catalog(
+                                tmdb_key, max_age_hours=database.CATALOG_CACHE_HOURS
+                            )
                             if not items:
                                 items, total_pages = tmdb_helper.fetch_country_catalog_page(
                                     country=req_country,
@@ -10153,6 +10160,10 @@ class CineWindow(Adw.ApplicationWindow):
                                 return None
                             items = items or []
                             raw_count = len(items)
+                            if cat_info.get("genre"):
+                                items = api.filter_items_by_genre(
+                                    items, cat_info["genre"], media_type=m_type
+                                )
                             if cur_lang:
                                 items = api.filter_items_by_genre(items, cur_lang, media_type=m_type)
                             if cur_country:
@@ -11626,6 +11637,14 @@ class CineWindow(Adw.ApplicationWindow):
                 "supports_pagination": True,
                 "title": tmdb_label,
             })
+
+            # TMDb can apply the language (and optional genre) filter directly
+            # in its discover request. When that row is available, don't also
+            # load the synthetic local-cache row: hydrating a large set of
+            # cached metadata can hold up the same filtered view without adding
+            # results that the TMDb query cannot already provide.
+            if cur_lang:
+                rows = [row for row in rows if row.get("_source") != "genre_cache"]
 
         # A selected Network gets its own TMDb catalog row. TV results are
         # queried by network and movie results by the matching production

@@ -1583,6 +1583,34 @@ def fetch_title_search_page(query, media_type="all", page=1, limit=50):
         except RuntimeError:
             pass
 
+    # TMDb's website uses a unified title search. Its multi-search can return
+    # fuzzy matches that the separate movie/TV endpoints miss (for example,
+    # "trublood" finding "True Blood"). Keep the focused endpoints as the
+    # primary path, then try the same unified search only when they yield no
+    # usable movie or TV cards.
+    has_usable_title = any(
+        entry.get("id") and entry.get("poster_path")
+        for _kind, _app_type, data in cached + fetched
+        for entry in (data or {}).get("results", []) or []
+        if _kind != "multi" or entry.get("media_type") in ("movie", "tv")
+    )
+    if not has_usable_title and mt in ("all", "discover", "none", "", "movie_series", "movies_series", "movie+series", "movies+series"):
+        params = {"api_key": api_key, "query": query, "page": page, "include_adult": "false"}
+        multi_url = "https://api.themoviedb.org/3/search/multi?" + urllib.parse.urlencode(params)
+        try:
+            multi_data = _get_cached_request(
+                multi_url, max_age_hours=METADATA_CACHE_HOURS,
+                cache_only=True, timeout=5.0,
+            )
+            if not multi_data:
+                multi_data = _get_cached_request(
+                    multi_url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0,
+                )
+        except Exception:
+            multi_data = None
+        if multi_data:
+            fetched.append(("multi", "", multi_data))
+
     total_pages = 0
     items, seen_ids = [], set()
     for _kind, app_type, data in cached + fetched:
@@ -1591,6 +1619,11 @@ def fetch_title_search_page(query, media_type="all", page=1, limit=50):
         except (TypeError, ValueError):
             pass
         for entry in (data or {}).get("results", []) or []:
+            if _kind == "multi":
+                media_kind = entry.get("media_type")
+                if media_kind not in ("movie", "tv"):
+                    continue
+                app_type = "movie" if media_kind == "movie" else "series"
             tmdb_id = entry.get("id")
             poster_path = entry.get("poster_path")
             if not tmdb_id or not poster_path:
