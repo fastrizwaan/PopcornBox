@@ -9646,7 +9646,7 @@ class CineWindow(Adw.ApplicationWindow):
                 "tmdb_total_pages": 0,
             }
             catalogs = [query_cache_cat, tmdb_search_cat] + search_catalog_entries
-        elif (selected_genre or selected_lang or selected_country) and not filter_addon and not section_scope and not any(c.get("_source") == "genre_cache" for c in catalogs):
+        elif (selected_genre or selected_lang or selected_country) and not filter_addon and not section_scope and not any(c.get("_source") in ("genre_cache", "tmdb_country", "tmdb_network") for c in catalogs):
             parts = [p for p in (selected_genre, selected_lang, selected_country) if p]
             cache_title = " · ".join(parts) if parts else "Cached"
             catalogs.insert(0, {
@@ -9676,7 +9676,7 @@ class CineWindow(Adw.ApplicationWindow):
             tmdb_target and tmdb_target_code and not active_query
             and not filter_addon and not section_scope
             and (filter_type or "all") in ("all", "movie", "series")
-            and not any(c.get("_source") == "tmdb_country" for c in catalogs)
+            and not any(c.get("_source") in ("tmdb_country", "tmdb_network") for c in catalogs)
         ):
             catalogs.insert(0, {
                 "_source": "tmdb_country",
@@ -9694,11 +9694,18 @@ class CineWindow(Adw.ApplicationWindow):
                 "tmdb_total_pages": 0,
             })
 
-        # The TMDb row can answer the language and genre filters directly.
-        # Avoid loading the local genre cache in parallel; it is capped per
-        # page and can spend a long time hydrating metadata before it yields.
-        if selected_lang and any(c.get("_source") == "tmdb_country" for c in catalogs):
-            catalogs = [c for c in catalogs if c.get("_source") != "genre_cache"]
+        # Direct TMDb country/language rows can combine these filters with genre
+        # and year. Use them as the only sources in global filtered views so
+        # addon metadata hydration cannot freeze the UI before cards arrive.
+        if (
+            (selected_lang or selected_country)
+            and not active_query and not filter_addon and not section_scope
+            and any(c.get("_source") in ("tmdb_country", "tmdb_network") for c in catalogs)
+        ):
+            catalogs = [
+                c for c in catalogs
+                if c.get("_source") in ("tmdb_country", "tmdb_network")
+            ]
 
         # In Discover, Unique means remove duplicates within the selected
         # section. Without this scope it aggregates every sibling catalog from
@@ -11672,6 +11679,17 @@ class CineWindow(Adw.ApplicationWindow):
             # Most addon pages lack network metadata, so retaining them here only
             # creates empty rows and repeats expensive metadata work.
             rows = [row for row in rows if row.get("_source") == "tmdb_network"]
+
+        if (cur_lang or cur_country) and not filter_addon_url:
+            # A direct TMDb row can combine country/language with genre and year.
+            # Avoid addon rows that would trigger metadata hydration without
+            # improving the filtered result set.
+            tmdb_rows = [
+                row for row in rows
+                if row.get("_source") in ("tmdb_country", "tmdb_network")
+            ]
+            if tmdb_rows:
+                rows = tmdb_rows
 
         # Deduplicate row titles to avoid GTK "duplicate child name" warnings
         seen_titles = {}

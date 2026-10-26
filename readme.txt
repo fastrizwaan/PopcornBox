@@ -92,11 +92,12 @@ Discover data sources and filters:
   exposing every production studio.
 - Network, media type, genre, year, original language, and country can be
   combined. These filters are passed to TMDb Discover when a TMDb Network or
-  country/language catalog is active. When a language filter has a TMDb row,
-  Unique uses that direct query (including a selected genre) instead of also
-  loading the slower hydrated local genre-cache row. A type change keeps other
-  selections if they are still offered; Reset returns dropdowns to their All
-  values and turns off Unique.
+  country/language catalog is active. In global views, supported country or
+  language filters use direct TMDb rows, combining genre and year without also
+  loading addon catalogs or the hydrated local genre cache. Addon-scoped views
+  continue to use that addon's catalogs. A type change keeps other selections
+  if they are still offered; Reset returns dropdowns to their All values and
+  turns off Unique.
 - Title searches use TMDb's movie and TV search endpoints, with unified
   multi-search as a fallback when those endpoints return no usable cards.
   TMDb may return typo-tolerant title matches; Title Only must not remove those
@@ -302,11 +303,11 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   a page already held fresh. `fetch_country_catalog_page()` probes every URL with
   `cache_only=True` and fetches only the gaps, so re-browsing a filter costs zero
   requests. The Unique loader normally submits local sources first and appends a
-  network slice behind cached slices it is waiting on. When a language-filtered
-  TMDb row is available, it skips the synthetic local genre-cache row so slow
-  metadata hydration does not delay the direct filtered results. Inside one row
-  the order stays TMDb's popularity sort - cached-before-network is about when
-  results reach the UI, not a ranking.
+  network slice behind cached slices it is waiting on. For supported global
+  country/language filters, it uses direct TMDb rows and skips addon and local
+  cache sources so metadata hydration does not delay the filtered results.
+  Inside one row the order stays TMDb's popularity sort - cached-before-network
+  is about when results reach the UI, not a ranking.
 - SIZE FAN-OUT POOLS TO THE WINDOW where they are created (see the TMDb
   country/language fan-out in `src/tmdb_helper.py`), so workers queue on the
   window instead of piling up behind it, and submit the must-have URLs first so
