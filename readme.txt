@@ -22,14 +22,19 @@ Key Source Files (`src/`):
 - `src/window.blp` & `src/window.ui`:
   Main UI layout declared in Blueprint (`.blp`) and compiled to GtkBuilder XML (`.ui`).
   Contains headerbars, search bars, `library_stack`, details views, and controls.
+  Stack sizing: `main_stack` and `library_stack` must have `hhomogeneous: false` and
+  `vhomogeneous: false` so wide child views do not inflate bounds of compact views or player.
 - `src/style.css`:
   Global GTK4 CSS stylesheets (dark theme, cards, headers, buttons, player OSD).
 - `src/api.py`:
   Stremio protocol client: fetches addon manifests, queries catalog items, resolves
   media streams, and queries subtitle providers asynchronously.
 - `src/database.py`:
-  SQLite storage for user state: history, watched status, continue watching queue,
-  favorites, downloaded items, cached catalogs, working streams, and addon states.
+  JSON database (`data.json`) and SQLite cache (`metadata.db`) for user state:
+  history, watched status, continue watching queue, favorites, downloaded items,
+  cached catalogs, working streams, and addon states. Uses double-checked in-memory
+  caching, O(1) set lookups for watched/favorites, and a non-blocking background
+  `DbFsyncWorker` to keep all physical disk writes and `os.fsync` off the GTK main thread.
 - `src/movie_widget.py`:
   Item cards: `MovieWidget` (standard posters) and `ContinueWatchingWidget` (progress
   bars, quick play button, remove button). Handles async cover loading and caching.
@@ -58,6 +63,14 @@ Key Source Files (`src/`):
    Network See All opens the paginated TMDb network results in the full Discover grid.
 3. `"search_results"`:
    Categorized search grids (Movies, Series, Anime).
+
+Stack Homogeneity & Layout Integrity:
+- Both `main_stack` and `library_stack` must have `hhomogeneous: false` and
+  `vhomogeneous: false` in `.blp`, `.ui`, and runtime window initialization.
+  If either stack is homogeneous, GTK sizes the entire stack to match its widest
+  or tallest child widget (such as a wide FlowBox grid or detailed series cast list),
+  forcing the video player or toast overlays to exceed window bounds and generating
+  `AdwToastOverlay exceeds CineWindow width` warnings.
 
 UI Spacing & Layout Guidelines:
 - Headerbar gap to first section: 12px. The first section header must have
@@ -160,9 +173,26 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   shutdown or startup waits, disk writes, fsync, and unbounded parsing or loops.
   Playback clicks must show the loading/player state promptly, then continue setup
   without waiting for persistence or cleanup.
-- Use background workers for network and blocking I/O. Prefer existing async
-  database APIs; when several related values must be persisted, batch them into
-  one locked write instead of issuing multiple full-file rewrites.
+- Main-Thread Disk I/O Ban: `src/database.py` enforces that physical disk writes,
+  `json.dump`, and `os.fsync` must never execute synchronously on the GTK main thread.
+  Calls to `_write_db()` from the main thread immediately update the in-memory cache
+  (`_json_cache`) and offload file writing + `os.fsync` to a background worker
+  (`DbFsyncWorker`). Background threads execute writes synchronously. Only testing
+  environments (`_is_testing()`) execute synchronously on the main thread for
+  deterministic assertions.
+- Double-Checked Locking in Database Reads: `_read_db()` employs double-checked
+  in-memory locking (`if _json_cache_valid and _json_cache is not None: return _json_cache`).
+  Readers never block on `_db_lock` or disk I/O when the in-memory cache is valid,
+  eliminating lock contention and UI micro-stutters.
+- O(1) Set Lookups for Status Checks: `is_watched()` and `is_favorite()` must never
+  run O(N) linear scans with string splits or regex parsing over database arrays on
+  the UI thread. In-memory set caches (`_watched_ids_cache`, `_favorites_ids_cache`)
+  provide O(1) lookups and are invalidated on write.
+- Use background workers for network and blocking I/O. Always prefer async APIs
+  such as `database.save_continue_watching_async()` over synchronous saves when
+  updating playback progress or user state from UI events. When several related
+  values must be persisted, batch them into one locked write instead of issuing
+  multiple full-file rewrites.
 - Small, bounded reads from an in-memory cache or indexed local database can stay
   on the main thread only when they are known to be fast and do not contend with a
   long write. Move them off-thread if profiling shows lock waits or UI stalls.
@@ -193,6 +223,22 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
 - Keep window construction limited to essential widgets and cached state. Start
   network refreshes and expensive derived work after the first frame, with clear
   cancellation when the user changes pages.
+- Zero-Latency Tab & Category Switching: Switching between Movies, Series, and
+  Anime categories must reuse existing cached `DiscoverView` instances
+  (`self._discover_views`) with `force_refresh=False`. Passing `force_refresh=True`
+  on normal category navigation forces full catalog destruction and network
+  re-querying, causing several-second UI freezes. Only an explicit user reload
+  should force a fresh fetch. Dropdown model population for hidden filter drawers
+  must be scheduled via `GLib.idle_add` so tab switches and animations complete
+  with zero latency.
+- Responsive Details Transitions: Navigating to movie or series details must
+  switch `main_stack` to `details_box` or `series_box` immediately. Never trigger
+  expensive home-screen updates (such as rebuilding the Continue Watching carousel)
+  while navigating to details.
+- Smooth Back Navigation: Pressing Back must restore the previous view stack
+  instantaneously. Guard Continue Watching rebuilds (`_update_continue_watching_section()`)
+  so they only execute if the Library stack is actually visible, and defer the rebuild
+  via `GLib.idle_add` so the visual view flip completes without any frame stutter.
 - Do not use a fixed delay as a substitute for measuring startup work. Schedule
   optional work when the main loop is idle, and keep each main-thread slice small
   enough to avoid visible stalls.
