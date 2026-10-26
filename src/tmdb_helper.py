@@ -1239,6 +1239,11 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
         genre_id = _tmdb_genre_id(genre, kind) if genre else None
         if genre_id:
             params["with_genres"] = genre_id
+        elif genre:
+            target_kw = str(genre).strip().lower()
+            kw_table = _TMDB_TV_KEYWORDS if kind == "tv" else _TMDB_EXTRA_KEYWORDS
+            if target_kw in kw_table:
+                params["with_keywords"] = kw_table[target_kw]
         if year:
             params["first_air_date_year" if kind == "tv" else "primary_release_year"] = year
         if language:
@@ -1293,10 +1298,25 @@ _TMDB_MOVIE_GENRES = {
 }
 
 _TMDB_TV_GENRES = {
-    10759: "Action", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary",
-    18: "Drama", 10751: "Family", 9648: "Mystery", 10765: "Sci-Fi",
-    10766: "Soap", 10767: "Talk-Show", 10768: "War", 10762: "Family",
-    10763: "News", 10764: "Reality-TV", 37: "Western",
+    10759: "Action & Adventure", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary",
+    18: "Drama", 10751: "Family", 9648: "Mystery", 10765: "Sci-Fi & Fantasy",
+    10766: "Soap", 10767: "Talk", 10768: "War & Politics", 10762: "Kids",
+    10763: "News", 10764: "Reality", 37: "Western",
+}
+
+
+_TMDB_TV_KEYWORDS = {
+    "musical": "4344",
+    "music": "6027",
+    "sport": "6075",
+    "sports": "6075",
+    "biography": "5565",
+}
+
+_TMDB_EXTRA_KEYWORDS = {
+    "biography": "5565",
+    "sport": "6075",
+    "sports": "6075",
 }
 
 
@@ -1308,8 +1328,21 @@ def _tmdb_genre_id(genre_name, kind):
     for gid, name in table.items():
         if name.lower() == target:
             return gid
-    if kind == "tv" and target == "science fiction":
-        return 10765
+    if target in ("sci-fi", "scifi", "sci fi", "science fiction"):
+        return 878 if kind == "movie" else 10765
+    if target in ("music", "musical") and kind == "movie":
+        return 10402
+    if kind == "tv":
+        if target in ("action", "adventure", "action & adventure"):
+            return 10759
+        if target in ("fantasy", "sci-fi & fantasy"):
+            return 10765
+        if target in ("reality", "reality-tv", "reality tv"):
+            return 10764
+        if target in ("talk", "talk-show", "talk show"):
+            return 10767
+        if target in ("war", "politics", "war & politics"):
+            return 10768
     return None
 
 
@@ -1399,6 +1432,11 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
         gid = _tmdb_genre_id(genre, kind)
         if gid:
             params["with_genres"] = gid
+        elif genre:
+            target_kw = str(genre).strip().lower()
+            kw_table = _TMDB_TV_KEYWORDS if kind == "tv" else _TMDB_EXTRA_KEYWORDS
+            if target_kw in kw_table:
+                params["with_keywords"] = kw_table[target_kw]
         if year and str(year).strip().isdigit():
             params["primary_release_year" if kind == "movie" else "first_air_date_year"] = str(year).strip()
         if sort_mode == "Featured":
@@ -1492,6 +1530,14 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
                 backdrop_path = entry.get("backdrop_path")
                 genre_ids = [g for g in (entry.get("genre_ids") or []) if g in TMDB_GENRES]
                 vote_average = entry.get("vote_average")
+                item_genres = [TMDB_GENRES[g] for g in genre_ids]
+                if genre and str(genre).strip():
+                    target_kw = str(genre).strip().lower()
+                    kw_table = _TMDB_TV_KEYWORDS if kind == "tv" else _TMDB_EXTRA_KEYWORDS
+                    if target_kw in kw_table and not _tmdb_genre_id(genre, kind):
+                        norm_g = database.normalize_imdb_genre(genre, media_type=app_type)
+                        if norm_g and norm_g not in item_genres:
+                            item_genres.append(norm_g)
                 items.append({
                     "id": f"tmdb:{mid}",
                     "raw_id": mid,
@@ -1511,7 +1557,7 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
                     "country": country_name or "",
                     "countries": [country_name] if country_name else [],
                     "language": database.LANGUAGE_CODE_MAP.get(str(entry.get("original_language") or "").lower()) or language_name or "",
-                    "genres": [TMDB_GENRES[g] for g in genre_ids],
+                    "genres": item_genres,
                     "genre_ids": genre_ids,
                     "original_language": entry.get("original_language") or "",
                 })
@@ -1660,8 +1706,8 @@ TMDB_GENRES = {
     99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
     27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Science Fiction",
     10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
-    10759: "Action", 10762: "Family", 10763: "News", 10764: "Reality-TV",
-    10765: "Sci-Fi", 10766: "Soap", 10767: "Talk-Show", 10768: "War"
+    10759: "Action & Adventure", 10762: "Kids", 10763: "News", 10764: "Reality",
+    10765: "Sci-Fi & Fantasy", 10766: "Soap", 10767: "Talk", 10768: "War & Politics"
 }
 
 def fetch_collection_details(cid, title=None, poster=None):

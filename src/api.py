@@ -2201,6 +2201,18 @@ def does_genre_match_filter(candidate_genre, target_genre):
             return True
 
     # Compound and alias mappings
+    if tgt in ("action & adventure", "action and adventure"):
+        return "action" in cand_str or "adventure" in cand_str
+    if tgt in ("sci-fi & fantasy", "sci-fi and fantasy", "science fiction & fantasy"):
+        return "sci-fi" in cand_str or "science fiction" in cand_str or "fantasy" in cand_str
+    if tgt in ("war & politics", "war and politics"):
+        return "war" in cand_str or "politics" in cand_str
+    if cand_str in ("action & adventure", "action and adventure"):
+        return "action" in tgt or "adventure" in tgt
+    if cand_str in ("sci-fi & fantasy", "sci-fi and fantasy", "science fiction & fantasy"):
+        return "sci-fi" in tgt or "science fiction" in tgt or "fantasy" in tgt
+    if cand_str in ("war & politics", "war and politics"):
+        return "war" in tgt or "politics" in tgt
     if tgt == "action":
         return "action" in cand_str
     if tgt == "adventure":
@@ -2213,6 +2225,8 @@ def does_genre_match_filter(candidate_genre, target_genre):
         return "reality" in cand_str
     if tgt in ("talk", "talk-show"):
         return "talk" in cand_str
+    if tgt in ("tv movie", "tv-movie"):
+        return "tv movie" in cand_str or "tv-movie" in cand_str
     if tgt in ("game-show", "game show"):
         return "game-show" in cand_str or "game show" in cand_str
     if tgt in ("film-noir", "film noir", "noir"):

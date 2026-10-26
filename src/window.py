@@ -8307,6 +8307,15 @@ class CineWindow(Adw.ApplicationWindow):
                 self.reload_catalog_grid()
             clear_btn.connect("clicked", _on_clear_clicked)
             box.append(clear_btn)
+        else:
+            reset_btn = Gtk.Button(label=_("Reset Filters"))
+            reset_btn.set_halign(Gtk.Align.CENTER)
+            reset_btn.add_css_class("suggested-action")
+            reset_btn.add_css_class("pill")
+            def _on_reset_clicked(_btn):
+                self._reset_discover_filters()
+            reset_btn.connect("clicked", _on_reset_clicked)
+            box.append(reset_btn)
         return box
 
     def _update_flowbox_empty_state(self, flowbox):
@@ -8352,15 +8361,10 @@ class CineWindow(Adw.ApplicationWindow):
                     msg = _("No items found for this year.")
                 else:
                     msg = _("No items found for this filter.")
-                if empty_box is None:
-                    new_empty = CineWindow._create_empty_filter_box(self, msg)
-                    flowbox.append(new_empty)
-                else:
-                    w = empty_box.get_child() if hasattr(empty_box, "get_child") else empty_box
-                    if hasattr(w, "get_first_child") and w.get_first_child():
-                        first_c = w.get_first_child()
-                        if hasattr(first_c, "set_label"):
-                            first_c.set_label(msg)
+                if empty_box is not None:
+                    flowbox.remove(empty_box)
+                new_empty = CineWindow._create_empty_filter_box(self, msg)
+                flowbox.append(new_empty)
 
     def _on_discover_results_search_changed(self, *_args):
         for flowbox_name in ("content_flowbox", "unique_flowbox"):

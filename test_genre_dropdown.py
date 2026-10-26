@@ -82,7 +82,7 @@ class TestGenreDropdownDatabase(unittest.TestCase):
         self.assertIn("2025", sort_options)
 
         series_genres = database.get_available_genres("series")
-        self.assertIn("Reality-TV", series_genres)
+        self.assertTrue("Reality" in series_genres or "Reality-TV" in series_genres)
 
         anime_genres = database.get_available_genres("anime")
         self.assertIn("Demons", anime_genres)
@@ -108,7 +108,7 @@ class TestGenreDropdownDatabase(unittest.TestCase):
         self.assertTrue(listener_called)
 
         stored = database.get_stored_genres("movie")
-        self.assertIn("Sci-Fi", stored)
+        self.assertTrue("Science Fiction" in stored or "Sci-Fi" in stored)
         self.assertIn("Animation", stored)
         self.assertIn("Hindi", stored)
         # Non-canonical genres must NOT be stored
@@ -119,7 +119,7 @@ class TestGenreDropdownDatabase(unittest.TestCase):
         self.assertIn("2024", stored_years)
 
         available_genres = database.get_available_genres("movie")
-        self.assertIn("Sci-Fi", available_genres)
+        self.assertIn("Science Fiction", available_genres)
         self.assertIn("Animation", available_genres)
         self.assertNotIn("Hindi", available_genres)
         self.assertIn("Hindi", database.get_available_languages())
@@ -176,8 +176,8 @@ class TestGenreDropdownDatabase(unittest.TestCase):
         self.assertTrue(api.catalog_supports_genre(cat_cinemeta, "Action"))
 
         items = [
-            {"id": "tt1", "title": "Hindi Movie", "genres": ["Hindi", "Crime"]},
-            {"id": "tt2", "title": "English Movie", "genres": ["Action", "Sci-Fi"]},
+            {"id": "tt1", "title": "Hindi Movie", "genres": ["Hindi", "Crime"], "language": "Hindi"},
+            {"id": "tt2", "title": "English Movie", "genres": ["Action", "Sci-Fi"], "language": "English"},
         ]
         filtered = api.filter_items_by_genre(items, "Hindi")
         self.assertEqual(len(filtered), 1)
@@ -335,17 +335,18 @@ class TestStrictImdbGenreFiltering(unittest.TestCase):
     def test_normalize_imdb_genre(self):
         self.assertEqual(database.normalize_imdb_genre("Animation"), "Animation")
         self.assertEqual(database.normalize_imdb_genre("animation"), "Animation")
-        self.assertEqual(database.normalize_imdb_genre("Science Fiction"), "Sci-Fi")
-        self.assertEqual(database.normalize_imdb_genre("sci fi"), "Sci-Fi")
-        self.assertEqual(database.normalize_imdb_genre("Talk"), "Talk-Show")
-        self.assertEqual(database.normalize_imdb_genre("Talk-Show"), "Talk-Show")
+        self.assertEqual(database.normalize_imdb_genre("Science Fiction"), "Science Fiction")
+        self.assertEqual(database.normalize_imdb_genre("sci fi"), "Science Fiction")
+        self.assertEqual(database.normalize_imdb_genre("Talk"), "Talk")
+        self.assertEqual(database.normalize_imdb_genre("Talk-Show"), "Talk")
+        self.assertEqual(database.normalize_imdb_genre("TV Movie"), "TV Movie")
+        self.assertEqual(database.normalize_imdb_genre("Soap"), "Soap")
         # Language genres normalized canonically
         self.assertEqual(database.normalize_imdb_genre("Hindi"), "Hindi")
         self.assertEqual(database.normalize_imdb_genre("Tamil"), "Tamil")
         # Non-canonical tags rejected
         self.assertIsNone(database.normalize_imdb_genre("Multi-Lang"))
-        self.assertIsNone(database.normalize_imdb_genre("TV Movie"))
-        self.assertIsNone(database.normalize_imdb_genre("Soap"))
+        self.assertIsNone(database.normalize_imdb_genre("Cyberpunk"))
 
     def test_metadata_language_enrichment(self):
         # Non-English title prepends language to genres matching IMDb chips

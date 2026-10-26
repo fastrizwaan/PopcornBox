@@ -2542,20 +2542,24 @@ def save_cached_metadata(item_id, media_type, details):
     except Exception as e:
         print(f"Error saving metadata cache: {e}")
 
-IMDB_MOVIE_GENRES = [
-    "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime",
-    "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "History",
-    "Horror", "Music", "Musical", "Mystery", "Romance", "Sci-Fi",
-    "Short", "Sport", "Thriller", "War", "Western"
+TMDB_MOVIE_GENRES = [
+    "Action", "Adventure", "Animation", "Comedy", "Crime",
+    "Documentary", "Drama", "Family", "Fantasy", "History",
+    "Horror", "Music", "Mystery", "Romance", "Science Fiction",
+    "TV Movie", "Thriller", "War", "Western"
 ]
 
-IMDB_SERIES_GENRES = [
-    "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime",
-    "Documentary", "Drama", "Family", "Fantasy", "Film-Noir", "Game-Show",
-    "History", "Horror", "Music", "Musical", "Mystery", "News",
-    "Reality-TV", "Romance", "Sci-Fi", "Short", "Sport", "Talk-Show",
-    "Thriller", "War", "Western"
+TMDB_SERIES_GENRES = [
+    "Action & Adventure", "Animation", "Comedy", "Crime",
+    "Documentary", "Drama", "Family", "Kids", "Mystery",
+    "News", "Reality", "Sci-Fi & Fantasy", "Soap", "Talk",
+    "War & Politics", "Western"
 ]
+
+DEFAULT_MOVIE_GENRES = TMDB_MOVIE_GENRES
+DEFAULT_SERIES_GENRES = TMDB_SERIES_GENRES
+IMDB_MOVIE_GENRES = TMDB_MOVIE_GENRES
+IMDB_SERIES_GENRES = TMDB_SERIES_GENRES
 
 DEFAULT_ANIME_GENRES = [
     "Action", "Adventure", "Cars", "Comedy", "Dementia", "Demons", "Drama",
@@ -2567,28 +2571,34 @@ DEFAULT_ANIME_GENRES = [
 ]
 
 IMDB_ALL_GENRES = sorted(
-    list(set(IMDB_MOVIE_GENRES) | set(IMDB_SERIES_GENRES)),
+    list(set(TMDB_MOVIE_GENRES) | set(TMDB_SERIES_GENRES)),
     key=lambda s: s.lower()
 )
 
-DEFAULT_MOVIE_GENRES = IMDB_MOVIE_GENRES
-DEFAULT_SERIES_GENRES = IMDB_SERIES_GENRES
-
 GENRE_ALIASES = {
-    "science fiction": "Sci-Fi",
-    "sci fi": "Sci-Fi",
-    "sci-fi": "Sci-Fi",
-    "scifi": "Sci-Fi",
-    "talk show": "Talk-Show",
-    "talk-show": "Talk-Show",
-    "talk": "Talk-Show",
+    "science fiction": "Science Fiction",
+    "sci fi": "Science Fiction",
+    "sci-fi": "Science Fiction",
+    "scifi": "Science Fiction",
+    "talk show": "Talk",
+    "talk-show": "Talk",
+    "talk": "Talk",
     "game show": "Game-Show",
     "game-show": "Game-Show",
-    "reality tv": "Reality-TV",
-    "reality-tv": "Reality-TV",
-    "reality": "Reality-TV",
+    "reality tv": "Reality",
+    "reality-tv": "Reality",
+    "reality": "Reality",
     "film noir": "Film-Noir",
     "film-noir": "Film-Noir",
+    "action and adventure": "Action & Adventure",
+    "action & adventure": "Action & Adventure",
+    "sci-fi and fantasy": "Sci-Fi & Fantasy",
+    "sci-fi & fantasy": "Sci-Fi & Fantasy",
+    "war and politics": "War & Politics",
+    "war & politics": "War & Politics",
+    "tv movie": "TV Movie",
+    "tv-movie": "TV Movie",
+    "musical": "Music",
 }
 
 POPULAR_LANGUAGE_GENRES = [
@@ -2696,6 +2706,19 @@ def normalize_imdb_genre(g, media_type=None):
             return lg
 
     mt = (media_type or "").lower()
+    if mt in ("series", "tvshow"):
+        if gl in ("action", "adventure"):
+            return "Action & Adventure"
+        if gl in ("sci-fi", "science fiction", "fantasy", "scifi", "sci fi"):
+            return "Sci-Fi & Fantasy"
+        if gl in ("war", "politics"):
+            return "War & Politics"
+    elif mt == "movie":
+        if gl in ("sci-fi", "scifi", "sci fi"):
+            return "Science Fiction"
+        if gl in ("musical",):
+            return "Music"
+
     if mt == "anime":
         for ag in DEFAULT_ANIME_GENRES:
             if ag.lower() == gl:
@@ -2725,19 +2748,20 @@ def _extract_metadata_genres(details, media_type=None):
     raw = details.get("genres") or details.get("genre") or details.get("genre_ids") or []
     values = raw if isinstance(raw, list) else [raw]
     genres = set()
+    mt = (media_type or "").lower()
     for value in values:
         if isinstance(value, dict):
             value = value.get("name") or value.get("id")
         if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
             gid = int(value)
             if gid == 10759:
-                genres.update(("Action", "Adventure"))
+                genres.add("Action & Adventure" if mt in ("series", "tvshow", "tv") else "Action")
             elif gid == 10765:
-                genres.update(("Sci-Fi", "Fantasy"))
+                genres.add("Sci-Fi & Fantasy" if mt in ("series", "tvshow", "tv") else "Science Fiction")
             elif gid == 10762:
-                genres.update(("Family",))
+                genres.add("Kids")
             elif gid == 10768:
-                genres.update(("War",))
+                genres.add("War & Politics" if mt in ("series", "tvshow", "tv") else "War")
         if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
             value = TMDB_GENRES.get(int(value))
         if not isinstance(value, str):
