@@ -7,7 +7,7 @@ gi.require_version('Pango', '1.0')
 from gi.repository import Gtk, GLib, Pango, Gdk
 from . import player
 from . import database
-from .utils import open_uri
+from .utils import open_uri, idle_add_once
 
 class DownloadItemRow(Gtk.Box):
     def __init__(self, download):
@@ -175,10 +175,10 @@ class DownloadItemRow(Gtk.Box):
             if speed_dl > 0 or speed_ul > 0:
                 status_text += f" - D: {speed_dl:.1f} KiB/s | U: {speed_ul:.1f} KiB/s"
             elif prog < 1.0:
-                status_text += f" - Connecting..."
+                status_text += " - Connecting..."
                 
             if tot > 0:
-                status_text += f" ({dl/(1024*1024):.1f} MB / {tot/(1024*1024*1024):.2f} GB)"
+                status_text += f" ({dl/(1024*1024):.1f} MB / {tot/(1024*1024):.1f} MB)"
                 
             status_desc = stats.get("status", "")
             if ("seeding" in status_desc.lower() or "finished" in status_desc.lower()) and prog >= 1.0:
@@ -234,9 +234,12 @@ class DownloadItemRow(Gtk.Box):
             window.show_player_loading("Starting stream...", title)
             
         def progress_callback(stats):
-            url = stats.get("url")
+            url = stats.get("url") if isinstance(stats, dict) else None
             if url and hasattr(window, '_play_stream'):
-                GLib.idle_add(
+                # GLib.idle_add() does not accept arbitrary keyword arguments
+                # (TypeError), and would re-run the callback if it returned a
+                # truthy value; idle_add_once handles both.
+                idle_add_once(
                     window._play_stream,
                     url,
                     title,

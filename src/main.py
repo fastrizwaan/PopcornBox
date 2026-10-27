@@ -118,7 +118,7 @@ class CineApplication(Adw.Application):
                 if first_video_path:
                     break
 
-            if first_video_path and not first_video_path.lower().endswith(('.torrent', '.srt', '.sub', '.txt', '.nfo', '.json')):
+            if first_video_path and not _is_sidecar_file(first_video_path):
                 try:
                     cmd = [
                         "ffprobe",

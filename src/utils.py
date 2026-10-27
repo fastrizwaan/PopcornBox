@@ -244,7 +244,8 @@ def get_gpu_vendor(libgl):
                 glGetString.argtypes = [ctypes.c_uint]
 
                 # GL_VENDOR is 0x1F00
-                return glGetString(0x1F00).decode("utf-8").lower()
+                vendor = glGetString(0x1F00)
+                return vendor.decode("utf-8").lower() if vendor else None
             finally:
                 try:
                     Gdk.GLContext.clear_current()
