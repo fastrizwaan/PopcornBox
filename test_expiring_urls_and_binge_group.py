@@ -179,5 +179,24 @@ class TestExpiringUrlsAndBingeGroup(unittest.TestCase):
         self.assertEqual(matched["binge_group"], "torrentio|1080p|qxr")
         self.assertEqual(matched["filename"], "show.s01e02.1080p.qxr.mkv")
 
+    def test_get_torrents_streamed_uncached_cache_miss(self):
+        from unittest.mock import patch
+        from src import api
+
+        cb_results = []
+        def cb(torrents, is_cached=False, is_complete=False):
+            cb_results.append((torrents, is_cached, is_complete))
+
+        with patch("src.database.get_cached_streams", return_value=(None, None)), \
+             patch("src.database.get_addons", return_value=[]):
+            # This must not raise TypeError: 'NoneType' object is not iterable
+            res = api.get_torrents_streamed(
+                "tt9999999", "movie", callback=cb, force_refresh=False
+            )
+            self.assertEqual(res, [])
+            self.assertTrue(len(cb_results) >= 1)
+            self.assertEqual(cb_results[-1][0], [])
+            self.assertTrue(cb_results[-1][2])  # is_complete=True
+
 if __name__ == "__main__":
     unittest.main()

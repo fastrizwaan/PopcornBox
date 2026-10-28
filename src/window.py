@@ -2940,7 +2940,9 @@ class MovieDetailsPage(Gtk.Overlay):
                     return
                 raise
             except Exception as e:
+                import traceback
                 print(f"[STREAM DEBUG] worker failed generation={current_gen}: {type(e).__name__}: {e}")
+                traceback.print_exc()
                 debug_log(f"Stream fetch error: {e}")
                 if not current_abort_event.is_set():
                     fallback_streams = previous_streams if same_stream_item else []

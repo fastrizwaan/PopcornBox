@@ -373,7 +373,7 @@ class TestStaleStreamRefresh(unittest.TestCase):
             "streams_enabled": True
         }
         requested_urls = []
-        def fake_request(addon_dict, url, timeout=8, abort_event=None):
+        def fake_request(addon_dict, url, timeout=8, abort_event=None, **kwargs):
             requested_urls.append(url)
             return []
 

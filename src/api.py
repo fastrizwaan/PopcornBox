@@ -6290,6 +6290,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         cached, cache_age = cache_res
     else:
         cached, cache_age = cache_res, 0.0
+    cached = list(cached) if isinstance(cached, (list, tuple)) else []
 
     if provider_scope:
         if cached:
@@ -6358,7 +6359,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     # need their own expiry and age checks even in a mixed result set.
     has_torrents = bool(
         any(_is_cached_torrent_stream(s) for s in cache_candidates)
-        if source_scope else any(_is_cached_torrent_stream(s) for s in cached)
+        if source_scope else any(_is_cached_torrent_stream(s) for s in (cached or []))
     )
     max_fresh_age = 1800 if source_scope == "direct" or (not source_scope and not has_torrents) else 7200
     usable_cached = [
@@ -6377,7 +6378,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     )
 
     if is_fresh:
-        print(f"[STREAM DEBUG] cache hit: returning {len(cached)} fresh cards without provider requests")
+        print(f"[STREAM DEBUG] cache hit: returning {len(cached or [])} fresh cards without provider requests")
         if callback: callback(usable_cached, is_cached=True, is_complete=True)
         return usable_cached
 
@@ -6467,7 +6468,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             if type_match:
                 matched_media_type = type_match
             else:
-                has_cat_match = any(is_type_match(cat.get("type"), actual_media) for cat in addon.get("catalogs", []))
+                has_cat_match = any(is_type_match(cat.get("type"), actual_media) for cat in (addon.get("catalogs") or []))
                 has_prefix_match = addon_prefixes and any(str(cur_id).startswith(p) for p in addon_prefixes)
                 if not (has_cat_match or has_prefix_match):
                     print(f"[STREAM DEBUG] addon skipped addon={addon.get('name')!r} id={cur_id!r}: media type mismatch")
@@ -6587,7 +6588,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 from .tmdb_helper import resolve_all_provider_ids
                 ids_to_fetch = resolve_all_provider_ids(imdb_id, media_type, title)
                 print(f"[STREAM DEBUG] ID resolver id={imdb_id!r} returned {len(ids_to_fetch or [])} IDs: {ids_to_fetch!r}")
-                return [i for i in ids_to_fetch if i != imdb_id]
+                return [i for i in (ids_to_fetch or []) if i != imdb_id]
 
             scoped_provider_cooling = bool(
                 provider_scope
