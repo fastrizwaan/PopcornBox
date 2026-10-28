@@ -400,9 +400,10 @@ _PROVIDER_LAST_REQUEST_TIME = {}      # host -> float (timestamp)
 _PROVIDER_COOLDOWNS = {}              # host -> float (cooldown expiry timestamp)
 _PROVIDER_COOLDOWN_REASONS = {}       # host -> str
 _PROVIDER_STATE_LAST_PRUNE = 0.0
-_STREAM_URL_CACHE = {}                # url -> (data, expiry_timestamp)
+_STREAM_URL_CACHE = {}                # url -> (data, expiry_timestamp, write_generation)
 _STREAM_URL_CACHE_LOCK = threading.Lock()
 _STREAM_URL_CACHE_TTL = 900           # 15 minutes cache for identical stream URLs
+_STREAM_URL_CACHE_GENERATION = 0
 _REFRESH_RESULT_CACHE = {}            # (id, type, season, episode, provider) -> (data, expiry)
 _REFRESH_RESULT_CACHE_LOCK = threading.Lock()
 _REFRESH_RESULT_TTL = 60              # successful refresh results
@@ -542,6 +543,123 @@ def clear_provider_cooldown(url_or_manifest=None):
             _PROVIDER_COOLDOWNS.clear()
             _PROVIDER_COOLDOWN_REASONS.clear()
 
+EXPIRING_CREDENTIAL_QUERY_KEYS = {
+    "accesskey", "accesssignature", "accesssig", "access_token", "accesstoken",
+    "auth", "authkey", "authsig", "authsignature", "auth_token", "authtoken",
+    "e", "exp", "expiration", "expire", "expires", "expiresat", "expiresin",
+    "expires_in", "expiry", "hmac", "jwt", "keypairid", "policy", "sig",
+    "signature", "signed", "st", "t", "token", "wsipauth", "wssecret"
+}
+
+EXPIRING_CREDENTIAL_FRAGMENTS = ("token", "signature", "expires", "expiry")
+
+def has_likely_expiring_playback_credentials(url):
+    """Return True if the URL contains query parameters indicating short-lived tokens/signatures."""
+    if not url or not isinstance(url, str) or "?" not in url:
+        return False
+    try:
+        parsed = urllib.parse.urlparse(url)
+        params = {key.lower(): values for key, values in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()}
+        for key in params.keys():
+            k_lower = key.strip().lower()
+            if not k_lower:
+                continue
+            k_compact = k_lower.replace("-", "").replace("_", "").replace(".", "")
+            if k_lower in EXPIRING_CREDENTIAL_QUERY_KEYS or k_compact in EXPIRING_CREDENTIAL_QUERY_KEYS:
+                return True
+            if any(frag in k_lower or frag in k_compact for frag in EXPIRING_CREDENTIAL_FRAGMENTS):
+                return True
+    except Exception:
+        pass
+    return False
+
+def get_stream_url_expiry_timestamp(url, saved_at=None):
+    """
+    Extract the numeric expiration epoch timestamp from an HTTP stream URL if present in query parameters.
+    Returns float timestamp (seconds since epoch) or None.
+    """
+    if not url or not isinstance(url, str) or "?" not in url:
+        return None
+    try:
+        parsed = urllib.parse.urlparse(url)
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        # Look for direct timestamp parameters
+        ts_keys = ("exp", "expires", "expires_at", "expiresat", "expiry", "expiration", "e", "until", "valid_until")
+        for k in ts_keys:
+            val_list = params.get(k)
+            if not val_list or not val_list[0]:
+                continue
+            try:
+                val = float(val_list[0].strip())
+                if 1000000000 <= val <= 3000000000:
+                    return val
+                elif val > 3000000000:
+                    return val / 1000.0
+            except (ValueError, TypeError):
+                continue
+        # Look for relative duration parameter (e.g. expires_in=7200)
+        rel_keys = ("expires_in", "expiresin", "ttl", "x-amz-expires")
+        for k in rel_keys:
+            val_list = params.get(k)
+            if not val_list or not val_list[0]:
+                continue
+            try:
+                rel_val = float(val_list[0].strip())
+                if 0 < rel_val < 864000:  # Up to 10 days
+                    if k == "x-amz-expires" and params.get("x-amz-date"):
+                        try:
+                            import datetime
+                            issued_at = datetime.datetime.strptime(
+                                params["x-amz-date"][0].strip(), "%Y%m%dT%H%M%SZ"
+                            ).replace(tzinfo=datetime.timezone.utc).timestamp()
+                            return issued_at + rel_val
+                        except (ValueError, TypeError, IndexError):
+                            pass
+                    base_ts = float(saved_at) if saved_at else time.time()
+                    return base_ts + rel_val
+            except (ValueError, TypeError):
+                continue
+    except Exception:
+        pass
+    return None
+
+def is_stream_url_expired(url, buffer_seconds=180, saved_at=None):
+    """
+    Determine if a stream URL has expired or will expire within buffer_seconds.
+    If the URL has expiring credentials with a known expiry timestamp, checks if now + buffer_seconds >= expiry.
+    If the URL has expiring credentials but no timestamp, checks if saved_at is older than 1 hour.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    if not url.startswith(("http://", "https://")):
+        return False
+    
+    expiry_ts = get_stream_url_expiry_timestamp(url, saved_at=saved_at)
+    now = time.time()
+    if expiry_ts is not None:
+        return (now + buffer_seconds) >= expiry_ts
+    
+    # If it has signed/token credentials but no explicit timestamp, treat as ephemeral (1 hour default max TTL)
+    if has_likely_expiring_playback_credentials(url):
+        if saved_at:
+            try:
+                age = now - float(saved_at)
+                if age > 3600:  # 1 hour
+                    return True
+            except (ValueError, TypeError):
+                return True
+    return False
+
+def stream_matches_binge_group(stream, target_binge_group):
+    """Return True if the stream matches the target bingeGroup from behaviorHints."""
+    if not stream or not target_binge_group or not isinstance(stream, dict):
+        return False
+    bh = stream.get("behaviorHints")
+    stream_bg = stream.get("binge_group") or (bh.get("bingeGroup") if isinstance(bh, dict) else None)
+    if not stream_bg or not isinstance(stream_bg, str):
+        return False
+    return stream_bg.strip().lower() == str(target_binge_group).strip().lower()
+
 def check_stream_rate_limit_warning(stream):
     """
     Check if a stream entry returned by an addon is actually a rate-limit/ban notice.
@@ -663,14 +781,37 @@ def _get_cached_stream_url(url):
     with _STREAM_URL_CACHE_LOCK:
         entry = _STREAM_URL_CACHE.get(url)
         if entry:
-            data, exp = entry
+            data, exp = entry[:2]
             if time.time() < exp:
                 return data
             del _STREAM_URL_CACHE[url]
     return None
 
 def _save_cached_stream_url(url, streams, ttl=_STREAM_URL_CACHE_TTL):
+    global _STREAM_URL_CACHE_GENERATION
     if not url or streams is None:
+        return
+    # Never let an endpoint response cache outlive the media credentials it
+    # contains. Signed URLs can expire much sooner than our normal cache TTL.
+    now = time.time()
+    effective_ttl = max(0.0, float(ttl))
+    for stream in streams:
+        if not isinstance(stream, dict):
+            continue
+        stream.setdefault("saved_at", now)
+        stream_url = stream.get("url") or stream.get("externalUrl") or ""
+        expiry = stream.get("expires_at")
+        try:
+            expiry = float(expiry) if expiry is not None else None
+        except (TypeError, ValueError):
+            expiry = None
+        if expiry is None:
+            expiry = get_stream_url_expiry_timestamp(stream_url, saved_at=stream.get("saved_at") or now)
+        if expiry is not None:
+            effective_ttl = min(effective_ttl, expiry - now - 180)
+        elif stream.get("has_expiring_credentials") or has_likely_expiring_playback_credentials(stream_url):
+            effective_ttl = min(effective_ttl, 3600)
+    if effective_ttl <= 0:
         return
     with _STREAM_URL_CACHE_LOCK:
         if len(_STREAM_URL_CACHE) > 500:
@@ -679,8 +820,10 @@ def _save_cached_stream_url(url, streams, ttl=_STREAM_URL_CACHE_TTL):
             for k in expired:
                 del _STREAM_URL_CACHE[k]
             while len(_STREAM_URL_CACHE) > 400:
-                _STREAM_URL_CACHE.pop(next(iter(_STREAM_URL_CACHE)), None)
-        _STREAM_URL_CACHE[url] = (streams, time.time() + ttl)
+                evicted = next(iter(_STREAM_URL_CACHE))
+                _STREAM_URL_CACHE.pop(evicted, None)
+        _STREAM_URL_CACHE_GENERATION += 1
+        _STREAM_URL_CACHE[url] = (streams, now + effective_ttl, _STREAM_URL_CACHE_GENERATION)
 
 @contextlib.contextmanager
 def _acquire_provider_slot(host, min_interval=0.4, timeout=4.0, abort_event=None,
@@ -839,7 +982,7 @@ def _get_stream_provider_options():
 
 
 def _wait_before_provider_retry(attempt, abort_event=None):
-    delay = min(0.5 * (2 ** attempt), 2.0)
+    delay = min(1.5 * (2 ** attempt), 4.0)
     print(f"[STREAM DEBUG] retry backoff attempt={attempt + 1} delay={delay:.1f}s")
     if abort_event:
         return not abort_event.wait(delay)
@@ -851,11 +994,11 @@ def _request_addon_streams(addon, url, timeout=None, abort_event=None, retries=N
     """
     Politely requests stream data from an addon URL with:
     - Host-level concurrency limit (max 1 concurrent in-flight request per host)
-    - Minimum inter-request delay (400ms spacing per host)
-    - Active cooldown check (e.g. from 429 or provider ban/wait warnings)
+    - Minimum inter-request delay (600ms spacing per host)
+    - Active cooldown check (e.g. from 402, 403, 429 or provider ban/wait warnings)
     - HTTP 429 Retry-After handling
     - Detection and filtering of provider rate-limit/ban messages
-    - Short-term stream URL in-memory caching
+    - Short-term stream URL in-memory caching (including negative caching for empty responses)
     """
     default_timeout, default_retries = _get_stream_provider_options()
     timeout = default_timeout if timeout is None else max(1, min(int(timeout), 30))
@@ -866,24 +1009,27 @@ def _request_addon_streams(addon, url, timeout=None, abort_event=None, retries=N
     manifest_url = addon.get("manifest_url", "")
     host = _get_provider_host(manifest_url) or _get_provider_host(url)
     addon_name = addon.get("name", "Unknown")
+    with _STREAM_URL_CACHE_LOCK:
+        entry = _STREAM_URL_CACHE.get(url)
+        url_cache_start_version = entry[2] if entry and len(entry) > 2 else 0
 
-    # 1. Cooldown check
-    if is_provider_in_cooldown(host):
-        rem = get_provider_cooldown_remaining(host)
-        print(f"[STREAM DEBUG] request skipped addon={addon_name!r} host={host!r}: cooldown {rem}s")
-        logging.info(f"[Provider Protection] Addon '{addon.get('name')}' ({host}) is in cooldown for {rem}s. Skipping request.")
-        return []
-
-    # 2. Check stream URL cache (skipped when callers need genuinely fresh
-    # debrid tokens, e.g. auto-heal after a stale link failed)
+    # Check the exact endpoint cache before provider cooldown. A still-valid
+    # response is safe to reuse and avoids touching a cooling provider.
+    # Explicit refreshes skip it and request revalidation from the add-on.
     if not bypass_url_cache:
         cached_streams = _get_cached_stream_url(url)
         if cached_streams is not None:
             print(f"[STREAM DEBUG] request URL cache hit addon={addon_name!r} cards={len(cached_streams)}")
             return cached_streams
 
-    # 3. Acquire host slot (concurrency limit + polite delay)
-    with _acquire_provider_slot(host, min_interval=0.4, timeout=timeout, abort_event=abort_event) as acquired:
+    if is_provider_in_cooldown(host):
+        rem = get_provider_cooldown_remaining(host)
+        print(f"[STREAM DEBUG] request skipped addon={addon_name!r} host={host!r}: cooldown {rem}s")
+        logging.info(f"[Provider Protection] Addon '{addon.get('name')}' ({host}) is in cooldown for {rem}s. Skipping request.")
+        return []
+
+    # 3. Acquire host slot (concurrency limit + polite delay of 600ms)
+    with _acquire_provider_slot(host, min_interval=0.6, timeout=timeout, abort_event=abort_event) as acquired:
         if not acquired:
             print(f"[STREAM DEBUG] request skipped addon={addon_name!r} host={host!r}: host slot unavailable or cancelled")
             return []
@@ -895,18 +1041,32 @@ def _request_addon_streams(addon, url, timeout=None, abort_event=None, retries=N
             if cached_streams is not None:
                 print(f"[STREAM DEBUG] request URL cache hit after slot addon={addon_name!r} cards={len(cached_streams)}")
                 return cached_streams
+        else:
+            # A forced refresh must bypass an old response, but concurrent
+            # forced refreshes for the same endpoint should share the response
+            # fetched by the request that reached the host slot first.
+            with _STREAM_URL_CACHE_LOCK:
+                entry = _STREAM_URL_CACHE.get(url)
+                current_version = entry[2] if entry and len(entry) > 2 else 0
+                if entry and current_version > url_cache_start_version and time.time() < entry[1]:
+                    print(f"[STREAM DEBUG] concurrent forced refresh coalesced addon={addon_name!r}")
+                    return entry[0]
 
         retry_requested = False
         try:
-            req = urllib.request.Request(
-                url,
-                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-            )
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+            if bypass_url_cache:
+                headers['Cache-Control'] = 'no-cache'
+                headers['Pragma'] = 'no-cache'
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as response:
                 print(f"[STREAM DEBUG] HTTP response addon={addon_name!r} status={getattr(response, 'status', 'unknown')}")
                 data_str = response.read().decode('utf-8')
             if not data_str or not data_str.strip():
                 print(f"[STREAM DEBUG] empty response body addon={addon_name!r}")
+                _save_cached_stream_url(url, [], 600)
                 return []
             data = json.loads(data_str)
             _record_addon_success(manifest_url)
@@ -930,30 +1090,45 @@ def _request_addon_streams(addon, url, timeout=None, abort_event=None, retries=N
                 set_provider_cooldown(host, duration_seconds=300, reason=warning_msg)
                 logging.warning(f"[Provider Protection] Provider '{addon.get('name')}' returned rate-limit notice: '{warning_msg}'. Cooldown set for 300s.")
 
-            if clean_streams:
-                _save_cached_stream_url(url, clean_streams)
+            # Negative caching: cache empty responses too so we don't spam addons that index 0 streams for this item
+            _save_cached_stream_url(url, clean_streams, 900 if clean_streams else 600)
 
             return clean_streams
 
         except urllib.error.HTTPError as e:
             code = e.code
             if code == 429:
-                retry_after = e.headers.get("Retry-After") if hasattr(e, "headers") else None
-                cooldown_secs = 300
-                if retry_after:
-                    try:
-                        cooldown_secs = max(int(retry_after), 30)
-                    except ValueError:
-                        try:
-                            import email.utils
-                            t = email.utils.parsedate_to_datetime(retry_after).timestamp()
-                            cooldown_secs = max(int(t - time.time()), 30)
-                        except Exception:
-                            cooldown_secs = 300
+                cooldown_secs = _retry_after_seconds(getattr(e, "headers", None))
                 set_provider_cooldown(host, duration_seconds=cooldown_secs, reason="HTTP 429 Too Many Requests")
                 print(f"[STREAM DEBUG] HTTP 429 addon={addon_name!r} cooldown_seconds={cooldown_secs}")
                 logging.warning(f"[Provider Protection] Provider '{addon.get('name')}' ({host}) returned HTTP 429. Cooldown set for {cooldown_secs}s.")
+                if not (abort_event and abort_event.is_set()):
+                    _record_addon_failure(manifest_url)
                 retry_requested = False
+            elif code == 402:
+                # 402 Payment Required / Deployment Disabled (e.g. Vercel quota limit exceeded)
+                set_provider_cooldown(host, duration_seconds=900, reason="HTTP 402 Payment Required (Quota Exceeded)")
+                print(f"[STREAM DEBUG] HTTP 402 addon={addon_name!r} quota exceeded, cooldown 900s")
+                logging.warning(f"[Provider Protection] Provider '{addon.get('name')}' ({host}) returned HTTP 402. Cooldown set for 900s.")
+                if not (abort_event and abort_event.is_set()):
+                    _record_addon_failure(manifest_url)
+                retry_requested = False
+            elif code == 403:
+                # 403 Forbidden / Cloudflare challenge / IP blocked
+                set_provider_cooldown(host, duration_seconds=600, reason="HTTP 403 Forbidden (Blocked)")
+                print(f"[STREAM DEBUG] HTTP 403 addon={addon_name!r} blocked, cooldown 600s")
+                logging.warning(f"[Provider Protection] Provider '{addon.get('name')}' ({host}) returned HTTP 403. Cooldown set for 600s.")
+                if not (abort_event and abort_event.is_set()):
+                    _record_addon_failure(manifest_url)
+                retry_requested = False
+            elif code in (502, 503, 504):
+                print(f"[STREAM DEBUG] HTTP {code} addon={addon_name!r}")
+                if _attempt < retries and _wait_before_provider_retry(_attempt, abort_event):
+                    retry_requested = True
+                else:
+                    set_provider_cooldown(host, duration_seconds=180, reason=f"HTTP {code} Server Overload")
+                    if not (abort_event and abort_event.is_set()):
+                        _record_addon_failure(manifest_url)
             elif code >= 500:
                 print(f"[STREAM DEBUG] HTTP {code} addon={addon_name!r}")
                 if _attempt < retries and _wait_before_provider_retry(_attempt, abort_event):
@@ -962,7 +1137,8 @@ def _request_addon_streams(addon, url, timeout=None, abort_event=None, retries=N
                     _record_addon_failure(manifest_url)
             else:
                 print(f"[STREAM DEBUG] HTTP {code} addon={addon_name!r}")
-                _record_addon_success(manifest_url)
+                if not (abort_event and abort_event.is_set()):
+                    _record_addon_failure(manifest_url)
             try:
                 e.close()
             except Exception:
@@ -983,8 +1159,7 @@ def _request_addon_streams(addon, url, timeout=None, abort_event=None, retries=N
                                 _record_addon_success(manifest_url)
                                 raw_streams = data.get("streams", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
                                 clean_streams = [s for s in raw_streams if isinstance(s, dict) and not check_stream_rate_limit_warning(s)]
-                                if clean_streams:
-                                    _save_cached_stream_url(url, clean_streams)
+                                _save_cached_stream_url(url, clean_streams, 900 if clean_streams else 600)
                                 print(f"[STREAM DEBUG] DoH bypass success addon={addon_name!r} streams={len(clean_streams)}")
                                 return clean_streams
                 except Exception:
@@ -998,9 +1173,9 @@ def _request_addon_streams(addon, url, timeout=None, abort_event=None, retries=N
         except TimeoutError:
             print(f"[STREAM DEBUG] timeout addon={addon_name!r} timeout={timeout}s")
             logging.debug(f"Timeout fetching from addon {addon.get('name')}")
-            if _attempt < retries and _wait_before_provider_retry(_attempt, abort_event):
-                retry_requested = True
-            elif not (abort_event and abort_event.is_set()):
+            # Do NOT immediately retry after a long timeout - server is already unresponsive
+            set_provider_cooldown(host, duration_seconds=120, reason="Request Timeout (Unresponsive)")
+            if not (abort_event and abort_event.is_set()):
                 _record_addon_failure(manifest_url)
         except Exception as e:
             print(f"[STREAM DEBUG] request error addon={addon_name!r}: {type(e).__name__}: {e}")
@@ -5227,6 +5402,15 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
         raw_stream_url = str(s.get("url") or "")
         external_url = str(s.get("externalUrl") or "")
         info_hash = str(s.get("infoHash") or "").lower()
+        source_addon_names = []
+        raw_addon_names = s.get("addon_names") or []
+        if isinstance(raw_addon_names, str):
+            raw_addon_names = [raw_addon_names]
+        if isinstance(raw_addon_names, (list, tuple, set)):
+            source_addon_names.extend(str(name).strip() for name in raw_addon_names if name)
+        if s.get("addon_name"):
+            source_addon_names.append(str(s.get("addon_name")).strip())
+        source_addon_names = list(dict.fromkeys(name for name in source_addon_names if name))
         
         if yt_id and not raw_stream_url and not external_url:
             raw_stream_url = f"https://www.youtube.com/watch?v={yt_id}"
@@ -5267,8 +5451,9 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             idx = seen_keys[dedup_key]
             if idx is not None and 0 <= idx < len(valid_streams):
                 vs = valid_streams[idx]
-                if s.get("addon_name") and s["addon_name"] not in vs.get("addon_names", []):
-                    vs["addon_names"].append(s["addon_name"])
+                for addon_name in source_addon_names:
+                    if addon_name not in vs.get("addon_names", []):
+                        vs.setdefault("addon_names", []).append(addon_name)
                 if s.get("sources"):
                     existing_sources = vs.setdefault("sources", [])
                     for src in s["sources"]:
@@ -5335,6 +5520,16 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
         if not filename:
             filename = name_and_title.replace('/', '_')
 
+        binge_group = behavior_hints.get("bingeGroup") if isinstance(behavior_hints, dict) else None
+        if not binge_group:
+            binge_group = s.get("binge_group")
+        saved_at = s.get("saved_at") or time.time()
+        expires_at = s.get("expires_at") or get_stream_url_expiry_timestamp(stream_url, saved_at=saved_at)
+        has_expiring_credentials = bool(
+            s.get("has_expiring_credentials")
+            or has_likely_expiring_playback_credentials(stream_url)
+        )
+
         is_trailer = bool(
             yt_id
             or s.get("is_trailer")
@@ -5345,6 +5540,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             
         stream_entry = {
             "hash": raw_id,
+            "infoHash": info_hash or (raw_id if not is_http else ""),
             "url": stream_url,
             "sources": s.get("sources") or [],
             "externalUrl": external_url,
@@ -5363,7 +5559,12 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             "file_index": s.get("fileIdx"),
             "filename": filename,
             "behaviorHints": behavior_hints,
-            "addon_names": [s.get("addon_name")] if s.get("addon_name") else []
+            "binge_group": binge_group,
+            "saved_at": saved_at,
+            "expires_at": expires_at,
+            "has_expiring_credentials": has_expiring_credentials,
+            "addon_name": source_addon_names[0] if source_addon_names else "",
+            "addon_names": source_addon_names,
         }
 
         if season is not None and episode is not None:
@@ -5437,8 +5638,17 @@ def streams_match(s1, s2):
         if p1 == p2 and len(p1) > 20:
             return True
 
+    # Conflicting distinct qualities cannot match
+    q1 = (s1.get("quality") or "").strip().lower()
+    q2 = (s2.get("quality") or "").strip().lower()
+    if q1 and q2 and q1 not in ("unknown", "") and q2 not in ("unknown", "") and q1 != q2:
+        return False
+
     h1 = (s1.get("hash") or s1.get("infoHash") or "").lower()
     h2 = (s2.get("hash") or s2.get("infoHash") or "").lower()
+    if h1 and h2 and h1 != h2 and not (u1 and u2 and u1 == u2):
+        return False
+
     if h1 and h2 and h1 == h2:
         idx1 = s1.get("file_index") if s1.get("file_index") is not None else s1.get("fileIdx")
         idx2 = s2.get("file_index") if s2.get("file_index") is not None else s2.get("fileIdx")
@@ -5522,6 +5732,12 @@ def find_best_matching_stream(target_stream, candidate_streams, preferred_provid
         c_prov_match = stream_matches_provider(c, target_prov)
         if c_prov_match:
             score += 100  # Strongly prioritize same provider
+
+        # Binge group matching
+        target_bg = target_stream.get("binge_group") or (target_stream.get("behaviorHints") or {}).get("bingeGroup")
+        c_bg = c.get("binge_group") or (c.get("behaviorHints") or {}).get("bingeGroup")
+        if target_bg and c_bg and str(target_bg).strip().lower() == str(c_bg).strip().lower():
+            score += 150  # Strongly prioritize matching binge group
 
         c_fn = (c.get("filename") or "").strip().lower()
         if target_fn and c_fn and target_fn == c_fn:
@@ -5639,6 +5855,8 @@ def refresh_stream(imdb_id, media_type="movie", season=None, episode=None, old_s
     if matched:
         if isinstance(old_stream, dict) and old_stream.get("behaviorHints") and not matched.get("behaviorHints"):
             matched["behaviorHints"] = old_stream["behaviorHints"]
+        if isinstance(old_stream, dict) and old_stream.get("binge_group") and not matched.get("binge_group"):
+            matched["binge_group"] = old_stream["binge_group"]
         matched["_refreshed"] = True
         return matched, fresh_streams
     
@@ -5729,6 +5947,7 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
     if provider:
         p_lower = str(provider).strip().lower()
         stremio_addons.sort(key=lambda a: 0 if (p_lower in a.get("name", "").lower() or a.get("name", "").lower() in p_lower) else 1)
+    refresh_started_at = time.time()
     
     def fetch_from_addon(addon_orig):
         addon = dict(addon_orig)  # Shallow copy to avoid mutating shared dict in concurrent threads
@@ -5812,7 +6031,10 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
         return addon.get("name", "Unknown"), streams
             
     all_streams = []
-    num_workers = min(len(stremio_addons), 20)
+    # Keep the legacy force-refresh path aligned with the main discovery path;
+    # spawning one worker per installed provider amplified canceled/overlapping
+    # refreshes even though requests are paced later at the host boundary.
+    num_workers = min(len(stremio_addons), 4)
     if num_workers > 0:
         # Explicit executor: a `with` block would call shutdown(wait=True) on
         # exit and block until every slow addon finishes, defeating the
@@ -5849,7 +6071,10 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
             
     valid_streams = process_raw_streams(all_streams, season=season, episode=episode)
     if valid_streams:
-        database.save_cached_streams(cache_key, valid_streams)
+        database.save_cached_streams_full(
+            cache_key, cache_key + ":source:direct", cache_key + ":source:torrent",
+            valid_streams, started_at=refresh_started_at,
+        )
     return valid_streams
 
 # Pre-cache ffprobe availability once at module level
@@ -5861,8 +6086,7 @@ def _ping_stream_url(stream):
     url = stream.get("url")
     if not url or not isinstance(url, str) or not (url.startswith("http://") or url.startswith("https://")):
         return stream
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-    headers.update(extract_stream_headers(stream, url))
+    headers = extract_stream_headers(stream, url)
 
     for attempt in range(2):
         if _has_ffprobe:
@@ -5888,6 +6112,12 @@ def _ping_stream_url(stream):
                     stream["is_working"] = True
                     return stream
         except urllib.error.HTTPError as e:
+            is_hakuna = isinstance(url, str) and "hakunaymatata.com" in url.lower()
+            if e.code in (401, 403) and not is_hakuna and not any(k.lower() == 'user-agent' for k in headers):
+                headers = dict(headers)
+                headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+            elif e.code == 428 and any(k.lower() == 'user-agent' for k in headers):
+                headers = {k: v for k, v in headers.items() if k.lower() != 'user-agent'}
             try:
                 e.close()
             except Exception:
@@ -5902,6 +6132,12 @@ def _ping_stream_url(stream):
                     stream["is_working"] = True
                     return stream
         except urllib.error.HTTPError as e:
+            is_hakuna = isinstance(url, str) and "hakunaymatata.com" in url.lower()
+            if e.code in (401, 403) and not is_hakuna and not any(k.lower() == 'user-agent' for k in headers):
+                headers = dict(headers)
+                headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+            elif e.code == 428 and any(k.lower() == 'user-agent' for k in headers):
+                headers = {k: v for k, v in headers.items() if k.lower() != 'user-agent'}
             try:
                 e.close()
             except Exception:
@@ -5937,7 +6173,39 @@ def ping_and_filter_streams(streams):
             filtered.append(s)
     return filtered
 
-def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False):
+def _is_cached_torrent_stream(stream):
+    """Identify a torrent result without mistaking its synthetic dedupe hash for a torrent hash."""
+    if not isinstance(stream, dict) or stream.get("is_http"):
+        return False
+    url = str(stream.get("url") or stream.get("stream_url") or "").strip().lower()
+    if url.startswith(("http://", "https://")) and not url.split("?", 1)[0].endswith(".torrent"):
+        return False
+    return bool(
+        stream.get("infoHash")
+        or url.startswith(("magnet:", "torrent://"))
+        or url.split("?", 1)[0].endswith(".torrent")
+        or (stream.get("hash") and not url.startswith(("http://", "https://")))
+    )
+
+
+def _stream_has_exact_provider(stream, provider_name):
+    if not isinstance(stream, dict) or not provider_name:
+        return False
+    target = str(provider_name).strip().casefold()
+    names = list(stream.get("addon_names") or [])
+    if stream.get("addon_name"):
+        names.append(stream.get("addon_name"))
+    return any(str(name).strip().casefold() == target for name in names if name)
+
+
+def _stream_matches_source_scope(stream, source_scope):
+    if not source_scope:
+        return True
+    is_direct = bool(stream.get("is_http")) if isinstance(stream, dict) else False
+    return is_direct if source_scope == "direct" else not is_direct
+
+
+def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None):
     original_id = imdb_id
     # Callers may pass the full alias list used by metadata lookup. Addon
     # stream URLs and prefix checks require a single concrete provider ID.
@@ -6001,59 +6269,152 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if callback: callback(stream_obj, is_cached=False, is_complete=True)
         return stream_obj
 
-    # Check cache immediately using the provided ID
-    cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
-    cache_res = database.get_cached_streams(cache_key, max_age_hours=24, return_age=True)
+    # A provider-filtered refresh has its own cache namespace. It can reuse
+    # matching entries from the global cache for an immediate display, but it
+    # must not make the all-provider cache appear freshly refreshed.
+    base_cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
+    provider_scope = str(provider_scope).strip() if provider_scope else None
+    source_scope = str(source_scope).strip().lower() if source_scope else None
+    if source_scope not in ("direct", "torrent"):
+        source_scope = None
+    provider_cache_suffix = (
+        ":provider:" + urllib.parse.quote(provider_scope.casefold(), safe="")
+        if provider_scope else ""
+    )
+    aggregate_cache_key = base_cache_key + provider_cache_suffix
+    cache_key = aggregate_cache_key
+    direct_source_cache_key = aggregate_cache_key + ":source:direct"
+    torrent_source_cache_key = aggregate_cache_key + ":source:torrent"
+    cache_res = database.get_cached_streams(aggregate_cache_key, max_age_hours=24, return_age=True)
     if isinstance(cache_res, tuple) and len(cache_res) == 2:
         cached, cache_age = cache_res
     else:
         cached, cache_age = cache_res, 0.0
 
+    if provider_scope:
+        if cached:
+            cached = [s for s in cached if _stream_has_exact_provider(s, provider_scope)]
+        global_res = database.get_cached_streams(base_cache_key, max_age_hours=24, return_age=True)
+        if isinstance(global_res, tuple) and len(global_res) == 2:
+            global_cached, global_age = global_res
+        else:
+            global_cached, global_age = global_res, 0.0
+        global_matches = [
+            s for s in (global_cached or [])
+            if _stream_has_exact_provider(s, provider_scope)
+        ]
+        if global_matches and (
+            not cached
+            or (global_age is not None and (cache_age is None or global_age < cache_age))
+        ):
+            cached = global_matches
+            cache_age = global_age
+
     if cached:
         cached = [s for s in cached if not check_stream_rate_limit_warning(s)]
+    aggregate_cached = list(cached or [])
+    aggregate_cache_age = cache_age
+
+    source_cache_key = None
+    cache_candidates = aggregate_cached
+    if source_scope:
+        source_cache_key = aggregate_cache_key + ":source:" + source_scope
+        source_res = database.get_cached_streams(source_cache_key, max_age_hours=24, return_age=True)
+        if isinstance(source_res, tuple) and len(source_res) == 2:
+            source_cached, source_cache_age = source_res
+        else:
+            source_cached, source_cache_age = source_res, 0.0
+        source_cached = [
+            s for s in (source_cached or [])
+            if _stream_matches_source_scope(s, source_scope)
+            and (not provider_scope or _stream_has_exact_provider(s, provider_scope))
+            and not check_stream_rate_limit_warning(s)
+        ]
+        aggregate_candidates = [
+            s for s in aggregate_cached
+            if _stream_matches_source_scope(s, source_scope)
+        ]
+        if source_cached and (
+            not aggregate_candidates
+            or (source_cache_age is not None and (aggregate_cache_age is None or source_cache_age < aggregate_cache_age))
+        ):
+            cache_candidates = source_cached
+            cache_age = source_cache_age
+        else:
+            cache_candidates = aggregate_candidates
+            cache_age = aggregate_cache_age
+        cached = [
+            s for s in aggregate_cached
+            if not _stream_matches_source_scope(s, source_scope)
+        ] + list(cache_candidates)
+
     print(
         f"[STREAM DEBUG] cache key={cache_key!r} cards={len(cached or [])} "
-        f"age_seconds={cache_age!r} force={force_refresh}"
+        f"age_seconds={cache_age!r} force={force_refresh} "
+        f"provider_scope={provider_scope!r} source_scope={source_scope!r}"
     )
 
-    # Consider cache fresh only if recent (< 5 min) and contains no stale HTTP links
+    # Torrent entries can remain useful longer, but direct HTTP links still
+    # need their own expiry and age checks even in a mixed result set.
+    has_torrents = bool(
+        any(_is_cached_torrent_stream(s) for s in cache_candidates)
+        if source_scope else any(_is_cached_torrent_stream(s) for s in cached)
+    )
+    max_fresh_age = 1800 if source_scope == "direct" or (not source_scope and not has_torrents) else 7200
+    usable_cached = [
+        s for s in (cached or [])
+        if _is_cached_torrent_stream(s) or not database.is_stream_stale(s, max_age_seconds=1800)
+    ]
+    usable_cache_candidates = [
+        s for s in (cache_candidates or [])
+        if _is_cached_torrent_stream(s) or not database.is_stream_stale(s, max_age_seconds=1800)
+    ]
     is_fresh = bool(
-        cached
+        cache_candidates and len(usable_cache_candidates) == len(cache_candidates)
         and not force_refresh
         and cache_age is not None
-        and cache_age < 300
-        and not any(database.is_stream_stale(s) for s in cached)
+        and cache_age < max_fresh_age
     )
 
     if is_fresh:
         print(f"[STREAM DEBUG] cache hit: returning {len(cached)} fresh cards without provider requests")
-        if callback: callback(cached, is_cached=True, is_complete=True)
-        return cached
+        if callback: callback(usable_cached, is_cached=True, is_complete=True)
+        return usable_cached
 
-    if cached and callback:
-        print(f"[STREAM DEBUG] delivering {len(cached)} cached cards while provider refresh runs")
-        callback(cached, is_cached=True, is_complete=False)
+    if usable_cached and callback:
+        print(f"[STREAM DEBUG] delivering {len(usable_cached)} usable cached cards while provider refresh runs")
+        callback(usable_cached, is_cached=True, is_complete=False)
 
     actual_media = media_type
     addons = [a for a in database.get_addons() if a.get("enabled", True)]
     print(f"[STREAM DEBUG] enabled addons={len(addons)} media={actual_media!r}")
     if not addons:
         print(f"[STREAM DEBUG] no enabled addons; returning cached cards={len(cached or [])}")
-        if callback: callback(cached or [], is_cached=False, is_complete=True)
-        return cached or []
+        if callback: callback(usable_cached, is_cached=False, is_complete=True)
+        return usable_cached
         
-    all_stream_addons = [a for a in addons if not a.get("manifest_url", "").startswith("builtin://") and has_stream_resource(a, media_type=actual_media)]
+    all_stream_addons = [
+        a for a in addons
+        if not a.get("manifest_url", "").startswith("builtin://")
+        and has_stream_resource(a, media_type=actual_media)
+        and (
+            not provider_scope
+            or str(a.get("name") or "").strip().casefold() == provider_scope.casefold()
+        )
+    ]
     print(
-        f"[STREAM DEBUG] stream-capable addons={len(all_stream_addons)} "
+        f"[STREAM DEBUG] stream-capable addons={len(all_stream_addons)} provider_scope={provider_scope!r} "
         f"names={[a.get('name', 'Unknown') for a in all_stream_addons]}"
     )
     if not all_stream_addons:
         print(f"[STREAM DEBUG] no stream-capable addons; returning cached cards={len(cached or [])}")
-        if callback: callback(cached or [], is_cached=False, is_complete=True)
-        return cached or []
+        if callback: callback(usable_cached, is_cached=False, is_complete=True)
+        return usable_cached
+
+    refresh_started_at = time.time()
 
     provider_timeout, provider_retries = _get_stream_provider_options()
-    retry_backoff_budget = sum(min(0.5 * (2 ** attempt), 2.0) for attempt in range(provider_retries))
+    retry_backoff_budget = sum(min(1.5 * (2 ** attempt), 4.0) for attempt in range(provider_retries))
     # Each retry reacquires a host slot (bounded to 4s) before making the HTTP
     # request. Use one total deadline for collection, including all attempts.
     provider_collection_timeout = (4.0 + provider_timeout) * (provider_retries + 1) + retry_backoff_budget + 1.0
@@ -6156,26 +6517,33 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         # fail while an immediate manual retry often succeeded.
         # Omit retries: _request_addon_streams already defaults to the
         # configured stream-provider retry policy.
-        streams = _request_addon_streams(addon, url, timeout=provider_timeout, abort_event=abort_event)
+        streams = _request_addon_streams(
+            addon, url, timeout=provider_timeout, abort_event=abort_event,
+            bypass_url_cache=force_refresh,
+        )
         print(f"[STREAM DEBUG] addon request done addon={addon.get('name')!r} id={cur_id!r} raw_cards={len(streams or [])}")
         return addon.get("name", "Unknown"), streams
 
     all_raw_streams = []
     if cached and not force_refresh:
-        for c in cached:
-            if database.is_stream_stale(c):
-                continue
+        cache_seed_streams = usable_cache_candidates if source_scope else usable_cached
+        for c in cache_seed_streams:
             # Reconstitute the raw stream structure carefully.
             raw = {
-                "infoHash": c.get("hash"),
+                "infoHash": c.get("infoHash") or (c.get("hash") if _is_cached_torrent_stream(c) else None),
                 "url": c.get("url"),
                 "ytId": c.get("ytId"),
                 "is_trailer": c.get("is_trailer"),
                 "name": c.get("title") or "",
                 "title": c.get("stream_title") or "",
                 "fileIdx": c.get("file_index"),
+                "saved_at": c.get("saved_at"),
+                "expires_at": c.get("expires_at"),
+                "has_expiring_credentials": c.get("has_expiring_credentials"),
+                "binge_group": c.get("binge_group"),
+                "addon_names": c.get("addon_names") or [],
                 "behaviorHints": c.get("behaviorHints") or ({"filename": c.get("filename")} if c.get("filename") else {}),
-                "addon_name": c.get("addon_names")[0] if c.get("addon_names") else "Cache"
+                "addon_name": c.get("addon_name") or (c.get("addon_names")[0] if c.get("addon_names") else "Cache")
             }
             all_raw_streams.append(raw)
 
@@ -6187,7 +6555,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     alias_cache_ids = []
 
     import concurrent.futures
-    num_workers = min(max(len(all_stream_addons), 2), 8) if all_stream_addons else 1
+    num_workers = min(max(len(all_stream_addons), 2), 4) if all_stream_addons else 1
     if num_workers > 0 and all_stream_addons:
         if abort_event and abort_event.is_set():
             return []
@@ -6221,7 +6589,17 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 print(f"[STREAM DEBUG] ID resolver id={imdb_id!r} returned {len(ids_to_fetch or [])} IDs: {ids_to_fetch!r}")
                 return [i for i in ids_to_fetch if i != imdb_id]
 
-            if not (abort_event and abort_event.is_set()):
+            scoped_provider_cooling = bool(
+                provider_scope
+                and all(
+                    is_provider_in_cooldown(_get_provider_host(a.get("manifest_url", "")))
+                    for a in all_stream_addons
+                )
+            )
+            if scoped_provider_cooling:
+                print(f"[STREAM DEBUG] skipping ID resolution: scoped provider {provider_scope!r} is cooling down")
+
+            if not (abort_event and abort_event.is_set()) and not scoped_provider_cooling:
                 resolve_future = executor.submit(resolve_and_submit)
             else:
                 resolve_future = None
@@ -6294,7 +6672,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                 if callback and not (abort_event and abort_event.is_set()):
                                     current_parsed = process_raw_streams(list(all_raw_streams), season=season, episode=episode, ep_title=ep_title)
                                     print(f"[STREAM DEBUG] incremental results addon={addon_name!r} raw_total={len(all_raw_streams)} parsed_cards={len(current_parsed)}")
-                                    callback(current_parsed, is_cached=False, is_complete=False)
+                                    if source_scope:
+                                        current_scope = [s for s in current_parsed if _stream_matches_source_scope(s, source_scope)]
+                                        preserved_scope = [s for s in usable_cached if not _stream_matches_source_scope(s, source_scope)]
+                                        callback(preserved_scope + current_scope, is_cached=False, is_complete=False)
+                                    else:
+                                        callback(current_parsed, is_cached=False, is_complete=False)
                         except Exception as e:
                             print(f"[STREAM DEBUG] addon future failed addon={addon_obj.get('name') if addon_obj else 'Unknown'!r}: {type(e).__name__}: {e}")
         except RuntimeError as e:
@@ -6307,20 +6690,66 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             except Exception:
                 pass
 
-    final_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title)
+    # Cancellation invalidates persistence as well as UI callbacks. The HTTP
+    # workers may finish in the background, but an obsolete request must not
+    # mutate the cache after a newer item/source has been selected.
+    if abort_event and abort_event.is_set():
+        print(f"[STREAM DEBUG] cache write skipped: request cancelled id={imdb_id!r}")
+        return []
+
+    parsed_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title)
+    selected_scope_streams = None
+    if source_scope:
+        selected_scope_streams = [s for s in parsed_streams if _stream_matches_source_scope(s, source_scope)]
+        preserved_scope = [s for s in usable_cached if not _stream_matches_source_scope(s, source_scope)]
+        final_streams = preserved_scope + selected_scope_streams if selected_scope_streams else []
+    else:
+        final_streams = parsed_streams
     print(f"[STREAM DEBUG] collection finished raw_cards={len(all_raw_streams)} parsed_cards={len(final_streams or [])} cached_fallback={bool(not final_streams and cached)}")
 
     if final_streams:
-        database.save_cached_streams(cache_key, final_streams)
+        if source_scope:
+            merged_streams = database.save_cached_streams_partial(
+                cache_key, source_cache_key, selected_scope_streams, source_scope,
+                started_at=refresh_started_at, abort_event=abort_event,
+                preserved_streams=usable_cached,
+            )
+            if abort_event and abort_event.is_set():
+                return []
+            if merged_streams is not None:
+                final_streams = merged_streams
+        else:
+            merged_streams = database.save_cached_streams_full(
+                cache_key, direct_source_cache_key, torrent_source_cache_key,
+                final_streams, started_at=refresh_started_at, abort_event=abort_event,
+            )
+            if abort_event and abort_event.is_set():
+                return []
+            if merged_streams is not None:
+                final_streams = merged_streams
         for alias_id in alias_cache_ids[:1]:
-            alias_key = get_stream_cache_key(alias_id, media_type, season, episode)
+            alias_key = get_stream_cache_key(alias_id, media_type, season, episode) + provider_cache_suffix
             if alias_key != cache_key:
-                database.save_cached_streams(alias_key, final_streams)
+                if source_scope:
+                    database.save_cached_streams_partial(
+                        alias_key, alias_key + ":source:" + source_scope,
+                        selected_scope_streams, source_scope,
+                        started_at=refresh_started_at, abort_event=abort_event,
+                        preserved_streams=usable_cached,
+                    )
+                else:
+                    database.save_cached_streams_full(
+                        alias_key, alias_key + ":source:direct", alias_key + ":source:torrent",
+                        final_streams, started_at=refresh_started_at, abort_event=abort_event,
+                    )
+        final_streams = [
+            stream for stream in final_streams
+            if _is_cached_torrent_stream(stream)
+            or not database.is_stream_stale(stream, max_age_seconds=1800)
+        ]
         print(f"[STREAM DEBUG] saved {len(final_streams)} cards to cache key={cache_key!r} aliases={alias_cache_ids[:1]!r}")
-    elif all_stream_addons and not cached:
-        database.delete_cached_streams(cache_key)
 
-    result_to_deliver = final_streams if final_streams else (cached or [])
+    result_to_deliver = final_streams if final_streams else usable_cached
     if callback:
         print(f"[STREAM DEBUG] final callback cards={len(result_to_deliver or [])} cached={bool(not final_streams and cached)} complete=True")
         callback(result_to_deliver, is_cached=bool(not final_streams and cached), is_complete=True)

@@ -705,7 +705,10 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                             except Exception:
                                 break
                             if (time.time() - last_nonzero_time) > 30:
-                                break
+                                print(f"Torrent resume buffering timed out after 30s for {info_hash}")
+                                if progress_callback:
+                                    GLib.idle_add(progress_callback, {"ready": False, "status": "Error: Buffering timeout (30s)", "closed": True})
+                                return
                             time.sleep(0.5)
                         if engine and engine.is_alive():
                             launch_player_only(engine)
@@ -753,10 +756,16 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                 
             def monitor_ready():
                 if progress_callback: GLib.idle_add(progress_callback, {"status": "Fetching metadata..."})
+                start_meta_time = time.time()
                 while engine.is_alive() and not engine.wait_ready(timeout=1.0):
                     with _engines_lock:
                         if _engines.get(info_hash) != engine: return
                     if _streaming_hash != info_hash: return
+                    if (time.time() - start_meta_time) > 30.0:
+                        print(f"Torrent metadata fetch timed out after 30s for {info_hash}")
+                        if progress_callback:
+                            GLib.idle_add(progress_callback, {"ready": False, "status": "Error: Metadata timeout (30s)", "closed": True})
+                        return
                     stats = engine.stats()
                     if progress_callback: GLib.idle_add(progress_callback, stats)
                         
@@ -787,7 +796,11 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                     
                     if engine.is_buffering_finished():
                         break
-                    if (time.time() - last_nonzero_time) > 30: break
+                    if (time.time() - last_nonzero_time) > 30:
+                        print(f"Torrent buffering timed out after 30s for {info_hash}")
+                        if progress_callback:
+                            GLib.idle_add(progress_callback, {"ready": False, "status": "Error: Buffering timeout (30s)", "closed": True})
+                        return
                     time.sleep(0.5)
                     
                 with _engines_lock:

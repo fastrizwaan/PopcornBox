@@ -1394,7 +1394,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.streams_list_box.append(loading_box)
                 return
 
-            no_s_lbl = Gtk.Label(label=_("No streams available"))
+            empty_message = f"No streams from {sel_prov_name}" if sel_prov_name != "All Providers" else _("No streams available")
+            no_s_lbl = Gtk.Label(label=empty_message)
             no_s_lbl.add_css_class("dim-label")
             no_s_lbl.set_margin_top(16)
             self.streams_list_box.append(no_s_lbl)
@@ -2665,9 +2666,25 @@ class MovieDetailsPage(Gtk.Overlay):
         sel_season = getattr(self, 'selected_season', None) if req_media_type in ["series", "anime", "tv"] and not self.is_channel else None
         sel_episode = getattr(self, 'selected_episode', None) if req_media_type in ["series", "anime", "tv"] and not self.is_channel else None
 
+        provider_scope = None
+        if hasattr(self, 'provider_dropdown'):
+            model = self.provider_dropdown.get_model()
+            selected = self.provider_dropdown.get_selected()
+            if model and selected != Gtk.INVALID_LIST_POSITION and selected < model.get_n_items():
+                selected_name = model.get_string(selected)
+                if selected_name != "All Providers":
+                    provider_scope = selected_name
+        selected_source_scope = {1: "direct", 2: "torrent"}.get(getattr(self, "source_idx", 0))
+        # Ordinary discovery still fills the complete candidate list. A user
+        # initiated refresh is scoped to the active source filter so Direct,
+        # Torrent, and All can be refreshed independently.
+        source_scope = selected_source_scope if force else None
+
         print(
             f"[STREAM DEBUG] UI fetch requested page_id={id(self)} id={item_id!r} media={req_media_type!r} "
-            f"season={sel_season!r} episode={sel_episode!r} force={force}"
+            f"season={sel_season!r} episode={sel_episode!r} force={force} "
+            f"provider_scope={provider_scope!r} selected_source={selected_source_scope!r} "
+            f"refresh_source_scope={source_scope!r}"
         )
 
         # Guard: For episodic content, do not query streams until season and episode are resolved
@@ -2680,6 +2697,8 @@ class MovieDetailsPage(Gtk.Overlay):
             if getattr(self, 'stream_abort_event', None):
                 self.stream_abort_event.set()
             self._fetching_streams = False
+            self._active_stream_force = False
+            self._pending_forced_stream_refresh = False
             self._set_provider_spinner_active(False)
             self.torrents = []
             self.current_t_list = []
@@ -2687,7 +2706,25 @@ class MovieDetailsPage(Gtk.Overlay):
             return
 
         key_item_id = item_id[0] if isinstance(item_id, (list, tuple)) and item_id else item_id
-        fetch_key = f"{key_item_id}_{sel_season}_{sel_episode}"
+        stream_item_key = f"{key_item_id}_{sel_season}_{sel_episode}"
+        same_stream_item = getattr(self, "_stream_item_key", None) == stream_item_key
+        if force:
+            self._last_forced_stream_item_key = stream_item_key
+            self._last_forced_stream_refresh_at = time.monotonic()
+        elif (
+            getattr(self, "_last_forced_stream_item_key", None) == stream_item_key
+            and time.monotonic() - getattr(self, "_last_forced_stream_refresh_at", 0) < 12
+        ):
+            # A details refresh can finish after the user's forced source
+            # refresh and otherwise start a second, all-source request.
+            print(f"[STREAM DEBUG] automatic fetch coalesced after manual refresh key={stream_item_key!r}")
+            return
+
+        fetch_key = stream_item_key
+        if provider_scope:
+            fetch_key += f"_provider_{provider_scope.casefold()}"
+        if source_scope:
+            fetch_key += f"_source_{source_scope}"
         if getattr(self, '_last_fetch_key', None) == fetch_key:
             # Never cancel an active lookup for the same item just because a
             # later UI trigger requests a forced refresh. The provider HTTP
@@ -2697,26 +2734,48 @@ class MovieDetailsPage(Gtk.Overlay):
             # refresh can still run after it completes.
             already_fetching = getattr(self, '_fetching_streams', False)
             has_results = bool(getattr(self, 'torrents', None))
-            if already_fetching or (not force and has_results):
+            if already_fetching:
+                if force and not getattr(self, "_active_stream_force", False):
+                    self._pending_forced_stream_refresh = True
+                    self._pending_forced_stream_item_key = stream_item_key
+                    print(f"[STREAM DEBUG] forced refresh queued behind active lookup key={fetch_key!r}")
+                    return
                 print(
                     f"[STREAM DEBUG] UI fetch coalesced key={fetch_key!r} "
                     f"already_fetching={already_fetching} cards={len(getattr(self, 'torrents', []) or [])} force={force}"
                 )
                 return
+            if not force and has_results:
+                print(f"[STREAM DEBUG] UI fetch coalesced key={fetch_key!r} cards={len(getattr(self, 'torrents', []) or [])}")
+                return
+        if same_stream_item and getattr(self, "_fetching_streams", False) and not force and getattr(self, "_active_stream_force", False):
+            print(f"[STREAM DEBUG] automatic fetch coalesced with active manual refresh key={fetch_key!r}")
+            return
         self._last_fetch_key = fetch_key
 
         self._fetching_streams = True
+        self._active_stream_force = bool(force)
         self._set_provider_spinner_active(True)
-        self._stream_loading_status = "Searching streams..."
+        search_parts = [part for part in (provider_scope, source_scope.title() if source_scope else None) if part]
+        self._stream_loading_status = (
+            f"Searching {' '.join(search_parts)} streams..."
+            if search_parts else _("Searching streams...")
+        )
         if hasattr(self, 'progress_label') and self.progress_label:
             self.progress_label.set_text("Loading streams...")
         
-        while child := self.quality_button_box.get_first_child():
-            self.quality_button_box.remove(child)
-
-        self.current_t_list = []
-        self.torrents = []
-        self.render_streams_list()
+        previous_streams = list(getattr(self, "torrents", []) or [])
+        self._stream_item_key = stream_item_key
+        if not same_stream_item:
+            self.current_t_list = []
+            self.torrents = []
+            self.selected_torrent = None
+            while child := self.quality_button_box.get_first_child():
+                self.quality_button_box.remove(child)
+            self.update_quality_dropdown()
+        else:
+            # Keep the last good list visible while a same-item refresh runs.
+            self.render_streams_list()
 
         self._fetch_gen = getattr(self, '_fetch_gen', 0) + 1
         current_gen = self._fetch_gen
@@ -2744,10 +2803,23 @@ class MovieDetailsPage(Gtk.Overlay):
 
             if is_complete:
                 self._fetching_streams = False
+                self._active_stream_force = False
                 self._set_provider_spinner_active(False)
                 if hasattr(self, 'progress_label') and self.progress_label:
                     if not torrents: self.progress_label.set_text("No streams available.")
                     else: self.progress_label.set_text("")
+                if (
+                    getattr(self, "_pending_forced_stream_refresh", False)
+                    and getattr(self, "_pending_forced_stream_item_key", None) == stream_item_key
+                ):
+                    self._pending_forced_stream_refresh = False
+                    def _run_queued_stream_refresh():
+                        if self._is_current_details_page() and getattr(self, "_stream_item_key", None) == stream_item_key:
+                            self.fetch_torrents_async(force=True)
+                        return False
+                    GLib.idle_add(_run_queued_stream_refresh)
+                elif getattr(self, "_pending_forced_stream_refresh", False):
+                    self._pending_forced_stream_refresh = False
             elif is_cached:
                 if hasattr(self, 'progress_label') and self.progress_label:
                     self.progress_label.set_text("Loaded cached streams... (Updating)")
@@ -2780,9 +2852,13 @@ class MovieDetailsPage(Gtk.Overlay):
                     for t in (self.torrents or [])
                 )
 
+            from . import api
+            active_bg = getattr(self, "active_binge_group", None) or (getattr(self.window, "active_binge_group", None) if self.window else None)
+            has_bg_stream = bool(active_bg and any(api.stream_matches_binge_group(t, active_bg) for t in (self.torrents or [])))
+
             ready_for_auto_play = False
             if self.torrents:
-                if has_pref_stream or is_complete or (not pref_prov and not pref_q):
+                if has_bg_stream or has_pref_stream or is_complete or (not pref_prov and not pref_q and not active_bg):
                     ready_for_auto_play = True
 
             if ready_for_auto_play and getattr(self, '_auto_play_on_streams_loaded', False):
@@ -2854,7 +2930,9 @@ class MovieDetailsPage(Gtk.Overlay):
                     title=target_title,
                     abort_event=current_abort_event,
                     ep_title=ep_title,
-                    force_refresh=force
+                    force_refresh=force,
+                    provider_scope=provider_scope,
+                    source_scope=source_scope,
                 )
                 print(f"[STREAM DEBUG] worker API returned generation={current_gen}")
             except RuntimeError as e:
@@ -2865,7 +2943,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 print(f"[STREAM DEBUG] worker failed generation={current_gen}: {type(e).__name__}: {e}")
                 debug_log(f"Stream fetch error: {e}")
                 if not current_abort_event.is_set():
-                    GLib.idle_add(on_stream_batch, [], False, True)
+                    fallback_streams = previous_streams if same_stream_item else []
+                    GLib.idle_add(on_stream_batch, fallback_streams, bool(fallback_streams), True)
         threading.Thread(target=fetch, daemon=True).start()
 
     def update_quality_dropdown(self):
@@ -3310,16 +3389,28 @@ class MovieDetailsPage(Gtk.Overlay):
                 matching_items = [t for t in t_list if _streams_match(working_stream, t)]
                 self.selected_torrent = matching_items[0]
             elif t_list:
-                pref_prov = getattr(self, 'preferred_direct_provider', None)
-                pref_matches = [t for t in t_list if t.get('is_http') and _stream_matches_provider(t, pref_prov)] if pref_prov else []
-                if not pref_matches:
-                    gen_prov = getattr(self, 'preferred_provider', None)
-                    if gen_prov:
-                        pref_matches = [t for t in t_list if _stream_matches_provider(t, gen_prov)]
-                if pref_matches:
-                    self.selected_torrent = pref_matches[0]
+                active_bg = getattr(self, "active_binge_group", None) or (getattr(self.window, "active_binge_group", None) if self.window else None)
+                if not active_bg and self.movie_stub:
+                    from . import database
+                    m_id = self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
+                    if m_id:
+                        active_bg = database.get_setting(f"active_binge_group_{m_id}", None)
+
+                from . import api
+                bg_matches = [t for t in t_list if api.stream_matches_binge_group(t, active_bg)] if active_bg else []
+                if bg_matches:
+                    self.selected_torrent = bg_matches[0]
                 else:
-                    self.selected_torrent = t_list[0]
+                    pref_prov = getattr(self, 'preferred_direct_provider', None)
+                    pref_matches = [t for t in t_list if t.get('is_http') and _stream_matches_provider(t, pref_prov)] if pref_prov else []
+                    if not pref_matches:
+                        gen_prov = getattr(self, 'preferred_provider', None)
+                        if gen_prov:
+                            pref_matches = [t for t in t_list if _stream_matches_provider(t, gen_prov)]
+                    if pref_matches:
+                        self.selected_torrent = pref_matches[0]
+                    else:
+                        self.selected_torrent = t_list[0]
             elif raw_t_list and source_idx == 0:
                 pref_prov = getattr(self, 'preferred_direct_provider', None)
                 pref_matches = [t for t in raw_t_list if t.get('is_http') and _stream_matches_provider(t, pref_prov)] if pref_prov else []
@@ -3361,6 +3452,14 @@ class MovieDetailsPage(Gtk.Overlay):
         prefs_to_save = []
 
         # Remember stream provider for subsequent episodes
+        selected_bg = self.selected_torrent.get("binge_group") or (self.selected_torrent.get("behaviorHints") or {}).get("bingeGroup")
+        if selected_bg and selected_bg != "trailer":
+            self.active_binge_group = selected_bg
+            if self.window:
+                self.window.active_binge_group = selected_bg
+            if primary_id:
+                prefs_to_save.append((f"active_binge_group_{primary_id}", selected_bg))
+
         addon_names = self.selected_torrent.get("addon_names", [])
         prov = addon_names[0] if addon_names else self.selected_torrent.get("addon_name")
         if prov:
@@ -3436,14 +3535,22 @@ class MovieDetailsPage(Gtk.Overlay):
         pref_prov = getattr(self, 'preferred_direct_provider', None)
         pref_q = getattr(self, 'user_selected_quality', None)
 
+        active_bg = getattr(self, "active_binge_group", None) or (getattr(self.window, "active_binge_group", None) if self.window else None)
+
         def _queue_sort_priority(t):
             t_http = bool(t.get("is_http"))
             t_q = _normalize_stream_quality(t)
+            from . import api
+            same_bg = 1 if (active_bg and api.stream_matches_binge_group(t, active_bg)) else 0
             same_q = 1 if (pref_q and t_q == pref_q) else 0
             same_prov = 1 if (t_http and pref_prov and _stream_matches_provider(t, pref_prov)) else 0
 
             if t_http:
-                if same_prov and same_q:
+                if same_bg and same_q:
+                    tier = -2
+                elif same_bg:
+                    tier = -1
+                elif same_prov and same_q:
                     tier = 0
                 elif same_prov:
                     tier = 1
@@ -3454,7 +3561,9 @@ class MovieDetailsPage(Gtk.Overlay):
                 return (tier, -int(t.get("ping_status") is True), -float(t.get("size_gb") or 0.0))
             else:
                 seeds = int(t.get("seeders") or 0)
-                if seeds > 0:
+                if same_bg:
+                    tier = 2
+                elif seeds > 0:
                     tier = 4 if same_q else 5
                 else:
                     tier = 8 if same_q else 9
@@ -3540,9 +3649,13 @@ class MovieDetailsPage(Gtk.Overlay):
         headers = api.extract_stream_headers(torrent, url=url)
         bh = torrent.get("behaviorHints", {}) if isinstance(torrent, dict) else {}
         is_direct_http = torrent.get("is_http") or (isinstance(url, str) and url.startswith(("http://", "https://")))
-        requires_headers = bool(bh.get("notWebReady")) or bool(headers.get("Referer")) or bool(headers.get("referer"))
+        is_external = bool(
+            torrent.get("is_external")
+            or torrent.get("externalUrl")
+            or (isinstance(url, str) and any(d in url.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]))
+        )
 
-        if is_direct_http and requires_headers:
+        if is_direct_http and not is_external:
             self._download_http_stream(url, torrent, headers)
             return
 
@@ -3552,12 +3665,12 @@ class MovieDetailsPage(Gtk.Overlay):
             print("Open URL error:", e)
         if hasattr(self, 'progress_label') and self.progress_label:
             if is_direct_http:
-                self.progress_label.set_text("Opening direct stream in browser...")
+                self.progress_label.set_text("Opening stream in browser...")
             else:
                 self.progress_label.set_text("Opening stream URL...")
 
     def _download_http_stream(self, url, torrent, headers):
-        """Download a direct HTTP stream that requires proxy/referer headers directly to Downloads."""
+        """Download a direct HTTP stream directly to Downloads."""
         import os
         import re
         import threading
@@ -3590,8 +3703,23 @@ class MovieDetailsPage(Gtk.Overlay):
         def _worker():
             part_path = dest_path + ".part"
             try:
-                req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=30) as resp, open(part_path, "wb") as out_f:
+                req_headers = dict(headers or {})
+                req = urllib.request.Request(url, headers=req_headers)
+                try:
+                    resp = urllib.request.urlopen(req, timeout=30)
+                except urllib.error.HTTPError as he:
+                    if he.code == 428 and any(k.lower() == 'user-agent' for k in req_headers):
+                        req_headers = {k: v for k, v in req_headers.items() if k.lower() != 'user-agent'}
+                        req = urllib.request.Request(url, headers=req_headers)
+                        resp = urllib.request.urlopen(req, timeout=30)
+                    elif he.code in (401, 403) and not any(k.lower() == 'user-agent' for k in req_headers):
+                        req_headers['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                        req = urllib.request.Request(url, headers=req_headers)
+                        resp = urllib.request.urlopen(req, timeout=30)
+                    else:
+                        raise
+
+                with resp, open(part_path, "wb") as out_f:
                     while True:
                         chunk = resp.read(256 * 1024)
                         if not chunk:
@@ -4178,6 +4306,12 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue = []
         self.stream_queue_index = 0
         self.stream_request_id = 0
+        self._stream_loading_watchdog_id = None
+        self._seek_debounce_id = None
+        self._is_hls_proxy_active = False
+        self._hls_session_id = None
+        self._hls_time_offset = 0.0
+        self._hls_total_duration = None
         self._pending_subtitle_request = None
         self._subtitles_configured_for_file = False
         self.mpv_ctx: mpv.MpvRenderContext
@@ -4194,6 +4328,7 @@ class CineWindow(Adw.ApplicationWindow):
             input_default_bindings=False,
             input_vo_keyboard=True,
             load_scripts=True,
+            network_timeout=30.0,
             audio_display="embedded-first",
             audio_file_auto="fuzzy",
             sub_auto="fuzzy",
@@ -5304,7 +5439,7 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _go_to_chapter_start(self, *args):
         if self.curr_chapter_time is not None:
-            self.mpv.command_async("seek", self.curr_chapter_time, "absolute")
+            self.mpv.command_async("seek", self.curr_chapter_time, "absolute+keyframes")
 
     def _on_progress_scroll(self, controller, _dx, dy):
         event: Gdk.ScrollEvent = controller.get_current_event()
@@ -5358,9 +5493,18 @@ class CineWindow(Adw.ApplicationWindow):
         self._set_time_margin()
 
     def _update_progress(self, curr_time, update_bar=True):
-        curr_time = round(curr_time, 1)
+        if getattr(self, "_is_hls_proxy_active", False):
+            curr_time = round(float(curr_time or 0.0) + getattr(self, "_hls_time_offset", 0.0), 1)
+            duration = getattr(self, "_hls_total_duration", None) or float(self.mpv.duration or 0)
+        else:
+            curr_time = round(curr_time, 1)
+            duration = float(self.mpv.duration or 0)
 
         if update_bar and curr_time == self.prev_prog_time:
+            return
+
+        if update_bar and getattr(self, "_seek_debounce_id", None) is not None:
+            # User is actively dragging the seek slider, do not jump back
             return
 
         if update_bar:
@@ -5369,7 +5513,6 @@ class CineWindow(Adw.ApplicationWindow):
             self.video_progress_adj.handler_unblock_by_func(self._on_progress_adjusted)
 
         try:
-            duration = float(self.mpv.duration or 0)
             remaining = (duration - curr_time) if duration > curr_time else 0
 
             if self.show_remaining:
@@ -5527,6 +5670,8 @@ class CineWindow(Adw.ApplicationWindow):
         self.app_mpris._update_playback_status(paused)
 
     def _update_duration(self, duration):
+        if getattr(self, "_is_hls_proxy_active", False) and getattr(self, "_hls_total_duration", None):
+            duration = self._hls_total_duration
         self.time_total_label.set_text(format_time(duration))
 
         if duration == 0:
@@ -5549,12 +5694,43 @@ class CineWindow(Adw.ApplicationWindow):
 
         self.time_elapsed_label.set_width_chars(chars)
 
+    def _seek_hls_proxy(self, target_val: float):
+        if not getattr(self, "_is_hls_proxy_active", False) or not getattr(self, "_hls_session_id", None):
+            return
+        from . import hls_proxy
+        self._hls_time_offset = target_val
+        new_url = hls_proxy.get_sliced_url(self._hls_session_id, offset=target_val)
+        try:
+            self.mpv.command("loadfile", new_url, "replace")
+        except Exception as e:
+            logger.warning(f"Error seeking via HLS proxy: {e}")
+
     @Gtk.Template.Callback()
     def _on_play_pause_clicked(self, *args):
         self.mpv.pause = not self.mpv.pause
 
     def _on_progress_adjusted(self, adjustment):
-        self.mpv.command_async("seek", adjustment.props.value, "absolute")
+        target_val = float(adjustment.props.value)
+        wid = getattr(self, "_seek_debounce_id", None)
+        if wid is not None:
+            try:
+                GLib.source_remove(wid)
+            except Exception:
+                pass
+            self._seek_debounce_id = None
+
+        def _do_seek():
+            self._seek_debounce_id = None
+            if getattr(self, "_is_hls_proxy_active", False):
+                self._seek_hls_proxy(target_val)
+            else:
+                try:
+                    self.mpv.command_async("seek", target_val, "absolute+keyframes")
+                except Exception as e:
+                    logger.debug(f"Seek failed: {e}")
+            return False
+
+        self._seek_debounce_id = GLib.timeout_add(150, _do_seek)
 
     @Gtk.Template.Callback()
     def _on_shuffle_toggled(self, button):
@@ -5827,6 +6003,23 @@ class CineWindow(Adw.ApplicationWindow):
 
             self.space_holding = False
             return True
+
+        if getattr(self, "_is_hls_proxy_active", False) and event_type == "keypress":
+            delta = None
+            if combo in ("LEFT", "WHEEL_LEFT"):
+                delta = -5.0
+            elif combo in ("RIGHT", "WHEEL_RIGHT"):
+                delta = 5.0
+            elif combo == "j":
+                delta = -10.0
+            elif combo == "l":
+                delta = 10.0
+            if delta is not None:
+                cur_pos = float(self.mpv.time_pos or 0.0) + getattr(self, "_hls_time_offset", 0.0)
+                dur = getattr(self, "_hls_total_duration", None) or float(self.mpv.duration or 0.0) or 999999.0
+                target_val = max(0.0, min(dur, cur_pos + delta))
+                self._seek_hls_proxy(target_val)
+                return True
 
         try:
             self.mpv.command_async(event_type, combo)
@@ -6268,7 +6461,7 @@ class CineWindow(Adw.ApplicationWindow):
                             target_seek = float(self._seek_after_loaded)
                             cur_pos = float(self.mpv.time_pos or 0.0)
                             if abs(cur_pos - target_seek) > 3.0:
-                                self.mpv.seek(target_seek, reference="absolute")
+                                self.mpv.seek(target_seek, reference="absolute+keyframes")
                         except Exception as e:
                             logger.debug(f"Seek on file-loaded failed: {e}")
                         self._seek_after_loaded = None
@@ -13752,15 +13945,51 @@ class CineWindow(Adw.ApplicationWindow):
             return False
         GLib.idle_add(_apply)
 
+    def _start_stream_loading_watchdog(self, request_id):
+        self._cancel_stream_loading_watchdog()
+        self._stream_loading_watchdog_id = GLib.timeout_add_seconds(
+            30,
+            self._on_stream_loading_timeout,
+            request_id
+        )
+
+    def _cancel_stream_loading_watchdog(self):
+        wid = getattr(self, "_stream_loading_watchdog_id", None)
+        if wid is not None:
+            try:
+                GLib.source_remove(wid)
+            except Exception:
+                pass
+            self._stream_loading_watchdog_id = None
+
+    def _on_stream_loading_timeout(self, request_id):
+        self._stream_loading_watchdog_id = None
+        if request_id != getattr(self, "stream_request_id", 0):
+            return GLib.SOURCE_REMOVE
+        if not getattr(self, "is_loading_stream", False):
+            return GLib.SOURCE_REMOVE
+        if not getattr(self, "stream_queue", None) or len(self.stream_queue) == 0:
+            return GLib.SOURCE_REMOVE
+
+        logger.warning(
+            f"[FAILOVER] Stream loading timed out after 30 seconds for stream {self.stream_queue_index + 1}/{len(self.stream_queue)}. Advancing to next stream..."
+        )
+        self._show_toast(_("Stream timed out after 30s. Trying next stream..."))
+        self._try_next_stream_in_queue()
+        return GLib.SOURCE_REMOVE
+
     def hide_player_loading(self):
+        self._cancel_stream_loading_watchdog()
         GLib.idle_add(self._hide_player_loading_ui)
 
     def _hide_player_loading_ui(self):
         self.is_loading_stream = False
+        self._cancel_stream_loading_watchdog()
         if hasattr(self, "player_loading_box"):
             self.player_loading_box.set_visible(False)
 
     def _clear_stream_failover(self):
+        self._cancel_stream_loading_watchdog()
         self.stream_request_id += 1
         self.stream_queue = []
         self.stream_queue_index = 0
@@ -13783,6 +14012,18 @@ class CineWindow(Adw.ApplicationWindow):
 
         if not preserve_queue:
             self._clear_stream_failover()
+        if getattr(self, "_is_hls_proxy_active", False):
+            old_sess = getattr(self, "_hls_session_id", None)
+            if old_sess:
+                try:
+                    from . import hls_proxy
+                    hls_proxy.close_session(old_sess)
+                except Exception:
+                    pass
+            self._is_hls_proxy_active = False
+            self._hls_session_id = None
+            self._hls_time_offset = 0.0
+            self._hls_total_duration = None
         if url and isinstance(url, str) and any(d in url.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
             self.hide_player_loading()
             self._show_toast(_("Opening in web browser..."))
@@ -13894,6 +14135,21 @@ class CineWindow(Adw.ApplicationWindow):
                 self._current_playing_item["stream_title"] = title
 
             from . import database
+            # Record active binge group if present
+            cur_st = self._current_playing_item.get("selected_torrent")
+            sq = getattr(self, 'stream_queue', None)
+            sq_idx = getattr(self, 'stream_queue_index', None)
+            if not cur_st and isinstance(sq, (list, tuple)) and isinstance(sq_idx, int) and 0 <= sq_idx < len(sq):
+                cur_st = sq[sq_idx]
+            if isinstance(cur_st, dict):
+                bg = cur_st.get("binge_group") or (cur_st.get("behaviorHints") or {}).get("bingeGroup")
+                if bg and bg != "trailer":
+                    self.active_binge_group = bg
+                    self._current_playing_item["binge_group"] = bg
+                    p_id_bg = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
+                    if p_id_bg:
+                        database.set_setting(f"active_binge_group_{p_id_bg}", bg)
+
             if self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id"):
                 database.save_continue_watching_async(self._current_playing_item)
                 if not is_download and page and hasattr(page, "update_continue_btn"):
@@ -13920,17 +14176,18 @@ class CineWindow(Adw.ApplicationWindow):
             self.mpv["force-media-title"] = title
             
         from . import api
-        all_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        cur_item = getattr(self, "_current_playing_item", None)
-        if isinstance(cur_item, dict) and isinstance(cur_item.get("selected_torrent"), dict):
-            extracted = api.extract_stream_headers(cur_item["selected_torrent"], url=url)
-            for ek, ev in extracted.items():
-                if ek not in all_headers:
-                    all_headers[ek] = ev
-
-        if headers:
+        all_headers = {}
+        if headers is not None:
             all_headers.update(headers)
-            
+        else:
+            cur_item = getattr(self, "_current_playing_item", None)
+            if isinstance(cur_item, dict) and isinstance(cur_item.get("selected_torrent"), dict):
+                st = cur_item["selected_torrent"]
+                st_url = st.get("url") or st.get("magnet")
+                if not st_url or st_url == url:
+                    extracted = api.extract_stream_headers(st, url=url)
+                    all_headers.update(extracted)
+
         if url and isinstance(url, str):
             try:
                 import urllib.parse
@@ -13942,10 +14199,12 @@ class CineWindow(Adw.ApplicationWindow):
                             all_headers[k_target] = p_val[0]
             except Exception:
                 pass
-                
+
         user_agent = None
         referrer = None
         custom_header_fields = []
+
+        is_hakuna = isinstance(url, str) and "hakunaymatata.com" in url.lower()
 
         for k, v in all_headers.items():
             k_clean = str(k).strip()
@@ -13953,8 +14212,14 @@ class CineWindow(Adw.ApplicationWindow):
             if not k_clean or not v_clean:
                 continue
             if k_clean.lower() == "user-agent":
+                if is_hakuna and "mozilla" in v_clean.lower():
+                    # hakunaymatata.com rejects Mozilla browser User-Agents with HTTP 428
+                    continue
                 user_agent = v_clean
             elif k_clean.lower() == "referer":
+                if is_hakuna and "vidy.st" in v_clean.lower():
+                    # Leaked referer from previous provider
+                    continue
                 referrer = v_clean
             else:
                 # Do NOT include user-agent or referer here, otherwise MPV sends duplicate
@@ -13984,12 +14249,13 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
 
-            self.mpv["user-agent"] = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            self.mpv["user-agent"] = user_agent or ""
             self.mpv["referrer"] = referrer or ""
             self.mpv["http-header-fields"] = custom_header_fields
 
             try:
-                self.mpv["demuxer-lavf-o"] = "probesize=2000000,analyzeduration=2000000"
+                self.mpv["network-timeout"] = 30.0
+                self.mpv["demuxer-lavf-o"] = ""
                 is_live_hls_channel = is_channel_context and str(url).split("?", 1)[0].lower().endswith(".m3u8")
                 if is_live_hls_channel:
                     # Live HLS playlists refresh continuously and benefit from
@@ -14037,14 +14303,77 @@ class CineWindow(Adw.ApplicationWindow):
             if pos > 5.0 and prog < 0.92:
                 seek_target = pos
 
+        is_hls = bool(
+            url and isinstance(url, str)
+            and any(x in url.lower() for x in [".m3u8", "/hls/", "manifest.m3u8"])
+        )
+
+        if is_hls and not is_trailer:
+            from . import hls_proxy
+            req_id = getattr(self, "stream_request_id", 0)
+            target_offset = float(seek_target) if (seek_target and float(seek_target) > 5.0) else 0.0
+
+            def _on_hls_prepared(is_fmp4, session_id, playback_url, total_dur, actual_offset, is_blocked=False):
+                if req_id != getattr(self, "stream_request_id", 0):
+                    return
+                if is_blocked or not playback_url:
+                    logger.warning(f"[HLS] Stream preparation failed/blocked (is_blocked={is_blocked}), advancing queue")
+                    self._is_hls_proxy_active = False
+                    self._hls_session_id = None
+                    self._hls_time_offset = 0.0
+                    self._hls_total_duration = None
+                    self._try_next_stream_in_queue()
+                    return
+                if is_fmp4 and session_id:
+                    self._is_hls_proxy_active = True
+                    self._hls_session_id = session_id
+                    self._hls_time_offset = actual_offset
+                    self._hls_total_duration = total_dur
+                    if total_dur and total_dur > 0:
+                        self._update_duration(total_dur)
+                    self._seek_after_loaded = None
+                    try:
+                        self.mpv.loadfile(playback_url, "replace")
+                    except Exception as e:
+                        logger.warning(f"Error loading HLS proxy stream: {e}")
+                else:
+                    self._is_hls_proxy_active = False
+                    self._hls_session_id = None
+                    self._hls_time_offset = 0.0
+                    self._hls_total_duration = None
+                    target_url = playback_url or url
+                    if target_offset > 5.0:
+                        try:
+                            self.mpv.command("loadfile", target_url, "replace", -1, f"start={target_offset:.2f}")
+                        except Exception:
+                            self.mpv.loadfile(target_url, "replace")
+                    else:
+                        self.mpv.loadfile(target_url, "replace")
+
+            hls_proxy.prepare_hls_stream_async(
+                url,
+                headers=all_headers,
+                seek_target=target_offset,
+                callback=_on_hls_prepared
+            )
+            self.mpv.pause = False
+            self.is_inactive = False
+            if hasattr(self, "gl_area"):
+                self.gl_area.queue_render()
+            if not is_trailer:
+                self._prefetch_next_episode_streams()
+            return
+
         if seek_target and float(seek_target) > 5.0 and not is_trailer:
-            self._seek_after_loaded = float(seek_target)
             try:
                 self.mpv.command("loadfile", url, "replace", -1, f"start={float(seek_target):.2f}")
+                self._seek_after_loaded = None
             except Exception:
                 try:
                     self.mpv.loadfile(url, "replace", start=f"{float(seek_target):.2f}")
+                    self._seek_after_loaded = None
                 except Exception:
+                    self._seek_after_loaded = float(seek_target)
                     self.mpv.loadfile(url, "replace")
         else:
             self._seek_after_loaded = None
@@ -14453,6 +14782,18 @@ class CineWindow(Adw.ApplicationWindow):
             return
         if not getattr(self, 'stream_queue', None) or len(self.stream_queue) == 0:
             return
+
+        from . import api
+        while self.stream_queue_index < len(self.stream_queue):
+            cand = self.stream_queue[self.stream_queue_index]
+            c_url = cand.get("url") or cand.get("magnet") if isinstance(cand, dict) else None
+            if c_url and (c_url.startswith("http://") or c_url.startswith("https://")):
+                if api.is_stream_url_expired(c_url, buffer_seconds=30):
+                    logger.info(f"Skipping expired stream in queue: {c_url}")
+                    self.stream_queue_index += 1
+                    continue
+            break
+
         if self.stream_queue_index >= len(self.stream_queue):
             self._handle_all_streams_exhausted()
             return
@@ -14464,6 +14805,11 @@ class CineWindow(Adw.ApplicationWindow):
         file_index = torrent.get("file_index") if isinstance(torrent, dict) else None
         if file_index is None and isinstance(torrent, dict):
             file_index = torrent.get("fileIdx")
+
+        if getattr(self, "_current_playing_item", None) and isinstance(self._current_playing_item, dict):
+            self._current_playing_item["selected_torrent"] = torrent
+            self._current_playing_item["stream_url"] = magnet
+            self._current_playing_item["stream_queue_index"] = self.stream_queue_index
 
         if not magnet and hash_val:
             from . import api
@@ -14484,6 +14830,7 @@ class CineWindow(Adw.ApplicationWindow):
             f"Connecting to stream ({self.stream_queue_index + 1}/{len(self.stream_queue)})...",
             display_title
         )
+        self._start_stream_loading_watchdog(request_id)
 
         from . import api
         headers = api.extract_stream_headers(torrent, url=magnet)
@@ -14595,8 +14942,32 @@ class CineWindow(Adw.ApplicationWindow):
             return
 
         failed_st = self.stream_queue[self.stream_queue_index]
+        from . import api
 
-        # 1. If HTTP stream failed and has not been refreshed yet, attempt auto-heal refresh from provider first
+        # 1. If HTTP stream failed, check if retrying with alternate User-Agent recovers it (e.g. 403 bot blocks vs 428 bot blocks)
+        if isinstance(failed_st, dict) and failed_st.get("is_http") and not failed_st.get("_ua_fallback_tried"):
+            failed_st["_ua_fallback_tried"] = True
+            st_headers = api.extract_stream_headers(failed_st)
+            magnet = failed_st.get("url") or failed_st.get("magnet")
+            if magnet:
+                is_hakuna = "hakunaymatata.com" in magnet.lower()
+                if not any(k.lower() == 'user-agent' for k in st_headers):
+                    if not is_hakuna:
+                        logger.info("[FAILOVER] Retrying stream with browser User-Agent fallback")
+                        self._start_stream_loading_watchdog(request_id)
+                        fallback_headers = dict(st_headers)
+                        fallback_headers['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                        self._play_stream(magnet, self.stream_queue_title or "Stream", headers=fallback_headers, preserve_queue=True)
+                        return
+                elif any(k.lower() == 'user-agent' for k in st_headers):
+                    logger.info("[FAILOVER] Retrying stream without User-Agent (bypass 428 / bot blocks)")
+                    self._start_stream_loading_watchdog(request_id)
+                    fallback_headers = {k: v for k, v in st_headers.items() if k.lower() != 'user-agent'}
+                    fallback_headers['User-Agent'] = ""
+                    self._play_stream(magnet, self.stream_queue_title or "Stream", headers=fallback_headers, preserve_queue=True)
+                    return
+
+        # 2. If HTTP stream failed and has not been refreshed yet, attempt auto-heal refresh from provider first
         if isinstance(failed_st, dict) and failed_st.get("is_http") and not failed_st.get("_refreshed"):
             failed_st["_refreshed"] = True
             p_id = getattr(self, "_current_playing_item", {}).get("id") or getattr(self, "_current_playing_item", {}).get("imdb_id")
@@ -14668,8 +15039,8 @@ class CineWindow(Adw.ApplicationWindow):
 
         curr_idx = self.stream_queue_index
         remaining = self.stream_queue[curr_idx + 1:]
+        from . import api
         if target_prov and remaining:
-            from . import api
             same_prov_streams = [s for s in remaining if api.stream_matches_provider(s, target_prov)]
             other_streams = [s for s in remaining if not api.stream_matches_provider(s, target_prov)]
             if same_prov_streams:
@@ -15020,6 +15391,19 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, 'mpv'):
             try: self.mpv.stop()
             except Exception: pass
+
+        if getattr(self, "_is_hls_proxy_active", False):
+            old_sess = getattr(self, "_hls_session_id", None)
+            if old_sess:
+                try:
+                    from . import hls_proxy
+                    hls_proxy.close_session(old_sess)
+                except Exception:
+                    pass
+            self._is_hls_proxy_active = False
+            self._hls_session_id = None
+            self._hls_time_offset = 0.0
+            self._hls_total_duration = None
         
         # Check if the current torrent contains the next episode
         cur_torrent = None
@@ -15091,6 +15475,20 @@ class CineWindow(Adw.ApplicationWindow):
             page.remembered_working_stream = None
             self.selected_torrent = None
             self.remembered_working_stream = None
+
+        # Carry over active binge group
+        active_bg = getattr(self, "active_binge_group", None)
+        if not active_bg:
+            cur_item = getattr(self, "_current_playing_item", None) or {}
+            active_bg = cur_item.get("binge_group") or (cur_item.get("behaviorHints") or {}).get("bingeGroup")
+        if active_bg:
+            self.active_binge_group = active_bg
+            if page:
+                page.active_binge_group = active_bg
+            primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0] if page else None
+            if primary_id:
+                from . import database
+                database.set_setting(f"active_binge_group_{primary_id}", active_bg)
 
         # Carry over preferred direct provider and general provider
         prov = getattr(self, 'preferred_direct_provider', None)
@@ -15271,13 +15669,26 @@ class CineWindow(Adw.ApplicationWindow):
             self._next_ep_prefetched = None
 
     def _rank_direct_streams_for_playback(self, streams):
-        """Order direct HTTP streams so the provider/quality being watched comes first."""
+        """Order direct HTTP streams so the binge group / provider / quality being watched comes first."""
+        from . import api
         direct = [
             s for s in (streams or [])
             if isinstance(s, dict) and s.get("is_http") and (s.get("url") or s.get("stream_url"))
+            and not api.is_stream_url_expired(s.get("url") or s.get("stream_url"), buffer_seconds=60)
         ]
         if not direct:
             return []
+
+        binge_group = getattr(self, "active_binge_group", None)
+        if not binge_group:
+            cur_item = getattr(self, "_current_playing_item", None) or {}
+            binge_group = cur_item.get("binge_group") or (cur_item.get("behaviorHints") or {}).get("bingeGroup")
+        if not binge_group:
+            p_id = (getattr(self, "_current_playing_item", None) or {}).get("id") or (getattr(self, "_current_playing_item", None) or {}).get("imdb_id")
+            if p_id:
+                from . import database
+                binge_group = database.get_setting(f"active_binge_group_{p_id}", None)
+
         provider = getattr(self, "preferred_direct_provider", None)
         if not provider:
             cur_item = getattr(self, "_current_playing_item", None) or {}
@@ -15315,6 +15726,8 @@ class CineWindow(Adw.ApplicationWindow):
 
         def _rank(stream):
             score = 0
+            if binge_group and api.stream_matches_binge_group(stream, binge_group):
+                score -= 10
             if provider and _stream_matches_provider(stream, provider):
                 score -= 2
             if quality and _normalize_stream_quality(stream) == quality:
@@ -15475,6 +15888,10 @@ class CineWindow(Adw.ApplicationWindow):
                 try:
                     curr_pos = float(self.mpv.time_pos or 0.0)
                     curr_dur = float(self.mpv.duration or 0.0)
+                    if getattr(self, "_is_hls_proxy_active", False):
+                        curr_pos += getattr(self, "_hls_time_offset", 0.0)
+                        if getattr(self, "_hls_total_duration", None):
+                            curr_dur = self._hls_total_duration
                     if curr_pos <= 0:
                         curr_pos = float(self._current_playing_item.get("position") or 0.0)
                     if curr_dur <= 0:
@@ -15511,6 +15928,19 @@ class CineWindow(Adw.ApplicationWindow):
                 pass
             try: self.mpv.stop()
             except Exception: pass
+
+        if getattr(self, "_is_hls_proxy_active", False):
+            old_sess = getattr(self, "_hls_session_id", None)
+            if old_sess:
+                try:
+                    from . import hls_proxy
+                    hls_proxy.close_session(old_sess)
+                except Exception:
+                    pass
+            self._is_hls_proxy_active = False
+            self._hls_session_id = None
+            self._hls_time_offset = 0.0
+            self._hls_total_duration = None
 
         self._current_playing_item = None
         from . import player

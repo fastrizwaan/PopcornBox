@@ -1166,13 +1166,29 @@ def _normalize_stream_for_storage(stream):
     if not stream or not isinstance(stream, dict):
         return None
     res = {}
-    for k in ["url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "stream_title", "title", "filename", "is_http", "is_external", "ytId", "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles", "saved_at"]:
+    for k in ["url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "stream_title", "title", "filename", "is_http", "is_external", "ytId", "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles", "saved_at", "binge_group", "expires_at", "has_expiring_credentials"]:
         if k in stream and stream[k] is not None:
             res[k] = stream[k]
     if "addon_name" in stream and "addon_names" not in res:
         res["addon_names"] = [stream["addon_name"]]
     elif res.get("addon_names") and not res.get("addon_name"):
         res["addon_name"] = res["addon_names"][0]
+
+    bh = res.get("behaviorHints")
+    if not res.get("binge_group") and isinstance(bh, dict):
+        bg = bh.get("bingeGroup")
+        if bg and bg != "trailer":
+            res["binge_group"] = bg
+
+    from . import api
+    url = res.get("url") or res.get("stream_url")
+    if url and isinstance(url, str):
+        if hasattr(api, "has_likely_expiring_playback_credentials") and api.has_likely_expiring_playback_credentials(url):
+            res["has_expiring_credentials"] = True
+            exp_ts = api.get_stream_url_expiry_timestamp(url, saved_at=res.get("saved_at"))
+            if exp_ts:
+                res["expires_at"] = exp_ts
+
     return res
 
 def is_stream_stale(stream_or_item, max_age_seconds=14400):
@@ -1185,7 +1201,14 @@ def is_stream_stale(stream_or_item, max_age_seconds=14400):
         return False
     
     url = stream_or_item.get("stream_url") or stream_or_item.get("url") or ""
-    is_http = bool(stream_or_item.get("is_http") or (isinstance(url, str) and url.startswith(("http://", "https://")) and not stream_or_item.get("hash") and not stream_or_item.get("infoHash")))
+    is_http = bool(
+        stream_or_item.get("is_http")
+        or (
+            isinstance(url, str)
+            and url.startswith(("http://", "https://"))
+            and not url.split("?", 1)[0].lower().endswith(".torrent")
+        )
+    )
     if not is_http:
         return False
     
@@ -1194,12 +1217,32 @@ def is_stream_stale(stream_or_item, max_age_seconds=14400):
     last_watched = stream_or_item.get("last_watched")
     
     timestamp = last_refreshed or saved_at or last_watched
+
+    from . import api
+    # 1. Check explicit expires_at if recorded
+    expires_at = stream_or_item.get("expires_at")
+    if expires_at:
+        try:
+            import time as _time
+            if (_time.time() + 180) >= float(expires_at):
+                return True
+        except (ValueError, TypeError):
+            pass
+
+    # 2. Check embedded expiration in URL query params
+    if hasattr(api, "is_stream_url_expired") and api.is_stream_url_expired(url, buffer_seconds=180, saved_at=timestamp):
+        return True
+
     if not timestamp:
         return True
     
     try:
         import time as _time
         age = _time.time() - float(timestamp)
+        # If the stream is known to have expiring credentials without exact timestamp, reduce stale threshold to 1 hour
+        if stream_or_item.get("has_expiring_credentials") or (hasattr(api, "has_likely_expiring_playback_credentials") and api.has_likely_expiring_playback_credentials(url)):
+            if age > 3600:
+                return True
         return age > max_age_seconds
     except (ValueError, TypeError):
         return True
@@ -3756,11 +3799,12 @@ def get_cached_streams(cache_key, max_age_hours=24, return_age=False):
         print(f"Error reading stream cache: {e}")
     return (None, None) if return_age else None
 
-def save_cached_streams(cache_key, streams):
+def save_cached_streams(cache_key, streams, updated_at=None):
     if not cache_key or streams is None:
         return
     try:
         now = time.time()
+        cache_updated_at = now if updated_at is None else float(updated_at)
         for s in streams:
             if isinstance(s, dict):
                 s.setdefault("saved_at", now)
@@ -3769,11 +3813,140 @@ def save_cached_streams(cache_key, streams):
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT OR REPLACE INTO stream_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
-                (str(cache_key), json.dumps(streams), now)
+                (str(cache_key), json.dumps(streams), cache_updated_at)
             )
             conn.commit()
     except Exception as e:
         print(f"Error saving stream cache: {e}")
+
+def save_cached_streams_partial(cache_key, source_cache_key, streams, source_scope, started_at=None, abort_event=None, preserved_streams=None):
+    """Atomically replace one source category while preserving the other cached category."""
+    if not cache_key or not source_cache_key or streams is None or source_scope not in ("direct", "torrent"):
+        return None
+    try:
+        now = time.time()
+        started_at = float(started_at if started_at is not None else now)
+        selected = [dict(s) for s in streams if isinstance(s, dict)]
+        for stream in selected:
+            stream.setdefault("saved_at", now)
+
+        def matches_scope(stream):
+            url = str(stream.get("stream_url") or stream.get("url") or "").lower()
+            is_direct = bool(
+                stream.get("is_http")
+                or (url.startswith(("http://", "https://")) and not url.split("?", 1)[0].endswith(".torrent"))
+            )
+            return is_direct if source_scope == "direct" else not is_direct
+
+        with _cache_db_lock:
+            if abort_event and abort_event.is_set():
+                return None
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT updated_at FROM stream_cache WHERE cache_key = ?", (str(source_cache_key),))
+            source_row = cursor.fetchone()
+            # A later-started refresh for this category has already committed.
+            # Do not let an older, slower provider response replace it.
+            if source_row and float(source_row[0] or 0) > started_at:
+                cursor.execute("SELECT data FROM stream_cache WHERE cache_key = ?", (str(cache_key),))
+                aggregate_row = cursor.fetchone()
+                return json.loads(aggregate_row[0]) if aggregate_row and aggregate_row[0] else []
+            cursor.execute("SELECT data FROM stream_cache WHERE cache_key = ?", (str(cache_key),))
+            row = cursor.fetchone()
+            previous = json.loads(row[0]) if row and row[0] else []
+            preserved = [s for s in previous if isinstance(s, dict) and not matches_scope(s)]
+            # A provider-scoped cache may be new while matching cards only
+            # exist in the global cache. Seed its hidden category from those
+            # matching cards on the first scoped refresh.
+            if not preserved and preserved_streams:
+                preserved = [
+                    dict(s) for s in preserved_streams
+                    if isinstance(s, dict) and not matches_scope(s)
+                ]
+            merged = preserved + selected
+            cursor.execute(
+                "INSERT OR REPLACE INTO stream_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
+                (str(cache_key), json.dumps(merged), now - 7201),
+            )
+            cursor.execute(
+                "INSERT OR REPLACE INTO stream_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
+                (str(source_cache_key), json.dumps(selected), started_at),
+            )
+            conn.commit()
+        return merged
+    except Exception as e:
+        print(f"Error saving partial stream cache: {e}")
+        return None
+
+def save_cached_streams_full(cache_key, direct_cache_key, torrent_cache_key, streams, started_at=None, abort_event=None):
+    """Atomically save a complete result without overwriting newer source refreshes."""
+    if not cache_key or not direct_cache_key or not torrent_cache_key or streams is None:
+        return None
+    try:
+        now = time.time()
+        started_at = float(started_at if started_at is not None else now)
+        candidates = [dict(s) for s in streams if isinstance(s, dict)]
+        for stream in candidates:
+            stream.setdefault("saved_at", now)
+
+        def is_direct(stream):
+            url = str(stream.get("stream_url") or stream.get("url") or "").lower()
+            return bool(
+                stream.get("is_http")
+                or (url.startswith(("http://", "https://")) and not url.split("?", 1)[0].endswith(".torrent"))
+            )
+
+        with _cache_db_lock:
+            if abort_event and abort_event.is_set():
+                return None
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT updated_at FROM stream_cache WHERE cache_key = ?", (str(cache_key),))
+            aggregate_row = cursor.fetchone()
+            # A newer complete lookup has already won; an older lookup must not
+            # replace its result just because slower providers finished later.
+            if aggregate_row and float(aggregate_row[0] or 0) > started_at:
+                cursor.execute("SELECT data FROM stream_cache WHERE cache_key = ?", (str(cache_key),))
+                data_row = cursor.fetchone()
+                return json.loads(data_row[0]) if data_row and data_row[0] else []
+
+            cursor.execute("SELECT updated_at FROM stream_cache WHERE cache_key = ?", (str(direct_cache_key),))
+            direct_row = cursor.fetchone()
+            cursor.execute("SELECT updated_at FROM stream_cache WHERE cache_key = ?", (str(torrent_cache_key),))
+            torrent_row = cursor.fetchone()
+            newer_direct = bool(direct_row and float(direct_row[0] or 0) > started_at)
+            newer_torrent = bool(torrent_row and float(torrent_row[0] or 0) > started_at)
+
+            if newer_direct or newer_torrent:
+                cursor.execute("SELECT data FROM stream_cache WHERE cache_key = ?", (str(cache_key),))
+                data_row = cursor.fetchone()
+                previous = json.loads(data_row[0]) if data_row and data_row[0] else []
+                if newer_direct:
+                    candidates = [s for s in candidates if not is_direct(s)] + [s for s in previous if isinstance(s, dict) and is_direct(s)]
+                if newer_torrent:
+                    candidates = [s for s in candidates if is_direct(s)] + [s for s in previous if isinstance(s, dict) and not is_direct(s)]
+
+            direct_streams = [s for s in candidates if is_direct(s)]
+            torrent_streams = [s for s in candidates if not is_direct(s)]
+            if not newer_direct:
+                cursor.execute(
+                    "INSERT OR REPLACE INTO stream_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
+                    (str(direct_cache_key), json.dumps(direct_streams), started_at),
+                )
+            if not newer_torrent:
+                cursor.execute(
+                    "INSERT OR REPLACE INTO stream_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
+                    (str(torrent_cache_key), json.dumps(torrent_streams), started_at),
+                )
+            cursor.execute(
+                "INSERT OR REPLACE INTO stream_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
+                (str(cache_key), json.dumps(candidates), now),
+            )
+            conn.commit()
+        return candidates
+    except Exception as e:
+        print(f"Error saving full stream cache: {e}")
+        return None
 
 def delete_cached_metadata(item_id):
     if not item_id:

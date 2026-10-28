@@ -106,6 +106,252 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertFalse(any("User-Agent:" in f for f in http_fields))
         self.assertTrue(any("Origin: https://abyssplayer.com" in f for f in http_fields))
 
+    def test_play_stream_without_user_agent_leaves_mpv_user_agent_empty(self):
+        from src.window import CineWindow
+        win = MagicMock()
+        win.main_stack = MagicMock()
+        mpv_props = {}
+        win.mpv.__setitem__.side_effect = lambda k, v: mpv_props.__setitem__(k, v)
+        win.mpv.__getitem__.side_effect = lambda k: mpv_props.get(k)
+        win._is_playing_trailer.return_value = False
+
+        # When no User-Agent is explicitly requested, MPV should not be forced with Chrome UA
+        CineWindow._play_stream(
+            win,
+            url="https://hcdn3.hakunaymatata.com/resource/test.mp4",
+            title="Direct Stream",
+            headers={}
+        )
+        self.assertEqual(mpv_props.get("user-agent"), "")
+        self.assertEqual(mpv_props.get("referrer"), "")
+        self.assertFalse(mpv_props.get("ytdl"))
+
+    def test_ping_stream_url_preserves_clean_headers(self):
+        stream = {
+            "url": "https://hcdn3.hakunaymatata.com/resource/test.mp4",
+            "behaviorHints": {"notWebReady": False}
+        }
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            res = api._ping_stream_url(dict(stream))
+            self.assertTrue(res.get("is_working"))
+            # Ensure ffprobe was NOT passed a hardcoded Mozilla User-Agent header
+            call_cmd = mock_run.call_args[0][0]
+            cmd_str = " ".join(call_cmd)
+            self.assertNotIn("Mozilla", cmd_str)
+
+    def test_play_stream_does_not_leak_previous_stream_headers(self):
+        from src.window import CineWindow
+        win = MagicMock()
+        win.main_stack = MagicMock()
+        mpv_props = {}
+        win.mpv.__setitem__.side_effect = lambda k, v: mpv_props.__setitem__(k, v)
+        win.mpv.__getitem__.side_effect = lambda k: mpv_props.get(k)
+        win._is_playing_trailer.return_value = False
+
+        # Simulate previous playing item with Videasy proxyHeaders
+        win._current_playing_item = {
+            "selected_torrent": {
+                "url": "https://videasy.net/hls/test.m3u8",
+                "behaviorHints": {
+                    "proxyHeaders": {
+                        "request": {
+                            "Referer": "https://vidy.st/",
+                            "User-Agent": "Mozilla/5.0 Chrome/137"
+                        }
+                    }
+                }
+            }
+        }
+
+        # Playing a new stream with empty headers
+        CineWindow._play_stream(
+            win,
+            url="https://bcdn.hakunaymatata.com/resource/f4452e26cf89de5e091c20c4108d6cbb.mp4?sign=test",
+            title="Now Apocalypse",
+            headers={}
+        )
+        self.assertEqual(mpv_props.get("user-agent"), "")
+        self.assertEqual(mpv_props.get("referrer"), "")
+
+    def test_hakunaymatata_strips_mozilla_user_agent(self):
+        from src.window import CineWindow
+        win = MagicMock()
+        win.main_stack = MagicMock()
+        mpv_props = {}
+        win.mpv.__setitem__.side_effect = lambda k, v: mpv_props.__setitem__(k, v)
+        win.mpv.__getitem__.side_effect = lambda k: mpv_props.get(k)
+        win._is_playing_trailer.return_value = False
+
+        CineWindow._play_stream(
+            win,
+            url="https://bcdn.hakunaymatata.com/resource/test.mp4",
+            title="Hakuna Stream",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0"}
+        )
+        self.assertEqual(mpv_props.get("user-agent"), "")
+
+    def test_streams_match_different_quality_does_not_match(self):
+        s1 = {
+            "hash": "325896c673cc290e7928ac3763ec5764",
+            "url": "https://bcdn.hakunaymatata.com/1080.mp4",
+            "quality": "1080p",
+            "filename": "⚡ Fast Load",
+            "addon_names": ["GGplay"]
+        }
+        s2 = {
+            "hash": "178244607ae3342b7fbe2ddf2107ba5a",
+            "url": "https://bcdn.hakunaymatata.com/720.mp4",
+            "quality": "720p",
+            "filename": "⚡ Fast Load",
+            "addon_names": ["GGplay"]
+        }
+        self.assertFalse(api.streams_match(s1, s2))
+
+    def test_play_stream_configures_30s_timeout_and_probe_size(self):
+        from src.window import CineWindow
+        win = MagicMock()
+        win.main_stack = MagicMock()
+        mpv_props = {}
+        win.mpv.__setitem__.side_effect = lambda k, v: mpv_props.__setitem__(k, v)
+        win.mpv.__getitem__.side_effect = lambda k: mpv_props.get(k)
+        win._is_playing_trailer.return_value = False
+
+        CineWindow._play_stream(
+            win,
+            url="https://bcdn.hakunaymatata.com/resource/test.mp4",
+            title="Hakuna Stream",
+            headers={}
+        )
+        self.assertEqual(mpv_props.get("network-timeout"), 30.0)
+        self.assertEqual(mpv_props.get("demuxer-lavf-o"), "")
+
+    def test_progress_adjusted_debounced_seek(self):
+        from src.window import CineWindow
+        from gi.repository import GLib
+        win = MagicMock()
+        win._seek_debounce_id = None
+        win._is_hls_proxy_active = False
+        adj = MagicMock()
+        adj.props.value = 120.0
+
+        seek_cb = None
+        def mock_timeout(ms, cb):
+            nonlocal seek_cb
+            seek_cb = cb
+            return 888
+
+        with patch.object(GLib, "timeout_add", side_effect=mock_timeout):
+            CineWindow._on_progress_adjusted(win, adj)
+            self.assertEqual(win._seek_debounce_id, 888)
+            self.assertIsNotNone(seek_cb)
+            seek_cb()
+            win.mpv.command_async.assert_called_once_with("seek", 120.0, "absolute+keyframes")
+
+    def test_progress_adjusted_hls_proxy_seek(self):
+        from src.window import CineWindow
+        from gi.repository import GLib
+        win = MagicMock()
+        win._seek_debounce_id = None
+        win._is_hls_proxy_active = True
+        win._hls_session_id = "test_sess"
+        adj = MagicMock()
+        adj.props.value = 350.0
+
+        seek_cb = None
+        def mock_timeout(ms, cb):
+            nonlocal seek_cb
+            seek_cb = cb
+            return 777
+
+        with patch.object(GLib, "timeout_add", side_effect=mock_timeout):
+            CineWindow._on_progress_adjusted(win, adj)
+            self.assertEqual(win._seek_debounce_id, 777)
+            self.assertIsNotNone(seek_cb)
+            with patch.object(win, "_seek_hls_proxy") as mock_seek_hls:
+                seek_cb()
+                mock_seek_hls.assert_called_once_with(350.0)
+
+    def test_stream_loading_watchdog_lifecycle(self):
+        from src.window import CineWindow
+        from gi.repository import GLib
+        win = MagicMock()
+        win._stream_loading_watchdog_id = None
+        win.stream_request_id = 42
+
+        # Start watchdog
+        with patch.object(GLib, "timeout_add_seconds", return_value=999) as mock_timeout:
+            CineWindow._start_stream_loading_watchdog(win, 42)
+            mock_timeout.assert_called_once_with(30, win._on_stream_loading_timeout, 42)
+            self.assertEqual(win._stream_loading_watchdog_id, 999)
+
+        # Cancel watchdog
+        with patch.object(GLib, "source_remove") as mock_remove:
+            CineWindow._cancel_stream_loading_watchdog(win)
+            mock_remove.assert_called_once_with(999)
+            self.assertIsNone(win._stream_loading_watchdog_id)
+
+    def test_stream_loading_watchdog_timeout_triggers_failover(self):
+        from src.window import CineWindow
+        from gi.repository import GLib
+        win = MagicMock()
+        win.stream_request_id = 5
+        win.is_loading_stream = True
+        win.stream_queue = [{"url": "http://example.com/1"}, {"url": "http://example.com/2"}]
+        win.stream_queue_index = 0
+
+        res = CineWindow._on_stream_loading_timeout(win, 5)
+        self.assertEqual(res, GLib.SOURCE_REMOVE)
+        win._try_next_stream_in_queue.assert_called_once()
+
+
+    def test_hls_stream_loads_without_start_offset(self):
+        from src.window import CineWindow
+        from src import hls_proxy
+        win = MagicMock()
+        win.main_stack = MagicMock()
+        win._is_playing_trailer.return_value = False
+        win.stream_request_id = 1
+
+        hls_url = "https://ggplay-gf.vercel.app/hls/manifest.m3u8?url=https%3A%2F%2Fnebula.bright67.online%2Fplaylist.jpg"
+        mock_prepared_url = "http://127.0.0.1:9999/hls/sess123/playlist.m3u8?offset=96.00"
+
+        def mock_prepare_async(url, headers, seek_target, callback):
+            # Directly execute callback
+            callback(True, "sess123", mock_prepared_url, 7200.0, 96.0)
+
+        with patch.object(hls_proxy, "prepare_hls_stream_async", side_effect=mock_prepare_async) as mock_prep:
+            CineWindow._play_stream(
+                win,
+                url=hls_url,
+                title="Project Hail Mary",
+                headers={},
+                start_time=96.0
+            )
+            mock_prep.assert_called_once()
+            win.mpv.loadfile.assert_called_once_with(mock_prepared_url, "replace")
+            self.assertTrue(win._is_hls_proxy_active)
+            self.assertEqual(win._hls_time_offset, 96.0)
+            self.assertEqual(win._hls_total_duration, 7200.0)
+
+    def test_mp4_stream_loads_with_start_offset(self):
+        from src.window import CineWindow
+        win = MagicMock()
+        win.main_stack = MagicMock()
+        win._is_playing_trailer.return_value = False
+
+        mp4_url = "https://bcdn.hakunaymatata.com/resource/video.mp4"
+        CineWindow._play_stream(
+            win,
+            url=mp4_url,
+            title="Project Hail Mary",
+            headers={},
+            start_time=96.0
+        )
+        # Verify non-HLS streams pass start offset
+        win.mpv.command.assert_called_once_with("loadfile", mp4_url, "replace", -1, "start=96.00")
+        self.assertIsNone(win._seek_after_loaded)
+
 
 if __name__ == "__main__":
     unittest.main()
