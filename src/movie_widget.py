@@ -37,7 +37,7 @@ IMAGE_CACHE_DIR = os.path.join(BASE_DIR, 'images')
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
 _image_pool = ThreadPoolExecutor(max_workers=10)
-_disk_pool = ThreadPoolExecutor(max_workers=6)
+_disk_pool = ThreadPoolExecutor(max_workers=2)
 _meta_fallback_pool = ThreadPoolExecutor(max_workers=8)
 
 import atexit

@@ -2615,6 +2615,20 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def _on_cast_member_clicked(self, member_id, member_name, photo_url=None):
         try:
+            # Abort stream provider search and metadata in details page so cast page gets exclusive network
+            if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
+                self.stream_abort_event.set()
+            if hasattr(self, 'page_abort_event') and self.page_abort_event:
+                self.page_abort_event.set()
+            if hasattr(self, '_live_check_abort_event') and self._live_check_abort_event:
+                self._live_check_abort_event.set()
+            if hasattr(self, '_trailer_fast_abort') and self._trailer_fast_abort:
+                self._trailer_fast_abort.set()
+            self._fetching_streams = False
+            if hasattr(self, '_set_provider_spinner_active'):
+                try: self._set_provider_spinner_active(False)
+                except Exception: pass
+
             if hasattr(self.window, "open_person_details"):
                 self.window.open_person_details(member_id, member_name, photo_url=photo_url)
             else:
@@ -3333,6 +3347,24 @@ class MovieDetailsPage(Gtk.Overlay):
             player.stop_engine_explicit(h)
 
     def on_watch_clicked(self, btn=None):
+        # Dedicated network priority: abort other stream fetching and background work immediately
+        if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
+            self.stream_abort_event.set()
+        if hasattr(self, 'page_abort_event') and self.page_abort_event:
+            self.page_abort_event.set()
+        if hasattr(self, '_live_check_abort_event') and self._live_check_abort_event:
+            self._live_check_abort_event.set()
+        if hasattr(self, '_trailer_fast_abort') and self._trailer_fast_abort:
+            self._trailer_fast_abort.set()
+        self._fetching_streams = False
+        if hasattr(self, '_set_provider_spinner_active'):
+            try:
+                self._set_provider_spinner_active(False)
+            except Exception:
+                pass
+        if self.window and hasattr(self.window, "_cancel_all_background_fetching"):
+            self.window._cancel_all_background_fetching()
+
         raw_t_list = getattr(self, 'current_t_list', []) or []
         
         sel_prov_name = "All Providers"
@@ -3634,6 +3666,15 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def _download_stream_item(self, torrent):
         if not torrent: return
+        if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
+            self.stream_abort_event.set()
+        self._fetching_streams = False
+        if hasattr(self, '_set_provider_spinner_active'):
+            try: self._set_provider_spinner_active(False)
+            except Exception: pass
+        if self.window and hasattr(self.window, "_cancel_all_background_fetching"):
+            self.window._cancel_all_background_fetching()
+
         url = torrent.get("url") or torrent.get("magnet")
         sources = torrent.get("sources") if isinstance(torrent, dict) else None
         if not url and torrent.get("hash"):
@@ -3783,6 +3824,14 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def _start_streaming(self, magnet, file_index):
         if not magnet: return
+        if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
+            self.stream_abort_event.set()
+        self._fetching_streams = False
+        if hasattr(self, '_set_provider_spinner_active'):
+            try: self._set_provider_spinner_active(False)
+            except Exception: pass
+        if self.window and hasattr(self.window, "_cancel_all_background_fetching"):
+            self.window._cancel_all_background_fetching()
         
         media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
         if self.media_type in ["series", "anime", "tv"] and not self.is_channel and getattr(self, "selected_season", None) is not None:
@@ -4439,6 +4488,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action("open-downloads", lambda *a: self._open_local_page("downloads"))
         self._create_action("open-watched", lambda *a: self._open_local_page("watched"))
         def _open_player_action(*a):
+            self._cancel_all_background_fetching()
             curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
             if curr_page and curr_page != "player":
                 self.previous_page_before_player = curr_page
@@ -5470,8 +5520,11 @@ class CineWindow(Adw.ApplicationWindow):
         return True
 
     def _update_volume_icon(self):
-        volume = cast(float, self.mpv.volume)
-        is_muted = self.mpv.mute
+        try:
+            volume = cast(float, self.mpv.volume)
+            is_muted = self.mpv.mute
+        except (mpv.ShutdownError, AttributeError, Exception):
+            return
 
         if is_muted or volume == 0:
             icon = "cine-volume-mute-symbolic"
@@ -5493,31 +5546,36 @@ class CineWindow(Adw.ApplicationWindow):
     def _toggle_elapsed_remaining(self, _btn):
         self.show_remaining = not self.show_remaining
         settings.set_boolean("show-remaining", self.show_remaining)
-        pos = float(self.mpv.time_pos or 0)
+        try:
+            pos = float(getattr(self.mpv, "time_pos", 0) or 0)
+        except (mpv.ShutdownError, AttributeError, Exception):
+            pos = 0.0
         self._update_progress(pos, update_bar=False)
         self._set_time_margin()
 
     def _update_progress(self, curr_time, update_bar=True):
-        if getattr(self, "_is_hls_proxy_active", False):
-            curr_time = round(float(curr_time or 0.0) + getattr(self, "_hls_time_offset", 0.0), 1)
-            duration = getattr(self, "_hls_total_duration", None) or float(self.mpv.duration or 0)
-        else:
-            curr_time = round(curr_time, 1)
-            duration = float(self.mpv.duration or 0)
-
-        if update_bar and curr_time == self.prev_prog_time:
-            return
-
-        if update_bar and getattr(self, "_seek_debounce_id", None) is not None:
-            # User is actively dragging the seek slider, do not jump back
-            return
-
-        if update_bar:
-            self.video_progress_adj.handler_block_by_func(self._on_progress_adjusted)
-            self.video_progress_adj.props.value = curr_time
-            self.video_progress_adj.handler_unblock_by_func(self._on_progress_adjusted)
-
         try:
+            if getattr(self, "_is_hls_proxy_active", False):
+                curr_time = round(float(curr_time or 0.0) + getattr(self, "_hls_time_offset", 0.0), 1)
+                duration = getattr(self, "_hls_total_duration", None)
+                if duration is None:
+                    duration = float(getattr(self.mpv, "duration", 0) or 0)
+            else:
+                curr_time = round(curr_time, 1)
+                duration = float(getattr(self.mpv, "duration", 0) or 0)
+
+            if update_bar and curr_time == self.prev_prog_time:
+                return
+
+            if update_bar and getattr(self, "_seek_debounce_id", None) is not None:
+                # User is actively dragging the seek slider, do not jump back
+                return
+
+            if update_bar:
+                self.video_progress_adj.handler_block_by_func(self._on_progress_adjusted)
+                self.video_progress_adj.props.value = curr_time
+                self.video_progress_adj.handler_unblock_by_func(self._on_progress_adjusted)
+
             remaining = (duration - curr_time) if duration > curr_time else 0
 
             if self.show_remaining:
@@ -5584,10 +5642,10 @@ class CineWindow(Adw.ApplicationWindow):
                         curr_stack = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
                         if curr_stack != "player":
                             self._update_continue_watching_section()
-        except mpv.ShutdownError:
-            pass
 
-        self.prev_prog_time = curr_time
+            self.prev_prog_time = curr_time
+        except (mpv.ShutdownError, AttributeError):
+            return
 
     def _update_chapter_marks_and_menu(self, chapters):
         self.video_progress_scale.clear_marks()
@@ -7579,6 +7637,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.discover_request_id = 0
         self._discover_abort_event = threading.Event()
         self._discover_active_pool = None
+        self._discover_prewarm_abort_event = threading.Event()
 
         self.content_request_id = 0
         self._content_abort_event = threading.Event()
@@ -7589,6 +7648,7 @@ class CineWindow(Adw.ApplicationWindow):
             
         self._discover_views = {}
         self._discover_catalog_list_cache = {}
+        self._discover_catalog_list_cache_timestamps = {}
         # Defer populating addons list to avoid freezing GTK main thread during window presentation
         GLib.timeout_add(2500, lambda: (self._populate_addons(), False)[1])
         
@@ -7748,6 +7808,11 @@ class CineWindow(Adw.ApplicationWindow):
             self._discover_active_pool = None
         self._active_discover_view_key = None
 
+        # Discover prewarm thread
+        if hasattr(self, "_discover_prewarm_abort_event") and self._discover_prewarm_abort_event:
+            self._discover_prewarm_abort_event.set()
+        self._discover_prewarm_abort_event = threading.Event()
+
         # 4. Content catalog view (single catalog grid)
         self.content_request_id = getattr(self, "content_request_id", 0) + 1
         self.is_fetching_content = False
@@ -7766,6 +7831,51 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             self._search_pool = None
+
+        # 6. Details page (stream providers, metadata, trailers, live check)
+        details_box = getattr(self, "details_box", None)
+        if details_box is not None and hasattr(details_box, "get_first_child"):
+            try:
+                seen_children = set()
+                child = details_box.get_first_child()
+                count = 0
+                while child and child not in seen_children and count < 50:
+                    count += 1
+                    seen_children.add(child)
+                    if hasattr(child, "stream_abort_event") and child.stream_abort_event and hasattr(child.stream_abort_event, "set"):
+                        child.stream_abort_event.set()
+                    if hasattr(child, "page_abort_event") and child.page_abort_event and hasattr(child.page_abort_event, "set"):
+                        child.page_abort_event.set()
+                    if hasattr(child, "_live_check_abort_event") and child._live_check_abort_event and hasattr(child._live_check_abort_event, "set"):
+                        child._live_check_abort_event.set()
+                    if hasattr(child, "_trailer_fast_abort") and child._trailer_fast_abort and hasattr(child._trailer_fast_abort, "set"):
+                        child._trailer_fast_abort.set()
+                    if hasattr(child, "_fetching_streams"):
+                        child._fetching_streams = False
+                    if hasattr(child, "_set_provider_spinner_active") and callable(child._set_provider_spinner_active):
+                        try:
+                            child._set_provider_spinner_active(False)
+                        except Exception:
+                            pass
+                    child = child.get_next_sibling() if hasattr(child, "get_next_sibling") else None
+            except Exception:
+                pass
+
+        # 7. Person page (cast filmography)
+        person_box = getattr(self, "person_box", None)
+        if person_box is not None and hasattr(person_box, "get_first_child"):
+            try:
+                seen_children = set()
+                child = person_box.get_first_child()
+                count = 0
+                while child and child not in seen_children and count < 50:
+                    count += 1
+                    seen_children.add(child)
+                    if hasattr(child, "_fetch_gen") and isinstance(child._fetch_gen, int):
+                        child._fetch_gen += 1
+                    child = child.get_next_sibling() if hasattr(child, "get_next_sibling") else None
+            except Exception:
+                pass
 
         self._set_discover_spinner_active(False)
 
@@ -11630,8 +11740,15 @@ class CineWindow(Adw.ApplicationWindow):
             if is_home else
             (filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "")
         )
+        cached_res = None
         if not force_refresh and hasattr(self, "_discover_catalog_list_cache") and cache_key in self._discover_catalog_list_cache:
-            cached_res = list(self._discover_catalog_list_cache[cache_key])
+            ts = getattr(self, "_discover_catalog_list_cache_timestamps", {}).get(cache_key, 0)
+            if ts and (time.time() - ts) >= 24 * 3600:
+                self._discover_catalog_list_cache.pop(cache_key, None)
+                if hasattr(self, "_discover_catalog_list_cache_timestamps"):
+                    self._discover_catalog_list_cache_timestamps.pop(cache_key, None)
+            else:
+                cached_res = list(self._discover_catalog_list_cache[cache_key])
             if cached_res:
                 from . import api
                 # Evict rows whose provider has since gone offline for the
@@ -12011,10 +12128,14 @@ class CineWindow(Adw.ApplicationWindow):
 
         if not hasattr(self, "_discover_catalog_list_cache"):
             self._discover_catalog_list_cache = {}
+        if not hasattr(self, "_discover_catalog_list_cache_timestamps"):
+            self._discover_catalog_list_cache_timestamps = {}
         if rows:
             self._discover_catalog_list_cache[cache_key] = rows
+            self._discover_catalog_list_cache_timestamps[cache_key] = time.time()
         else:
             self._discover_catalog_list_cache.pop(cache_key, None)
+            self._discover_catalog_list_cache_timestamps.pop(cache_key, None)
         debug_log(f"_get_discover_catalog_list DONE for {cache_key}", f"Generated {len(rows)} catalog rows")
         return rows
 
@@ -12394,6 +12515,11 @@ class CineWindow(Adw.ApplicationWindow):
             cur_genre = None
         
         # 1. Instant cache hit: Switch visible view immediately with zero refetch
+        if hasattr(self, "_discover_views") and view_key in self._discover_views:
+            _created_at = self._discover_views[view_key].get("created_at", 0)
+            if _created_at and (time.time() - _created_at) >= 24 * 3600:
+                self._discover_views.pop(view_key, None)
+
         if not force_refresh and view_key in self._discover_views:
             view_data = self._discover_views[view_key]
             target_box = view_data.get("box")
@@ -12444,10 +12570,19 @@ class CineWindow(Adw.ApplicationWindow):
                             return False
                         if getattr(self, "_discover_is_loading_rows", False):
                             return False
-                        resume_batch = min(3, len(self._discover_catalog_list) - self._discover_next_row_index) if is_home else 4
+                        if hasattr(self, "main_stack") and self.main_stack.get_visible_child_name() != "library":
+                            return False
+                        if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "discover":
+                            return False
+                        current_cat = self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else None
+                        if is_home and current_cat != "home":
+                            return False
+                        if not is_home and current_cat == "home":
+                            return False
+                        resume_batch = min(4, len(self._discover_catalog_list) - self._discover_next_row_index) if is_home else 4
                         self._load_next_discover_batch(req_id, batch_size=resume_batch)
                         return False
-                    self._discover_batch_timer_id = GLib.timeout_add(180 if is_home else 120, _resume_load)
+                    self._discover_batch_timer_id = GLib.timeout_add(40 if is_home else 30, _resume_load)
                 else:
                     self._set_discover_spinner_active(False)
                 return
@@ -12571,13 +12706,14 @@ class CineWindow(Adw.ApplicationWindow):
             "box": new_box,
             "catalog_list": self._discover_catalog_list,
             "next_row_index": 0,
-            "request_id": req_id
+            "request_id": req_id,
+            "created_at": time.time(),
         }
         
         # Keep Home responsive on slower machines: start with only a few rows and
         # let the paced background loader fill the rest while the user can browse.
         # Filtered Discover views keep their larger initial batch.
-        initial_batch = min(3, len(self._discover_catalog_list)) if is_home else 6
+        initial_batch = min(4, len(self._discover_catalog_list)) if is_home else 6
         debug_log(f"_refresh_discover_page dispatching initial batch of {initial_batch} rows (req_id={req_id}, is_home={is_home})")
         self._set_discover_spinner_active(True)
         self._load_next_discover_batch(req_id, batch_size=initial_batch)
@@ -12590,6 +12726,12 @@ class CineWindow(Adw.ApplicationWindow):
             return
         if req_id != getattr(self, "discover_request_id", 0) or _is_event_set(abort_ev):
             debug_log(f"_load_next_discover_batch SKIPPED: outdated req_id {req_id} vs current {getattr(self, 'discover_request_id', 0)}")
+            return
+        if hasattr(self, "main_stack") and self.main_stack.get_visible_child_name() != "library":
+            self._set_discover_spinner_active(False)
+            return
+        if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "discover":
+            self._set_discover_spinner_active(False)
             return
         if not hasattr(self, "_discover_catalog_list") or self._discover_next_row_index >= len(self._discover_catalog_list):
             debug_log(f"_load_next_discover_batch SKIPPED: all rows loaded ({self._discover_next_row_index}/{len(self._discover_catalog_list) if hasattr(self, '_discover_catalog_list') else 0})")
@@ -12750,6 +12892,25 @@ class CineWindow(Adw.ApplicationWindow):
                                 total_pages = max(total_pages, int(page_total or 0))
                                 if items and not _is_event_set(abort_ev):
                                     database.save_cached_catalog(tmdb_key, items)
+                            elif items and not database.is_catalog_cache_fresh(tmdb_key, max_age_hours=database.CATALOG_CACHE_HOURS):
+                                def _bg_refresh_tmdb():
+                                    try:
+                                        fresh, p_tot = tmdb_helper.fetch_country_catalog_page(
+                                            country=req_country,
+                                            media_type=m_type,
+                                            genre=req_genre,
+                                            year=req_year,
+                                            sort_mode=req_sort,
+                                            language=req_lang,
+                                            limit=DISCOVER_ROW_CARD_LIMIT,
+                                            page=req_page,
+                                            exclude_ids=tmdb_seen_snapshot,
+                                        )
+                                        if fresh and not _is_event_set(abort_ev):
+                                            database.save_cached_catalog(tmdb_key, fresh)
+                                    except Exception:
+                                        pass
+                                threading.Thread(target=_bg_refresh_tmdb, daemon=True).start()
                             # The row carries the cursor the next page is queued
                             # from; the main thread only reads it after this batch.
                             if not items:
@@ -12867,6 +13028,23 @@ class CineWindow(Adw.ApplicationWindow):
                             if not cached and (current_g or current_l or current_c or cur_network):
                                 cached = None
                             if cached:
+                                if not database.is_catalog_cache_fresh(cache_key, max_age_hours=database.CATALOG_CACHE_HOURS):
+                                    def _bg_refresh_provider(m_type=m_type, c_id=c_id, m_url=m_url, fetch_genre=fetch_genre, cache_key=cache_key):
+                                        try:
+                                            fresh_items = api.fetch_items(
+                                                media_type=m_type,
+                                                catalog_id=c_id,
+                                                catalog_url=m_url,
+                                                genre=fetch_genre or "",
+                                                page=1,
+                                                limit=DISCOVER_ROW_CARD_LIMIT,
+                                                timeout=4.0,
+                                            )
+                                            if fresh_items:
+                                                database.save_cached_catalog(cache_key, fresh_items)
+                                        except Exception:
+                                            pass
+                                    threading.Thread(target=_bg_refresh_provider, daemon=True).start()
                                 debug_log(f"discover row CACHE HIT: '{row_title}'", f"{len(cached)} items")
                                 return (row_info, cached)
                         if _is_event_set(abort_ev):
@@ -13049,7 +13227,20 @@ class CineWindow(Adw.ApplicationWindow):
                                 return False
                             if getattr(self, "_discover_is_loading_rows", False):
                                 return False
-                            next_batch_size = min(3, len(self._discover_catalog_list) - self._discover_next_row_index) if is_home else 4
+                            if hasattr(self, "main_stack") and self.main_stack.get_visible_child_name() != "library":
+                                self._set_discover_spinner_active(False)
+                                return False
+                            if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "discover":
+                                self._set_discover_spinner_active(False)
+                                return False
+                            current_cat = self.category_btn_stack.get_visible_child_name() if hasattr(self, "category_btn_stack") else None
+                            if is_home and current_cat != "home":
+                                self._set_discover_spinner_active(False)
+                                return False
+                            if not is_home and current_cat == "home":
+                                self._set_discover_spinner_active(False)
+                                return False
+                            next_batch_size = min(4, len(self._discover_catalog_list) - self._discover_next_row_index) if is_home else 4
                             self._load_next_discover_batch(req_id, batch_size=next_batch_size)
                             return False
 
@@ -13058,7 +13249,7 @@ class CineWindow(Adw.ApplicationWindow):
                         page_size = adj.get_page_size() if adj else 0
                         upper = adj.get_upper() if adj else 0
                         is_screen_filled = bool(page_size > 0 and upper > page_size)
-                        batch_delay = 180 if is_home else (120 if is_screen_filled else 40)
+                        batch_delay = 40 if is_home else (40 if is_screen_filled else 20)
                         self._discover_batch_timer_id = GLib.timeout_add(batch_delay, _schedule_next_batch)
                     else:
                         self._set_discover_spinner_active(False)
@@ -13239,7 +13430,12 @@ class CineWindow(Adw.ApplicationWindow):
         debug_log(f"_populate_discover_row_slot appended row: '{row_title}' ({len(display_items)} cards)")
 
     def _on_discover_scroll(self, adj):
+        if hasattr(self, "main_stack") and self.main_stack.get_visible_child_name() != "library":
+            return
         if hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() != "discover":
+            return
+        target_box = getattr(self, "discover_box", None)
+        if target_box is None or (hasattr(target_box, "get_mapped") and not target_box.get_mapped()):
             return
         val = adj.get_value()
         page_size = adj.get_page_size()
@@ -13344,21 +13540,36 @@ class CineWindow(Adw.ApplicationWindow):
             debug_log("_prewarm_discover_views already running, skipping duplicate")
             return
         self._discover_prewarm_running = True
+        self._discover_prewarm_abort_event = threading.Event()
+        abort_ev = self._discover_prewarm_abort_event
         debug_log("_prewarm_discover_views scheduling background prewarm thread")
         def bg_prewarm():
             import time
             import concurrent.futures
-            time.sleep(1.5)  # Wait for initial app startup and UI rendering to complete
+            for _ in range(15):
+                if _is_event_set(abort_ev):
+                    return
+                time.sleep(0.1)  # Wait for initial app startup and UI rendering to complete
+            if _is_event_set(abort_ev):
+                return
+            if hasattr(self, "main_stack") and self.main_stack.get_visible_child_name() != "library":
+                return
+            if hasattr(self, "category_btn_stack") and self.category_btn_stack.get_visible_child_name() != "home":
+                return
             debug_log("bg_prewarm thread woke up after 1.5s delay")
             from . import api, database
 
             all_uncached = []
             for m_type in ["movie", "series", "anime"]:
+                if _is_event_set(abort_ev):
+                    return
                 try:
                     cat_list = self._get_discover_catalog_list(filter_media_type=m_type)
                     if not cat_list:
                         continue
                     for row_info in cat_list[:4]:
+                        if _is_event_set(abort_ev):
+                            return
                         mt = row_info.get("media_type", m_type)
                         c_id = row_info.get("catalog_id")
                         m_url = row_info.get("manifest_url")
@@ -13371,16 +13582,18 @@ class CineWindow(Adw.ApplicationWindow):
                 except Exception as e:
                     logger.debug(f"Prewarm error for {m_type}: {e}")
 
-            if not all_uncached:
+            if not all_uncached or _is_event_set(abort_ev):
                 debug_log("bg_prewarm: All initial catalogs already cached, nothing to prewarm")
                 return
 
             debug_log(f"bg_prewarm: Fetching {len(all_uncached)} uncached catalog rows")
             def _fetch_one(args):
+                if _is_event_set(abort_ev):
+                    return
                 mt, c_id, m_url, cache_key = args
                 try:
-                    items = api.fetch_items(media_type=mt, catalog_id=c_id, catalog_url=m_url, page=1, limit=DISCOVER_ROW_CARD_LIMIT)
-                    if items:
+                    items = api.fetch_items(media_type=mt, catalog_id=c_id, catalog_url=m_url, page=1, limit=DISCOVER_ROW_CARD_LIMIT, is_cancelled=lambda: _is_event_set(abort_ev))
+                    if items and not _is_event_set(abort_ev):
                         database.save_cached_catalog(cache_key, items)
                 except Exception:
                     pass
@@ -14678,6 +14891,7 @@ class CineWindow(Adw.ApplicationWindow):
             logger.error(f"[SUBS] Failed to add pending subtitles: {e}")
 
     def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page=None, season=None, episode=None, imdb_id=None, media_type=None, stream_subtitles=None):
+        self._cancel_all_background_fetching()
         # Mark playback as loading immediately. This prevents the idle-state
         # observer from briefly restoring the player’s Open screen while the
         # playback request is being prepared.
@@ -17093,10 +17307,18 @@ class CineWindow(Adw.ApplicationWindow):
                 self.main_stack.set_visible_child_name("details")
                 if hasattr(existing, "update_continue_btn"):
                     existing.update_continue_btn()
+                if hasattr(existing, "fetch_torrents_async") and not getattr(existing, "_fetching_streams", False):
+                    stream_count = len(getattr(existing, "torrents", [])) if hasattr(existing, "torrents") else 0
+                    if stream_count == 0:
+                        existing.fetch_torrents_async(force=False)
             elif movie_data:
                 self._on_movie_clicked(movie_data, push_history=False)
             elif existing and not getattr(existing, "_destroyed", False):
                 self.main_stack.set_visible_child_name("details")
+                if hasattr(existing, "fetch_torrents_async") and not getattr(existing, "_fetching_streams", False):
+                    stream_count = len(getattr(existing, "torrents", [])) if hasattr(existing, "torrents") else 0
+                    if stream_count == 0:
+                        existing.fetch_torrents_async(force=False)
             else:
                 self.main_stack.set_visible_child_name("library")
         elif main_page == "person":
@@ -17148,6 +17370,17 @@ class CineWindow(Adw.ApplicationWindow):
                 self._refresh_active_library_view()
             elif cat_name == "home" and hasattr(self, "_update_continue_watching_section"):
                 GLib.idle_add(self._update_continue_watching_section)
+
+            if lib_page == "discover" or (not lib_page and hasattr(self, "library_stack") and self.library_stack.get_visible_child_name() == "discover"):
+                v_key = self._get_discover_view_key()
+                if hasattr(self, "_discover_views") and v_key in self._discover_views:
+                    v_data = self._discover_views[v_key]
+                    nxt = v_data.get("next_row_index", 0)
+                    total = len(v_data.get("catalog_list", []))
+                    if nxt < total and not getattr(self, "_discover_is_loading_rows", False):
+                        is_home = (cat_name == "home")
+                        resume_batch = min(3, total - nxt) if is_home else 4
+                        self._load_next_discover_batch(self.discover_request_id, batch_size=resume_batch)
         elif main_page in ["favorites", "history", "watched", "downloads", "continue_watching"]:
             self.main_stack.set_visible_child_name(main_page)
             self._populate_local_db_page(main_page)

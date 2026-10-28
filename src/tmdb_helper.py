@@ -1256,7 +1256,7 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
                 params["with_origin_country"] = country_code
         payload = _get_cached_request(
             f"https://api.themoviedb.org/3/discover/{kind}?{urllib.parse.urlencode(params)}",
-            max_age_hours=24 if use_watch_provider else METADATA_CACHE_HOURS,
+            max_age_hours=24,
             timeout=5.0,
         ) or {}
         total_pages = max(total_pages, int(payload.get("total_pages") or 0))
@@ -1464,7 +1464,7 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
     for kind, url in requests:
         try:
             page_data = _get_cached_request(
-                url, max_age_hours=METADATA_CACHE_HOURS, cache_only=True, timeout=5.0)
+                url, max_age_hours=24, cache_only=True, timeout=5.0)
         except Exception:
             page_data = None
         if page_data:
@@ -1483,7 +1483,7 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(missing))) as executor:
                 futures = [
                     (kind, executor.submit(
-                        _get_cached_request, url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0))
+                        _get_cached_request, url, max_age_hours=24, timeout=5.0))
                     for kind, url in missing]
                 for kind, future in futures:
                     try:

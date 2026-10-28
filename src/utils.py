@@ -201,6 +201,8 @@ def idle_add_once(function, *args, **kwargs) -> int:
         try:
             function(*args, **kwargs)
         except Exception as e:
+            if "ShutdownError" in type(e).__name__ or "libmpv core has been shutdown" in str(e):
+                return GLib.SOURCE_REMOVE
             logger.error(f"Error in idle_add_once callback: {e}", exc_info=True)
         return GLib.SOURCE_REMOVE
 
@@ -212,6 +214,8 @@ def timeout_add_once(interval: int, function, *args, **kwargs) -> int:
         try:
             function(*args, **kwargs)
         except Exception as e:
+            if "ShutdownError" in type(e).__name__ or "libmpv core has been shutdown" in str(e):
+                return GLib.SOURCE_REMOVE
             logger.error(f"Error in timeout_add_once callback: {e}", exc_info=True)
         return GLib.SOURCE_REMOVE
 
@@ -223,6 +227,8 @@ def timeout_add_seconds_once(interval: int, function, *args, **kwargs) -> int:
         try:
             function(*args, **kwargs)
         except Exception as e:
+            if "ShutdownError" in type(e).__name__ or "libmpv core has been shutdown" in str(e):
+                return GLib.SOURCE_REMOVE
             logger.error(f"Error in timeout_add_seconds_once callback: {e}", exc_info=True)
         return GLib.SOURCE_REMOVE
 

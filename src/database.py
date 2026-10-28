@@ -4069,18 +4069,15 @@ def delete_cached_subtitles(cache_key):
 _MEM_CATALOG_CACHE = {}
 _MEM_CATALOG_LOCK = threading.Lock()
 
-# Catalog rows are the cards themselves -- title, year, poster URL, genres,
-# countries -- so they are kept forever, matching api.METADATA_CACHE_HOURS.
-# Re-reading a stored row is free; re-asking an addon or TMDb for the same page
-# costs the provider a request and the user a wait. Streams, subtitles and
-# trailer resolvers below keep their explicit 24 h TTLs because those do change.
-CATALOG_CACHE_HOURS = None
+# Catalog rows are refreshed every 24 hours so home, discover, movies, series
+# feeds stay up-to-date with newly added media and catalog updates.
+CATALOG_CACHE_HOURS = 24
 
 def _cache_row_is_fresh(age_hours, max_age_hours):
     """False only when the row has a declared TTL and has aged past it."""
     return max_age_hours is None or age_hours < max_age_hours
 
-def get_cached_catalog(cache_key, max_age_hours=CATALOG_CACHE_HOURS):
+def get_cached_catalog(cache_key, max_age_hours=CATALOG_CACHE_HOURS, allow_stale=True):
     if not cache_key:
         return None
     now = time.time()
@@ -4089,9 +4086,9 @@ def get_cached_catalog(cache_key, max_age_hours=CATALOG_CACHE_HOURS):
     with _MEM_CATALOG_LOCK:
         if cache_key in _MEM_CATALOG_CACHE:
             data, ts = _MEM_CATALOG_CACHE[cache_key]
-            if _cache_row_is_fresh((now - ts) / 3600, max_age_hours):
+            if allow_stale or _cache_row_is_fresh((now - ts) / 3600, max_age_hours):
                 found_data = data
-            else:
+            elif not allow_stale:
                 del _MEM_CATALOG_CACHE[cache_key]
 
     if found_data is not None:
@@ -4111,8 +4108,14 @@ def get_cached_catalog(cache_key, max_age_hours=CATALOG_CACHE_HOURS):
             row = cursor.fetchone()
             if row and row[0]:
                 updated_at = row[1]
-                if _cache_row_is_fresh((now - updated_at) / 3600, max_age_hours):
+                if allow_stale or _cache_row_is_fresh((now - updated_at) / 3600, max_age_hours):
                     raw_json = row[0]
+                elif not allow_stale:
+                    try:
+                        cursor.execute("DELETE FROM catalog_cache WHERE cache_key = ?", (str(cache_key),))
+                        conn.commit()
+                    except Exception:
+                        pass
 
         if raw_json:
             data = json.loads(raw_json)
@@ -4133,6 +4136,28 @@ def get_cached_catalog(cache_key, max_age_hours=CATALOG_CACHE_HOURS):
     except Exception as e:
         print(f"Error reading catalog cache: {e}")
     return None
+
+def is_catalog_cache_fresh(cache_key, max_age_hours=CATALOG_CACHE_HOURS):
+    """Return True if catalog exists in cache and was updated within max_age_hours."""
+    if not cache_key or max_age_hours is None:
+        return False
+    now = time.time()
+    with _MEM_CATALOG_LOCK:
+        if cache_key in _MEM_CATALOG_CACHE:
+            _, ts = _MEM_CATALOG_CACHE[cache_key]
+            if ts and (now - ts) < max_age_hours * 3600:
+                return True
+    try:
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT updated_at FROM catalog_cache WHERE cache_key = ?", (str(cache_key),))
+            row = cursor.fetchone()
+            if row and row[0]:
+                return (now - row[0]) < max_age_hours * 3600
+    except Exception:
+        pass
+    return False
 
 def save_cached_catalog(cache_key, items):
     if not cache_key or not items:

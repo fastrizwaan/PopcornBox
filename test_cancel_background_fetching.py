@@ -29,6 +29,25 @@ if res_file.exists():
         Gio.resources_register(res)
     except Exception:
         pass
+else:
+    try:
+        tmppath = Path(schema_temp_dir.name)
+        for ui_name in ["preferences.ui", "window.ui", "history.ui", "playlist.ui", "options.ui", "shortcuts-dialog.ui"]:
+            (tmppath / ui_name).write_text("<interface></interface>")
+        (tmppath / "style.css").write_text("")
+        file_tags = "\n".join(f"    <file>{f}</file>" for f in ["preferences.ui", "window.ui", "history.ui", "playlist.ui", "options.ui", "shortcuts-dialog.ui", "style.css"])
+        xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/io/github/fastrizwaan/PopcornBox">
+{file_tags}
+  </gresource>
+</gresources>"""
+        (tmppath / "res.xml").write_text(xml_content)
+        subprocess.run(["glib-compile-resources", f"--sourcedir={schema_temp_dir.name}", str(tmppath / "res.xml"), f"--target={schema_temp_dir.name}/test.gresource"], check=True)
+        res = Gio.Resource.load(f"{schema_temp_dir.name}/test.gresource")
+        Gio.resources_register(res)
+    except Exception:
+        pass
 
 from src.window import CineWindow, MovieDetailsPage, _is_event_set
 
@@ -78,6 +97,8 @@ class TestCancelBackgroundFetching(unittest.TestCase):
         win._unique_active_pool = unique_pool
         win._discover_active_pool = discover_pool
         win._search_pool = search_pool
+        win.details_box = None
+        win.person_box = None
 
         with patch("src.movie_widget.cancel_pending_image_downloads") as mock_cancel_img:
             CineWindow._cancel_all_background_fetching(win)
@@ -118,6 +139,69 @@ class TestCancelBackgroundFetching(unittest.TestCase):
         self.assertTrue(page.page_abort_event.is_set())
         self.assertTrue(page.stream_abort_event.is_set())
         self.assertTrue(page._live_check_abort_event.is_set())
+
+    def test_cancel_all_background_fetching_cleans_details_and_prewarm(self):
+        win = MagicMock()
+        win.unique_request_id = 1
+        win.discover_request_id = 1
+        win.content_request_id = 1
+        win.search_request_id = 1
+
+        prewarm_ev = threading.Event()
+        win._discover_prewarm_abort_event = prewarm_ev
+
+        detail_child = MagicMock()
+        detail_child.stream_abort_event = threading.Event()
+        detail_child.page_abort_event = threading.Event()
+        detail_child._live_check_abort_event = threading.Event()
+        detail_child._trailer_fast_abort = threading.Event()
+        detail_child._fetching_streams = True
+        detail_child.get_next_sibling.return_value = None
+
+        win.details_box = MagicMock()
+        win.details_box.get_first_child.return_value = detail_child
+
+        win.person_box = MagicMock()
+        win.person_box.get_first_child.return_value = None
+
+        CineWindow._cancel_all_background_fetching(win)
+
+        self.assertTrue(prewarm_ev.is_set())
+        self.assertTrue(detail_child.stream_abort_event.is_set())
+        self.assertTrue(detail_child.page_abort_event.is_set())
+        self.assertTrue(detail_child._live_check_abort_event.is_set())
+        self.assertTrue(detail_child._trailer_fast_abort.is_set())
+        self.assertFalse(detail_child._fetching_streams)
+
+    def test_catalog_cache_allow_stale_and_freshness(self):
+        import time
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_dir = Path(tmpdir)
+            with patch("src.database.CONFIG_DIR", db_dir), patch("src.database.DB_FILE", db_dir / "data.json"):
+                from src import database
+                test_key = "test:stale_catalog_key"
+                items = [{"id": "m1", "title": "Movie 1"}]
+
+                database.save_cached_catalog(test_key, items)
+                self.assertTrue(database.is_catalog_cache_fresh(test_key, max_age_hours=24))
+
+                # Simulate 25 hours old entry
+                with database._cache_db_lock:
+                    conn = database._get_cache_db()
+                    conn.execute("UPDATE catalog_cache SET updated_at = ? WHERE cache_key = ?", (time.time() - 25 * 3600, test_key))
+                    conn.commit()
+                with database._MEM_CATALOG_LOCK:
+                    database._MEM_CATALOG_CACHE.pop(test_key, None)
+
+                self.assertFalse(database.is_catalog_cache_fresh(test_key, max_age_hours=24))
+
+                # With allow_stale=True, returns data immediately for instant card rendering
+                cached = database.get_cached_catalog(test_key, max_age_hours=24, allow_stale=True)
+                self.assertIsNotNone(cached)
+                self.assertEqual(len(cached), 1)
+                self.assertEqual(cached[0]["id"], "m1")
 
 
 if __name__ == "__main__":
