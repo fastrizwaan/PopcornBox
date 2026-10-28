@@ -969,23 +969,7 @@ def play_trailer(youtube_id, progress_callback=None):
     def launch():
         from gi.repository import GLib
 
-        if progress_callback:
-            GLib.idle_add(progress_callback, {"status": "Resolving trailer..."})
-
-        video_url, audio_url, ua = resolve_youtube_url(clean_id, watch_url)
-        if video_url:
-            if progress_callback:
-                GLib.idle_add(progress_callback, {
-                    "status": "Playing Trailer!",
-                    "url": video_url,
-                    "audio_url": audio_url,
-                    "user_agent": ua,
-                    "is_trailer": True,
-                    "is_direct": True
-                })
-            return
-
-        # Fallback to watch URL directly
+        # Attempt direct MPV playback first
         if progress_callback:
             GLib.idle_add(progress_callback, {
                 "status": "Loading trailer in player...",
@@ -993,7 +977,8 @@ def play_trailer(youtube_id, progress_callback=None):
                 "audio_url": None,
                 "user_agent": "",
                 "is_trailer": True,
-                "is_direct": False
+                "is_direct": False,
+                "youtube_id": clean_id,
             })
 
     threading.Thread(target=launch, daemon=True).start()

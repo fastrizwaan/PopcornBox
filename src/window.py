@@ -4316,6 +4316,9 @@ class CineWindow(Adw.ApplicationWindow):
         self._hls_total_duration = None
         self._pending_subtitle_request = None
         self._subtitles_configured_for_file = False
+        self._youtube_safe_mode_active: bool = False
+        self._youtube_safe_mode_url: str | None = None
+        self._youtube_safe_mode_video_url: str | None = None
         self.mpv_ctx: mpv.MpvRenderContext
 
         self.mpv = mpv.MPV(
@@ -6521,17 +6524,25 @@ class CineWindow(Adw.ApplicationWindow):
                         self.mpv.playlist_pos = 0
 
                     self.error_count += 1
-                    is_yt = self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower() or "googlevideo.com" in self.loaded_path.lower())
+                    is_yt = bool(
+                        (self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower() or "googlevideo.com" in self.loaded_path.lower()))
+                        or (isinstance(getattr(self, "_current_playing_item", None), dict) and any(
+                            k in str(self._current_playing_item.get("stream_url", "")).lower() for k in ["youtube.com", "youtu.be", "googlevideo.com"]
+                        ))
+                    )
                     is_trailer = is_yt or bool(getattr(self, "_current_playing_item", {}).get("is_trailer"))
                     is_web = self.loaded_path and isinstance(self.loaded_path, str) and any(d in self.loaded_path.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"])
+
+                    if is_yt and not getattr(self, "_youtube_safe_mode_active", False):
+                        logger.warning(f"[YouTube] Direct MPV playback failed ({error}), falling back to safe mode")
+                        def _trigger_safe_mode():
+                            if not self._try_youtube_safe_mode():
+                                self._handle_youtube_failure(is_trailer)
+                        idle_add_once(_trigger_safe_mode)
+                        return
+
                     if is_trailer:
-                        idle_add_once(self.hide_player_loading)
-                        if hasattr(self, 'details_box') and self.details_box.get_first_child():
-                            page = self.details_box.get_first_child()
-                            if hasattr(page, 'reset_trailer_btn_ui'):
-                                idle_add_once(page.reset_trailer_btn_ui)
-                        idle_add_once(self._show_toast, _("Failed to play trailer"))
-                        idle_add_once(self._close_player, remove_torrent=False)
+                        idle_add_once(self._handle_youtube_failure, True)
                     elif is_web:
                         idle_add_once(self._show_toast, _("Opening in web browser..."))
                         idle_add_once(open_uri, self.loaded_path, self)
@@ -14064,6 +14075,10 @@ class CineWindow(Adw.ApplicationWindow):
             ))
         )
         is_youtube_raw_url = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower()) and ("googlevideo.com" not in url.lower())
+        if url != getattr(self, "_youtube_safe_mode_url", None) and url != getattr(self, "_youtube_safe_mode_video_url", None):
+            self._youtube_safe_mode_active = False
+            self._youtube_safe_mode_url = None
+            self._youtube_safe_mode_video_url = None
         is_youtube_trailer = url and isinstance(url, str) and ("googlevideo.com" in url.lower())
         is_trailer = not is_channel_context and bool(
             is_youtube_trailer
@@ -14236,7 +14251,10 @@ class CineWindow(Adw.ApplicationWindow):
                 self.show_player_loading(_("Loading video..."), title=title)
             try:
                 self.mpv["ytdl"] = True
-                self.mpv["ytdl-raw-options"] = "no-playlist=,extractor-args=youtube:player_client=android"
+                if getattr(self, "_youtube_safe_mode_active", False):
+                    self.mpv["ytdl-raw-options"] = "no-playlist=,extractor-args=youtube:player_client=android"
+                else:
+                    self.mpv["ytdl-raw-options"] = "no-playlist="
                 self.mpv["user-agent"] = ""
                 self.mpv["referrer"] = ""
                 self.mpv["http-header-fields"] = []
@@ -14390,6 +14408,73 @@ class CineWindow(Adw.ApplicationWindow):
             # With Auto Play Next Episodes enabled, resolve the next episode's
             # streams now so the end-of-episode transition is instant.
             self._prefetch_next_episode_streams()
+
+    def _try_youtube_safe_mode(self):
+        curr_item = getattr(self, "_current_playing_item", None) or {}
+        st_url = curr_item.get("stream_url") or self.loaded_path or ""
+
+        from . import player
+        clean_id = player.extract_youtube_id(st_url)
+        if not clean_id and curr_item.get("id"):
+            clean_id = player.extract_youtube_id(curr_item.get("id"))
+        if not clean_id and curr_item.get("imdb_id"):
+            clean_id = player.extract_youtube_id(curr_item.get("imdb_id"))
+
+        if not clean_id and not st_url:
+            return False
+
+        watch_url = st_url if ("youtube.com" in str(st_url).lower() or "youtu.be" in str(st_url).lower()) else f"https://www.youtube.com/watch?v={clean_id}"
+
+        self._youtube_safe_mode_active = True
+        self._youtube_safe_mode_url = watch_url
+
+        title = curr_item.get("title") or curr_item.get("stream_title") or "YouTube"
+        is_tr = self._is_playing_trailer() or bool(curr_item.get("is_trailer"))
+
+        msg = _("Retrying trailer in safe mode...") if is_tr else _("Retrying in safe mode...")
+        self.show_player_loading(msg, title=title)
+
+        req_id = getattr(self, "stream_request_id", 0)
+
+        def _worker():
+            video_url, audio_url, ua = player.resolve_youtube_url(clean_id, watch_url)
+            def _apply():
+                if req_id != getattr(self, "stream_request_id", 0):
+                    return
+                if video_url:
+                    logger.info(f"[YouTube SafeMode] Resolved direct stream for {clean_id}")
+                    self._youtube_safe_mode_video_url = video_url
+                    headers = {"User-Agent": ua} if ua else None
+                    self._play_stream(video_url, title=title, headers=headers, audio_url=audio_url, preserve_queue=True)
+                else:
+                    logger.warning(f"[YouTube SafeMode] Direct URL extraction failed, attempting MPV android client fallback for {watch_url}")
+                    try:
+                        self.mpv["ytdl"] = True
+                        self.mpv["ytdl-raw-options"] = "no-playlist=,extractor-args=youtube:player_client=android"
+                        self.mpv.loadfile(watch_url, "replace")
+                    except Exception as e:
+                        logger.error(f"[YouTube SafeMode] Fallback load failed: {e}")
+                        self._handle_youtube_failure(is_tr)
+            GLib.idle_add(_apply)
+
+        threading.Thread(target=_worker, daemon=True, name="YTSafeModeWorker").start()
+        return True
+
+    def _handle_youtube_failure(self, is_trailer=True):
+        self._youtube_safe_mode_active = False
+        self._youtube_safe_mode_url = None
+        self._youtube_safe_mode_video_url = None
+        self.hide_player_loading()
+        if hasattr(self, 'details_box') and self.details_box.get_first_child():
+            page = self.details_box.get_first_child()
+            if hasattr(page, 'reset_trailer_btn_ui'):
+                page.reset_trailer_btn_ui()
+        if getattr(self, "stream_queue", None) and len(self.stream_queue) > 0 and not is_trailer:
+            self._try_next_stream_in_queue()
+        else:
+            msg = _("Failed to play trailer") if is_trailer else _("Failed to play video")
+            self._show_toast(msg)
+            self._close_player(remove_torrent=False)
 
     def _on_track_list_for_subtitles(self, track_list):
         """Called when track-list updates in MPV. If a preferred embedded subtitle is found, select it immediately and prevent downloading."""
@@ -15860,6 +15945,9 @@ class CineWindow(Adw.ApplicationWindow):
     def _close_player(self, *args, remove_torrent=True):
         self._next_episode_transition_in_progress = False
         self._pending_seek_position = None
+        self._youtube_safe_mode_active = False
+        self._youtube_safe_mode_url = None
+        self._youtube_safe_mode_video_url = None
         self.hide_player_loading()
         self._clear_stream_failover()
         self._cancel_next_episode_prefetch()

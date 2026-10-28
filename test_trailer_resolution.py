@@ -121,6 +121,24 @@ class TestTrailerResolution(unittest.TestCase):
         f_idx = cmd.index("-f")
         self.assertEqual(cmd[f_idx + 1], "best[height<=1080]/bestvideo[height<=1080]+bestaudio/best")
 
+    @patch("gi.repository.GLib.idle_add")
+    def test_play_trailer_direct_mpv_first(self, mock_idle_add):
+        received_stats = []
+        def dummy_cb(stats):
+            received_stats.append(stats)
+
+        mock_idle_add.side_effect = lambda fn, *args: fn(*args)
+
+        player.play_trailer("dQw4w9WgXcQ", progress_callback=dummy_cb)
+        time.sleep(0.05)
+
+        self.assertTrue(len(received_stats) >= 1)
+        stat = received_stats[0]
+        self.assertEqual(stat.get("url"), "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        self.assertTrue(stat.get("is_trailer"))
+        self.assertFalse(stat.get("is_direct"))
+        self.assertEqual(stat.get("youtube_id"), "dQw4w9WgXcQ")
+
 
 if __name__ == "__main__":
     unittest.main()
