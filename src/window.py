@@ -142,6 +142,24 @@ def _find_stream_index_exact(stream, stream_list):
 def _stream_matches_provider(stream, provider_name):
     return api.stream_matches_provider(stream, provider_name)
 
+def _merge_stream_lists(*stream_lists):
+    """Merge parsed stream lists, keeping the first entry for duplicates."""
+    merged = []
+    seen = set()
+    for stream_list in stream_lists:
+        for stream in stream_list or []:
+            if not isinstance(stream, dict):
+                continue
+            key = (
+                str(stream.get("hash") or stream.get("infoHash") or stream.get("url") or ""),
+                str(stream.get("stream_title") or stream.get("title") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(stream)
+    return merged
+
 def _extract_active_discover_query(win) -> str:
     q_fn = getattr(win, "_discover_result_search_query", None)
     if callable(q_fn):
@@ -771,6 +789,19 @@ class MovieDetailsPage(Gtk.Overlay):
 
             self.update_quality_dropdown()
 
+            scope = {1: "direct", 2: "torrent"}.get(self.source_idx)
+            if (
+                scope
+                and not getattr(self, "_fetching_streams", False)
+                and not any(
+                    bool(t.get("is_http")) == (scope == "direct")
+                    for t in (getattr(self, "torrents", []) or [])
+                )
+            ):
+                # Nothing loaded for this source yet: fetch it now instead of
+                # leaving the sidebar empty until the user reloads the page.
+                self.fetch_torrents_async(force=False, source_scope_override=scope)
+
         self.source_all_btn.connect("toggled", on_source_toggled)
         self.source_direct_btn.connect("toggled", on_source_toggled)
         self.source_torrent_btn.connect("toggled", on_source_toggled)
@@ -1373,7 +1404,10 @@ class MovieDetailsPage(Gtk.Overlay):
                 self._ignore_provider_signals = False
 
     def render_streams_list(self):
-        self._set_provider_spinner_active(getattr(self, '_fetching_streams', False))
+        self._set_provider_spinner_active(
+            getattr(self, '_fetching_streams', False)
+            and not getattr(self, '_background_fetch', False)
+        )
         while child := self.streams_list_box.get_first_child():
             self.streams_list_box.remove(child)
 
@@ -1610,6 +1644,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self._fetch_gen = getattr(self, "_fetch_gen", 0) + 1
             self._fetching_streams = False
             self._active_stream_force = False
+            self._background_fetch = False
             self._pending_forced_stream_refresh = False
             self._last_fetch_key = None
             self._set_provider_spinner_active(False)
@@ -1659,6 +1694,34 @@ class MovieDetailsPage(Gtk.Overlay):
                 return False
         self.fetch_torrents_async(force=False)
         return False
+
+    def _refresh_other_source_in_background(self, stream_item_key):
+        """Warm the source filter the user is not currently looking at."""
+        if getattr(self, "is_channel", False):
+            return
+        scope = {1: "direct", 2: "torrent"}.get(getattr(self, "source_idx", 0))
+        if not scope:
+            return
+        other_scope = "torrent" if scope == "direct" else "direct"
+        if any(
+            bool(t.get("is_http")) == (other_scope == "direct")
+            for t in (getattr(self, "torrents", []) or [])
+        ):
+            return
+
+        def _run():
+            if not self._is_current_details_page():
+                return False
+            if getattr(self, "_stream_item_key", None) != stream_item_key:
+                return False
+            if getattr(self, "_fetching_streams", False):
+                return False
+            self.fetch_torrents_async(
+                force=False, source_scope_override=other_scope, background=True
+            )
+            return False
+
+        GLib.timeout_add(400, _run)
 
     def load_details_async(self, force_refresh=False):
         candidate_ids = []
@@ -2753,7 +2816,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if hasattr(self, '_live_check_abort_event') and self._live_check_abort_event:
             self._live_check_abort_event.set()
 
-    def fetch_torrents_async(self, force=False):
+    def fetch_torrents_async(self, force=False, source_scope_override=None, background=False):
         selected_video = getattr(self, 'selected_video', None)
         if not selected_video and hasattr(self, 'current_episodes') and self.current_episodes:
             selected_video = self.current_episodes[0]
@@ -2786,12 +2849,15 @@ class MovieDetailsPage(Gtk.Overlay):
         selected_source_scope = {1: "direct", 2: "torrent"}.get(getattr(self, "source_idx", 0))
         # Ordinary discovery still fills the complete candidate list. A user
         # initiated refresh is scoped to the active source filter so Direct,
-        # Torrent, and All can be refreshed independently.
-        source_scope = selected_source_scope if force else None
+        # Torrent, and All can be refreshed independently. An explicit source
+        # override fetches that source even when it is not a forced refresh.
+        source_scope = source_scope_override or (selected_source_scope if force else None)
+        if source_scope not in ("direct", "torrent"):
+            source_scope = None
 
         print(
             f"[STREAM DEBUG] UI fetch requested page_id={id(self)} id={item_id!r} media={req_media_type!r} "
-            f"season={sel_season!r} episode={sel_episode!r} force={force} "
+            f"season={sel_season!r} episode={sel_episode!r} force={force} background={background} "
             f"provider_scope={provider_scope!r} selected_source={selected_source_scope!r} "
             f"refresh_source_scope={source_scope!r}"
         )
@@ -2807,6 +2873,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.stream_abort_event.set()
             self._fetching_streams = False
             self._active_stream_force = False
+            self._background_fetch = False
             self._pending_forced_stream_refresh = False
             self._set_provider_spinner_active(False)
             self.torrents = []
@@ -2821,7 +2888,8 @@ class MovieDetailsPage(Gtk.Overlay):
             self._last_forced_stream_item_key = stream_item_key
             self._last_forced_stream_refresh_at = time.monotonic()
         elif (
-            getattr(self, "_last_forced_stream_item_key", None) == stream_item_key
+            not source_scope_override
+            and getattr(self, "_last_forced_stream_item_key", None) == stream_item_key
             and getattr(self, "_stream_item_key", None) == stream_item_key
             and time.monotonic() - getattr(self, "_last_forced_stream_refresh_at", 0) < 12
             and (getattr(self, "_fetching_streams", False) or bool(getattr(self, "torrents", None)))
@@ -2859,7 +2927,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     f"already_fetching={already_fetching} cards={len(getattr(self, 'torrents', []) or [])} force={force}"
                 )
                 return
-            if not force and has_results:
+            if not force and has_results and not source_scope_override:
                 print(f"[STREAM DEBUG] UI fetch coalesced key={fetch_key!r} cards={len(getattr(self, 'torrents', []) or [])}")
                 return
         if same_stream_item and getattr(self, "_fetching_streams", False) and not force and getattr(self, "_active_stream_force", False):
@@ -2869,14 +2937,16 @@ class MovieDetailsPage(Gtk.Overlay):
 
         self._fetching_streams = True
         self._active_stream_force = bool(force)
-        self._set_provider_spinner_active(True)
-        search_parts = [part for part in (provider_scope, source_scope.title() if source_scope else None) if part]
-        self._stream_loading_status = (
-            f"Searching {' '.join(search_parts)} streams..."
-            if search_parts else _("Searching streams...")
-        )
-        if hasattr(self, 'progress_label') and self.progress_label:
-            self.progress_label.set_text("Loading streams...")
+        self._background_fetch = bool(background)
+        if not background:
+            self._set_provider_spinner_active(True)
+            search_parts = [part for part in (provider_scope, source_scope.title() if source_scope else None) if part]
+            self._stream_loading_status = (
+                f"Searching {' '.join(search_parts)} streams..."
+                if search_parts else _("Searching streams...")
+            )
+            if hasattr(self, 'progress_label') and self.progress_label:
+                self.progress_label.set_text("Loading streams...")
         
         previous_streams = list(getattr(self, "torrents", []) or [])
         self._stream_item_key = stream_item_key
@@ -2918,11 +2988,12 @@ class MovieDetailsPage(Gtk.Overlay):
             if is_complete:
                 self._fetching_streams = False
                 self._active_stream_force = False
+                self._background_fetch = False
                 self._set_provider_spinner_active(False)
-                if hasattr(self, 'progress_label') and self.progress_label:
+                if not background and hasattr(self, 'progress_label') and self.progress_label:
                     if not torrents: self.progress_label.set_text("No streams available.")
                     else: self.progress_label.set_text("")
-                if not torrents and provider_scope:
+                if not background and not torrents and provider_scope:
                     # The selected provider returned nothing (disabled, cooling
                     # down or simply empty). Fall back to all providers instead
                     # of leaving an empty list that needs a manual reload.
@@ -2942,16 +3013,24 @@ class MovieDetailsPage(Gtk.Overlay):
                 elif getattr(self, "_pending_forced_stream_refresh", False):
                     self._pending_forced_stream_refresh = False
             elif is_cached:
-                if hasattr(self, 'progress_label') and self.progress_label:
+                if not background and hasattr(self, 'progress_label') and self.progress_label:
                     self.progress_label.set_text("Loaded cached streams... (Updating)")
 
-            self.torrents = torrents or []
+            new_streams = torrents or []
+            if background:
+                # A silent source refresh must never drop the cards already on
+                # screen when its own response only covers one category.
+                new_streams = _merge_stream_lists(previous_streams, new_streams)
+            self.torrents = new_streams
             print(
                 f"[STREAM DEBUG] UI batch applied generation={current_gen} cards={len(self.torrents)} "
-                f"cached={is_cached} complete={is_complete}"
+                f"cached={is_cached} complete={is_complete} background={background}"
             )
             self.update_quality_dropdown()
             self.update_continue_btn()
+
+            if is_complete and not background:
+                self._refresh_other_source_in_background(stream_item_key)
 
             pref_prov = getattr(self, 'preferred_direct_provider', None)
             pref_q = getattr(self, 'user_selected_quality', None)

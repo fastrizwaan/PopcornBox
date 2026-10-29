@@ -6262,6 +6262,24 @@ def _stream_matches_source_scope(stream, source_scope):
     return is_direct if source_scope == "direct" else not is_direct
 
 
+def _merge_parsed_streams(primary, secondary):
+    """Merge parsed stream lists without duplicating cards, preferring the first list."""
+    merged = []
+    seen = set()
+    for stream in list(primary or []) + list(secondary or []):
+        if not isinstance(stream, dict):
+            continue
+        key = (
+            str(stream.get("hash") or stream.get("infoHash") or stream.get("url") or ""),
+            str(stream.get("stream_title") or stream.get("title") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(stream)
+    return merged
+
+
 def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None):
     original_id = imdb_id
     # Callers may pass the full alias list used by metadata lookup. Addon
@@ -6757,25 +6775,42 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     parsed_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title)
     selected_scope_streams = None
+    other_scope_streams = []
     if source_scope:
         selected_scope_streams = [s for s in parsed_streams if _stream_matches_source_scope(s, source_scope)]
+        # A scoped refresh still asks every provider, so the other source
+        # category is refreshed too. Keep it instead of throwing it away:
+        # otherwise switching Direct/Torrents afterwards shows an empty list
+        # (and provider dropdown) until the user reloads the page.
+        other_scope_streams = [s for s in parsed_streams if not _stream_matches_source_scope(s, source_scope)]
         preserved_scope = [s for s in usable_cached if not _stream_matches_source_scope(s, source_scope)]
-        final_streams = preserved_scope + selected_scope_streams if selected_scope_streams else []
+        merged_other = _merge_parsed_streams(other_scope_streams, preserved_scope)
+        final_streams = merged_other + selected_scope_streams if (merged_other or selected_scope_streams) else []
     else:
         final_streams = parsed_streams
     print(f"[STREAM DEBUG] collection finished raw_cards={len(all_raw_streams)} parsed_cards={len(final_streams or [])} cached_fallback={bool(not final_streams and cached)}")
 
     if final_streams:
         if source_scope:
-            merged_streams = database.save_cached_streams_partial(
-                cache_key, source_cache_key, selected_scope_streams, source_scope,
-                started_at=refresh_started_at, abort_event=abort_event,
-                preserved_streams=usable_cached,
-            )
-            if abort_event and abort_event.is_set():
-                return []
-            if merged_streams is not None:
-                final_streams = merged_streams
+            if selected_scope_streams:
+                if other_scope_streams and not provider_scope:
+                    # Both categories came back from this all-provider pass, so
+                    # persist a complete result and let the page keep the other
+                    # category ready for an instant source switch.
+                    merged_streams = database.save_cached_streams_full(
+                        cache_key, direct_source_cache_key, torrent_source_cache_key,
+                        final_streams, started_at=refresh_started_at, abort_event=abort_event,
+                    )
+                else:
+                    merged_streams = database.save_cached_streams_partial(
+                        cache_key, source_cache_key, selected_scope_streams, source_scope,
+                        started_at=refresh_started_at, abort_event=abort_event,
+                        preserved_streams=usable_cached,
+                    )
+                if abort_event and abort_event.is_set():
+                    return []
+                if merged_streams is not None:
+                    final_streams = merged_streams
         else:
             merged_streams = database.save_cached_streams_full(
                 cache_key, direct_source_cache_key, torrent_source_cache_key,
@@ -6789,12 +6824,19 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             alias_key = get_stream_cache_key(alias_id, media_type, season, episode) + provider_cache_suffix
             if alias_key != cache_key:
                 if source_scope:
-                    database.save_cached_streams_partial(
-                        alias_key, alias_key + ":source:" + source_scope,
-                        selected_scope_streams, source_scope,
-                        started_at=refresh_started_at, abort_event=abort_event,
-                        preserved_streams=usable_cached,
-                    )
+                    if selected_scope_streams:
+                        if other_scope_streams and not provider_scope:
+                            database.save_cached_streams_full(
+                                alias_key, alias_key + ":source:direct", alias_key + ":source:torrent",
+                                final_streams, started_at=refresh_started_at, abort_event=abort_event,
+                            )
+                        else:
+                            database.save_cached_streams_partial(
+                                alias_key, alias_key + ":source:" + source_scope,
+                                selected_scope_streams, source_scope,
+                                started_at=refresh_started_at, abort_event=abort_event,
+                                preserved_streams=usable_cached,
+                            )
                 else:
                     database.save_cached_streams_full(
                         alias_key, alias_key + ":source:direct", alias_key + ":source:torrent",

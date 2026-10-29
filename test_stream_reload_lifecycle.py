@@ -363,6 +363,140 @@ class TestStreamReloadLifecycle(unittest.TestCase):
         strings = [model.get_string(i) for i in range(model.get_n_items())]
         self.assertEqual(strings, ["All Providers", "CachedOnlyProvider", "OnlineProvider"])
 
+    def test_source_toggle_fetches_torrents_when_none_loaded(self):
+        page = self._make_page(stub={"id": "tt0106179", "title": "The X-Files", "type": "movie"})
+        page.torrents = [{
+            "title": "Direct stream",
+            "is_http": True,
+            "addon_names": ["DirectOnly"],
+            "url": "https://direct.example/stream.m3u8",
+        }]
+        page._fetching_streams = False
+        page.source_idx = 0
+
+        with patch.object(page, "fetch_torrents_async") as fetch_streams:
+            page.source_torrent_btn.set_active(True)
+
+        self.assertEqual(page.source_idx, 2)
+        fetch_streams.assert_any_call(force=False, source_scope_override="torrent")
+
+    def test_source_toggle_fetches_direct_when_none_loaded(self):
+        page = self._make_page(stub={"id": "tt0106179", "title": "The X-Files", "type": "movie"})
+        page.torrents = [{
+            "title": "Torrent stream",
+            "is_http": False,
+            "infoHash": "a" * 40,
+            "addon_names": ["TorrentOnly"],
+        }]
+        page._fetching_streams = False
+        page.source_idx = 0
+
+        with patch.object(page, "fetch_torrents_async") as fetch_streams:
+            page.source_direct_btn.set_active(True)
+
+        self.assertEqual(page.source_idx, 1)
+        fetch_streams.assert_any_call(force=False, source_scope_override="direct")
+
+    def test_source_toggle_does_not_fetch_when_source_loaded(self):
+        page = self._make_page(stub={"id": "tt0106179", "title": "The X-Files", "type": "movie"})
+        page.torrents = [{
+            "title": "Torrent stream",
+            "is_http": False,
+            "infoHash": "b" * 40,
+            "addon_names": ["TorrentOnly"],
+        }]
+        page._fetching_streams = False
+        page.source_idx = 0
+
+        with patch.object(page, "fetch_torrents_async") as fetch_streams:
+            page.source_torrent_btn.set_active(True)
+
+        self.assertEqual(page.source_idx, 2)
+        fetch_streams.assert_not_called()
+
+    def test_background_refresh_fetches_missing_other_source(self):
+        page = self._make_page(stub={"id": "tt0106179", "title": "The X-Files", "type": "movie"})
+        page.source_idx = 1
+        page.torrents = [{
+            "title": "Direct stream",
+            "is_http": True,
+            "addon_names": ["DirectOnly"],
+            "url": "https://direct.example/stream.m3u8",
+        }]
+        page._stream_item_key = "tt0106179_None_None"
+        page._fetching_streams = False
+
+        with patch("src.window.GLib.timeout_add") as timeout_add:
+            page._refresh_other_source_in_background("tt0106179_None_None")
+
+        timeout_add.assert_called_once()
+        _, run_refresh = timeout_add.call_args.args
+        with patch.object(page, "fetch_torrents_async") as fetch_streams:
+            run_refresh()
+        fetch_streams.assert_called_once_with(
+            force=False, source_scope_override="torrent", background=True
+        )
+
+    def test_background_refresh_skips_when_other_source_loaded(self):
+        page = self._make_page(stub={"id": "tt0106179", "title": "The X-Files", "type": "movie"})
+        page.source_idx = 1
+        page.torrents = [
+            {"title": "Direct", "is_http": True, "url": "https://direct.example/stream.m3u8"},
+            {"title": "Torrent", "is_http": False, "infoHash": "c" * 40},
+        ]
+        page._stream_item_key = "tt0106179_None_None"
+        page._fetching_streams = False
+
+        with patch("src.window.GLib.timeout_add") as timeout_add:
+            page._refresh_other_source_in_background("tt0106179_None_None")
+
+        timeout_add.assert_not_called()
+
+    def test_scoped_fetch_caches_and_returns_both_source_categories(self):
+        from src import api
+
+        addon = {
+            "name": "Mixed Provider",
+            "manifest_url": "https://mixed.test/manifest.json",
+            "types": ["movie"],
+            "resources": [{"name": "stream", "types": ["movie"], "idPrefixes": ["tt"]}],
+            "idPrefixes": ["tt"],
+            "enabled": True,
+            "streams_enabled": True,
+        }
+        raw_streams = [
+            {"name": "Mixed", "title": "Movie 1080p", "url": "https://cdn.example/movie.m3u8"},
+            {"name": "Mixed", "title": "Movie 720p", "infoHash": "d" * 40},
+        ]
+        saved_full = {}
+
+        def fake_get_cached(cache_key, max_age_hours=24, return_age=False):
+            return (None, None) if return_age else None
+
+        def fake_save_full(cache_key, direct_key, torrent_key, streams, started_at=None, abort_event=None):
+            saved_full[cache_key] = (direct_key, torrent_key, list(streams))
+            return list(streams)
+
+        with patch("src.database.get_addons", return_value=[addon]), \
+             patch("src.database.get_cached_streams", side_effect=fake_get_cached), \
+             patch("src.database.save_cached_streams_full", side_effect=fake_save_full), \
+             patch("src.database.save_cached_streams_partial") as save_partial, \
+             patch("src.api._request_addon_streams", return_value=raw_streams), \
+             patch("src.api.is_addon_online", return_value=True), \
+             patch("src.tmdb_helper.resolve_all_provider_ids", return_value=[]):
+            streams = api.get_torrents_streamed(
+                "tt4242424", "movie", force_refresh=True, source_scope="direct"
+            )
+
+        self.assertTrue(any(s.get("is_http") for s in streams), "direct streams must be kept")
+        self.assertTrue(any(not s.get("is_http") for s in streams), "torrent streams must not be dropped")
+        save_partial.assert_not_called()
+        self.assertEqual(len(saved_full), 1)
+        cache_key, (direct_key, torrent_key, cached_streams) = next(iter(saved_full.items()))
+        self.assertTrue(direct_key.endswith(":source:direct"))
+        self.assertTrue(torrent_key.endswith(":source:torrent"))
+        self.assertEqual(len(cached_streams), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
