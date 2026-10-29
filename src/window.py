@@ -4609,6 +4609,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue_index = 0
         self.stream_request_id = 0
         self._stream_loading_watchdog_id = None
+        self._trailer_loading_watchdog_id = None
         self._seek_debounce_id = None
         self._is_hls_proxy_active = False
         self._hls_session_id = None
@@ -14497,18 +14498,66 @@ class CineWindow(Adw.ApplicationWindow):
         self._try_next_stream_in_queue()
         return GLib.SOURCE_REMOVE
 
+    def _start_trailer_loading_watchdog(self, request_id):
+        self._cancel_trailer_loading_watchdog()
+        self._trailer_loading_watchdog_id = GLib.timeout_add_seconds(
+            30,
+            self._on_trailer_loading_timeout,
+            request_id
+        )
+
+    def _cancel_trailer_loading_watchdog(self):
+        wid = getattr(self, "_trailer_loading_watchdog_id", None)
+        if wid is not None:
+            try:
+                GLib.source_remove(wid)
+            except Exception:
+                pass
+            self._trailer_loading_watchdog_id = None
+
+    def _on_trailer_loading_timeout(self, request_id):
+        self._trailer_loading_watchdog_id = None
+        if request_id != getattr(self, "stream_request_id", 0):
+            return GLib.SOURCE_REMOVE
+        if not getattr(self, "is_loading_stream", False):
+            return GLib.SOURCE_REMOVE
+        if not self._is_playing_trailer():
+            return GLib.SOURCE_REMOVE
+        curr_item = getattr(self, "_current_playing_item", None)
+        stream_url = str(curr_item.get("stream_url") or "") if isinstance(curr_item, dict) else ""
+        is_youtube_watch_url = (
+            ("youtube.com" in stream_url.lower() or "youtu.be" in stream_url.lower())
+            and "googlevideo.com" not in stream_url.lower()
+        )
+        # MPV's ytdl_hook can sit in "loading" forever when YouTube stalls.
+        # Retry once through the bounded yt-dlp resolver before giving up.
+        if (
+            not getattr(self, "_youtube_safe_mode_active", False)
+            and is_youtube_watch_url
+            and self._try_youtube_safe_mode()
+        ):
+            logger.warning("[Trailer] Playback did not start within 30 seconds; retrying in safe mode")
+            self._start_trailer_loading_watchdog(request_id)
+            return GLib.SOURCE_REMOVE
+        logger.warning("[Trailer] Playback did not start within 30 seconds; giving up")
+        self._handle_youtube_failure(True, message=_("Trailer timed out after 30s"))
+        return GLib.SOURCE_REMOVE
+
     def hide_player_loading(self):
         self._cancel_stream_loading_watchdog()
+        self._cancel_trailer_loading_watchdog()
         GLib.idle_add(self._hide_player_loading_ui)
 
     def _hide_player_loading_ui(self):
         self.is_loading_stream = False
         self._cancel_stream_loading_watchdog()
+        self._cancel_trailer_loading_watchdog()
         if hasattr(self, "player_loading_box"):
             self.player_loading_box.set_visible(False)
 
     def _clear_stream_failover(self):
         self._cancel_stream_loading_watchdog()
+        self._cancel_trailer_loading_watchdog()
         self.stream_request_id += 1
         self.stream_queue = []
         self.stream_queue_index = 0
@@ -14919,7 +14968,11 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "gl_area"):
             self.gl_area.queue_render()
 
-        if not is_trailer:
+        if is_trailer:
+            # MPV's ytdl_hook can wait forever on a stalled YouTube fetch, so
+            # bound trailer startup instead of leaving the loading screen up.
+            self._start_trailer_loading_watchdog(getattr(self, "stream_request_id", 0))
+        else:
             # With Auto Play Next Episodes enabled, resolve the next episode's
             # streams now so the end-of-episode transition is instant.
             self._prefetch_next_episode_streams()
@@ -14975,7 +15028,7 @@ class CineWindow(Adw.ApplicationWindow):
         threading.Thread(target=_worker, daemon=True, name="YTSafeModeWorker").start()
         return True
 
-    def _handle_youtube_failure(self, is_trailer=True):
+    def _handle_youtube_failure(self, is_trailer=True, message=None):
         self._youtube_safe_mode_active = False
         self._youtube_safe_mode_url = None
         self._youtube_safe_mode_video_url = None
@@ -14987,7 +15040,7 @@ class CineWindow(Adw.ApplicationWindow):
         if getattr(self, "stream_queue", None) and len(self.stream_queue) > 0 and not is_trailer:
             self._try_next_stream_in_queue()
         else:
-            msg = _("Failed to play trailer") if is_trailer else _("Failed to play video")
+            msg = message or (_("Failed to play trailer") if is_trailer else _("Failed to play video"))
             self._show_toast(msg)
             self._close_player(remove_torrent=False)
 

@@ -357,6 +357,98 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertEqual(res, GLib.SOURCE_REMOVE)
         win._try_next_stream_in_queue.assert_called_once()
 
+    def test_trailer_loading_watchdog_lifecycle(self):
+        from src.window import CineWindow
+        from gi.repository import GLib
+        win = MagicMock()
+        win._trailer_loading_watchdog_id = None
+        win.stream_request_id = 42
+
+        with patch.object(GLib, "timeout_add_seconds", return_value=999) as mock_timeout:
+            CineWindow._start_trailer_loading_watchdog(win, 42)
+            mock_timeout.assert_called_once_with(30, win._on_trailer_loading_timeout, 42)
+            self.assertEqual(win._trailer_loading_watchdog_id, 999)
+
+        with patch.object(GLib, "source_remove") as mock_remove:
+            CineWindow._cancel_trailer_loading_watchdog(win)
+            mock_remove.assert_called_once_with(999)
+            self.assertIsNone(win._trailer_loading_watchdog_id)
+
+    def test_trailer_loading_watchdog_retries_safe_mode_once(self):
+        from src.window import CineWindow
+        from gi.repository import GLib
+        win = MagicMock()
+        win.stream_request_id = 5
+        win.is_loading_stream = True
+        win._youtube_safe_mode_active = False
+        win._current_playing_item = {
+            "is_trailer": True,
+            "stream_url": "https://www.youtube.com/watch?v=l91Km49W9qI",
+        }
+        win._try_youtube_safe_mode.return_value = True
+
+        res = CineWindow._on_trailer_loading_timeout(win, 5)
+        self.assertEqual(res, GLib.SOURCE_REMOVE)
+        win._try_youtube_safe_mode.assert_called_once()
+        win._start_trailer_loading_watchdog.assert_called_once_with(5)
+        win._handle_youtube_failure.assert_not_called()
+
+    def test_trailer_loading_watchdog_fails_after_safe_mode_timeout(self):
+        from src.window import CineWindow
+        from gi.repository import GLib
+        win = MagicMock()
+        win.stream_request_id = 5
+        win.is_loading_stream = True
+        win._youtube_safe_mode_active = True
+        win._current_playing_item = {
+            "is_trailer": True,
+            "stream_url": "https://www.youtube.com/watch?v=l91Km49W9qI",
+        }
+
+        res = CineWindow._on_trailer_loading_timeout(win, 5)
+        self.assertEqual(res, GLib.SOURCE_REMOVE)
+        win._try_youtube_safe_mode.assert_not_called()
+        win._start_trailer_loading_watchdog.assert_not_called()
+        win._handle_youtube_failure.assert_called_once()
+        self.assertIs(win._handle_youtube_failure.call_args.args[0], True)
+        self.assertIn("timed out", win._handle_youtube_failure.call_args.kwargs["message"].lower())
+
+    def test_trailer_loading_watchdog_ignores_started_playback(self):
+        from src.window import CineWindow
+        from gi.repository import GLib
+        win = MagicMock()
+        win.stream_request_id = 5
+        win.is_loading_stream = False
+        win._current_playing_item = {
+            "is_trailer": True,
+            "stream_url": "https://www.youtube.com/watch?v=l91Km49W9qI",
+        }
+
+        res = CineWindow._on_trailer_loading_timeout(win, 5)
+        self.assertEqual(res, GLib.SOURCE_REMOVE)
+        win._try_youtube_safe_mode.assert_not_called()
+        win._handle_youtube_failure.assert_not_called()
+
+    def test_play_stream_arms_trailer_watchdog(self):
+        from src.window import CineWindow
+        win = MagicMock()
+        win.main_stack = MagicMock()
+        page = MagicMock()
+        page.is_channel = False
+        win.details_box = MagicMock()
+        win.details_box.get_first_child.return_value = page
+        win._is_playing_trailer.return_value = True
+        win.stream_request_id = 7
+
+        CineWindow._play_stream(
+            win,
+            url="https://www.youtube.com/watch?v=l91Km49W9qI",
+            title="Some Movie (Trailer)",
+            headers={},
+        )
+
+        win._start_trailer_loading_watchdog.assert_called_once_with(7)
+
 
     def test_hls_stream_loads_without_start_offset(self):
         from src.window import CineWindow
