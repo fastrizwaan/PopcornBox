@@ -134,9 +134,12 @@ class HistoryDialog(Adw.Dialog):
                     group = created_groups[day_key]
 
                 row = Adw.ActionRow(
-                    # ActionRow.title is plain text unless use-markup is set;
-                    # escaping here would show "&amp;" for titles like "A & B".
+                    # Media titles routinely contain bare "&", e.g.
+                    # "Hindi (DD5.1) & English", and libadwaita parses row
+                    # titles as Pango markup by default. Without this the
+                    # label drops the title and logs a GTK warning.
                     title=file_title,
+                    use_markup=False,
                     title_lines=1,
                     tooltip_text=file_title,
                     activatable=True,

@@ -351,7 +351,15 @@ class MovieDetailsPage(Gtk.Overlay):
         def on_reload(btn):
             from . import database, api
             print(f"[STREAM DEBUG] reload clicked title={self.movie_stub.get('title')!r} media_type={self.media_type!r}")
+            # An explicit reload must retry providers that failed earlier.
+            # Session blocks, host cooldowns and cached (including negative)
+            # endpoint responses would otherwise turn this into a no-op.
             api.reset_addon_session_status()
+            api.clear_provider_cooldown()
+            api.clear_stream_url_cache()
+            # A page cancelled by playback, navigation or a previous reload
+            # keeps tripped abort events, which silently discard this request.
+            self._rearm_background_fetching(force=True)
             item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("imdb_id") or self.movie_stub.get("id")
             primary_id = item_id[0] if isinstance(item_id, list) else item_id
             existing = database.get_cached_metadata(primary_id)
@@ -1185,6 +1193,9 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.selected_season = s_val
                     self._preferred_series_season = s_val
                     self._preferred_series_episode = episode_num
+                    # A metadata refresh must not restore a Continue Watching
+                    # episode over the one the user just picked here.
+                    self._user_selected_episode = True
                     self.movie_stub["season"] = s_val
                     self.movie_stub["episode"] = episode_num
                     primary_id = (self.movie_stub.get("alias_ids") or [self.movie_stub.get("id") or self.movie_stub.get("imdb_id")])[0]
@@ -1314,19 +1325,31 @@ class MovieDetailsPage(Gtk.Overlay):
         if not hasattr(self, 'provider_dropdown'): return
         from . import api, database
         all_addons = set()
+        unavailable = set()
         try:
             mtype = getattr(self, 'media_type', 'movie')
             item_id = self.movie_stub.get("id") or getattr(self, "movie_details", {}).get("id")
             for addon in database.get_addons():
+                name = addon.get("name")
+                if not name:
+                    continue
+                manifest_url = addon.get("manifest_url", "")
+                if manifest_url and (
+                    not api.is_addon_online(manifest_url)
+                    or api.is_provider_in_cooldown(manifest_url)
+                ):
+                    unavailable.add(name)
                 if api.is_stream_provider(addon, media_type=mtype, item_id=item_id):
-                    name = addon.get("name")
-                    if name:
-                        all_addons.add(name)
+                    all_addons.add(name)
         except Exception:
             pass
         for t in getattr(self, 'torrents', []):
             for a in t.get("addon_names", []):
-                if a: all_addons.add(a)
+                if a and a not in unavailable:
+                    all_addons.add(a)
+        # Don't offer a provider that cannot answer right now: selecting it
+        # only produced an empty list and forced a fallback refetch.
+        all_addons -= unavailable
         provider_strings = ["All Providers"] + sorted(list(all_addons))
         
         curr_model = self.provider_dropdown.get_model()
@@ -1564,6 +1587,78 @@ class MovieDetailsPage(Gtk.Overlay):
             return current is self
         except Exception:
             return False
+
+    def _rearm_background_fetching(self, force=False):
+        """Renew abort events tripped by navigation, playback or cancellation.
+
+        A reused details page keeps the events that cancelled its previous
+        requests, so later metadata/stream fetches are dropped before they can
+        populate the page. `force` additionally discards bookkeeping left by a
+        superseded request (manual reload).
+        """
+        if force or _is_event_set(getattr(self, "page_abort_event", None)):
+            self.page_abort_event = threading.Event()
+        if force or _is_event_set(getattr(self, "_trailer_fast_abort", None)):
+            self._trailer_fast_abort = threading.Event()
+        if force or _is_event_set(getattr(self, "_live_check_abort_event", None)):
+            self._live_check_abort_event = threading.Event()
+        if force or _is_event_set(getattr(self, "stream_abort_event", None)):
+            abort_event = getattr(self, "stream_abort_event", None)
+            if abort_event:
+                abort_event.set()
+            self.stream_abort_event = threading.Event()
+            self._fetch_gen = getattr(self, "_fetch_gen", 0) + 1
+            self._fetching_streams = False
+            self._active_stream_force = False
+            self._pending_forced_stream_refresh = False
+            self._last_fetch_key = None
+            self._set_provider_spinner_active(False)
+
+    def handle_addons_changed(self):
+        """Drop provider-dependent state after the addon list/caches change."""
+        self._rearm_background_fetching(force=True)
+        self.torrents = []
+        self.current_t_list = []
+        self.selected_torrent = None
+        self._stream_item_key = None
+        self._last_forced_stream_item_key = None
+        self._last_forced_stream_refresh_at = 0
+        self.update_provider_dropdown_model()
+        self.update_quality_dropdown()
+
+    def _fallback_to_all_providers(self):
+        """Replace a provider filter that yields no streams with All Providers."""
+        if not hasattr(self, "provider_dropdown"):
+            return
+        model = self.provider_dropdown.get_model()
+        if not model or model.get_n_items() == 0 or model.get_string(0) != "All Providers":
+            return
+        if self.provider_dropdown.get_selected() == 0:
+            return
+        self._ignore_provider_signals = True
+        try:
+            self.provider_dropdown.set_selected(0)
+        finally:
+            self._ignore_provider_signals = False
+        self.update_quality_dropdown()
+        GLib.idle_add(self._refetch_after_provider_fallback)
+
+    def _refetch_after_provider_fallback(self):
+        if self._is_current_details_page() and not getattr(self, "_fetching_streams", False):
+            self.fetch_torrents_async(force=True)
+        return False
+
+    def _refetch_for_selected_episode(self):
+        if not self._is_current_details_page() or getattr(self, "_fetching_streams", False):
+            return False
+        sel_v = getattr(self, "selected_video", None)
+        sel_s = getattr(self, "selected_season", None)
+        sel_e = getattr(self, "selected_episode", None)
+        if isinstance(sel_v, dict) and sel_v.get("id") and sel_s is not None and sel_e is not None:
+            if getattr(self, "_stream_item_key", None) == f"{sel_v.get('id')}_{sel_s}_{sel_e}":
+                return False
+        self.fetch_torrents_async(force=False)
+        return False
 
     def load_details_async(self, force_refresh=False):
         candidate_ids = []
@@ -2727,10 +2822,15 @@ class MovieDetailsPage(Gtk.Overlay):
             self._last_forced_stream_refresh_at = time.monotonic()
         elif (
             getattr(self, "_last_forced_stream_item_key", None) == stream_item_key
+            and getattr(self, "_stream_item_key", None) == stream_item_key
             and time.monotonic() - getattr(self, "_last_forced_stream_refresh_at", 0) < 12
+            and (getattr(self, "_fetching_streams", False) or bool(getattr(self, "torrents", None)))
         ):
             # A details refresh can finish after the user's forced source
-            # refresh and otherwise start a second, all-source request.
+            # refresh and otherwise start a second, all-source request. Only
+            # suppress it while that refresh is active or actually produced
+            # the streams currently on screen; an empty result must stay
+            # retryable so the listing can populate without another reload.
             print(f"[STREAM DEBUG] automatic fetch coalesced after manual refresh key={stream_item_key!r}")
             return
 
@@ -2822,6 +2922,13 @@ class MovieDetailsPage(Gtk.Overlay):
                 if hasattr(self, 'progress_label') and self.progress_label:
                     if not torrents: self.progress_label.set_text("No streams available.")
                     else: self.progress_label.set_text("")
+                if not torrents and provider_scope:
+                    # The selected provider returned nothing (disabled, cooling
+                    # down or simply empty). Fall back to all providers instead
+                    # of leaving an empty list that needs a manual reload.
+                    print(f"[STREAM DEBUG] provider produced no streams; falling back to All Providers provider={provider_scope!r}")
+                    self._pending_forced_stream_refresh = False
+                    GLib.idle_add(self._fallback_to_all_providers)
                 if (
                     getattr(self, "_pending_forced_stream_refresh", False)
                     and getattr(self, "_pending_forced_stream_item_key", None) == stream_item_key
@@ -3018,6 +3125,26 @@ class MovieDetailsPage(Gtk.Overlay):
 
         if sel_prov_name != "All Providers":
             filtered_torrents = [t for t in filtered_torrents if sel_prov_name in t.get("addon_names", [])]
+            provider_present = any(sel_prov_name in t.get("addon_names", []) for t in all_torrents)
+            if not filtered_torrents and all_torrents and not provider_present and not getattr(self, '_fetching_streams', False):
+                # The selected provider produced nothing for this item at all
+                # (disabled, cooling down or not a source here). Drop the filter
+                # so available streams stay shown instead of blanking the list.
+                # An empty result caused only by the source filter keeps the
+                # provider selection, since switching it would add no streams.
+                print(f"[STREAM DEBUG] provider filter {sel_prov_name!r} matched no streams; resetting to All Providers")
+                self._ignore_provider_signals = True
+                try:
+                    self.provider_dropdown.set_selected(0)
+                finally:
+                    self._ignore_provider_signals = False
+                sel_prov_name = "All Providers"
+                if source_idx == 1:
+                    filtered_torrents = [t for t in all_torrents if t.get('is_http')]
+                elif source_idx == 2:
+                    filtered_torrents = [t for t in all_torrents if not t.get('is_http')]
+                else:
+                    filtered_torrents = list(all_torrents)
 
         sel_s = getattr(self, 'selected_season', None) if self.media_type in ["series", "anime", "tv"] and not self.is_channel else None
         sel_e = getattr(self, 'selected_episode', None) if self.media_type in ["series", "anime", "tv"] and not self.is_channel else None
@@ -3026,10 +3153,23 @@ class MovieDetailsPage(Gtk.Overlay):
 
         if sel_s is not None and sel_e is not None:
             from . import api
-            filtered_torrents = [
+            episode_torrents = [
                 t for t in filtered_torrents
                 if api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH
             ]
+            if filtered_torrents and not episode_torrents:
+                # Loaded streams belong to a different episode; ask for the
+                # active one instead of leaving the sidebar empty.
+                sel_vid = sel_v.get("id") if isinstance(sel_v, dict) else None
+                expected_key = f"{sel_vid}_{sel_s}_{sel_e}" if sel_vid else None
+                if (
+                    expected_key
+                    and getattr(self, "_stream_item_key", None) != expected_key
+                    and not getattr(self, '_fetching_streams', False)
+                ):
+                    print(f"[STREAM DEBUG] streams loaded for another episode; refetching key={expected_key!r}")
+                    GLib.idle_add(self._refetch_for_selected_episode)
+            filtered_torrents = episode_torrents
 
         if not filtered_torrents:
             self.current_t_list = []
@@ -3037,7 +3177,13 @@ class MovieDetailsPage(Gtk.Overlay):
             self.quality_row_box.set_visible(True)
             self.quality_button_box.set_visible(False)
             if hasattr(self, 'row3_box'): self.row3_box.set_visible(True)
-            self.file_dropdown.set_model(Gtk.StringList.new(["No streams available for selected source filter"]))
+            if sel_s is not None and sel_e is not None and getattr(self, '_fetching_streams', False):
+                empty_msg = f"Searching streams for S{sel_s}E{sel_e}..."
+            elif sel_s is not None and sel_e is not None:
+                empty_msg = _("No streams available for selected episode")
+            else:
+                empty_msg = "No streams available for selected source filter"
+            self.file_dropdown.set_model(Gtk.StringList.new([empty_msg]))
             self.file_dropdown.set_selected(0)
             self.render_streams_list()
             return
@@ -14498,13 +14644,22 @@ class CineWindow(Adw.ApplicationWindow):
                     self.mpv["demuxer-readahead-secs"] = 10
                     self.mpv["demuxer-max-bytes"] = 64 * 1024 * 1024
                     self.mpv["demuxer-max-back-bytes"] = 16 * 1024 * 1024
+                    # Options persist on the shared mpv instance; reset the
+                    # VOD buffering gate so a live channel starts immediately.
+                    self.mpv["cache-pause-wait"] = 1.0
+                    self.mpv["cache-pause-initial"] = "no"
                 else:
-                    self.mpv["demuxer-readahead-secs"] = 30
-                    self.mpv["demuxer-max-bytes"] = 150 * 1024 * 1024
-                    self.mpv["demuxer-max-back-bytes"] = 50 * 1024 * 1024
+                    # Marginal hosts underrun mpv's default 1 s resume
+                    # threshold constantly, causing stop/start buffering. A
+                    # larger cache and a long refill gate trade a slower
+                    # start/seek for steady playback.
+                    self.mpv["demuxer-readahead-secs"] = 60
+                    self.mpv["demuxer-max-bytes"] = 256 * 1024 * 1024
+                    self.mpv["demuxer-max-back-bytes"] = 64 * 1024 * 1024
+                    self.mpv["cache-pause-wait"] = 15.0
+                    self.mpv["cache-pause-initial"] = "yes"
                 self.mpv["cache"] = "yes"
                 self.mpv["cache-pause"] = "yes"
-                self.mpv["cache-pause-wait"] = 1.0
             except Exception:
                 pass
 
@@ -16528,8 +16683,28 @@ class CineWindow(Adw.ApplicationWindow):
         # Reset session-blocked addons so they get a fresh attempt after the list changes
         api.reset_addon_session_status()
         api.invalidate_catalogs_cache()
+        # SQLite caches alone are not enough: in-memory endpoint responses
+        # (including 10 min negative entries) and per-host cooldowns otherwise
+        # keep hiding the reloaded providers until a manual refresh.
+        api.clear_stream_url_cache()
+        api.clear_provider_cooldown()
         database.clear_all_cached_streams()
         database.clear_all_cached_catalogs()
+
+        # 0. Existing details pages hold provider-dependent state from the old
+        # addon set; reset them so the next visit fetches a populated listing.
+        details_box = getattr(self, "details_box", None)
+        if details_box is not None and hasattr(details_box, "get_first_child"):
+            child = details_box.get_first_child()
+            seen_children = set()
+            while child and child not in seen_children:
+                seen_children.add(child)
+                if hasattr(child, "handle_addons_changed"):
+                    try:
+                        child.handle_addons_changed()
+                    except Exception:
+                        pass
+                child = child.get_next_sibling() if hasattr(child, "get_next_sibling") else None
 
         # 1. Invalidate all cached discover views & catalog lists
         if hasattr(self, "_discover_views"):
@@ -16669,6 +16844,79 @@ class CineWindow(Adw.ApplicationWindow):
         else:
             self._populate_installed_addons(scroll_to_url=scroll_to_url)
 
+    def _probe_addon_status_async(self, manifest_url, status_label, status_text, addon_name="Unknown", force_network=False):
+        from . import api
+
+        def worker():
+            started = time.time()
+            latency_ms = 0
+            if not manifest_url:
+                is_on = False
+                reason = _("Offline")
+            elif api.is_provider_in_cooldown(manifest_url):
+                is_on = False
+                reason = _("Temporarily unavailable")
+            elif not api.is_addon_online(manifest_url):
+                is_on = False
+                reason = _("Offline")
+            elif force_network:
+                is_on = api.probe_addon_manifest_online(manifest_url)
+                latency_ms = int((time.time() - started) * 1000)
+                api.set_addon_online_status(manifest_url, is_on)
+                if is_on:
+                    api.reset_addon_session_status(manifest_url)
+                try:
+                    from . import database
+                    database.update_addon_health(
+                        manifest_url,
+                        online=is_on,
+                        latency_ms=latency_ms,
+                        error=None if is_on else "Manifest probe failed",
+                    )
+                except Exception:
+                    pass
+                reason = _("Online") if is_on else _("Offline — manifest unreachable")
+            else:
+                # Default checks reuse the manifest cache (no burst of live
+                # requests for every installed addon). Cooldown and session
+                # health above still surface providers that recently failed.
+                is_on = api.check_addon_manifest_online(manifest_url)
+                if not is_on:
+                    api.set_addon_online_status(manifest_url, False)
+                reason = _("Online (cached)") if is_on else _("Offline")
+            debug_log(f"addon status '{addon_name}' ({manifest_url})", reason)
+            GLib.idle_add(self._apply_addon_status, status_label, status_text, is_on, reason)
+
+        threading.Thread(target=worker, daemon=True, name="AddonStatusProbe").start()
+
+    def _apply_addon_status(self, status_label, status_text, is_on, reason):
+        try:
+            status_label.set_label("🟢" if is_on else "🔴")
+            status_label.set_tooltip_text(reason)
+            if status_text is not None:
+                status_text.set_label("" if is_on else reason)
+                status_text.set_visible(not is_on)
+        except Exception:
+            pass
+        return False
+
+    def _select_installed_addon_view(self):
+        dropdown = getattr(self, "addon_catalog_dropdown", None)
+        sources = getattr(self, "_addon_catalog_sources", []) or []
+        if dropdown is None:
+            return
+        for idx, source in enumerate(sources):
+            if source.get("is_installed_view"):
+                if dropdown.get_selected() != idx:
+                    self._updating_addon_catalog_dropdown = True
+                    try:
+                        dropdown.set_selected(idx)
+                    finally:
+                        self._updating_addon_catalog_dropdown = False
+                if hasattr(self, "addon_type_dropdown"):
+                    self.addon_type_dropdown.set_sensitive(False)
+                return
+
     def _populate_installed_addons(self, scroll_to_url=None):
         debug_log("_populate_installed_addons START")
         if hasattr(self, "addon_catalog_spinner"):
@@ -16685,8 +16933,10 @@ class CineWindow(Adw.ApplicationWindow):
         debug_log(f"_populate_installed_addons DB returned {len(addons)} addons")
         target_row = None
         for addon in addons:
-            has_cats = bool(addon.get("catalogs")) or api.addon_has_resource(addon, "catalog")
-            has_streams = api.addon_has_resource(addon, "stream")
+            # Capabilities come from the manifest, not from health/toggle state:
+            # a disabled or offline addon must still expose its toggles.
+            has_cats = bool(addon.get("catalogs")) or api.addon_declares_resource(addon, "catalog")
+            has_streams = api.addon_declares_resource(addon, "stream")
 
             name_str = GLib.markup_escape_text(addon.get("name", "Unknown") or "Unknown")
             desc_str = GLib.markup_escape_text(addon.get("description", "") or "")
@@ -16706,24 +16956,23 @@ class CineWindow(Adw.ApplicationWindow):
             row._addon_desc = (addon.get("description") or "").lower()
             row._addon_types = [str(t).lower() for t in addon.get("types", [])]
 
+            status_box = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
             status_label = Gtk.Label(label="⚪", valign=Gtk.Align.CENTER)
-            row.add_prefix(status_label)
+            status_label.set_tooltip_text(_("Checking status…"))
+            status_text = Gtk.Label(label="", valign=Gtk.Align.CENTER)
+            status_text.add_css_class("dim-label")
+            status_text.set_visible(False)
+            status_box.append(status_label)
+            status_box.append(status_text)
+            row.add_prefix(status_box)
 
             manifest_url = addon.get("manifest_url", "")
-
-            def check_online(url, lbl, aname=addon.get("name", "Unknown")):
-                from . import api
-                is_on = api.check_addon_manifest_online(url)
-                api.set_addon_online_status(url, is_on)
-                if is_on:
-                    api.reset_addon_session_status(url)
-                debug_log(f"check_online result for '{aname}' ({url})", "🟢 Online" if is_on else "🔴 Offline")
-                GLib.idle_add(lbl.set_label, "🟢" if is_on else "🔴")
-
             if manifest_url:
-                threading.Thread(target=check_online, args=(manifest_url, status_label), daemon=True).start()
+                self._probe_addon_status_async(
+                    manifest_url, status_label, status_text, addon.get("name", "Unknown")
+                )
             else:
-                status_label.set_label("🔴")
+                self._apply_addon_status(status_label, status_text, False, _("Offline"))
 
             desc_str_orig = GLib.markup_escape_text(addon.get("description", "") or "")
             row_state = {
@@ -16796,7 +17045,7 @@ class CineWindow(Adw.ApplicationWindow):
 
             box = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
 
-            if has_cats and has_streams:
+            if has_cats:
                 cat_toggle = Gtk.ToggleButton(label=_("Catalog"), valign=Gtk.Align.CENTER)
                 cat_toggle.set_active(addon.get("catalogs_enabled", True))
                 cat_toggle.set_tooltip_text(_("Enable/disable catalogs from this addon"))
@@ -16805,6 +17054,7 @@ class CineWindow(Adw.ApplicationWindow):
                 row_state["cat_toggle"] = cat_toggle
                 box.append(cat_toggle)
 
+            if has_streams:
                 stream_toggle = Gtk.ToggleButton(label=_("Media"), valign=Gtk.Align.CENTER)
                 stream_toggle.set_active(addon.get("streams_enabled", True))
                 stream_toggle.set_tooltip_text(_("Enable/disable media streams from this addon"))
@@ -16862,6 +17112,15 @@ class CineWindow(Adw.ApplicationWindow):
                     open_uri(c_url, self)
                 config_btn.connect("clicked", on_config)
                 popover_box.append(config_btn)
+
+            if manifest_url:
+                check_status_btn = Gtk.Button(label=_("Check Status"))
+                check_status_btn.add_css_class("flat")
+                def on_check_status(btn, m_url=manifest_url, lbl=status_label, txt=status_text, pop=popover, aname=addon.get("name", "Unknown")):
+                    pop.popdown()
+                    self._probe_addon_status_async(m_url, lbl, txt, aname, force_network=True)
+                check_status_btn.connect("clicked", on_check_status)
+                popover_box.append(check_status_btn)
 
             copy_btn = Gtk.Button(label=_("Copy URL"))
             copy_btn.add_css_class("flat")
@@ -17144,6 +17403,9 @@ class CineWindow(Adw.ApplicationWindow):
                         if hasattr(self, "addon_catalog_dropdown"):
                             self._on_addon_catalog_selected(self.addon_catalog_dropdown, None)
                     else:
+                        # Show the installed list so the new row is visible even
+                        # when the user added it while browsing a directory.
+                        self._select_installed_addon_view()
                         self._populate_addons(scroll_to_url=url)
                     self._on_addons_changed()
                     self._show_toast(_(f"Installed addon: {addon_name}"))
@@ -17305,6 +17567,9 @@ class CineWindow(Adw.ApplicationWindow):
             existing = self.details_box.get_first_child() if hasattr(self, "details_box") else None
             if existing and not getattr(existing, "_destroyed", False) and (not movie_data or self._is_same_movie(getattr(existing, "movie_stub", None), movie_data)):
                 self.main_stack.set_visible_child_name("details")
+                if hasattr(existing, "_rearm_background_fetching"):
+                    # Playback/cancellation tripped the page's abort events.
+                    existing._rearm_background_fetching()
                 if hasattr(existing, "update_continue_btn"):
                     existing.update_continue_btn()
                 if hasattr(existing, "fetch_torrents_async") and not getattr(existing, "_fetching_streams", False):
@@ -17315,6 +17580,8 @@ class CineWindow(Adw.ApplicationWindow):
                 self._on_movie_clicked(movie_data, push_history=False)
             elif existing and not getattr(existing, "_destroyed", False):
                 self.main_stack.set_visible_child_name("details")
+                if hasattr(existing, "_rearm_background_fetching"):
+                    existing._rearm_background_fetching()
                 if hasattr(existing, "fetch_torrents_async") and not getattr(existing, "_fetching_streams", False):
                     stream_count = len(getattr(existing, "torrents", [])) if hasattr(existing, "torrents") else 0
                     if stream_count == 0:

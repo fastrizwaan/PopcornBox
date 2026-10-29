@@ -825,6 +825,13 @@ def _save_cached_stream_url(url, streams, ttl=_STREAM_URL_CACHE_TTL):
         _STREAM_URL_CACHE_GENERATION += 1
         _STREAM_URL_CACHE[url] = (streams, now + effective_ttl, _STREAM_URL_CACHE_GENERATION)
 
+def clear_stream_url_cache():
+    """Drop cached stream endpoint responses, including negative (empty) entries."""
+    global _STREAM_URL_CACHE_GENERATION
+    with _STREAM_URL_CACHE_LOCK:
+        _STREAM_URL_CACHE.clear()
+        _STREAM_URL_CACHE_GENERATION += 1
+
 @contextlib.contextmanager
 def _acquire_provider_slot(host, min_interval=0.4, timeout=4.0, abort_event=None,
                            max_wait=None, may_wait=True, permits=1, slot_key=None):
@@ -2302,6 +2309,56 @@ def get_stream_addons(media_type=None, item_id=None, only_working=True):
 def has_stream_addons(media_type=None, item_id=None, only_working=True):
     """Return True if there is at least one enabled stream/torrent addon for this media type and item."""
     return len(get_stream_addons(media_type=media_type, item_id=item_id, only_working=only_working)) > 0
+
+def addon_declares_resource(addon, resource_name):
+    """Check an addon's declared resources without health or toggle gating.
+
+    The addon manager must keep showing a stream/catalog toggle for addons that
+    are disabled or temporarily offline, otherwise their capabilities vanish
+    from the row and cannot be re-enabled.
+    """
+    if not isinstance(addon, dict):
+        return False
+    resource_name = str(resource_name or "").lower()
+    resources = addon.get("resources")
+    if resources is None:
+        if resource_name == "catalog":
+            return bool(addon.get("catalogs"))
+        return resource_name in ("stream", "meta")
+    declared = set()
+    for resource in resources:
+        if isinstance(resource, str):
+            declared.add(resource.lower())
+        elif isinstance(resource, dict):
+            declared.add(str(resource.get("name", "")).lower())
+    # Addon-directory entries expose only "addon_catalog" and are not media addons.
+    if declared and declared <= {"addon_catalog"}:
+        return False
+    return resource_name in declared
+
+def probe_addon_manifest_online(manifest_url, timeout=4.0):
+    """Live manifest probe used by the addon manager's explicit status check.
+
+    Unlike check_addon_manifest_online(), this never answers from the manifest
+    cache: a stale entry made dead providers look healthy and cleared their
+    session block.
+    """
+    if not manifest_url or manifest_url.startswith("builtin:"):
+        return True
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    try:
+        request = urllib.request.Request(manifest_url, headers=headers)
+        with urllib.request.urlopen(request, timeout=timeout, context=_SSL_CONTEXT) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return isinstance(data, dict) and bool(data.get("id"))
+    except Exception as exc:
+        logging.debug(f"[Addon] Live manifest probe failed for {manifest_url}: {exc}")
+        return False
 
 def has_catalog_resource(addon, media_type=None):
     """Return True if the addon supports catalog ('catalog') resource for this media type."""

@@ -480,6 +480,9 @@ class TestRuntimeDefectFixes(unittest.TestCase):
         self.assertEqual(len(created_rows), 1, "malformed history lines must be skipped")
         self.assertEqual(created_rows[0]["title"], "A & B")
         self.assertNotIn("&amp;", created_rows[0]["title"])
+        # libadwaita parses row titles as markup by default and drops titles
+        # containing a bare "&", so history must explicitly disable markup.
+        self.assertFalse(created_rows[0]["use_markup"])
 
 
     # ------------------------------------------------------------------

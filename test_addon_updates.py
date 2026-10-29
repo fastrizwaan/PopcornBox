@@ -49,6 +49,8 @@ class TestAddonUpdates(unittest.TestCase):
         database._ensure_db()
 
     def tearDown(self):
+        api.reset_addon_health_cache()
+        api.clear_provider_cooldown()
         database._json_cache = None
         database._json_cache_valid = False
         self.patch_db.stop()
@@ -158,6 +160,80 @@ class TestAddonUpdates(unittest.TestCase):
             database.remove_addon(addon_id="test.addon")
             mock_inval.assert_called()
             self.assertIsNone(database.get_cached_streams("tt12345"))
+
+    def test_addon_declares_resource_ignores_health_and_toggles(self):
+        addon = {
+            "id": "test.disabled",
+            "manifest_url": "https://disabled.example/manifest.json",
+            "resources": ["catalog", "stream", "meta"],
+            "enabled": False,
+            "catalogs_enabled": False,
+            "streams_enabled": False,
+        }
+        self.assertTrue(api.addon_declares_resource(addon, "catalog"))
+        self.assertTrue(api.addon_declares_resource(addon, "stream"))
+        self.assertFalse(api.addon_declares_resource(addon, "subtitles"))
+
+        api.set_addon_online_status(addon["manifest_url"], False)
+        self.assertTrue(api.addon_declares_resource(addon, "stream"))
+
+        # Addon-directory entries only expose addon_catalog and are not media addons.
+        self.assertFalse(api.addon_declares_resource({"resources": ["addon_catalog"]}, "catalog"))
+        self.assertFalse(api.addon_declares_resource({"resources": ["addon_catalog"]}, "stream"))
+
+        # Legacy addons without a resources list keep their inferred capabilities.
+        legacy = {"catalogs": [{"type": "movie", "id": "top"}]}
+        self.assertTrue(api.addon_declares_resource(legacy, "catalog"))
+        self.assertTrue(api.addon_declares_resource(legacy, "stream"))
+
+    def test_remove_addon_refreshes_ui_immediately(self):
+        addon = {
+            "id": "test.remove-now",
+            "name": "Remove Now",
+            "manifest_url": "https://remove-now.example/manifest.json",
+            "resources": ["stream"],
+            "types": ["movie"],
+            "catalogs": [],
+        }
+        database.add_addon(dict(addon))
+        api.set_addon_online_status(addon["manifest_url"], False)
+
+        class MockWindow:
+            def __init__(self):
+                self._update_addon_catalog_dropdown = MagicMock()
+                self._populate_addons = MagicMock()
+                self._on_addons_changed = MagicMock()
+                self._show_toast = MagicMock()
+
+            _remove_addon = CineWindow._remove_addon
+
+        win = MockWindow()
+        win._remove_addon(addon)
+
+        self.assertFalse(any(a["id"] == addon["id"] for a in database.get_addons()))
+        win._update_addon_catalog_dropdown.assert_called_once()
+        win._populate_addons.assert_called_once_with()
+        win._on_addons_changed.assert_called_once()
+        win._show_toast.assert_called_once()
+        self.assertNotIn(addon["manifest_url"], api._ADDON_ONLINE_STATUS)
+
+    def test_apply_addon_status_labels_online_and_offline(self):
+        status_label = MagicMock()
+        status_text = MagicMock()
+
+        CineWindow._apply_addon_status(None, status_label, status_text, False, "Temporarily unavailable")
+        status_label.set_label.assert_called_with("🔴")
+        status_label.set_tooltip_text.assert_called_with("Temporarily unavailable")
+        status_text.set_label.assert_called_with("Temporarily unavailable")
+        status_text.set_visible.assert_called_with(True)
+
+        status_label.reset_mock()
+        status_text.reset_mock()
+
+        CineWindow._apply_addon_status(None, status_label, status_text, True, "Online")
+        status_label.set_label.assert_called_with("🟢")
+        status_label.set_tooltip_text.assert_called_with("Online")
+        status_text.set_visible.assert_called_with(False)
 
     def test_on_addons_changed_flow(self):
         class MockWindow:

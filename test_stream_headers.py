@@ -226,6 +226,59 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertEqual(mpv_props.get("network-timeout"), 30.0)
         self.assertEqual(mpv_props.get("demuxer-lavf-o"), "")
 
+    def test_play_stream_sets_vod_buffer_headroom(self):
+        from src.window import CineWindow
+        win = MagicMock()
+        win.main_stack = MagicMock()
+        mpv_props = {}
+        win.mpv.__setitem__.side_effect = lambda k, v: mpv_props.__setitem__(k, v)
+        win.mpv.__getitem__.side_effect = lambda k: mpv_props.get(k)
+        win._is_playing_trailer.return_value = False
+        win._current_playing_item = None
+
+        CineWindow._play_stream(
+            win,
+            url="https://bcdn.hakunaymatata.com/resource/test.mp4",
+            title="Slow Host",
+            headers={}
+        )
+        self.assertEqual(mpv_props.get("demuxer-readahead-secs"), 60)
+        self.assertEqual(mpv_props.get("demuxer-max-bytes"), 256 * 1024 * 1024)
+        self.assertEqual(mpv_props.get("demuxer-max-back-bytes"), 64 * 1024 * 1024)
+        self.assertEqual(mpv_props.get("cache-pause-wait"), 15.0)
+        self.assertEqual(mpv_props.get("cache-pause-initial"), "yes")
+        self.assertEqual(mpv_props.get("cache-pause"), "yes")
+        self.assertEqual(mpv_props.get("cache"), "yes")
+
+    def test_live_channel_playback_resets_vod_buffer_gate(self):
+        from src.window import CineWindow
+        from src import hls_proxy
+        win = MagicMock()
+        win.main_stack = MagicMock()
+        mpv_props = {}
+        win.mpv.__setitem__.side_effect = lambda k, v: mpv_props.__setitem__(k, v)
+        win.mpv.__getitem__.side_effect = lambda k: mpv_props.get(k)
+        win._is_playing_trailer.return_value = False
+        win.stream_request_id = 1
+        win._current_playing_item = None
+
+        def mock_prepare_async(url, headers=None, seek_target=0, callback=None):
+            callback(False, None, url, 0.0, 0.0)
+
+        with patch.object(hls_proxy, "prepare_hls_stream_async", side_effect=mock_prepare_async):
+            CineWindow._play_stream(
+                win,
+                url="https://iptv.example.com/live/channel.m3u8",
+                title="Live Channel",
+                headers={},
+                media_type="channel"
+            )
+        self.assertEqual(mpv_props.get("demuxer-readahead-secs"), 10)
+        self.assertEqual(mpv_props.get("demuxer-max-bytes"), 64 * 1024 * 1024)
+        self.assertEqual(mpv_props.get("demuxer-max-back-bytes"), 16 * 1024 * 1024)
+        self.assertEqual(mpv_props.get("cache-pause-wait"), 1.0)
+        self.assertEqual(mpv_props.get("cache-pause-initial"), "no")
+
     def test_progress_adjusted_debounced_seek(self):
         from src.window import CineWindow
         from gi.repository import GLib
