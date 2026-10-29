@@ -1729,8 +1729,21 @@ def set_addon_online_status(manifest_url, is_online):
             # UI explicitly says online — clear session block
             _ADDON_SESSION_BLOCKED.discard(manifest_url)
             _ADDON_SESSION_FAILURES.pop(manifest_url, None)
+            # The health cache outranks this override, so a stale offline
+            # verdict would keep a re-enabled addon hidden for up to 2h.
+            entry = _IN_MEMORY_ADDON_HEALTH.get(manifest_url)
+            if entry is not None and not entry.get("online", True):
+                entry["online"] = True
+                entry["last_checked"] = time.time()
+                entry["error"] = None
         else:
             _ADDON_SESSION_BLOCKED.add(manifest_url)
+    if is_online:
+        try:
+            from . import database
+            database.update_addon_health(manifest_url, online=True, latency_ms=0, error=None)
+        except Exception:
+            pass
     invalidate_catalogs_cache()
 
 def _record_addon_failure(manifest_url):

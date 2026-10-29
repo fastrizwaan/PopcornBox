@@ -177,6 +177,32 @@ def _extract_active_discover_query(win) -> str:
 def _find_best_matching_stream(target_stream, candidate_streams, preferred_provider=None, preferred_quality=None):
     return api.find_best_matching_stream(target_stream, candidate_streams, preferred_provider=preferred_provider, preferred_quality=preferred_quality)
 
+def _filter_items_from_available_addons(items):
+    """Drop saved items whose source addon was removed or disabled.
+
+    History/favorites/continue-watching rows store the whole item dict,
+    including the manifest URL of the catalog that supplied it, so they
+    otherwise keep showing content from addons the user just turned off.
+    Items without an addon origin (local files, builtin catalogs) are kept.
+    """
+    if not items:
+        return []
+    from . import database
+    addon_state = {}
+    for addon in database.get_addons():
+        url = str(addon.get("manifest_url") or "").strip()
+        if url:
+            addon_state[url] = bool(addon.get("enabled", True))
+    kept = []
+    for item in items:
+        if not isinstance(item, dict):
+            kept.append(item)
+            continue
+        url = str(item.get("manifest_url") or "").strip()
+        if not url or url.startswith("builtin:") or addon_state.get(url, False):
+            kept.append(item)
+    return kept
+
 def _stream_link_changed(refreshed, previous):
     """True when a refresh actually produced a different playable link."""
     if not isinstance(refreshed, dict) or not refreshed:
@@ -8732,6 +8758,7 @@ class CineWindow(Adw.ApplicationWindow):
             ]:
                 if dd is not None and hasattr(dd, "set_expression"):
                     dd.set_expression(expr)
+                self._watch_discover_filter_popover(dd)
 
             # Backward compatibility alias
             self.media_type_dropdown = getattr(self, "type_dropdown", None)
@@ -8778,6 +8805,47 @@ class CineWindow(Adw.ApplicationWindow):
                     flowbox.set_filter_func(self._discover_result_filter)
         finally:
             self._syncing_discover_toolbar = False
+
+    def _watch_discover_filter_popover(self, dropdown):
+        if dropdown is None or not hasattr(dropdown, "get_first_child"):
+            return
+        child = dropdown.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Popover):
+                if not getattr(child, "_discover_refocus_hooked", False):
+                    child._discover_refocus_hooked = True
+                    child.connect("closed", self._on_discover_filter_popover_closed)
+                return
+            child = child.get_next_sibling()
+
+    def _on_discover_filter_popover_closed(self, popover):
+        box = getattr(self, "advanced_search_box", None)
+        entry = getattr(self, "discover_search_entry", None)
+        if box is None or entry is None or not box.get_visible():
+            return
+        # The click that dismisses a popover is consumed by its grab, so it
+        # never reaches the entry underneath; give the entry the focus the
+        # click was meant to set.
+        window_surface = self.get_surface()
+        pointer = self.get_display().get_default_seat().get_pointer()
+        surface, x, y = pointer.get_surface_at_position()
+        if surface is None or window_surface is None or surface != window_surface:
+            return
+        result = entry.compute_bounds(self)
+        if not result:
+            return
+        ok, bounds = result
+        if not ok:
+            return
+        if not (bounds.get_x() <= x <= bounds.get_x() + bounds.get_width()
+                and bounds.get_y() <= y <= bounds.get_y() + bounds.get_height()):
+            return
+
+        def _refocus():
+            entry.grab_focus()
+            return False
+
+        GLib.idle_add(_refocus)
 
     def _set_discover_spinner_active(self, active: bool):
         is_act = bool(active)
@@ -12371,7 +12439,7 @@ class CineWindow(Adw.ApplicationWindow):
         while child := self.content_flowbox.get_first_child():
             self.content_flowbox.remove(child)
             
-        cw_items = database.get_continue_watching()
+        cw_items = _filter_items_from_available_addons(database.get_continue_watching())
         for item in cw_items:
             card = ContinueWatchingWidget(
                 item,
@@ -12493,7 +12561,7 @@ class CineWindow(Adw.ApplicationWindow):
             return
             
         debug_log("_update_continue_watching_section START")
-        cw_items = database.get_continue_watching()
+        cw_items = _filter_items_from_available_addons(database.get_continue_watching())
         visible_card_count, card_width = self._discover_row_card_metrics()
         display_cw_items = cw_items[:max(DISCOVER_ROW_CARD_LIMIT, visible_card_count)]
         debug_log(f"_update_continue_watching_section DB returned {len(cw_items)} items (displaying {len(display_cw_items)})")
@@ -16657,7 +16725,10 @@ class CineWindow(Adw.ApplicationWindow):
     def _refresh_active_library_view(self):
         from . import api, database
         lib_page = self.library_stack.get_visible_child_name() if hasattr(self, "library_stack") else "discover"
-        if lib_page == "unique" or (hasattr(self, "_is_unique_mode_active") and self._is_unique_mode_active() is True):
+        # Trust the visible page: the Unique checkbox can still be set on the
+        # persisted Discover preference while Home is showing the discover
+        # page, and refreshing the hidden Unique view leaves Home stale.
+        if lib_page == "unique":
             if hasattr(self, "_refresh_unique_combined_view"):
                 self._refresh_unique_combined_view()
             self._addons_dirty = False
@@ -16796,12 +16867,20 @@ class CineWindow(Adw.ApplicationWindow):
         # 2. Update dynamic media types & button visibility (Anime, TV channels, etc.)
         self._update_supported_media_types()
 
-        # 3. Update dropdowns
-        self._update_search_catalog_dropdown()
-        self._update_catalog_dropdown()
-        if hasattr(self, "_populate_discover_catalog_dropdown"):
-            cur_t = self._get_current_discover_type() if hasattr(self, "_get_current_discover_type") else "all"
-            self._populate_discover_catalog_dropdown(cur_t)
+        # 3. Update dropdowns. Rebuilding their models emits notify::selected,
+        # which reloads the discover grid; that resolves to the Unique view
+        # while the checkbox is set and would replace the page the user is
+        # on (even from the Addons page) with a hidden, unrelated refresh.
+        sync_prev = getattr(self, "_syncing_discover_toolbar", False)
+        self._syncing_discover_toolbar = True
+        try:
+            self._update_search_catalog_dropdown()
+            self._update_catalog_dropdown()
+            if hasattr(self, "_populate_discover_catalog_dropdown"):
+                cur_t = self._get_current_discover_type() if hasattr(self, "_get_current_discover_type") else "all"
+                self._populate_discover_catalog_dropdown(cur_t)
+        finally:
+            self._syncing_discover_toolbar = sync_prev
         if hasattr(self, "_update_addon_catalog_dropdown"):
             self._update_addon_catalog_dropdown()
 
@@ -17097,6 +17176,10 @@ class CineWindow(Adw.ApplicationWindow):
                 finally:
                     state["updating_sync"] = False
                 database.set_addon_catalogs_enabled(state["addon"].get("id"), active, manifest_url=state["manifest_url"])
+                if active and state["manifest_url"]:
+                    # Re-enabling is an explicit retry: drop a stale offline
+                    # verdict so the addon's catalogs are usable immediately.
+                    api.set_addon_online_status(state["manifest_url"], True)
                 self._on_addons_changed()
 
             def on_stream_changed(active, state=row_state):
@@ -17115,11 +17198,15 @@ class CineWindow(Adw.ApplicationWindow):
                 finally:
                     state["updating_sync"] = False
                 database.set_addon_streams_enabled(state["addon"].get("id"), active, manifest_url=state["manifest_url"])
+                if active and state["manifest_url"]:
+                    api.set_addon_online_status(state["manifest_url"], True)
                 self._on_addons_changed()
 
             def on_enable_changed(active, state=row_state):
                 state["addon"]["enabled"] = bool(active)
                 database.set_addon_enabled(state["addon"].get("id"), active, manifest_url=state["manifest_url"])
+                if active and state["manifest_url"]:
+                    api.set_addon_online_status(state["manifest_url"], True)
                 self._on_addons_changed()
 
             box = Gtk.Box(spacing=8, valign=Gtk.Align.CENTER)
@@ -18181,6 +18268,8 @@ class CineWindow(Adw.ApplicationWindow):
                 or query in str(i.get("name") or "").lower()
                 or query in str(i.get("description") or "").lower()
             ]
+
+        items = _filter_items_from_available_addons(items)
             
         movies = []
         series = []

@@ -1625,6 +1625,98 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._on_discover_results_search_changed.assert_called_once()
         self.win.reload_catalog_grid.assert_not_called()
 
+    def test_discover_filter_popover_close_refocuses_search_entry(self):
+        """A click that dismisses a filter popover is eaten by the popover grab, so closing it over the entry must restore focus."""
+        self.win.advanced_search_box = Gtk.Box()
+        self.win.advanced_search_box.set_visible(True)
+
+        entry = Gtk.SearchEntry()
+        bounds = MagicMock()
+        bounds.get_x.return_value = 100.0
+        bounds.get_y.return_value = 40.0
+        bounds.get_width.return_value = 220.0
+        bounds.get_height.return_value = 34.0
+        entry.compute_bounds = MagicMock(return_value=(True, bounds))
+        entry.grab_focus = MagicMock()
+        self.win.discover_search_entry = entry
+
+        surface = object()
+        self.win.get_surface = MagicMock(return_value=surface)
+        pointer = MagicMock()
+        pointer.get_surface_at_position.return_value = (surface, 150.0, 50.0)
+        self.win.get_display = MagicMock()
+        self.win.get_display.return_value.get_default_seat.return_value.get_pointer.return_value = pointer
+
+        scheduled = []
+        with patch("src.window.GLib.idle_add", side_effect=lambda cb, *a: scheduled.append(cb)):
+            CineWindow._on_discover_filter_popover_closed(self.win, Gtk.Popover())
+
+        self.assertEqual(len(scheduled), 1)
+        self.assertFalse(scheduled[0]())
+        entry.grab_focus.assert_called_once()
+
+    def test_discover_filter_popover_close_elsewhere_keeps_focus(self):
+        """Closing a popover while the pointer is not over the entry must not steal focus into it."""
+        self.win.advanced_search_box = Gtk.Box()
+        self.win.advanced_search_box.set_visible(True)
+
+        entry = Gtk.SearchEntry()
+        bounds = MagicMock()
+        bounds.get_x.return_value = 100.0
+        bounds.get_y.return_value = 40.0
+        bounds.get_width.return_value = 220.0
+        bounds.get_height.return_value = 34.0
+        entry.compute_bounds = MagicMock(return_value=(True, bounds))
+        entry.grab_focus = MagicMock()
+        self.win.discover_search_entry = entry
+
+        surface = object()
+        self.win.get_surface = MagicMock(return_value=surface)
+        pointer = MagicMock()
+        pointer.get_surface_at_position.return_value = (surface, 700.0, 300.0)
+        self.win.get_display = MagicMock()
+        self.win.get_display.return_value.get_default_seat.return_value.get_pointer.return_value = pointer
+
+        with patch("src.window.GLib.idle_add") as idle_add:
+            CineWindow._on_discover_filter_popover_closed(self.win, Gtk.Popover())
+
+        idle_add.assert_not_called()
+        entry.grab_focus.assert_not_called()
+
+    def test_discover_filter_popover_close_ignored_when_search_hidden(self):
+        """With the results filter box closed there is no entry to focus."""
+        self.win.advanced_search_box = Gtk.Box()
+        self.win.advanced_search_box.set_visible(False)
+        box_child = Gtk.Box()
+        self.win.advanced_search_box.append(box_child)
+        self.win.discover_search_entry = Gtk.SearchEntry()
+        self.win.get_display = MagicMock()
+
+        with patch("src.window.GLib.idle_add") as idle_add:
+            CineWindow._on_discover_filter_popover_closed(self.win, Gtk.Popover())
+
+        idle_add.assert_not_called()
+        self.win.get_display.assert_not_called()
+
+    def test_watch_discover_filter_popover_hooks_dropdown_popover_once(self):
+        """Every filter dropdown's popover is hooked exactly once for the refocus handoff."""
+        dd = Gtk.DropDown()
+        popover = None
+        child = dd.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Popover):
+                popover = child
+                break
+            child = child.get_next_sibling()
+        self.assertIsNotNone(popover)
+
+        with patch.object(popover, "connect", wraps=popover.connect) as connect_mock:
+            CineWindow._watch_discover_filter_popover(self.win, dd)
+            CineWindow._watch_discover_filter_popover(self.win, dd)
+
+        connect_mock.assert_called_once()
+        self.assertEqual(connect_mock.call_args.args[0], "closed")
+
     def test_discover_search_title_only_matching(self):
         """When Title Only is enabled, matches title/name only and ignores genre/description."""
         item = {

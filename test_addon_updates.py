@@ -3,6 +3,7 @@ import sys
 import tempfile
 import os
 import json
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -31,7 +32,7 @@ if res_file.exists():
         pass
 
 from src import database, api
-from src.window import CineWindow
+from src.window import CineWindow, _filter_items_from_available_addons
 
 
 class TestAddonUpdates(unittest.TestCase):
@@ -234,6 +235,271 @@ class TestAddonUpdates(unittest.TestCase):
         status_label.set_label.assert_called_with("🟢")
         status_label.set_tooltip_text.assert_called_with("Online")
         status_text.set_visible.assert_called_with(False)
+
+    def test_filter_items_from_available_addons(self):
+        database.add_addon({
+            "id": "probe.enabled",
+            "name": "Probe Enabled",
+            "manifest_url": "https://enabled.example/manifest.json",
+            "types": ["movie"],
+            "catalogs": [],
+        })
+        database.add_addon({
+            "id": "probe.disabled",
+            "name": "Probe Disabled",
+            "manifest_url": "https://disabled.example/manifest.json",
+            "types": ["movie"],
+            "catalogs": [],
+        })
+        database.set_addon_enabled("probe.disabled", False)
+
+        items = [
+            {"id": "tt1", "title": "Enabled source", "manifest_url": "https://enabled.example/manifest.json"},
+            {"id": "tt2", "title": "Disabled source", "manifest_url": "https://disabled.example/manifest.json"},
+            {"id": "tt3", "title": "Removed source", "manifest_url": "https://removed.example/manifest.json"},
+            {"id": "tt4", "title": "Local file"},
+            {"id": "tt5", "title": "Builtin catalog", "manifest_url": "builtin:popular"},
+            "raw-non-dict-item",
+        ]
+        kept = _filter_items_from_available_addons(items)
+        self.assertEqual(
+            [i["id"] if isinstance(i, dict) else i for i in kept],
+            ["tt1", "tt4", "tt5", "raw-non-dict-item"],
+        )
+        self.assertEqual(_filter_items_from_available_addons([]), [])
+        self.assertEqual(_filter_items_from_available_addons(None), [])
+
+    def test_set_addon_online_status_overrides_stale_health(self):
+        url = "https://stale.example/manifest.json"
+        database.update_addon_health(url, online=False, latency_ms=0, error="timeout")
+        with api._ADDON_ONLINE_LOCK:
+            api._IN_MEMORY_ADDON_HEALTH[url] = {
+                "online": False,
+                "last_checked": time.time(),
+                "latency_ms": 0,
+                "error": "timeout",
+            }
+        self.assertFalse(api.is_addon_online(url))
+
+        # Re-enabling the addon is an explicit retry; it must clear the stale
+        # offline verdict instead of staying hidden for the 2h health window.
+        api.set_addon_online_status(url, True)
+
+        self.assertTrue(api.is_addon_online(url))
+        persisted = database.get_addon_health()[url]
+        self.assertTrue(persisted["online"])
+        self.assertLessEqual(abs(persisted["last_checked"] - time.time()), 60)
+
+        api.set_addon_online_status(url, False)
+        self.assertFalse(api.is_addon_online(url))
+
+    def test_refresh_active_library_view_follows_visible_page(self):
+        class MockWindow:
+            def __init__(self, lib_page):
+                self.library_stack = MagicMock()
+                self.library_stack.get_visible_child_name.return_value = lib_page
+                self.category_btn_stack = MagicMock()
+                self.unique_check = MagicMock()
+                self.unique_check.get_active.return_value = True
+                self.library_unique_check = MagicMock()
+                self.library_unique_check.get_active.return_value = True
+                self._refresh_unique_combined_view = MagicMock()
+                self._refresh_discover_page = MagicMock()
+                self._addons_dirty = True
+                self._current_discover_type = "all"
+                self._current_discover_addon = None
+                self.media_type_keys = ["all", "movie_series", "movie", "series"]
+                self.anime_supported = False
+
+            _refresh_active_library_view = CineWindow._refresh_active_library_view
+
+        win = MockWindow("discover")
+        win._refresh_active_library_view()
+        # The persisted Unique checkbox must not hijack a visible Discover page.
+        win._refresh_unique_combined_view.assert_not_called()
+        win._refresh_discover_page.assert_called_once_with(
+            filter_media_type="all", filter_addon_url=None, force_refresh=True
+        )
+        self.assertFalse(win._addons_dirty)
+
+        win = MockWindow("unique")
+        win._refresh_active_library_view()
+        win._refresh_unique_combined_view.assert_called_once()
+        win._refresh_discover_page.assert_not_called()
+        self.assertFalse(win._addons_dirty)
+
+    def test_on_addons_changed_suppresses_dropdown_reloads(self):
+        class MockWindow:
+            def __init__(self, prior):
+                self._syncing_discover_toolbar = prior
+                self._observed = {}
+                self._discover_views = {}
+                self._discover_catalog_list_cache = {}
+                self._catalog_list_cache = {}
+                self._built_menu_models = {}
+                self._menus_built = True
+                self._menus_building = False
+                self._addons_dirty = False
+                self.main_stack = MagicMock()
+                self.main_stack.get_visible_child_name.return_value = "addons"
+                self.details_box = None
+                self._ensure_all_menus_built = MagicMock()
+                self._prewarm_discover_views = MagicMock()
+                self._refresh_active_library_view = MagicMock()
+
+            def _update_supported_media_types(self):
+                pass
+
+            def _update_search_catalog_dropdown(self):
+                self._observed["search"] = self._syncing_discover_toolbar
+
+            def _update_catalog_dropdown(self):
+                self._observed["catalog"] = self._syncing_discover_toolbar
+
+            def _populate_discover_catalog_dropdown(self, cur_t):
+                self._observed["discover_catalog"] = self._syncing_discover_toolbar
+
+            def _get_current_discover_type(self):
+                return "all"
+
+            _on_addons_changed = CineWindow._on_addons_changed
+
+        for prior in (False, True):
+            win = MockWindow(prior)
+            CineWindow._on_addons_changed(win)
+
+            # Dropdown model rebuilds must not emit reload signals that switch
+            # the hidden library to the Unique view while the user is elsewhere.
+            self.assertTrue(win._observed["search"])
+            self.assertTrue(win._observed["catalog"])
+            self.assertTrue(win._observed["discover_catalog"])
+            self.assertIs(win._syncing_discover_toolbar, prior)
+            self.assertTrue(win._addons_dirty)
+            win._refresh_active_library_view.assert_not_called()
+
+    def test_continue_watching_row_filters_disabled_addons(self):
+        url = "https://probe.cw.example/manifest.json"
+        database.add_addon({
+            "id": "probe.cw",
+            "name": "Probe CW",
+            "manifest_url": url,
+            "types": ["movie"],
+            "catalogs": [],
+        })
+        database.save_continue_watching({
+            "id": "tt99001",
+            "title": "Probe In Progress",
+            "type": "movie",
+            "manifest_url": url,
+            "last_watched": 10,
+        })
+        database.save_continue_watching({
+            "id": "tt99002",
+            "title": "Local In Progress",
+            "type": "movie",
+            "last_watched": 20,
+        })
+
+        class FakeCard(Gtk.Box):
+            def __init__(self, item, *args, **kwargs):
+                super().__init__()
+                self.item = item
+
+        def build_window():
+            win = MagicMock()
+            win.category_btn_stack.get_visible_child_name.return_value = "home"
+            target_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            win.discover_box = target_box
+            win._discover_views = {"home|all|all|all|all|all|Popular": {"box": target_box}}
+            win._discover_row_card_metrics.return_value = (15, 130)
+            win._discover_result_matches_item.return_value = True
+            win._fit_discover_row_card = MagicMock()
+            win._start_background_continue_watching_refresh = MagicMock()
+            win._cw_initial_layout_check_scheduled = True
+            return win, target_box
+
+        def count_cards(target_box):
+            child = target_box.get_first_child()
+            scroll = None
+            while child:
+                if getattr(child, "_is_cw_scroll", False):
+                    scroll = child
+                    break
+                child = child.get_next_sibling()
+            self.assertIsNotNone(scroll)
+            row = scroll.get_child()
+            if hasattr(row, "get_child"):
+                row = row.get_child()
+            count = 0
+            card = row.get_first_child()
+            while card:
+                count += 1
+                card = card.get_next_sibling()
+            return count
+
+        with patch("src.movie_widget.ContinueWatchingWidget", FakeCard):
+            win, target_box = build_window()
+            CineWindow._update_continue_watching_section(win)
+            self.assertEqual(count_cards(target_box), 2)
+
+            database.set_addon_enabled("probe.cw", False)
+            CineWindow._update_continue_watching_section(win)
+            self.assertEqual(count_cards(target_box), 1)
+
+    def test_local_continue_watching_page_filters_disabled_addons(self):
+        url = "https://probe.local.example/manifest.json"
+        database.add_addon({
+            "id": "probe.local",
+            "name": "Probe Local",
+            "manifest_url": url,
+            "types": ["movie"],
+            "catalogs": [],
+        })
+        database.set_addon_enabled("probe.local", False)
+        database.save_continue_watching({
+            "id": "tt88001",
+            "title": "Disabled Source",
+            "type": "movie",
+            "manifest_url": url,
+            "last_watched": 10,
+        })
+        database.save_continue_watching({
+            "id": "tt88002",
+            "title": "Local Source",
+            "type": "movie",
+            "last_watched": 20,
+        })
+
+        class FakeCard(Gtk.Box):
+            def __init__(self, item, *args, **kwargs):
+                super().__init__()
+                self.item = item
+
+        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        win = MagicMock()
+        win.continue_watching_box = container
+        win.local_media_type_filter = "all"
+        win.cw_search_entry = None
+
+        with patch("src.movie_widget.ContinueWatchingWidget", FakeCard):
+            CineWindow._populate_local_db_page(win, "continue_watching")
+
+        flowbox = None
+        child = container.get_first_child()
+        while child:
+            if isinstance(child, Gtk.FlowBox):
+                flowbox = child
+                break
+            child = child.get_next_sibling()
+        self.assertIsNotNone(flowbox)
+
+        titles = []
+        child = flowbox.get_first_child()
+        while child:
+            card = child.get_child() if isinstance(child, Gtk.FlowBoxChild) else child
+            titles.append(card.item["title"])
+            child = child.get_next_sibling()
+        self.assertEqual(titles, ["Local Source"])
 
     def test_on_addons_changed_flow(self):
         class MockWindow:
