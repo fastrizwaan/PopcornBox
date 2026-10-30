@@ -493,7 +493,140 @@ class TestNextEpisodePrefetch(unittest.TestCase):
         # The explicit start_time already carries the resume point; leaving the
         # pending seek set would make the next episode jump to 20:00.
         self.assertIsNone(win._pending_seek_position)
-        self.assertEqual(win._seek_after_loaded, 1200.0)
+        win.mpv.command.assert_called_once_with(
+            "loadfile", "https://cdn.example/e4.mp4", "replace", -1, "start=1200.00"
+        )
+        self.assertIsNone(win._seek_after_loaded)
+
+    def test_tiny_saved_position_starts_from_beginning(self):
+        win = self._failover_window()
+        win._is_playing_trailer.return_value = False
+        saved = {
+            "id": "tt1234567",
+            "season": 1,
+            "episode": 1,
+            "position": 7.4,
+            "progress": 0.012,
+            "duration": 600.0,
+        }
+        with patch.object(database, "get_continue_watching_item", return_value=saved):
+            self._call_failover(win, season=1, episode=1, title="Test Show S01E01")
+
+        # A few seconds is not a real resume point: replaying would skip the
+        # intro, and every aborted start would push the resume point further.
+        self.assertEqual(win._current_playing_item["position"], 7.4)
+        self.assertIsNone(win._pending_seek_position)
+        self.assertIsNone(win._request_seek_position)
+
+        with patch.object(database, "save_continue_watching_async"):
+            CineWindow._play_stream(
+                win, url="https://cdn.example/new.mp4", title="Test Show S01E01"
+            )
+        win.mpv.loadfile.assert_called_once_with("https://cdn.example/new.mp4", "replace")
+        win.mpv.command.assert_not_called()
+
+    def test_previous_media_position_does_not_seek_new_request(self):
+        from src.window import CineWindow
+        win = MagicMock()
+        win._is_playing_trailer.return_value = False
+        win.stream_request_id = 1
+        win._pending_seek_position = None
+        win._request_seek_position = None
+        # `_update_progress` has not yet observed the new media starting, so
+        # this 640s position can only belong to the previous playback.
+        win._stream_media_started = False
+        win._current_playing_item = {
+            "id": "tt1234567",
+            "type": "movie",
+            "title": "Test Movie",
+            "position": 640.0,
+            "progress": 0.42,
+            "is_trailer": False,
+        }
+        with patch.object(database, "save_continue_watching_async"):
+            CineWindow._play_stream(
+                win, url="https://cdn.example/movie.mp4", preserve_queue=True
+            )
+        win.mpv.loadfile.assert_called_once_with("https://cdn.example/movie.mp4", "replace")
+        win.mpv.command.assert_not_called()
+
+    def test_failover_uses_live_position_after_media_started(self):
+        from src.window import CineWindow
+        win = MagicMock()
+        win._is_playing_trailer.return_value = False
+        win.stream_request_id = 1
+        win._pending_seek_position = None
+        win._request_seek_position = 1200.0
+        win._stream_media_started = True
+        win._current_playing_item = {
+            "id": "tt1234567",
+            "type": "movie",
+            "title": "Test Movie",
+            "position": 640.0,
+            "progress": 0.42,
+            "is_trailer": False,
+        }
+        with patch.object(database, "save_continue_watching_async"):
+            CineWindow._play_stream(
+                win, url="https://cdn.example/failover.mp4", preserve_queue=True
+            )
+        # The first stream already played to 640s, so its failover replacement
+        # resumes there instead of rewinding to the request's 1200s point.
+        win.mpv.command.assert_called_once_with(
+            "loadfile", "https://cdn.example/failover.mp4", "replace", -1, "start=640.00"
+        )
+
+    def test_request_seek_applies_when_first_stream_never_started(self):
+        from src.window import CineWindow
+        win = MagicMock()
+        win._is_playing_trailer.return_value = False
+        win.stream_request_id = 1
+        win._pending_seek_position = None
+        win._request_seek_position = 1200.0
+        win._stream_media_started = False
+        win._current_playing_item = {
+            "id": "tt1234567",
+            "type": "movie",
+            "title": "Test Movie",
+            "position": 0.0,
+            "progress": 0.01,
+            "is_trailer": False,
+        }
+        with patch.object(database, "save_continue_watching_async"):
+            CineWindow._play_stream(
+                win, url="https://cdn.example/retry.mp4", preserve_queue=True
+            )
+        win.mpv.command.assert_called_once_with(
+            "loadfile", "https://cdn.example/retry.mp4", "replace", -1, "start=1200.00"
+        )
+
+    def test_loading_ticks_from_previous_media_do_not_overwrite_resume(self):
+        self._start_playing(season=1, episode=1)
+        self.win._current_playing_item.update({
+            "position": 1200.0,
+            "progress": 0.8,
+            "duration": 1500.0,
+        })
+        self.win.is_loading_stream = True
+        self.win._stream_media_started = False
+        self.win._prefetch_next_episode_streams = MagicMock()
+        self.win._set_next_episode_banner_visible = MagicMock()
+
+        with patch("src.window.settings.get_boolean", return_value=True), \
+             patch.object(database, "save_continue_watching_async") as mock_save:
+            self.win._update_progress(500.0)
+        self.assertEqual(self.win._current_playing_item["position"], 1200.0)
+        self.assertEqual(self.win._current_playing_item["progress"], 0.8)
+        self.assertEqual(self.win._current_playing_item["duration"], 1500.0)
+        mock_save.assert_not_called()
+
+        # Once the replacement media starts, its own clock is authoritative.
+        self.win._stream_media_started = True
+        with patch("src.window.settings.get_boolean", return_value=True), \
+             patch.object(database, "save_continue_watching_async") as mock_save:
+            self.win._update_progress(501.0)
+        self.assertEqual(self.win._current_playing_item["position"], 501.0)
+        mock_save.assert_called_once()
 
     def test_progress_tick_does_not_advance_during_transition(self):
         self._start_playing(season=1, episode=1)

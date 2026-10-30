@@ -6964,6 +6964,22 @@ def get_user_preferred_languages():
 
     return pref_langs_str or ""
 
+def _parse_preferred_languages():
+    """Return the user's subtitle language preferences, defaulting to English."""
+    pref = get_user_preferred_languages()
+    raw_langs = [l.strip().lower() for l in pref.replace(";", ",").split(",") if l.strip()]
+    return raw_langs or ["en", "eng", "english"]
+
+def _build_language_rank_sets(raw_langs):
+    """Build sets of codes and names for each preferred language, in priority order."""
+    rank_sets = []
+    for pl in raw_langs:
+        clean_pl = pl.split("-")[0].split("_")[0]
+        codes = list(SUBTITLE_LANGUAGE_MAP.get(clean_pl, SUBTITLE_LANGUAGE_MAP.get(pl, [clean_pl, pl])))
+        names = [SUBTITLE_LANGUAGE_NAMES.get(c, "").lower() for c in codes]
+        rank_sets.append(set(codes) | set(n for n in names if n))
+    return rank_sets
+
 def is_sdh_track(track):
     """Determine if a subtitle track or subtitle item is SDH / CC / Hearing Impaired."""
     if not isinstance(track, dict):
@@ -6986,6 +7002,45 @@ def is_sdh_track(track):
     if "sdh" in lang.lower() or "cc" in lang.lower():
         return True
     return False
+
+def _match_subtitle_language(sub, rank_sets):
+    """Return the preference rank of an external subtitle item, or -1 if not preferred."""
+    if not isinstance(sub, dict):
+        return -1
+    raw_lang = str(sub.get("lang") or sub.get("language") or "").strip().lower()
+    clean_lang = raw_lang.split("-")[0].split("_")[0]
+    if raw_lang:
+        for idx, rset in enumerate(rank_sets):
+            if raw_lang in rset or clean_lang in rset:
+                return idx
+    # Some addons leave the language empty or tag the release as multi-language
+    # and only name the language in the file/track title.
+    if raw_lang not in ("", "mul", "multi", "und", "unk", "unknown"):
+        return -1
+    text = " ".join(
+        str(sub.get(key) or "")
+        for key in ("title", "subtitleFileName", "file_name", "release_name", "movieReleaseName", "filename")
+    ).lower()
+    if not text.strip():
+        return -1
+    for idx, rset in enumerate(rank_sets):
+        for token in rset:
+            if len(token) >= 3:
+                if re.search(r"\b" + re.escape(token) + r"\b", text):
+                    return idx
+            elif re.search(r"(^|[\s._\-\(\[])" + re.escape(token) + r"($|[\s._\-\)\]])", text):
+                return idx
+    return -1
+
+def _filter_subtitles_by_language(subtitles, rank_sets):
+    """Keep only preferred-language subtitles, best language first and SDH before regular."""
+    matched = []
+    for sub in subtitles or []:
+        rank = _match_subtitle_language(sub, rank_sets)
+        if rank >= 0:
+            matched.append((rank, 0 if is_sdh_track(sub) else 1, sub))
+    matched.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in matched]
 
 def has_embedded_subtitles(tracks):
     """Check if any embedded (non-external) subtitle track exists in the given tracks list."""
@@ -7010,26 +7065,15 @@ def find_best_subtitle_track(tracks, preferred_langs=None, only_embedded=False):
         return None
 
     if preferred_langs is None:
-        user_pref = get_user_preferred_languages()
-        raw_langs = [l.strip().lower() for l in user_pref.replace(";", ",").split(",") if l.strip()]
-        if not raw_langs:
-            raw_langs = ["en", "eng", "english"]
+        raw_langs = _parse_preferred_languages()
     elif isinstance(preferred_langs, str):
         raw_langs = [l.strip().lower() for l in preferred_langs.replace(";", ",").split(",") if l.strip()]
-        if not raw_langs:
-            raw_langs = ["en", "eng", "english"]
+        raw_langs = raw_langs or ["en", "eng", "english"]
     else:
         raw_langs = [str(l).strip().lower() for l in preferred_langs if str(l).strip()]
-        if not raw_langs:
-            raw_langs = ["en", "eng", "english"]
+        raw_langs = raw_langs or ["en", "eng", "english"]
 
-    rank_sets = []
-    for pl in raw_langs:
-        clean_pl = pl.split("-")[0].split("_")[0]
-        codes = list(SUBTITLE_LANGUAGE_MAP.get(clean_pl, SUBTITLE_LANGUAGE_MAP.get(pl, [clean_pl, pl])))
-        names = [SUBTITLE_LANGUAGE_NAMES.get(c, "").lower() for c in codes]
-        s = set(codes) | set(n for n in names if n)
-        rank_sets.append(s)
+    rank_sets = _build_language_rank_sets(raw_langs)
 
     candidates = []
     for track in tracks:
@@ -7093,11 +7137,20 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
     if season is not None and episode is not None:
         actual_media = "series"
 
-    cache_key = f"subs_{resolved_imdb or imdb_id}_{actual_media}_{season}_{episode}"
+    pref_langs = _parse_preferred_languages()
+    rank_sets = _build_language_rank_sets(pref_langs)
+    # Subtitles are filtered by language below, so the preference must be part
+    # of the key. Otherwise a list fetched for one language is replayed
+    # unfiltered after the preference changes.
+    lang_key = re.sub(r"[^a-z0-9._-]+", "_", "-".join(pref_langs)) or "default"
+    cache_key = f"subs_{resolved_imdb or imdb_id}_{actual_media}_{season}_{episode}_{lang_key}"
     if not stream_subtitles:
         cached = database.get_cached_subtitles(cache_key, max_age_hours=24)
         if cached is not None:
-            return cached
+            # Re-filter even cached rows: older builds cached unfiltered lists.
+            cached = _filter_subtitles_by_language(cached, rank_sets)
+            if cached:
+                return cached
 
     if resolved_imdb and str(resolved_imdb).startswith("tt"):
         clean_imdb = str(resolved_imdb).split(":")[0]
@@ -7184,37 +7237,10 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
             unique_subs.append(s)
     all_subs = unique_subs
 
-    pref_langs_str = get_user_preferred_languages()
-    raw_langs = [l.strip().lower() for l in pref_langs_str.replace(";", ",").split(',') if l.strip()]
-    if not raw_langs:
-        raw_langs = ["en", "eng", "english"]
-
-    rank_sets = []
-    for pl in raw_langs:
-        clean_pl = pl.split("-")[0].split("_")[0]
-        codes = SUBTITLE_LANGUAGE_MAP.get(clean_pl, SUBTITLE_LANGUAGE_MAP.get(pl, [clean_pl, pl]))
-        rank_sets.append(set(codes))
-
-    matched_subs = []
-    for s in all_subs:
-        raw_sub_lang = str(s.get("lang", "")).lower()
-        sub_lang_clean = raw_sub_lang.split("-")[0].split("_")[0]
-        matched_rank = 999
-        for idx, rset in enumerate(rank_sets):
-            if raw_sub_lang in rset or sub_lang_clean in rset or any(raw_sub_lang.startswith(p) for p in rset) or any(p in raw_sub_lang for p in rset):
-                matched_rank = idx
-                break
-        if matched_rank < 999:
-            sdh_score = 0 if is_sdh_track(s) else 1
-            matched_subs.append((matched_rank, sdh_score, s))
-            
-    if not matched_subs and all_subs:
-        if all_subs:
-            database.save_cached_subtitles(cache_key, all_subs)
-        return all_subs
-
-    matched_subs.sort(key=lambda x: (x[0], x[1]))
-    res_list = [item[2] for item in matched_subs]
+    # Never surface a language the user did not ask for. Returning every
+    # subtitle when nothing matched made the app select (and cache) arbitrary
+    # tracks, e.g. Bengali for a user who prefers English.
+    res_list = _filter_subtitles_by_language(all_subs, rank_sets)
     if res_list:
         database.save_cached_subtitles(cache_key, res_list)
     return res_list

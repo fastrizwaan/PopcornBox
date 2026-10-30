@@ -19,6 +19,7 @@
 
 import gi
 import os
+import sys
 import shutil
 import subprocess
 import webbrowser
@@ -52,6 +53,101 @@ def debug_log(step_name, detail=""):
     if detail:
         msg += f" -> {detail}"
     print(msg, flush=True)
+
+# --- Playback startup timing (diagnostic) ------------------------------------
+# Records wall-clock steps from the user's click to the first decoded frame in
+# CONFIG_DIR/playback-timing.log so a slow start can be attributed to database
+# writes, provider/network latency, or mpv buffering.
+_playback_trace_lock = threading.Lock()
+_playback_trace_start = 0.0
+_playback_trace_last = 0.0
+_playback_trace_active = False
+
+def playback_trace_active():
+    return _playback_trace_active
+
+def _playback_trace_disabled():
+    return "unittest" in sys.modules or "pytest" in sys.modules
+
+_main_loop_watch_last = 0.0
+_main_loop_watch_armed = False
+
+def _main_loop_stall_watch():
+    global _main_loop_watch_last, _main_loop_watch_armed
+    now = time.perf_counter()
+    lag = now - _main_loop_watch_last
+    _main_loop_watch_last = now
+    if lag >= 0.25:
+        playback_trace("main loop stalled", f"{lag:.2f}s without processing events")
+    if not playback_trace_active():
+        _main_loop_watch_armed = False
+        return False
+    return True
+
+def _start_main_loop_watch():
+    global _main_loop_watch_last, _main_loop_watch_armed
+    if _main_loop_watch_armed or _playback_trace_disabled():
+        return
+    _main_loop_watch_last = time.perf_counter()
+    _main_loop_watch_armed = True
+    try:
+        GLib.timeout_add(100, _main_loop_stall_watch)
+    except Exception:
+        _main_loop_watch_armed = False
+
+def _playback_trace_write(line):
+    if _playback_trace_disabled():
+        return
+    try:
+        conf = globals().get("CONFIG_DIR")
+        if conf:
+            log_path = os.path.join(conf, "playback-timing.log")
+            try:
+                if os.path.getsize(log_path) > 512 * 1024:
+                    os.truncate(log_path, 0)
+            except OSError:
+                pass
+            with open(log_path, "a") as f:
+                f.write(line + "\n")
+    except Exception:
+        pass
+    print(f"[PLAYBACK-TIMING] {line}", flush=True)
+
+def playback_trace_begin(source=""):
+    global _playback_trace_start, _playback_trace_last, _playback_trace_active
+    if _playback_trace_disabled():
+        return
+    with _playback_trace_lock:
+        _playback_trace_start = _playback_trace_last = time.perf_counter()
+        _playback_trace_active = True
+    _playback_trace_write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} playback start: {source} ===")
+    _start_main_loop_watch()
+
+def playback_trace(event, detail=""):
+    global _playback_trace_last
+    with _playback_trace_lock:
+        if not _playback_trace_active:
+            return
+        now = time.perf_counter()
+        total = now - _playback_trace_start
+        step = now - _playback_trace_last
+        _playback_trace_last = now
+    line = f"+{total:7.3f}s (step {step:6.3f}s) {event}"
+    if detail:
+        line += f" :: {detail}"
+    _playback_trace_write(line)
+
+def playback_trace_end(event, detail=""):
+    global _playback_trace_active
+    playback_trace(event, detail)
+    with _playback_trace_lock:
+        _playback_trace_active = False
+
+def playback_trace_step(event, detail="", begin_source=None):
+    """Log a playback step, starting a trace when no click-driven trace is running."""
+    if begin_source and not playback_trace_active():
+        playback_trace_begin(begin_source)
+    playback_trace(event, detail)
 
 gtk = ctypes.CDLL("libgtk-4.so.1")
 display = Gdk.Display.get_default()

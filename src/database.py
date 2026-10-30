@@ -405,8 +405,127 @@ def _under_user_data(path):
     return (str(Path.home() / ".local/share/popcorn-box") in text
             or ".var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box" in text)
 
+def _db_trace(label, started, detail=""):
+    """Add slow database work to the active playback timeline (no-op otherwise)."""
+    elapsed = time.perf_counter() - started
+    if elapsed < 0.1:
+        return
+    try:
+        from . import utils
+        message = f"{detail} {elapsed:.3f}s".strip()
+        utils.playback_trace(label, f"{message} [{threading.current_thread().name}]")
+    except Exception:
+        pass
+
+# Every data.json write is serialized on one background worker. Callers only
+# update the in-memory database and enqueue a snapshot; JSON encoding + fsync
+# (0.6-0.9 s for a 14 MB database) previously ran while holding _db_lock, which
+# stalled the GTK main loop for seconds whenever playback saved its state.
+_db_writer_cv = threading.Condition()
+_db_writer_queue = []
+_db_writer_thread = None
+_db_writer_stop = False
+_db_writer_busy = False
+
+
+def _db_writer_loop():
+    global _db_writer_busy
+    while True:
+        with _db_writer_cv:
+            while not _db_writer_queue and not _db_writer_stop:
+                _db_writer_cv.wait()
+            if not _db_writer_queue and _db_writer_stop:
+                return
+            target, payload = _db_writer_queue.pop(0)
+            _db_writer_busy = True
+        try:
+            _write_db_file(target, payload)
+        finally:
+            with _db_writer_cv:
+                _db_writer_busy = False
+                _db_writer_cv.notify_all()
+
+
+def _write_db_file(target, payload):
+    global _json_cache, _json_cache_valid
+    started = time.perf_counter()
+    if _db_corrupted:
+        return
+    # Mutations happen under _db_lock, so the snapshot is taken there; the
+    # encode+fsync below runs without it so readers and savers keep moving.
+    with _db_lock:
+        sanitize_started = time.perf_counter()
+        clean_data = _sanitize_for_json(payload)
+        sanitize_secs = time.perf_counter() - sanitize_started
+        if _json_cache is payload:
+            _json_cache = clean_data
+            _json_cache_valid = True
+            _invalidate_id_sets()
+        _ensure_db()
+    unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
+    temp_file = target.with_name(f"data{unique_suffix}")
+    dump_started = time.perf_counter()
+    try:
+        with open(temp_file, "w") as f:
+            json.dump(clean_data, f, indent=4, default=str)
+            f.flush()
+            written = f.tell()
+            os.fsync(f.fileno())
+        temp_file.replace(target)
+        _db_trace(
+            "db write (worker)",
+            started,
+            f"sanitize={sanitize_secs:.3f}s dump+fsync={time.perf_counter() - dump_started:.3f}s bytes={written}",
+        )
+    except Exception as e:
+        try:
+            if temp_file.exists():
+                temp_file.unlink()
+        except Exception:
+            pass
+        logging.error(f"Error writing database: {e}")
+        _db_trace("db write (worker) failed", started, str(e))
+
+
+def _enqueue_db_write(target, payload):
+    global _db_writer_thread
+    with _db_writer_cv:
+        # Each snapshot is the whole database, and callers keep mutating the
+        # same cached dict, so a newer snapshot of that object supersedes any
+        # queued one.
+        if _db_writer_queue and _db_writer_queue[-1][1] is payload:
+            _db_writer_queue[-1] = (target, payload)
+        else:
+            _db_writer_queue.append((target, payload))
+        if _db_writer_thread is None or not _db_writer_thread.is_alive():
+            _db_writer_thread = threading.Thread(
+                target=_db_writer_loop, daemon=True, name="DbWriteWorker"
+            )
+            _db_writer_thread.start()
+        _db_writer_cv.notify()
+
+
+def _flush_db_writes(timeout=5.0):
+    global _db_writer_stop
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _db_writer_cv:
+            if not _db_writer_queue and not _db_writer_busy:
+                break
+        time.sleep(0.02)
+    with _db_writer_cv:
+        _db_writer_stop = True
+        _db_writer_cv.notify_all()
+    thread = _db_writer_thread
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=3.0)
+
+atexit.register(_flush_db_writes)
+
+
 def _write_db(data):
     global _json_cache, _json_cache_valid
+    op_started = time.perf_counter()
     if _db_corrupted:
         print("Database read failed previously. Refusing to write to avoid overwriting with defaults.")
         return False
@@ -418,64 +537,55 @@ def _write_db(data):
     if _is_testing() and _under_user_data(target):
         print(f"[SECURITY] Blocked unittests from writing to user database: {target}")
         return False
+
+    if _is_testing():
+        with _db_lock:
+            lock_wait = time.perf_counter() - op_started
+            sanitize_started = time.perf_counter()
+            clean_data = _sanitize_for_json(data)
+            sanitize_secs = time.perf_counter() - sanitize_started
+            _json_cache = clean_data
+            _json_cache_valid = True
+            _invalidate_id_sets()
+            _ensure_db()
+            unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
+            temp_file = target.with_name(f"data{unique_suffix}")
+            dump_started = time.perf_counter()
+            try:
+                with open(temp_file, "w") as f:
+                    json.dump(clean_data, f, indent=4, default=str)
+                    # Flush to disk before the rename: without fsync a crash can
+                    # persist the rename while the contents are still unwritten,
+                    # leaving a truncated data.json behind.
+                    f.flush()
+                    os.fsync(f.fileno())
+                temp_file.replace(target)
+                _db_trace(
+                    "db write (sync)",
+                    op_started,
+                    f"lock_wait={lock_wait:.3f}s sanitize={sanitize_secs:.3f}s dump+fsync={time.perf_counter() - dump_started:.3f}s",
+                )
+                return True
+            except Exception as e:
+                try:
+                    if temp_file.exists():
+                        temp_file.unlink()
+                except Exception:
+                    pass
+                _json_cache_valid = False
+                logging.error(f"Error writing database: {e}")
+                return False
+
     with _db_lock:
-        clean_data = _sanitize_for_json(data)
-        _json_cache = clean_data
+        lock_wait = time.perf_counter() - op_started
+        # Point readers at the live dict immediately; the writer swaps in a
+        # sanitized copy once it actually encodes the file.
+        _json_cache = data
         _json_cache_valid = True
         _invalidate_id_sets()
-
-        # If called from the GTK main thread in normal usage, offload fsync to
-        # background thread so GUI responsiveness is never stalled by disk I/O.
-        if not _is_testing() and threading.current_thread() is threading.main_thread():
-            def _bg_fsync_worker(target_file, payload):
-                with _db_lock:
-                    _ensure_db()
-                    unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
-                    temp_file = target_file.with_name(f"data{unique_suffix}")
-                    try:
-                        with open(temp_file, "w") as f:
-                            json.dump(payload, f, indent=4, default=str)
-                            f.flush()
-                            os.fsync(f.fileno())
-                        temp_file.replace(target_file)
-                    except Exception as e:
-                        try:
-                            if temp_file.exists():
-                                temp_file.unlink()
-                        except Exception:
-                            pass
-                        logging.error(f"Error writing database in background: {e}")
-
-            threading.Thread(
-                target=_bg_fsync_worker,
-                args=(target, clean_data),
-                daemon=True,
-                name="DbFsyncWorker",
-            ).start()
-            return True
-
-        _ensure_db()
-        unique_suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
-        temp_file = target.with_name(f"data{unique_suffix}")
-        try:
-            with open(temp_file, "w") as f:
-                json.dump(clean_data, f, indent=4, default=str)
-                # Flush to disk before the rename: without fsync a crash can
-                # persist the rename while the contents are still unwritten,
-                # leaving a truncated data.json behind.
-                f.flush()
-                os.fsync(f.fileno())
-            temp_file.replace(target)
-            return True
-        except Exception as e:
-            try:
-                if temp_file.exists():
-                    temp_file.unlink()
-            except Exception:
-                pass
-            _json_cache_valid = False
-            logging.error(f"Error writing database: {e}")
-            return False
+    _enqueue_db_write(target, data)
+    _db_trace("db write queued", op_started, f"lock_wait={lock_wait:.3f}s")
+    return True
 
 # --- Favorites ---
 
@@ -834,6 +944,7 @@ def get_continue_watching_item(item_id):
 
 def save_continue_watching(item, sync_to_remote=True):
     """Save or update an in-progress item in continue_watching."""
+    op_started = time.perf_counter()
     if not item or not isinstance(item, dict):
         return
     item_id = item.get("id") or item.get("imdb_id")
@@ -844,6 +955,7 @@ def save_continue_watching(item, sync_to_remote=True):
         _cw_write_gen += 1
     updated_item = None
     with _db_lock:
+        lock_wait = time.perf_counter() - op_started
         db = _read_db()
         cw = db.setdefault("continue_watching", [])
         
@@ -928,12 +1040,12 @@ def save_continue_watching(item, sync_to_remote=True):
                 updated_item["provider"] = anames[0]
 
         if "last_watched" not in item:
-            import time
             updated_item["last_watched"] = int(time.time())
 
         new_cw.insert(0, updated_item)
         db["continue_watching"] = new_cw[:100]
         _write_db(db)
+    _db_trace("save_continue_watching", op_started, f"lock_wait={lock_wait:.3f}s")
 
     if updated_item and sync_to_remote and not _is_testing():
         try:
@@ -1101,11 +1213,14 @@ def get_setting(key, default=None):
     return _read_db().get("settings", {}).get(key, default)
 
 def set_setting(key, value):
+    op_started = time.perf_counter()
     with _db_lock:
+        lock_wait = time.perf_counter() - op_started
         db = _read_db()
         settings = db.setdefault("settings", {})
         settings[key] = value
         _write_db(db)
+    _db_trace(f"set_setting {key}", op_started, f"lock_wait={lock_wait:.3f}s")
 
 def is_adult_content_hidden():
     return get_setting("hide_adult_content", True)

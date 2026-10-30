@@ -246,7 +246,8 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertEqual(mpv_props.get("demuxer-max-bytes"), 256 * 1024 * 1024)
         self.assertEqual(mpv_props.get("demuxer-max-back-bytes"), 64 * 1024 * 1024)
         self.assertEqual(mpv_props.get("cache-pause-wait"), 15.0)
-        self.assertEqual(mpv_props.get("cache-pause-initial"), "yes")
+        # Startup must not wait for the refill gate to fill.
+        self.assertEqual(mpv_props.get("cache-pause-initial"), "no")
         self.assertEqual(mpv_props.get("cache-pause"), "yes")
         self.assertEqual(mpv_props.get("cache"), "yes")
 
@@ -331,11 +332,13 @@ class TestStreamHeaders(unittest.TestCase):
         win = MagicMock()
         win._stream_loading_watchdog_id = None
         win.stream_request_id = 42
+        win.stream_queue = [{"url": "http://example.com/1"}]
+        win.stream_queue_index = 0
 
         # Start watchdog
         with patch.object(GLib, "timeout_add_seconds", return_value=999) as mock_timeout:
             CineWindow._start_stream_loading_watchdog(win, 42)
-            mock_timeout.assert_called_once_with(30, win._on_stream_loading_timeout, 42)
+            mock_timeout.assert_called_once_with(30, win._on_stream_loading_timeout, 42, 30)
             self.assertEqual(win._stream_loading_watchdog_id, 999)
 
         # Cancel watchdog
@@ -343,6 +346,43 @@ class TestStreamHeaders(unittest.TestCase):
             CineWindow._cancel_stream_loading_watchdog(win)
             mock_remove.assert_called_once_with(999)
             self.assertIsNone(win._stream_loading_watchdog_id)
+
+    def test_stream_loading_watchdog_uses_longer_timeout_for_torrents(self):
+        from src.window import CineWindow
+        from gi.repository import GLib
+        win = MagicMock()
+        win._stream_loading_watchdog_id = None
+        win.stream_request_id = 7
+        win.stream_queue = [{"url": "magnet:?xt=urn:btih:deadbeef"}]
+        win.stream_queue_index = 0
+
+        with patch.object(GLib, "timeout_add_seconds", return_value=999) as mock_timeout:
+            CineWindow._start_stream_loading_watchdog(win, 7)
+            mock_timeout.assert_called_once_with(180, win._on_stream_loading_timeout, 7, 180)
+
+    @patch("src.player.play_magnet")
+    def test_torrent_progress_extends_loading_watchdog(self, mock_play_magnet):
+        from src.window import CineWindow
+        win = MagicMock()
+        win.stream_request_id = 0
+        win.stream_queue = [{"url": "magnet:?xt=urn:btih:deadbeef"}]
+        win.stream_queue_index = 0
+        win.stream_queue_title = "Some Movie"
+        win._start_stream_loading_watchdog = MagicMock()
+
+        CineWindow._play_current_stream_from_queue(win, 0)
+        self.assertEqual(win._start_stream_loading_watchdog.call_count, 1)
+        cb = mock_play_magnet.call_args.kwargs["progress_callback"]
+
+        cb({"status": "Verifying / Buffering...", "downloaded": 1024, "bufferedFromStart": 1024})
+        self.assertEqual(win._start_stream_loading_watchdog.call_count, 2)
+
+        cb({"status": "Verifying / Buffering...", "downloaded": 1024, "bufferedFromStart": 1024})
+        self.assertEqual(win._start_stream_loading_watchdog.call_count, 2)
+
+        cb({"status": "Verifying / Buffering...", "downloaded": 2048, "bufferedFromStart": 2048})
+        self.assertEqual(win._start_stream_loading_watchdog.call_count, 3)
+        win._start_stream_loading_watchdog.assert_called_with(0)
 
     def test_stream_loading_watchdog_timeout_triggers_failover(self):
         from src.window import CineWindow

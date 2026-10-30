@@ -46,6 +46,11 @@ from .save_session import (
 from .utils import (
     logger,
     debug_log,
+    playback_trace_begin,
+    playback_trace,
+    playback_trace_end,
+    playback_trace_active,
+    playback_trace_step,
     get_mouse_bindings,
     parse_nonrepeat_bindings,
     is_local_path,
@@ -102,6 +107,16 @@ from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject, Pango
 DISCOVER_ROW_CARD_LIMIT = 30
 MAX_ADDON_SEARCH_PAGES = 500
 
+STREAM_LOADING_TIMEOUT_SECONDS = 30
+# Torrents must find peers before any bytes arrive, so metadata discovery
+# routinely outlasts the HTTP-oriented 30s window.
+TORRENT_LOADING_TIMEOUT_SECONDS = 180
+
+# Resuming only a few seconds in skips the intro, and since the position is
+# saved every few seconds an aborted start makes the next attempt resume even
+# later. Only a substantive position is worth resuming from.
+RESUME_MIN_POSITION_SECONDS = 30
+
 HOME_ALLOWED_MEDIA_TYPES = {
     "movie", "movies", "film", "films",
     "series", "tvshow", "tv_series", "tvshows",
@@ -116,6 +131,14 @@ HOME_EXCLUDED_MEDIA_TYPES = {
 
 def _streams_match(s1, s2):
     return api.streams_match(s1, s2)
+
+def _is_torrent_stream(stream):
+    if not isinstance(stream, dict):
+        return False
+    url = stream.get("url") or stream.get("magnet")
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        return False
+    return bool(url or stream.get("hash") or stream.get("infoHash"))
 
 def _is_event_set(event):
     if event is None:
@@ -1184,6 +1207,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
             def make_ep_cb(episode_item, episode_num):
                 def cb(b):
+                    playback_trace_step("episode clicked", f"episode={episode_num}", begin_source="episode clicked")
                     if self.is_collection:
                         self.selected_video = episode_item
                         self.selected_episode = episode_num
@@ -3052,6 +3076,10 @@ class MovieDetailsPage(Gtk.Overlay):
                 f"[STREAM DEBUG] UI batch applied generation={current_gen} cards={len(self.torrents)} "
                 f"cached={is_cached} complete={is_complete} background={background}"
             )
+            playback_trace(
+                "streams batch applied",
+                f"cards={len(self.torrents)} cached={is_cached} complete={is_complete}",
+            )
             self.update_quality_dropdown()
             self.update_continue_btn()
 
@@ -3089,6 +3117,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
             if ready_for_auto_play and getattr(self, '_auto_play_on_streams_loaded', False):
                 self._auto_play_on_streams_loaded = False
+                playback_trace("auto-play triggered (streams ready)", f"cards={len(self.torrents)}")
                 GLib.idle_add(self.on_watch_clicked, None)
             elif is_complete and not self.torrents and getattr(self, '_auto_play_on_streams_loaded', False):
                 self._auto_play_on_streams_loaded = False
@@ -3136,11 +3165,13 @@ class MovieDetailsPage(Gtk.Overlay):
                 if (getattr(self, '_auto_play_next', False) or getattr(self, '_auto_play_on_streams_loaded', False)) and getattr(self, 'torrents', None):
                     self._auto_play_next = False
                     self._auto_play_on_streams_loaded = False
+                    playback_trace("fallback auto-play after 2.5s wait", f"cards={len(self.torrents)}")
                     GLib.idle_add(self.on_watch_clicked, None)
                 return False
             GLib.timeout_add(2500, _fallback_autoplay_check)
 
         def fetch():
+            playback_trace("stream fetch worker start", f"force={force} background={background}")
             try:
                 if current_abort_event and current_abort_event.is_set():
                     print(f"[STREAM DEBUG] worker not started generation={current_gen}: already cancelled")
@@ -3542,6 +3573,7 @@ class MovieDetailsPage(Gtk.Overlay):
             return
 
         print(f"[Trailer] Playing trailer: {trailer_url}")
+        playback_trace_step("trailer clicked", begin_source="trailer clicked")
 
         stub_title = self.movie_stub.get('name') or self.movie_stub.get('title') if hasattr(self, 'movie_stub') else ""
         details_title = self.movie_details.get('name') or self.movie_details.get('title') if (hasattr(self, 'movie_details') and self.movie_details) else ""
@@ -3598,6 +3630,7 @@ class MovieDetailsPage(Gtk.Overlay):
             player.stop_engine_explicit(h)
 
     def on_watch_clicked(self, btn=None):
+        playback_trace_step("watch clicked", begin_source="watch clicked")
         # Dedicated network priority: abort other stream fetching and background work immediately
         if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
             self.stream_abort_event.set()
@@ -3715,11 +3748,14 @@ class MovieDetailsPage(Gtk.Overlay):
                         self.progress_label.set_text("Loading streams to play...")
                     if self.window:
                         self.window.show_player_loading("Loading streams to play...", media_title)
+                    playback_trace("waiting for streams (auto-play armed)")
                     return
                 else:
                     if self.window and hasattr(self.window, '_show_toast'):
                         self.window._show_toast("No streams match active filter.")
                     return
+
+        playback_trace("stream chosen", str(self.selected_torrent.get("title") or self.selected_torrent.get("name") or "")[:80])
 
         # Remember the stream and playback preferences without making the Play
         # click wait for several fsync-backed JSON database writes.
@@ -3890,6 +3926,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     if v_title:
                         media_title = v_title
             stream_subs = self.selected_torrent.get("subtitles") if hasattr(self, "selected_torrent") and isinstance(self.selected_torrent, dict) else None
+            playback_trace("failover queue ready", f"{len(queue)} streams")
             self.window.play_stream_with_failover(
                 queue,
                 initial_index=init_idx,
@@ -4075,6 +4112,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def _start_streaming(self, magnet, file_index):
         if not magnet: return
+        playback_trace_step("streaming selected stream", begin_source="stream row click")
         if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
             self.stream_abort_event.set()
         self._fetching_streams = False
@@ -4123,6 +4161,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
         if not is_trailer:
             database.save_working_stream(primary_id, season, episode, st_obj)
+            playback_trace("saved working stream (sync)")
             self.remembered_working_stream = st_obj
 
             if self.window:
@@ -4146,7 +4185,13 @@ class MovieDetailsPage(Gtk.Overlay):
                     "selected_torrent": st_obj,
                     "is_trailer": False,
                 }
+                # Clicking a stream row starts that title from the beginning;
+                # do not carry a resume point from an earlier request.
+                self.window._pending_seek_position = None
+                self.window._request_seek_position = None
+                self.window._stream_media_started = False
                 database.save_continue_watching(self.window._current_playing_item)
+                playback_trace("saved continue watching (sync)")
                 self.update_continue_btn()
         elif self.window:
             self.window._current_playing_item = {
@@ -4604,6 +4649,8 @@ class CineWindow(Adw.ApplicationWindow):
         self.next_ep_auto_triggered: bool = False
         self._next_episode_transition_in_progress: bool = False
         self._pending_seek_position = None
+        self._request_seek_position = None
+        self._stream_media_started = False
         self._next_ep_prefetch_lock = threading.Lock()
         self.stream_queue = []
         self.stream_queue_index = 0
@@ -4615,6 +4662,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._hls_session_id = None
         self._hls_time_offset = 0.0
         self._hls_total_duration = None
+        self._hls_prep_url = None
         self._pending_subtitle_request = None
         self._subtitles_configured_for_file = False
         self._youtube_safe_mode_active: bool = False
@@ -5816,6 +5864,14 @@ class CineWindow(Adw.ApplicationWindow):
                 curr_time = round(curr_time, 1)
                 duration = float(getattr(self.mpv, "duration", 0) or 0)
 
+            if (
+                curr_time >= 0.1
+                and getattr(self, "_stream_media_started", False)
+                and not getattr(self, "_playback_trace_first_frame", False)
+            ):
+                self._playback_trace_first_frame = True
+                playback_trace_end("first frames on screen", f"time-pos={curr_time:.2f}")
+
             if update_bar and curr_time == self.prev_prog_time:
                 return
 
@@ -5836,6 +5892,13 @@ class CineWindow(Adw.ApplicationWindow):
                 self.time_elapsed_label.props.label = format_time(curr_time)
 
             is_trailer = self._is_playing_trailer()
+            # While a new stream is being prepared mpv may still report the
+            # previous media's clock. Those ticks must not overwrite the
+            # upcoming item's resume point or mark the new stream as working.
+            media_loading = (
+                getattr(self, "is_loading_stream", False) is True
+                and getattr(self, "_stream_media_started", False) is not True
+            )
             auto_play_enabled = settings.get_boolean("auto-play-next")
             # Warm the next episode's streams just before this one ends so the
             # automatic transition does not sit waiting on streaming providers.
@@ -5863,13 +5926,13 @@ class CineWindow(Adw.ApplicationWindow):
                 self._set_next_episode_banner_visible(False)
 
             # Track Continue Watching progress and mark verified working stream
-            if curr_time >= 0.1 and getattr(self, "stream_queue", None) and not is_trailer:
+            if curr_time >= 0.1 and not media_loading and getattr(self, "stream_queue", None) and not is_trailer:
                 last_marked = getattr(self, "_last_marked_stream_idx", None)
                 if last_marked != self.stream_queue_index:
                     self._last_marked_stream_idx = self.stream_queue_index
                     self._mark_current_stream_as_working()
 
-            if getattr(self, "_current_playing_item", None) and not is_trailer:
+            if getattr(self, "_current_playing_item", None) and not is_trailer and not media_loading:
                 prog = min(1.0, max(0.0, curr_time / duration)) if duration > 0 else 0.0
                 self._current_playing_item["position"] = curr_time
                 self._current_playing_item["duration"] = duration
@@ -6741,12 +6804,15 @@ class CineWindow(Adw.ApplicationWindow):
     def _setup_observers(self):
         @self.mpv.event_callback("start-file")
         def on_start_file(_event):
+            playback_trace("mpv start-file")
             idle_add_once(self.spinner.set_visible, True)
             self.loaded_path = str(self.mpv.path)
             self._subtitles_configured_for_file = False
+            self._stream_media_started = True
 
         @self.mpv.event_callback("playback-restart")
         def on_playback_restart(_event):
+            playback_trace("mpv playback-restart")
             def update():
                 self.hide_player_loading()
                 self.spinner.set_visible(False)
@@ -6754,8 +6820,13 @@ class CineWindow(Adw.ApplicationWindow):
                     self.gl_area.queue_render()
             idle_add_once(update)
 
+        @self.mpv.event_callback("video-reconfig")
+        def on_video_reconfig(_event):
+            playback_trace("mpv video-reconfig")
+
         @self.mpv.event_callback("file-loaded")
         def on_files_loaded(_event):
+            playback_trace("mpv file-loaded")
             def update():
                 try:
                     self._next_episode_transition_in_progress = False
@@ -6805,6 +6876,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         @self.mpv.event_callback("end-file")
         def on_end_file(event):
+            playback_trace("mpv end-file")
             try:
                 info = event.as_dict()
                 reason = info.get("reason")
@@ -11763,6 +11835,7 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _on_continue_watching_clicked(self, item_data):
         if not item_data: return
+        playback_trace_step("continue watching clicked", str(item_data.get("title") or "")[:60], begin_source="continue watching clicked")
         # Each click supersedes any in-flight stale-stream refresh. Without this,
         # a slow refresh for a previously clicked card can start playing after
         # the user has already chosen something else.
@@ -11885,7 +11958,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         self._current_playing_item = dict(item_data)
         
-        self._pending_seek_position = position if position > 5.0 else None
+        self._pending_seek_position = position if position > RESUME_MIN_POSITION_SECONDS else None
         
         curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else "library"
         prev_page = curr_page or "library"
@@ -14368,6 +14441,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.main_stack.set_visible_child_name("person")
 
     def show_player_loading(self, text="Fetching metadata...", title=None):
+        playback_trace("show_player_loading", str(text or ""))
         # Set transition state synchronously. The idle-active observer can run
         # before the queued UI callback and otherwise briefly reveal the player
         # welcome page while a stream is being prepared.
@@ -14375,6 +14449,7 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "start_page") and hasattr(self.start_page, "set_visible"):
             self.start_page.set_visible(False)
         self._cancel_all_background_fetching()
+        playback_trace("background fetching cancelled")
         curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
         if curr_page and curr_page != "player":
             self.previous_page_before_player = curr_page
@@ -14382,6 +14457,7 @@ class CineWindow(Adw.ApplicationWindow):
         GLib.idle_add(self._show_player_loading_ui, text, title)
 
     def _show_player_loading_ui(self, text, title=None):
+        playback_trace("loading screen shown (idle latency)")
         curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
         if curr_page and curr_page != "player":
             self.previous_page_before_player = curr_page
@@ -14467,10 +14543,21 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _start_stream_loading_watchdog(self, request_id):
         self._cancel_stream_loading_watchdog()
+        queue = getattr(self, "stream_queue", None)
+        idx = getattr(self, "stream_queue_index", 0)
+        current = None
+        if isinstance(queue, list) and isinstance(idx, int) and 0 <= idx < len(queue):
+            current = queue[idx]
+        timeout = (
+            TORRENT_LOADING_TIMEOUT_SECONDS
+            if _is_torrent_stream(current)
+            else STREAM_LOADING_TIMEOUT_SECONDS
+        )
         self._stream_loading_watchdog_id = GLib.timeout_add_seconds(
-            30,
+            timeout,
             self._on_stream_loading_timeout,
-            request_id
+            request_id,
+            timeout
         )
 
     def _cancel_stream_loading_watchdog(self):
@@ -14482,7 +14569,7 @@ class CineWindow(Adw.ApplicationWindow):
                 pass
             self._stream_loading_watchdog_id = None
 
-    def _on_stream_loading_timeout(self, request_id):
+    def _on_stream_loading_timeout(self, request_id, timeout=STREAM_LOADING_TIMEOUT_SECONDS):
         self._stream_loading_watchdog_id = None
         if request_id != getattr(self, "stream_request_id", 0):
             return GLib.SOURCE_REMOVE
@@ -14492,9 +14579,11 @@ class CineWindow(Adw.ApplicationWindow):
             return GLib.SOURCE_REMOVE
 
         logger.warning(
-            f"[FAILOVER] Stream loading timed out after 30 seconds for stream {self.stream_queue_index + 1}/{len(self.stream_queue)}. Advancing to next stream..."
+            f"[FAILOVER] Stream loading timed out after {timeout} seconds for stream {self.stream_queue_index + 1}/{len(self.stream_queue)}. Advancing to next stream..."
         )
-        self._show_toast(_("Stream timed out after 30s. Trying next stream..."))
+        self._show_toast(
+            _("Stream timed out after {seconds}s. Trying next stream...").format(seconds=timeout)
+        )
         self._try_next_stream_in_queue()
         return GLib.SOURCE_REMOVE
 
@@ -14563,6 +14652,12 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue_index = 0
 
     def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None, audio_url=None, item_id=None, media_type=None, season=None, episode=None, is_download=False):
+        playback_trace_step(
+            "_play_stream",
+            f"{str(title or '')[:60]} url={str(url or '')[:100]}",
+            begin_source="_play_stream",
+        )
+        self._playback_trace_first_frame = False
         # Don't carry stale status/error toasts over to the next video. The
         # template child can be an unbound descriptor on partially constructed
         # windows, so verify the widget actually exposes dismiss_all().
@@ -14580,6 +14675,11 @@ class CineWindow(Adw.ApplicationWindow):
 
         if not preserve_queue:
             self._clear_stream_failover()
+            # A standalone load starts a fresh resume decision. Failovers keep
+            # the request's frozen position (preserve_queue=True).
+            self._pending_seek_position = None
+            self._request_seek_position = None
+            self._stream_media_started = False
         if getattr(self, "_is_hls_proxy_active", False):
             old_sess = getattr(self, "_hls_session_id", None)
             if old_sess:
@@ -14847,18 +14947,21 @@ class CineWindow(Adw.ApplicationWindow):
                 else:
                     # Marginal hosts underrun mpv's default 1 s resume
                     # threshold constantly, causing stop/start buffering. A
-                    # larger cache and a long refill gate trade a slower
-                    # start/seek for steady playback.
+                    # large cache and a long refill gate keep playback steady.
+                    # cache-pause-initial stays off: with it on, mpv holds the
+                    # first frame until cache-pause-wait (15 s) is pre-read,
+                    # which made every fresh start look frozen for 5-10 s.
                     self.mpv["demuxer-readahead-secs"] = 60
                     self.mpv["demuxer-max-bytes"] = 256 * 1024 * 1024
                     self.mpv["demuxer-max-back-bytes"] = 64 * 1024 * 1024
                     self.mpv["cache-pause-wait"] = 15.0
-                    self.mpv["cache-pause-initial"] = "yes"
+                    self.mpv["cache-pause-initial"] = "no"
                 self.mpv["cache"] = "yes"
                 self.mpv["cache-pause"] = "yes"
             except Exception:
                 pass
 
+        playback_trace("mpv options configured")
         is_playing_tr = self._is_playing_trailer() or is_trailer
         self.next_ep_dismissed = is_playing_tr
         self.next_ep_auto_triggered = is_playing_tr
@@ -14881,26 +14984,51 @@ class CineWindow(Adw.ApplicationWindow):
             self._pending_seek_position = None
             if seek_target is None:
                 seek_target = pending_seek
-        if seek_target is None and getattr(self, "_current_playing_item", None):
+        if seek_target is None and getattr(self, "_stream_media_started", False) is True and getattr(self, "_current_playing_item", None):
+            # A failover within the same request resumes from the position the
+            # current media actually reached.
             pos = float(self._current_playing_item.get("position") or 0.0)
             prog = float(self._current_playing_item.get("progress") or 0.0)
-            if pos > 5.0 and prog < 0.92:
+            if pos > RESUME_MIN_POSITION_SECONDS and prog < 0.92:
                 seek_target = pos
+        if seek_target is None:
+            # Otherwise only the position frozen when the request started can
+            # be trusted; live state may still describe the previous media.
+            request_seek = getattr(self, "_request_seek_position", None)
+            if isinstance(request_seek, (int, float)) and float(request_seek) > RESUME_MIN_POSITION_SECONDS:
+                seek_target = float(request_seek)
 
         is_hls = bool(
             url and isinstance(url, str)
             and any(x in url.lower() for x in [".m3u8", "/hls/", "manifest.m3u8"])
         )
 
+        self._hls_prep_url = url if is_hls else None
+
         if is_hls and not is_trailer:
             from . import hls_proxy
             req_id = getattr(self, "stream_request_id", 0)
             target_offset = float(seek_target) if (seek_target and float(seek_target) > 5.0) else 0.0
+            # The proxy is only needed to make fMP4 seeking reliable. A fresh
+            # start plays the original URL immediately while the manifest is
+            # probed in the background; waiting for that probe added the
+            # provider's full playlist round-trip to every first frame.
+            fast_start = target_offset <= 5.0
 
             def _on_hls_prepared(is_fmp4, session_id, playback_url, total_dur, actual_offset, is_blocked=False):
+                playback_trace("hls prepared", f"fmp4={is_fmp4} blocked={is_blocked} fast_start={fast_start}")
                 if req_id != getattr(self, "stream_request_id", 0):
                     return
+                # Failover keeps the same request id, so a stale probe from the
+                # previous candidate must not touch the stream now loading.
+                if getattr(self, "_hls_prep_url", None) != url:
+                    return
                 if is_blocked or not playback_url:
+                    if fast_start:
+                        # The direct load is already in flight; a failed probe
+                        # must not tear it down. mpv's own error path advances.
+                        logger.warning(f"[HLS] Manifest probe failed/blocked (is_blocked={is_blocked}), keeping direct load")
+                        return
                     logger.warning(f"[HLS] Stream preparation failed/blocked (is_blocked={is_blocked}), advancing queue")
                     self._is_hls_proxy_active = False
                     self._hls_session_id = None
@@ -14909,13 +15037,24 @@ class CineWindow(Adw.ApplicationWindow):
                     self._try_next_stream_in_queue()
                     return
                 if is_fmp4 and session_id:
+                    if fast_start and is_channel_context:
+                        # Live playlists refresh continuously; a sliced VOD
+                        # session would go stale. Direct playback needs no seek.
+                        playback_trace("hls proxy skipped for live channel")
+                        return
                     self._is_hls_proxy_active = True
                     self._hls_session_id = session_id
                     self._hls_time_offset = actual_offset
                     self._hls_total_duration = total_dur
                     if total_dur and total_dur > 0:
                         self._update_duration(total_dur)
+                    if fast_start:
+                        # Direct playback is already running; keep the session
+                        # so the first seek switches to the sliced playlist.
+                        playback_trace("hls proxy attached for seeks")
+                        return
                     self._seek_after_loaded = None
+                    playback_trace("loadfile issue (hls proxy)")
                     try:
                         self.mpv.loadfile(playback_url, "replace")
                     except Exception as e:
@@ -14925,7 +15064,10 @@ class CineWindow(Adw.ApplicationWindow):
                     self._hls_session_id = None
                     self._hls_time_offset = 0.0
                     self._hls_total_duration = None
+                    if fast_start:
+                        return
                     target_url = playback_url or url
+                    playback_trace("loadfile issue (hls)", str(target_url)[:100])
                     if target_offset > 5.0:
                         try:
                             self.mpv.command("loadfile", target_url, "replace", -1, f"start={target_offset:.2f}")
@@ -14934,6 +15076,11 @@ class CineWindow(Adw.ApplicationWindow):
                     else:
                         self.mpv.loadfile(target_url, "replace")
 
+            if fast_start:
+                self._seek_after_loaded = None
+                playback_trace("loadfile issue (hls fast start)", str(url)[:100])
+                self.mpv.loadfile(url, "replace")
+            playback_trace("hls prepare start", str(url)[:100])
             hls_proxy.prepare_hls_stream_async(
                 url,
                 headers=all_headers,
@@ -14948,6 +15095,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._prefetch_next_episode_streams()
             return
 
+        playback_trace("loadfile issue", str(url)[:100])
         if seek_target and float(seek_target) > 5.0 and not is_trailer:
             try:
                 self.mpv.command("loadfile", url, "replace", -1, f"start={float(seek_target):.2f}")
@@ -14962,6 +15110,7 @@ class CineWindow(Adw.ApplicationWindow):
         else:
             self._seek_after_loaded = None
             self.mpv.loadfile(url, "replace")
+        playback_trace("loadfile returned")
 
         self.mpv.pause = False
         self.is_inactive = False
@@ -15183,7 +15332,7 @@ class CineWindow(Adw.ApplicationWindow):
                 # list is already ranked, so a few gives mpv usable choices.
                 for idx, s in enumerate(subs[:3]):
                     url = s.get("url")
-                    lang = s.get("lang", "en")
+                    lang = s.get("lang") or "und"
                     if url:
                         clean_id = str(imdb_id or extracted_title or 'sub').replace(":", "_").replace("/", "_").replace(" ", "_")
                         filename = f"{clean_id}_{int(time.time())}_{idx}_{lang}.srt"
@@ -15191,7 +15340,9 @@ class CineWindow(Adw.ApplicationWindow):
                         if path:
                             downloaded_count += 1
                             logger.info(f"[SUBS] Downloaded subtitle #{idx}: {lang} -> {path}")
-                            def _queue(p=path, l=lang, is_first=(idx == 0)):
+                            # Select the first track that actually downloaded;
+                            # an earlier preferred-language download may fail.
+                            def _queue(p=path, l=lang, is_first=(downloaded_count == 1)):
                                 if current_fetch_id != self._subtitle_fetch_id:
                                     return False
                                 if not hasattr(self, 'pending_subtitles'):
@@ -15246,11 +15397,14 @@ class CineWindow(Adw.ApplicationWindow):
             logger.error(f"[SUBS] Failed to add pending subtitles: {e}")
 
     def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page=None, season=None, episode=None, imdb_id=None, media_type=None, stream_subtitles=None):
+        playback_trace_step("play_stream_with_failover", str(title or "")[:80], begin_source="play_stream_with_failover")
         self._cancel_all_background_fetching()
         # Mark playback as loading immediately. This prevents the idle-state
         # observer from briefly restoring the player’s Open screen while the
         # playback request is being prepared.
         self.is_loading_stream = True
+        self._stream_media_started = False
+        self._request_seek_position = None
         if season is not None:
             self.selected_season = season
         if episode is not None:
@@ -15308,6 +15462,7 @@ class CineWindow(Adw.ApplicationWindow):
         item_title = details.get("title") or stub.get("title") or details.get("name") or stub.get("name") or title
         target_id = imdb_id or details.get("id") or stub.get("id")
         existing_cw = database.get_continue_watching_item(target_id) if target_id else None
+        playback_trace("database lookups done")
         # Continue Watching keeps one row per series, so the stored position can
         # belong to a different episode than the one being started. Only resume
         # when the row is for the same episode; otherwise a fresh episode would
@@ -15336,8 +15491,14 @@ class CineWindow(Adw.ApplicationWindow):
         pending_seek = getattr(self, "_pending_seek_position", None)
         if pending_seek is not None:
             saved_pos = max(saved_pos, float(pending_seek))
-        elif saved_pos > 5.0:
+        elif saved_pos > RESUME_MIN_POSITION_SECONDS:
             self._pending_seek_position = saved_pos
+        # Freeze the resume point for this request: `_current_playing_item`
+        # keeps receiving the previous media's ticks while a torrent engine is
+        # starting, so `_play_stream` may only seek to this snapshot.
+        self._request_seek_position = (
+            saved_pos if saved_pos > RESUME_MIN_POSITION_SECONDS else None
+        )
 
         import time
         self._last_marked_stream_idx = None
@@ -15429,6 +15590,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue_media_type = media_type or (getattr(page, 'media_type', 'movie') if page else 'movie')
         self.stream_queue_item_id = imdb_id or target_id
 
+        playback_trace("queue prepared")
         self._play_current_stream_from_queue(self.stream_request_id)
 
     def _play_current_stream_from_queue(self, request_id=None):
@@ -15439,6 +15601,10 @@ class CineWindow(Adw.ApplicationWindow):
         if not getattr(self, 'stream_queue', None) or len(self.stream_queue) == 0:
             return
 
+        playback_trace(
+            "connecting stream",
+            f"{getattr(self, 'stream_queue_index', 0) + 1}/{len(self.stream_queue)}",
+        )
         from . import api
         while self.stream_queue_index < len(self.stream_queue):
             cand = self.stream_queue[self.stream_queue_index]
@@ -15522,6 +15688,7 @@ class CineWindow(Adw.ApplicationWindow):
             if file_index is None and isinstance(torrent, dict):
                 file_index = torrent.get("fileIdx")
             failover_handled = [False]
+            last_progress_bytes = [0]
 
             def progress_callback(stats):
                 if request_id != getattr(self, "stream_request_id", 0):
@@ -15550,6 +15717,19 @@ class CineWindow(Adw.ApplicationWindow):
 
                 text = self.format_stream_stats(stats)
                 self.update_player_loading(text)
+
+                # A slow torrent that is still moving bytes should not be
+                # abandoned at the deadline; push the failover timer back.
+                try:
+                    progressed = max(
+                        int(stats.get("downloaded") or 0),
+                        int(stats.get("bufferedFromStart") or 0)
+                    )
+                except (TypeError, ValueError):
+                    progressed = 0
+                if progressed > last_progress_bytes[0]:
+                    last_progress_bytes[0] = progressed
+                    self._start_stream_loading_watchdog(request_id)
             page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
             q_season = getattr(self, "stream_queue_season", None)
             if q_season is None and getattr(self, "_current_playing_item", None):
@@ -15577,6 +15757,7 @@ class CineWindow(Adw.ApplicationWindow):
             if not q_item_id and page:
                 q_item_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0]
 
+            playback_trace("torrent engine start", str(magnet)[:80])
             player.play_magnet(
                 magnet,
                 file_index=file_index,
@@ -16512,8 +16693,16 @@ class CineWindow(Adw.ApplicationWindow):
         return True
 
     def _close_player(self, *args, remove_torrent=True):
+        # Capture this before the reset below: while the requested stream has
+        # not started, mpv is still playing the previous media.
+        media_loading = (
+            getattr(self, "is_loading_stream", False) is True
+            and getattr(self, "_stream_media_started", False) is not True
+        )
         self._next_episode_transition_in_progress = False
         self._pending_seek_position = None
+        self._request_seek_position = None
+        self._stream_media_started = False
         self._youtube_safe_mode_active = False
         self._youtube_safe_mode_url = None
         self._youtube_safe_mode_video_url = None
@@ -16545,12 +16734,16 @@ class CineWindow(Adw.ApplicationWindow):
             curr_season = self._current_playing_item.get("season")
             if hasattr(self, "mpv"):
                 try:
-                    curr_pos = float(self.mpv.time_pos or 0.0)
-                    curr_dur = float(self.mpv.duration or 0.0)
-                    if getattr(self, "_is_hls_proxy_active", False):
-                        curr_pos += getattr(self, "_hls_time_offset", 0.0)
-                        if getattr(self, "_hls_total_duration", None):
-                            curr_dur = self._hls_total_duration
+                    if media_loading:
+                        curr_pos = 0.0
+                        curr_dur = 0.0
+                    else:
+                        curr_pos = float(self.mpv.time_pos or 0.0)
+                        curr_dur = float(self.mpv.duration or 0.0)
+                        if getattr(self, "_is_hls_proxy_active", False):
+                            curr_pos += getattr(self, "_hls_time_offset", 0.0)
+                            if getattr(self, "_hls_total_duration", None):
+                                curr_dur = self._hls_total_duration
                     if curr_pos <= 0:
                         curr_pos = float(self._current_playing_item.get("position") or 0.0)
                     if curr_dur <= 0:
@@ -16601,6 +16794,7 @@ class CineWindow(Adw.ApplicationWindow):
             self._hls_time_offset = 0.0
             self._hls_total_duration = None
 
+        self._hls_prep_url = None
         self._current_playing_item = None
         from . import player
         # stop_player inspects torrent stats, hits the disk and may wait on the

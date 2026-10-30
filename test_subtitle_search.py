@@ -3,6 +3,7 @@ import sys
 import tempfile
 import os
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 sys.modules["mpv"] = MagicMock()
@@ -436,6 +437,113 @@ class TestSubtitleSearch(unittest.TestCase):
         # First returned subtitle should be the SDH subtitle!
         self.assertEqual(subs[0]["id"], "2")
         self.assertIn("SDH", subs[0]["subtitleFileName"])
+
+    @staticmethod
+    def _subtitle_response(entries):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"subtitles": entries}).encode("utf-8")
+        mock_resp.headers = {}
+        mock_resp.__enter__.return_value = mock_resp
+        return mock_resp
+
+    @patch("src.database.get_addons", return_value=[])
+    @patch("src.database.save_cached_subtitles")
+    @patch("src.database.get_cached_subtitles", return_value=None)
+    @patch("src.api.get_user_preferred_languages", return_value="en")
+    @patch("urllib.request.urlopen")
+    def test_get_subtitles_keeps_only_preferred_language(self, mock_urlopen, mock_pref, mock_get_cache, mock_save_cache, mock_addons):
+        mock_urlopen.return_value = self._subtitle_response([
+            {"id": "b1", "url": "http://subs/b1.srt", "lang": "ben", "subtitleFileName": "Movie.Bengali.srt"},
+            {"id": "e1", "url": "http://subs/e1.srt", "lang": "eng", "subtitleFileName": "Movie.en.srt"},
+            {"id": "s1", "url": "http://subs/s1.srt", "lang": "spa", "subtitleFileName": "Movie.es.srt"},
+            {"id": "e2", "url": "http://subs/e2.srt", "lang": "English"},
+            {"id": "u1", "url": "http://subs/u1.srt", "lang": "", "title": "Bengali (Original Audio)"},
+        ])
+
+        subs = api.get_subtitles(imdb_id="tt9999998")
+
+        # "ben" must not be treated as English by substring matching, and
+        # language names must match the "en" preference.
+        self.assertEqual([s["id"] for s in subs], ["e1", "e2"])
+        self.assertTrue(mock_save_cache.call_args.args[0].endswith("_en"))
+
+    @patch("src.database.get_addons", return_value=[])
+    @patch("src.database.save_cached_subtitles")
+    @patch("src.database.get_cached_subtitles", return_value=None)
+    @patch("src.api.get_user_preferred_languages", return_value="en")
+    @patch("urllib.request.urlopen")
+    def test_get_subtitles_returns_nothing_when_preferred_language_missing(self, mock_urlopen, mock_pref, mock_get_cache, mock_save_cache, mock_addons):
+        mock_urlopen.return_value = self._subtitle_response([
+            {"id": "b1", "url": "http://subs/b1.srt", "lang": "ben"},
+            {"id": "s1", "url": "http://subs/s1.srt", "lang": "spa"},
+        ])
+
+        subs = api.get_subtitles(imdb_id="tt9999997")
+
+        # Showing no subtitles is better than selecting a language the user
+        # did not ask for.
+        self.assertEqual(subs, [])
+        mock_save_cache.assert_not_called()
+
+    @patch("src.database.get_addons", return_value=[])
+    @patch("src.database.save_cached_subtitles")
+    @patch("src.database.get_cached_subtitles")
+    @patch("src.api.get_user_preferred_languages", return_value="en")
+    def test_get_subtitles_refilters_cached_mixed_languages(self, mock_pref, mock_get_cache, mock_save_cache, mock_addons):
+        # Older builds cached unfiltered lists; they must be filtered on read.
+        mock_get_cache.return_value = [
+            {"id": "b1", "url": "http://subs/b1.srt", "lang": "ben"},
+            {"id": "e1", "url": "http://subs/e1.srt", "lang": "eng"},
+            {"id": "s1", "url": "http://subs/s1.srt", "lang": "spa"},
+        ]
+
+        subs = api.get_subtitles(imdb_id="tt9999996")
+
+        self.assertEqual([s["id"] for s in subs], ["e1"])
+
+    @patch("src.database.get_addons", return_value=[])
+    @patch("src.database.save_cached_subtitles")
+    @patch("src.database.get_cached_subtitles", return_value=None)
+    @patch("urllib.request.urlopen")
+    def test_get_subtitles_cache_key_includes_language(self, mock_urlopen, mock_get_cache, mock_save_cache, mock_addons):
+        mock_urlopen.return_value = self._subtitle_response([
+            {"id": "e1", "url": "http://subs/e1.srt", "lang": "eng"},
+        ])
+
+        with patch("src.api.get_user_preferred_languages", return_value="en"):
+            api.get_subtitles(imdb_id="tt9999995")
+        with patch("src.api.get_user_preferred_languages", return_value="hi"):
+            api.get_subtitles(imdb_id="tt9999995")
+
+        keys = [call.args[0] for call in mock_get_cache.call_args_list]
+        self.assertEqual(keys[0], "subs_tt9999995_movie_None_None_en")
+        self.assertEqual(keys[1], "subs_tt9999995_movie_None_None_hi")
+
+    def test_fetch_and_add_subtitles_selects_first_successful_download(self):
+        from src.window import CineWindow
+
+        win = CineWindow.__new__(CineWindow)
+        win.pending_subtitles = []
+        win._subtitle_fetch_id = 0
+        win._try_add_pending_subtitles = MagicMock()
+
+        subs = [
+            {"url": "http://subs/1.srt", "lang": "eng"},
+            {"url": "http://subs/2.srt", "lang": "eng"},
+        ]
+
+        def download(url, filename):
+            return None if url.endswith("1.srt") else "/tmp/pb_sub_2.srt"
+
+        with patch("src.api.get_subtitles", return_value=subs), \
+             patch("src.api.download_subtitle", side_effect=download), \
+             patch("src.window.GLib.idle_add", side_effect=lambda fn, *a: fn()):
+            win.fetch_and_add_subtitles("tt1234567", "movie", None, None)
+            deadline = time.time() + 5
+            while not win.pending_subtitles and time.time() < deadline:
+                time.sleep(0.02)
+
+        self.assertEqual(win.pending_subtitles, [("/tmp/pb_sub_2.srt", "eng", True)])
 
 
 if __name__ == "__main__":

@@ -40,6 +40,11 @@ else:
     DOWNLOAD_BASE = os.path.expanduser("~/.var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box/torrents")
 os.makedirs(DOWNLOAD_BASE, exist_ok=True)
 
+# Torrents are slower to start than HTTP links: metadata discovery has to find
+# peers before any bytes arrive, and the first pieces can trickle in slowly.
+TORRENT_METADATA_TIMEOUT_SECONDS = 120
+TORRENT_BUFFER_STALL_TIMEOUT_SECONDS = 90
+
 def stop_player(remove_torrent=False, keep_downloading=True, is_series=None, season=None, info_hash=None):
     """Stop the currently streaming video, unless it's fully downloaded, keep_downloading is True, or it's part of a season.
 
@@ -658,7 +663,7 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                                 break
                         except Exception:
                             break
-                        if (time.time() - last_nonzero_time) > 30:
+                        if (time.time() - last_nonzero_time) > TORRENT_BUFFER_STALL_TIMEOUT_SECONDS:
                             break
                         time.sleep(0.5)
                     if engine and engine.is_alive():
@@ -704,10 +709,10 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                                     break
                             except Exception:
                                 break
-                            if (time.time() - last_nonzero_time) > 30:
-                                print(f"Torrent resume buffering timed out after 30s for {info_hash}")
+                            if (time.time() - last_nonzero_time) > TORRENT_BUFFER_STALL_TIMEOUT_SECONDS:
+                                print(f"Torrent resume buffering timed out after {TORRENT_BUFFER_STALL_TIMEOUT_SECONDS}s for {info_hash}")
                                 if progress_callback:
-                                    GLib.idle_add(progress_callback, {"ready": False, "status": "Error: Buffering timeout (30s)", "closed": True})
+                                    GLib.idle_add(progress_callback, {"ready": False, "status": f"Error: Buffering timeout ({TORRENT_BUFFER_STALL_TIMEOUT_SECONDS}s)", "closed": True})
                                 return
                             time.sleep(0.5)
                         if engine and engine.is_alive():
@@ -761,10 +766,10 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                     with _engines_lock:
                         if _engines.get(info_hash) != engine: return
                     if _streaming_hash != info_hash: return
-                    if (time.time() - start_meta_time) > 30.0:
-                        print(f"Torrent metadata fetch timed out after 30s for {info_hash}")
+                    if (time.time() - start_meta_time) > TORRENT_METADATA_TIMEOUT_SECONDS:
+                        print(f"Torrent metadata fetch timed out after {TORRENT_METADATA_TIMEOUT_SECONDS}s for {info_hash}")
                         if progress_callback:
-                            GLib.idle_add(progress_callback, {"ready": False, "status": "Error: Metadata timeout (30s)", "closed": True})
+                            GLib.idle_add(progress_callback, {"ready": False, "status": f"Error: Metadata timeout ({TORRENT_METADATA_TIMEOUT_SECONDS}s)", "closed": True})
                         return
                     stats = engine.stats()
                     if progress_callback: GLib.idle_add(progress_callback, stats)
@@ -796,10 +801,10 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
                     
                     if engine.is_buffering_finished():
                         break
-                    if (time.time() - last_nonzero_time) > 30:
-                        print(f"Torrent buffering timed out after 30s for {info_hash}")
+                    if (time.time() - last_nonzero_time) > TORRENT_BUFFER_STALL_TIMEOUT_SECONDS:
+                        print(f"Torrent buffering timed out after {TORRENT_BUFFER_STALL_TIMEOUT_SECONDS}s for {info_hash}")
                         if progress_callback:
-                            GLib.idle_add(progress_callback, {"ready": False, "status": "Error: Buffering timeout (30s)", "closed": True})
+                            GLib.idle_add(progress_callback, {"ready": False, "status": f"Error: Buffering timeout ({TORRENT_BUFFER_STALL_TIMEOUT_SECONDS}s)", "closed": True})
                         return
                     time.sleep(0.5)
                     
