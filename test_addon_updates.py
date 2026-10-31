@@ -220,21 +220,34 @@ class TestAddonUpdates(unittest.TestCase):
 
     def test_apply_addon_status_labels_online_and_offline(self):
         status_label = MagicMock()
-        status_text = MagicMock()
 
-        CineWindow._apply_addon_status(None, status_label, status_text, False, "Temporarily unavailable")
+        CineWindow._apply_addon_status(None, status_label, False, "Temporarily unavailable")
         status_label.set_label.assert_called_with("🔴")
         status_label.set_tooltip_text.assert_called_with("Temporarily unavailable")
-        status_text.set_label.assert_called_with("Temporarily unavailable")
-        status_text.set_visible.assert_called_with(True)
 
         status_label.reset_mock()
-        status_text.reset_mock()
 
-        CineWindow._apply_addon_status(None, status_label, status_text, True, "Online")
+        CineWindow._apply_addon_status(None, status_label, True, "Online")
         status_label.set_label.assert_called_with("🟢")
         status_label.set_tooltip_text.assert_called_with("Online")
-        status_text.set_visible.assert_called_with(False)
+
+    def test_apply_addon_health_results_refreshes_registered_rows(self):
+        url = "https://row.example/manifest.json"
+        status_label = MagicMock()
+        win = MagicMock()
+        win._addon_status_widgets = {url: status_label}
+
+        CineWindow._apply_addon_health_results(win, {url: {"online": True}})
+        win._apply_addon_status.assert_called_once_with(status_label, True, "Online")
+
+        win._apply_addon_status.reset_mock()
+        CineWindow._apply_addon_health_results(win, {url: {"online": False}})
+        win._apply_addon_status.assert_called_once_with(status_label, False, "Offline")
+
+        # Rows that are no longer on the page are ignored.
+        win._apply_addon_status.reset_mock()
+        CineWindow._apply_addon_health_results(win, {"https://gone.example/manifest.json": {"online": True}})
+        win._apply_addon_status.assert_not_called()
 
     def test_filter_items_from_available_addons(self):
         database.add_addon({

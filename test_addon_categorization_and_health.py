@@ -89,6 +89,88 @@ class TestAddonCategorizationAndHealth(unittest.TestCase):
             self.assertTrue(api.is_addon_online("https://online-catalog.com/manifest.json"))
             self.assertFalse(api.is_addon_online("https://dead-addon.com/manifest.json"))
 
+    def test_previous_session_offline_verdict_is_not_trusted(self):
+        from src import api, database
+        url = "https://previous-session.example/manifest.json"
+        stale = {
+            "online": False,
+            "last_checked": api._ADDON_HEALTH_SESSION_START - 60,
+            "latency_ms": 0,
+            "error": "timeout",
+        }
+        try:
+            with api._ADDON_ONLINE_LOCK:
+                api._IN_MEMORY_ADDON_HEALTH[url] = stale
+            with patch.object(database, 'get_addon_health', return_value={url: stale}):
+                # A failure recorded before this launch describes a network
+                # state we have not re-verified yet.
+                self.assertTrue(api.is_addon_online(url))
+
+            fresh = dict(stale, last_checked=time.time())
+            with api._ADDON_ONLINE_LOCK:
+                api._IN_MEMORY_ADDON_HEALTH[url] = fresh
+            self.assertFalse(api.is_addon_online(url))
+        finally:
+            with api._ADDON_ONLINE_LOCK:
+                api._IN_MEMORY_ADDON_HEALTH.pop(url, None)
+
+    def test_health_check_retries_transient_probe_failures(self):
+        from src import api, database
+        url = "https://retry.example/manifest.json"
+        addon = {"id": "retry.test", "manifest_url": url, "enabled": True}
+        manifest = {"id": "retry.test", "resources": ["stream"]}
+        attempts = []
+
+        def fake_live_probe(probe_url, timeout=4.0):
+            attempts.append(probe_url)
+            return None if len(attempts) == 1 else manifest
+
+        try:
+            with patch.object(database, "get_addons", return_value=[addon]), \
+                 patch.object(api, "_cached_addon_manifest", return_value=None), \
+                 patch.object(api, "_fetch_addon_manifest_live", side_effect=fake_live_probe), \
+                 patch.object(api, "_ADDON_HEALTH_RETRY_DELAYS", (0.0, 0.0)), \
+                 patch.object(database, "set_all_addons_health") as set_health, \
+                 patch.object(database, "add_addon"), \
+                 patch.object(database, "update_addon_catalogs"):
+                thread = api.check_addons_health_background()
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+
+            self.assertEqual(attempts, [url, url])
+            self.assertTrue(set_health.called)
+            with api._ADDON_ONLINE_LOCK:
+                self.assertTrue(api._IN_MEMORY_ADDON_HEALTH[url]["online"])
+        finally:
+            with api._ADDON_ONLINE_LOCK:
+                api._IN_MEMORY_ADDON_HEALTH.pop(url, None)
+
+    def test_health_check_keeps_statuses_when_every_probe_fails(self):
+        from src import api, database
+        addons = [
+            {"id": "down.one", "manifest_url": "https://down-one.example/manifest.json", "enabled": True},
+            {"id": "down.two", "manifest_url": "https://down-two.example/manifest.json", "enabled": True},
+        ]
+        try:
+            with patch.object(database, "get_addons", return_value=addons), \
+                 patch.object(api, "_cached_addon_manifest", return_value=None), \
+                 patch.object(api, "_fetch_addon_manifest_live", return_value=None), \
+                 patch.object(api, "_ADDON_HEALTH_RETRY_DELAYS", (0.0, 0.0)), \
+                 patch.object(database, "set_all_addons_health") as set_health:
+                thread = api.check_addons_health_background()
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+
+            # A network outage must not paint every addon offline for two hours.
+            self.assertFalse(set_health.called)
+            with api._ADDON_ONLINE_LOCK:
+                for addon in addons:
+                    self.assertNotIn(addon["manifest_url"], api._IN_MEMORY_ADDON_HEALTH)
+        finally:
+            with api._ADDON_ONLINE_LOCK:
+                for addon in addons:
+                    api._IN_MEMORY_ADDON_HEALTH.pop(addon["manifest_url"], None)
+
     def test_get_available_search_catalogs(self):
         from src import api, database
         catalog_addon = {

@@ -331,13 +331,12 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   pacing: it makes one non-blocking attempt and is answered from cache (or with
   nothing). Every fetch belongs on a daemon thread, so reaching that path is a
   bug in the caller, not a policy to widen.
-- KEEP FETCHING AND RENDERING BOUNDED. `tmdb_helper._MAX_DISCOVER_PAGES` limits
-  country/language Discover feeds; `_MAX_NETWORK_PAGES` allows network catalogs
-  up to TMDb's 500-page API ceiling. These are upper bounds, not preload targets.
-  Fetch the next page as the user approaches the end of the visible results.
-  Keep widget creation near the viewport plus a small buffer, and measure
-  scrolling, memory use, and time to first useful content before changing page
-  size or concurrency.
+- KEEP FETCHING AND RENDERING BOUNDED. `tmdb_helper._MAX_DISCOVER_PAGES` and
+  `_MAX_NETWORK_PAGES` both allow browsing up to TMDb's 500-page API ceiling.
+  These are upper bounds, not preload targets. Fetch the next page as the user
+  approaches the end of the visible results. Keep widget creation near the
+  viewport plus a small buffer, and measure scrolling, memory use, and time to
+  first useful content before changing page size or concurrency.
 - CACHED FIRST, NETWORK AFTER. Read the cache before the network and never ask for
   a page already held fresh. `fetch_country_catalog_page()` probes every URL with
   `cache_only=True` and fetches only the gaps, so re-browsing a filter costs zero

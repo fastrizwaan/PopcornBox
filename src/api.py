@@ -1719,6 +1719,30 @@ _ADDON_ONLINE_STATUS = {}
 
 _ADDON_FAIL_THRESHOLD = 5  # Block after this many consecutive timeout/connection errors
 
+# Health probing policy: a single failed probe is often just a Wi-Fi hiccup
+# while the app is starting, so addons get three attempts before being
+# recorded offline, and the whole list is re-verified once an hour.
+_ADDON_HEALTH_MAX_ATTEMPTS = 3
+_ADDON_HEALTH_RETRY_DELAYS = (5.0, 15.0)
+_ADDON_HEALTH_CHECK_LOCK = threading.Lock()
+_ADDON_HEALTH_CHECK_RUNNING = False
+# Verdicts recorded before this process started describe a network state that
+# no longer exists (shutdown mid-request, Wi-Fi off at launch). They must not
+# keep a healthy addon hidden until this session re-verifies it.
+_ADDON_HEALTH_SESSION_START = time.time()
+
+def _addon_health_offline_is_current(entry):
+    """True only for an offline verdict observed during this app session."""
+    if not isinstance(entry, dict) or entry.get("online", True):
+        return False
+    try:
+        last_checked = float(entry.get("last_checked", 0) or 0)
+    except (TypeError, ValueError):
+        last_checked = 0.0
+    if last_checked < _ADDON_HEALTH_SESSION_START:
+        return False
+    return time.time() - last_checked < 7200
+
 def set_addon_online_status(manifest_url, is_online):
     """Called by addon manager UI to override session status."""
     if not manifest_url:
@@ -1766,9 +1790,29 @@ def _record_addon_success(manifest_url):
     """Clear failure count on a successful addon response."""
     if not manifest_url or manifest_url.startswith("builtin:"):
         return
+    cleared_override = False
+    refreshed_offline = False
     with _ADDON_ONLINE_LOCK:
         _ADDON_SESSION_FAILURES.pop(manifest_url, None)
         _ADDON_SESSION_BLOCKED.discard(manifest_url)
+        # A probe that failed while the network was down leaves a hard offline
+        # override behind; a later success must lift it or the addon stays
+        # hidden until it is manually re-checked.
+        if _ADDON_ONLINE_STATUS.get(manifest_url) is False:
+            _ADDON_ONLINE_STATUS.pop(manifest_url, None)
+            cleared_override = True
+        # Serving a real request proves the addon is reachable again; an old
+        # offline health verdict would otherwise keep hiding it for two hours.
+        # The next health-check pass persists this; writing the whole DB here
+        # would run once per catalog/stream success.
+        entry = _IN_MEMORY_ADDON_HEALTH.get(manifest_url)
+        if entry is not None and not entry.get("online", True):
+            entry["online"] = True
+            entry["last_checked"] = time.time()
+            entry["error"] = None
+            refreshed_offline = True
+    if cleared_override or refreshed_offline:
+        invalidate_catalogs_cache()
 
 def reset_addon_session_status(manifest_url=None):
     """Reset session block for a specific addon (or all addons) — called on manual reload."""
@@ -1776,9 +1820,12 @@ def reset_addon_session_status(manifest_url=None):
         if manifest_url:
             _ADDON_SESSION_BLOCKED.discard(manifest_url)
             _ADDON_SESSION_FAILURES.pop(manifest_url, None)
+            if _ADDON_ONLINE_STATUS.get(manifest_url) is False:
+                _ADDON_ONLINE_STATUS.pop(manifest_url, None)
         else:
             _ADDON_SESSION_BLOCKED.clear()
             _ADDON_SESSION_FAILURES.clear()
+            _ADDON_ONLINE_STATUS.clear()
     invalidate_catalogs_cache()
 
 _IN_MEMORY_ADDON_HEALTH = {}
@@ -1796,6 +1843,31 @@ def reset_addon_health_cache():
     invalidate_catalogs_cache()
 
 
+def _merge_addon_health_locked(health):
+    """Merge persisted health rows, keeping whichever verdict is newer.
+
+    A blanket update() let a persisted row overwrite an in-memory recovery
+    observed moments earlier (e.g. a catalog request succeeded), which flipped
+    a working addon back to offline until the next batch check.
+    """
+    if not isinstance(health, dict):
+        return
+    for url, entry in health.items():
+        if not isinstance(entry, dict):
+            continue
+        current = _IN_MEMORY_ADDON_HEALTH.get(url)
+        if current is None:
+            _IN_MEMORY_ADDON_HEALTH[url] = entry
+            continue
+        try:
+            current_ts = float(current.get("last_checked", 0) or 0)
+            incoming_ts = float(entry.get("last_checked", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if incoming_ts >= current_ts:
+            _IN_MEMORY_ADDON_HEALTH[url] = entry
+
+
 def _init_in_memory_addon_health():
     global _IN_MEMORY_ADDON_HEALTH, _IN_MEMORY_HEALTH_INIT
     try:
@@ -1803,7 +1875,7 @@ def _init_in_memory_addon_health():
         health = database.get_addon_health()
         if isinstance(health, dict):
             with _ADDON_ONLINE_LOCK:
-                _IN_MEMORY_ADDON_HEALTH.update(health)
+                _merge_addon_health_locked(health)
                 _IN_MEMORY_HEALTH_INIT = True
     except Exception:
         pass
@@ -1821,10 +1893,8 @@ def is_addon_online(manifest_url):
         # Check in-memory health cache
         entry = _IN_MEMORY_ADDON_HEALTH.get(manifest_url)
         if entry is not None:
-            if not entry.get("online", True):
-                last_checked = float(entry.get("last_checked", 0))
-                if time.time() - last_checked < 7200:
-                    return False
+            if _addon_health_offline_is_current(entry):
+                return False
             return True
 
     # If not in cache yet, load from database once and update in-memory cache
@@ -1832,12 +1902,10 @@ def is_addon_online(manifest_url):
         from . import database
         health = database.get_addon_health() or {}
         with _ADDON_ONLINE_LOCK:
-            _IN_MEMORY_ADDON_HEALTH.update(health)
+            _merge_addon_health_locked(health)
             entry = _IN_MEMORY_ADDON_HEALTH.get(manifest_url)
-            if entry and not entry.get("online", True):
-                last_checked = float(entry.get("last_checked", 0))
-                if time.time() - last_checked < 7200:
-                    return False
+            if _addon_health_offline_is_current(entry):
+                return False
     except Exception:
         pass
 
@@ -1857,37 +1925,86 @@ def check_addon_manifest_online(manifest_url, timeout=3.0):
     except Exception:
         return False
 
-def check_addons_health_background(callback=None):
+def _cached_addon_manifest(manifest_url):
+    """Return a fresh cached manifest without touching the network."""
+    try:
+        data = _get_cached_request(manifest_url, max_age_hours=24, cache_only=True, timeout=1.0)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) and data.get("id") else None
+
+def _fetch_addon_manifest_live(manifest_url, timeout=4.0):
+    """Fetch a manifest bypassing the response cache; None when unreachable."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    try:
+        request = urllib.request.Request(manifest_url, headers=headers)
+        with urllib.request.urlopen(request, timeout=timeout, context=_SSL_CONTEXT) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return data if isinstance(data, dict) and data.get("id") else None
+    except Exception as exc:
+        logging.debug(f"[Addon] Live manifest probe failed for {manifest_url}: {exc}")
+        return None
+
+def check_addons_health_background(callback=None, live=False):
     """
     Check connectivity of all enabled remote addons in a background daemon thread.
+
+    Each addon gets up to three attempts: the first pass answers from the
+    manifest cache when it is fresh (no network burst at launch) and failed
+    addons are retried live with a short back-off, so a hiccup while the
+    network is still coming up does not record an addon offline for two hours.
+    `live=True` (the hourly re-check) hits the network on every attempt.
     Updates addon health cache and session blocked sets.
     Calls callback(results) upon completion on GLib main thread.
     """
-    def _worker():
-        from . import database
-        addons = [a for a in database.get_addons() if a.get("enabled", True)]
-        remote_addons = [a for a in addons if a.get("manifest_url") and not a.get("manifest_url", "").startswith("builtin:")]
-        if not remote_addons:
-            if callback:
-                try:
-                    import gi
-                    gi.require_version("GLib", "2.0")
-                    from gi.repository import GLib
-                    GLib.idle_add(callback, {})
-                except Exception:
-                    callback({})
-            return
+    global _ADDON_HEALTH_CHECK_RUNNING
+    with _ADDON_HEALTH_CHECK_LOCK:
+        if _ADDON_HEALTH_CHECK_RUNNING:
+            return None
+        _ADDON_HEALTH_CHECK_RUNNING = True
 
-        import concurrent.futures
-        results = {}
-
-        def _ping_addon(addon):
-            url = addon.get("manifest_url", "")
-            t_start = time.time()
+    def _finish(results):
+        global _ADDON_HEALTH_CHECK_RUNNING
+        with _ADDON_HEALTH_CHECK_LOCK:
+            _ADDON_HEALTH_CHECK_RUNNING = False
+        if callback:
             try:
-                manifest_data = _get_cached_request(url, max_age_hours=24, timeout=2.5)
+                import gi
+                gi.require_version("GLib", "2.0")
+                from gi.repository import GLib
+                GLib.idle_add(callback, results)
+            except Exception:
+                callback(results)
+
+    def _worker():
+        try:
+            from . import database
+            addons = [a for a in database.get_addons() if a.get("enabled", True)]
+            remote_addons = [a for a in addons if a.get("manifest_url") and not a.get("manifest_url", "").startswith("builtin:")]
+            if not remote_addons:
+                _finish({})
+                return
+
+            import concurrent.futures
+            results = {}
+
+            def _ping_addon(addon):
+                url = addon.get("manifest_url", "")
+                if is_provider_in_cooldown(url):
+                    # The host asked us to back off; a probe now would be rude
+                    # and the last known status is still the useful one.
+                    return None
+                t_start = time.time()
+                manifest_data = None if live else _cached_addon_manifest(url)
+                if manifest_data is None:
+                    manifest_data = _fetch_addon_manifest_live(url)
                 elapsed_ms = int((time.time() - t_start) * 1000)
-                if manifest_data and isinstance(manifest_data, dict) and manifest_data.get("id"):
+                if manifest_data:
                     # Success: verify if manifest has catalogs or resources to sync
                     if manifest_data.get("catalogs") and not addon.get("catalogs"):
                         addon["catalogs"] = manifest_data["catalogs"]
@@ -1897,50 +2014,67 @@ def check_addons_health_background(callback=None):
                         addon["resources"] = manifest_data["resources"]
                         try: database.add_addon(addon, sync_to_remote=False)
                         except Exception: pass
-                    return (url, True, elapsed_ms, None)
-                else:
-                    return (url, False, elapsed_ms, "Invalid manifest JSON")
-            except Exception as e:
-                elapsed_ms = int((time.time() - t_start) * 1000)
-                return (url, False, elapsed_ms, str(e))
+                    return (addon, True, elapsed_ms, None)
+                return (addon, False, elapsed_ms, "Manifest unreachable")
 
-        # Keep the startup burst small: addons often share a host, and 20
-        # parallel manifest fetches can trip their rate limits.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(remote_addons))) as pool:
-            futures = [pool.submit(_ping_addon, a) for a in remote_addons]
-            for f in concurrent.futures.as_completed(futures):
-                try:
-                    url, ok, latency, err = f.result()
-                    results[url] = {
-                        "online": ok,
-                        "last_checked": time.time(),
-                        "latency_ms": latency,
-                        "error": err
-                    }
-                    if not ok:
-                        _record_addon_failure(url)
-                    else:
-                        _record_addon_success(url)
-                except Exception:
-                    pass
+            pending = list(remote_addons)
+            for attempt in range(_ADDON_HEALTH_MAX_ATTEMPTS):
+                if not pending:
+                    break
+                if attempt:
+                    delay = _ADDON_HEALTH_RETRY_DELAYS[min(attempt - 1, len(_ADDON_HEALTH_RETRY_DELAYS) - 1)]
+                    time.sleep(delay)
+                retry_pending = []
+                # Keep the burst small: addons often share a host, and many
+                # parallel manifest fetches can trip their rate limits.
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(pending))) as pool:
+                    futures = [pool.submit(_ping_addon, a) for a in pending]
+                    for f in concurrent.futures.as_completed(futures):
+                        try:
+                            outcome = f.result()
+                        except Exception:
+                            outcome = None
+                        if outcome is None:
+                            continue
+                        addon, ok, latency, err = outcome
+                        url = addon.get("manifest_url", "")
+                        results[url] = {
+                            "online": ok,
+                            "last_checked": time.time(),
+                            "latency_ms": latency,
+                            "error": err,
+                        }
+                        if not ok:
+                            retry_pending.append(addon)
+                pending = retry_pending
 
-        with _ADDON_ONLINE_LOCK:
-            _IN_MEMORY_ADDON_HEALTH.update(results)
+            # If nothing answered, the machine is probably offline; marking
+            # every addon offline would outlive the outage by two hours.
+            if results and len(results) > 1 and not any(r["online"] for r in results.values()):
+                logging.info("[Addon] Every health probe failed; keeping previous addon statuses")
+                _finish({})
+                return
 
-        # Persist health results in database
-        try:
-            database.set_all_addons_health(results)
-        except Exception as e:
-            logging.debug(f"Failed to persist addon health: {e}")
+            with _ADDON_ONLINE_LOCK:
+                _IN_MEMORY_ADDON_HEALTH.update(results)
+            invalidate_catalogs_cache()
 
-        if callback:
+            # Persist health results in database
             try:
-                import gi
-                gi.require_version("GLib", "2.0")
-                from gi.repository import GLib
-                GLib.idle_add(callback, results)
-            except Exception:
-                callback(results)
+                database.set_all_addons_health(results)
+            except Exception as e:
+                logging.debug(f"Failed to persist addon health: {e}")
+
+            for url, entry in results.items():
+                if entry["online"]:
+                    _record_addon_success(url)
+                else:
+                    _record_addon_failure(url)
+
+            _finish(results)
+        except Exception:
+            logging.exception("Addon health check failed")
+            _finish({})
 
     thread = threading.Thread(target=_worker, daemon=True, name="AddonHealthChecker")
     thread.start()
@@ -2358,20 +2492,7 @@ def probe_addon_manifest_online(manifest_url, timeout=4.0):
     """
     if not manifest_url or manifest_url.startswith("builtin:"):
         return True
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-    }
-    try:
-        request = urllib.request.Request(manifest_url, headers=headers)
-        with urllib.request.urlopen(request, timeout=timeout, context=_SSL_CONTEXT) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        return isinstance(data, dict) and bool(data.get("id"))
-    except Exception as exc:
-        logging.debug(f"[Addon] Live manifest probe failed for {manifest_url}: {exc}")
-        return False
+    return _fetch_addon_manifest_live(manifest_url, timeout=timeout) is not None
 
 def has_catalog_resource(addon, media_type=None):
     """Return True if the addon supports catalog ('catalog') resource for this media type."""

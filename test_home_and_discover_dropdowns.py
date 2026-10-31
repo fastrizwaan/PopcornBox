@@ -569,7 +569,7 @@ class TestCountryCatalogFetch(unittest.TestCase):
             items, total_pages = tmdb_helper.fetch_country_catalog_page("India", media_type="all", page=2)
 
         self.assertEqual(items, [])
-        self.assertEqual(total_pages, tmdb_helper._MAX_DISCOVER_PAGES)
+        self.assertEqual(total_pages, 47)
         self.assertEqual(len(calls), 2)
         for url in calls:
             self.assertIn("page=2", url)
@@ -604,7 +604,7 @@ class TestCountryCatalogFetch(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertIn("page=8", calls[0])
         self.assertTrue(items)
-        self.assertEqual(total_pages, tmdb_helper._MAX_DISCOVER_PAGES)
+        self.assertEqual(total_pages, 30)
 
     def test_fetch_country_catalog_page_never_re_requests_a_cached_page(self):
         """A page the filter already has is served from disk and stays off the wire."""

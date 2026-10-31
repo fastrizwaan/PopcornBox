@@ -25,15 +25,13 @@ DEFAULT_TMDB_API_KEY = "68e094699525b18a70bab2f86b1fa706"
 # type; each result is cached forever, so the cost is paid once per filter.
 _MAX_COUNTRY_LANG_PAGES = 3
 
-# How deep one filter may browse. Each page is one request per media type and
-# api.py paces them through the polite catalog window, so the cap is what keeps a
-# long scroll from turning into a load test on TMDb: 20 pages is at most 40
-# requests per filter, each cached forever and only paid for as the user really
-# scrolls. Five pages were too tight - a discover row renders up to 36 cards, so
-# the grid stopped growing at about 180 cards.
-_MAX_DISCOVER_PAGES = 20
-# TMDb caps Discover at 500 pages. Network catalogs can be much deeper than the
-# other filtered feeds, so let the user keep scrolling up to the API's limit.
+# How deep one filter may browse. TMDb caps Discover at 500 pages; each page is
+# one request per media type and api.py paces them through the polite catalog
+# window, so this is an upper bound and never a preload target: the next page is
+# only spent when the user scrolls to the end of the results already shown.
+_MAX_DISCOVER_PAGES = 500
+# TMDb caps paged endpoints at 500 pages, so network catalogs share the same
+# ceiling as the filtered feeds and are still fetched only as the user scrolls.
 _MAX_NETWORK_PAGES = 500
 # TMDb's search endpoint allows up to 500 pages. Search pages are requested only
 # as the user scrolls, so keep the provider's full searchable depth available.

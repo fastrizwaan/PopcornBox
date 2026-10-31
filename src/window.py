@@ -8020,6 +8020,9 @@ class CineWindow(Adw.ApplicationWindow):
 
         # Trigger background addon health check on startup (deferred 1s to keep startup instantaneous)
         GLib.timeout_add(1000, lambda: (self._trigger_background_addon_health_check(), False)[1])
+        # Re-verify addon status hourly so a long-running session does not keep
+        # stale online/offline badges (and stale session blocks) forever.
+        GLib.timeout_add_seconds(3600, self._hourly_addon_health_check)
 
         # Trigger background Stremio sync once on startup (deferred 3s to keep startup instantaneous)
         GLib.timeout_add(3000, lambda: (self._trigger_background_stremio_sync(), False)[1])
@@ -8029,16 +8032,21 @@ class CineWindow(Adw.ApplicationWindow):
         settings.connect("changed::show-series-button", lambda *a: self.update_category_buttons_visibility())
         settings.connect("changed::show-anime-button", lambda *a: self.update_category_buttons_visibility())
 
-    def _trigger_background_addon_health_check(self):
+    def _trigger_background_addon_health_check(self, live=False):
         try:
             from . import api
             def on_health_checked(results):
                 debug_log(f"Addon health check finished: {len(results)} addons verified")
                 if hasattr(self, "_discover_catalog_list_cache"):
                     self._discover_catalog_list_cache.clear()
-            api.check_addons_health_background(callback=on_health_checked)
+                self._apply_addon_health_results(results)
+            api.check_addons_health_background(callback=on_health_checked, live=live)
         except Exception as e:
             logger.debug(f"Failed to start background addon health check: {e}")
+
+    def _hourly_addon_health_check(self):
+        self._trigger_background_addon_health_check(live=True)
+        return True
 
     def _trigger_background_stremio_sync(self, force=False):
         try:
@@ -17249,7 +17257,7 @@ class CineWindow(Adw.ApplicationWindow):
         else:
             self._populate_installed_addons(scroll_to_url=scroll_to_url)
 
-    def _probe_addon_status_async(self, manifest_url, status_label, status_text, addon_name="Unknown", force_network=False):
+    def _probe_addon_status_async(self, manifest_url, status_label, addon_name="Unknown", force_network=False):
         from . import api
 
         def worker():
@@ -17261,10 +17269,9 @@ class CineWindow(Adw.ApplicationWindow):
             elif api.is_provider_in_cooldown(manifest_url):
                 is_on = False
                 reason = _("Temporarily unavailable")
-            elif not api.is_addon_online(manifest_url):
-                is_on = False
-                reason = _("Offline")
             elif force_network:
+                # The explicit check always probes live: a cached verdict is
+                # exactly what the user is asking us to look past.
                 is_on = api.probe_addon_manifest_online(manifest_url)
                 latency_ms = int((time.time() - started) * 1000)
                 api.set_addon_online_status(manifest_url, is_on)
@@ -17281,28 +17288,47 @@ class CineWindow(Adw.ApplicationWindow):
                 except Exception:
                     pass
                 reason = _("Online") if is_on else _("Offline — manifest unreachable")
+            elif not api.is_addon_online(manifest_url):
+                is_on = False
+                reason = _("Offline")
             else:
                 # Default checks reuse the manifest cache (no burst of live
                 # requests for every installed addon). Cooldown and session
                 # health above still surface providers that recently failed.
                 is_on = api.check_addon_manifest_online(manifest_url)
-                if not is_on:
+                if is_on:
+                    api._record_addon_success(manifest_url)
+                else:
                     api.set_addon_online_status(manifest_url, False)
                 reason = _("Online (cached)") if is_on else _("Offline")
             debug_log(f"addon status '{addon_name}' ({manifest_url})", reason)
-            GLib.idle_add(self._apply_addon_status, status_label, status_text, is_on, reason)
+            GLib.idle_add(self._apply_addon_status, status_label, is_on, reason)
 
         threading.Thread(target=worker, daemon=True, name="AddonStatusProbe").start()
 
-    def _apply_addon_status(self, status_label, status_text, is_on, reason):
+    def _apply_addon_status(self, status_label, is_on, reason):
         try:
             status_label.set_label("🟢" if is_on else "🔴")
             status_label.set_tooltip_text(reason)
-            if status_text is not None:
-                status_text.set_label("" if is_on else reason)
-                status_text.set_visible(not is_on)
         except Exception:
             pass
+        return False
+
+    def _apply_addon_health_results(self, results):
+        """Refresh visible addon rows with the background health-check verdicts."""
+        if not results:
+            return False
+        widgets_by_url = getattr(self, "_addon_status_widgets", None)
+        if not widgets_by_url:
+            return False
+        for manifest_url, entry in results.items():
+            status_label = widgets_by_url.get(manifest_url)
+            if not status_label:
+                continue
+            is_on = bool(entry.get("online"))
+            self._apply_addon_status(
+                status_label, is_on, _("Online") if is_on else _("Offline")
+            )
         return False
 
     def _select_installed_addon_view(self):
@@ -17336,6 +17362,7 @@ class CineWindow(Adw.ApplicationWindow):
         from . import database, api
         addons = database.get_addons()
         debug_log(f"_populate_installed_addons DB returned {len(addons)} addons")
+        self._addon_status_widgets = {}
         target_row = None
         for addon in addons:
             # Capabilities come from the manifest, not from health/toggle state:
@@ -17364,20 +17391,17 @@ class CineWindow(Adw.ApplicationWindow):
             status_box = Gtk.Box(spacing=4, valign=Gtk.Align.CENTER)
             status_label = Gtk.Label(label="⚪", valign=Gtk.Align.CENTER)
             status_label.set_tooltip_text(_("Checking status…"))
-            status_text = Gtk.Label(label="", valign=Gtk.Align.CENTER)
-            status_text.add_css_class("dim-label")
-            status_text.set_visible(False)
             status_box.append(status_label)
-            status_box.append(status_text)
             row.add_prefix(status_box)
 
             manifest_url = addon.get("manifest_url", "")
             if manifest_url:
+                self._addon_status_widgets[manifest_url] = status_label
                 self._probe_addon_status_async(
-                    manifest_url, status_label, status_text, addon.get("name", "Unknown")
+                    manifest_url, status_label, addon.get("name", "Unknown")
                 )
             else:
-                self._apply_addon_status(status_label, status_text, False, _("Offline"))
+                self._apply_addon_status(status_label, False, _("Offline"))
 
             desc_str_orig = GLib.markup_escape_text(addon.get("description", "") or "")
             row_state = {
@@ -17529,9 +17553,9 @@ class CineWindow(Adw.ApplicationWindow):
             if manifest_url:
                 check_status_btn = Gtk.Button(label=_("Check Status"))
                 check_status_btn.add_css_class("flat")
-                def on_check_status(btn, m_url=manifest_url, lbl=status_label, txt=status_text, pop=popover, aname=addon.get("name", "Unknown")):
+                def on_check_status(btn, m_url=manifest_url, lbl=status_label, pop=popover, aname=addon.get("name", "Unknown")):
                     pop.popdown()
-                    self._probe_addon_status_async(m_url, lbl, txt, aname, force_network=True)
+                    self._probe_addon_status_async(m_url, lbl, aname, force_network=True)
                 check_status_btn.connect("clicked", on_check_status)
                 popover_box.append(check_status_btn)
 
@@ -17564,6 +17588,7 @@ class CineWindow(Adw.ApplicationWindow):
     def _load_addon_catalog(self, source):
         while self.addons_listbox.get_first_child() is not None:
             self.addons_listbox.remove(self.addons_listbox.get_first_child())
+        self._addon_status_widgets = {}
 
         catalog_url = source.get("url")
         if not catalog_url:
