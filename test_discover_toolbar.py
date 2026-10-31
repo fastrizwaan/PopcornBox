@@ -1115,6 +1115,21 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertEqual(self.win.library_stack.get_visible_child_name(), "discover")
         self.win._refresh_discover_page.assert_called_once()
 
+    def test_reset_discover_filters_checks_unique_by_default(self):
+        """Reset restores Unique, the Discover default, instead of turning it off."""
+        self.win._init_discover_toolbar()
+        self.win.unique_check.set_active(False)
+        self.win.library_unique_check.set_active(False)
+        self.win._persisted_unique_enabled = False
+
+        CineWindow._reset_discover_filters(self.win)
+
+        self.assertTrue(self.win.unique_check.get_active())
+        self.assertTrue(self.win.library_unique_check.get_active())
+        self.assertTrue(self.win._persisted_unique_enabled)
+        self.assertEqual(self.win.library_stack.get_visible_child_name(), "unique")
+        self.win._refresh_unique_combined_view.assert_called_once()
+
     def test_category_tab_disabling_unique_shows_discover_rows(self):
         """When in movies/series/anime tab, disabling unique returns to discover rows."""
         self.win.category_btn_stack.set_visible_child_name("movies")

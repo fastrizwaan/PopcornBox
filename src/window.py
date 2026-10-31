@@ -9545,14 +9545,29 @@ class CineWindow(Adw.ApplicationWindow):
             self._populate_discover_language_dropdown(None, "all", None)
             self._populate_discover_country_dropdown(None, "all", None)
             self._populate_discover_network_dropdown("all")
-            if getattr(self, "unique_check", None):
-                self.unique_check.set_active(False)
         finally:
             self._syncing_discover_toolbar = False
         self.current_genre = self.current_year = self.current_language = None
         self.current_country = self.current_network = None
         self._current_discover_type = "all"
         self._current_discover_addon = None
+        # Unique is the Discover default, so Reset restores it: the checkbox,
+        # the saved preference, and the menu action. Syncing the check buttons
+        # directly keeps _on_unique_toggled from reloading the view a second time.
+        self._persisted_unique_enabled = True
+        from . import database
+        database.set_setting("discover_unique_enabled", True)
+        self._syncing_unique_check = True
+        try:
+            for btn_name in ("unique_check", "library_unique_check"):
+                btn = getattr(self, btn_name, None)
+                if btn is not None and hasattr(btn, "set_active"):
+                    btn.set_active(True)
+            unique_action = self.lookup_action("toggle-unique") if hasattr(self, "lookup_action") else None
+            if unique_action:
+                unique_action.set_state(GLib.Variant.new_boolean(True))
+        finally:
+            self._syncing_unique_check = False
         self._on_discover_filter_changed()
 
     def _restore_dropdown_selection(self, dropdown, items, target_str):
