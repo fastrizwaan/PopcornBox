@@ -35,6 +35,8 @@ _json_cache_valid = False
 _cache_conn = None
 _cache_db_initialized = False
 _test_cache_dir = None
+_stream_cache_clear_pending = 0
+_stream_cache_clear_pending_lock = threading.Lock()
 
 def _is_testing():
     return (
@@ -1285,7 +1287,7 @@ def _normalize_stream_for_storage(stream):
     if not stream or not isinstance(stream, dict):
         return None
     res = {}
-    for k in ["url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "stream_title", "title", "filename", "is_http", "is_external", "ytId", "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles", "saved_at", "binge_group", "expires_at", "has_expiring_credentials"]:
+    for k in ["url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "seeders", "stream_title", "title", "filename", "is_http", "is_external", "ytId", "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles", "saved_at", "binge_group", "expires_at", "has_expiring_credentials", "is_nuvio_plugin", "plugin_scraper_id"]:
         if k in stream and stream[k] is not None:
             res[k] = stream[k]
     if "addon_name" in stream and "addon_names" not in res:
@@ -1754,6 +1756,33 @@ def clear_all_cached_streams():
     except Exception as e:
         print(f"Error clearing all cached streams: {e}")
 
+
+def clear_all_cached_streams_async():
+    """Clear stream rows without blocking the GTK thread on SQLite I/O."""
+    global _stream_cache_clear_pending
+    if _is_testing() or threading.current_thread() is not threading.main_thread():
+        clear_all_cached_streams()
+        return
+
+    with _stream_cache_clear_pending_lock:
+        _stream_cache_clear_pending += 1
+
+    def _clear():
+        global _stream_cache_clear_pending
+        try:
+            clear_all_cached_streams()
+        finally:
+            with _stream_cache_clear_pending_lock:
+                _stream_cache_clear_pending = max(0, _stream_cache_clear_pending - 1)
+
+    worker = threading.Thread(target=_clear, daemon=True, name="StreamCacheClear")
+    try:
+        worker.start()
+    except Exception as e:
+        with _stream_cache_clear_pending_lock:
+            _stream_cache_clear_pending = max(0, _stream_cache_clear_pending - 1)
+        logging.warning(f"Could not start stream cache cleanup worker: {e}")
+
 def set_addon_enabled(addon_id, enabled, manifest_url=None):
     target_url = manifest_url
     with _db_lock:
@@ -1868,7 +1897,7 @@ def toggle_plugin_scraper(scraper_id, enabled):
                 s["enabled"] = bool(enabled)
                 break
         _write_db(db)
-    clear_all_cached_streams()
+    clear_all_cached_streams_async()
 
 # --- SQLite Metadata & Stream Cache ---
 
@@ -3938,6 +3967,9 @@ def get_available_genres(media_type=None, include_years=False):
 def get_cached_streams(cache_key, max_age_hours=24, return_age=False):
     if not cache_key:
         return (None, None) if return_age else None
+    with _stream_cache_clear_pending_lock:
+        if _stream_cache_clear_pending:
+            return (None, None) if return_age else None
     try:
         with _cache_db_lock:
             conn = _get_cache_db()
@@ -4247,9 +4279,12 @@ def delete_cached_subtitles(cache_key):
 _MEM_CATALOG_CACHE = {}
 _MEM_CATALOG_LOCK = threading.Lock()
 
-# Catalog rows are refreshed every 24 hours so home, discover, movies, series
-# feeds stay up-to-date with newly added media and catalog updates.
-CATALOG_CACHE_HOURS = 24
+# Catalog rows are the cards themselves -- title, year, poster URL, genres,
+# countries -- so they are kept forever, matching api.METADATA_CACHE_HOURS.
+# Re-reading a stored row is free; re-asking an addon or TMDb for the same page
+# costs the provider a request and the user a wait. Streams, subtitles and
+# trailer resolvers keep their explicit TTLs because those do change.
+CATALOG_CACHE_HOURS = None
 
 def _cache_row_is_fresh(age_hours, max_age_hours):
     """False only when the row has a declared TTL and has aged past it."""
@@ -4316,14 +4351,18 @@ def get_cached_catalog(cache_key, max_age_hours=CATALOG_CACHE_HOURS, allow_stale
     return None
 
 def is_catalog_cache_fresh(cache_key, max_age_hours=CATALOG_CACHE_HOURS):
-    """Return True if catalog exists in cache and was updated within max_age_hours."""
-    if not cache_key or max_age_hours is None:
+    """Return True if catalog exists in cache and was updated within max_age_hours.
+
+    ``max_age_hours=None`` means catalog rows are kept forever, so any stored
+    row counts as fresh; callers must not schedule a revalidation for it.
+    """
+    if not cache_key:
         return False
     now = time.time()
     with _MEM_CATALOG_LOCK:
         if cache_key in _MEM_CATALOG_CACHE:
             _, ts = _MEM_CATALOG_CACHE[cache_key]
-            if ts and (now - ts) < max_age_hours * 3600:
+            if ts and _cache_row_is_fresh((now - ts) / 3600, max_age_hours):
                 return True
     try:
         with _cache_db_lock:
@@ -4332,7 +4371,7 @@ def is_catalog_cache_fresh(cache_key, max_age_hours=CATALOG_CACHE_HOURS):
             cursor.execute("SELECT updated_at FROM catalog_cache WHERE cache_key = ?", (str(cache_key),))
             row = cursor.fetchone()
             if row and row[0]:
-                return (now - row[0]) < max_age_hours * 3600
+                return _cache_row_is_fresh((now - row[0]) / 3600, max_age_hours)
     except Exception:
         pass
     return False

@@ -1226,6 +1226,68 @@ def _read_cached_response_json(cache_file):
         return None
 
 
+def _get_text_request(url, timeout=10.0, headers=None, is_cancelled=None):
+    """Fetch a plain-text resource through the polite catalog host window.
+
+    Plugin manifests and scraper code are text rather than JSON, so they cannot
+    use ``_get_cached_request``. They still must pace their host and must never
+    issue a bare ``urlopen`` from a feature module. Returns ``None`` when the
+    host window is closed or the host is cooling down; network errors propagate
+    so the caller can report why an install failed.
+    """
+    if not url:
+        return None
+
+    host = _get_provider_host(url)
+    if is_provider_in_cooldown(host):
+        logging.info(f"[Provider Protection] Skipping text request to cooling host {host!r}")
+        return None
+
+    on_main_thread = threading.current_thread() is threading.main_thread()
+
+    def _window_closed():
+        return bool(is_cancelled and is_cancelled())
+
+    with _acquire_catalog_window(
+        host,
+        abort_event=_CancelCheckAsEvent(_window_closed),
+        may_wait=not on_main_thread,
+    ) as host_slot_open:
+        if not host_slot_open:
+            if on_main_thread:
+                logging.debug(f"Polite fetch window closed for {host or url}; text request skipped")
+                return None
+            logging.debug(f"Polite fetch window busy for {host or url}; fetching directly")
+
+        if headers is None:
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as response:
+                return response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                cooldown_secs = _retry_after_seconds(
+                    getattr(e, "headers", None),
+                    default=_CATALOG_429_COOLDOWN,
+                    floor=30,
+                )
+                set_provider_cooldown(
+                    host,
+                    duration_seconds=cooldown_secs,
+                    reason="HTTP 429 Too Many Requests",
+                )
+                logging.warning(
+                    f"[Provider Protection] {host} returned HTTP 429 for a text request. "
+                    f"Backing off {cooldown_secs}s."
+                )
+            try:
+                e.close()
+            except Exception:
+                pass
+            raise
+
+
 def _get_cached_request_uncollapsed(url, max_age_hours=2, headers=None, cache_only=False, timeout=3.0, is_cancelled=None):
     if not url:
         return None
@@ -5616,7 +5678,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
         if yt_id and not raw_stream_url and not external_url:
             raw_stream_url = f"https://www.youtube.com/watch?v={yt_id}"
 
-        is_external = bool(external_url and not raw_stream_url)
+        is_external = bool(s.get("is_external") or (external_url and not raw_stream_url))
         stream_url = raw_stream_url or external_url
         
         is_http = False
@@ -5766,6 +5828,8 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             "has_expiring_credentials": has_expiring_credentials,
             "addon_name": source_addon_names[0] if source_addon_names else "",
             "addon_names": source_addon_names,
+            "is_nuvio_plugin": bool(s.get("is_nuvio_plugin")),
+            "plugin_scraper_id": s.get("plugin_scraper_id"),
         }
 
         if season is not None and episode is not None:
@@ -6017,6 +6081,21 @@ def refresh_stream(imdb_id, media_type="movie", season=None, episode=None, old_s
             _REFRESH_RESULT_CACHE.pop(cache_key, None)
 
     if fresh_streams is None:
+        from . import plugins
+        if plugins.is_plugins_enabled() and target_provider:
+            for s in plugins.get_all_scrapers():
+                if plugins.get_scraper_provider_name(s).strip().casefold() == str(target_provider).strip().casefold():
+                    try:
+                        from . import tmdb_helper
+                        tmdb_id = tmdb_helper.resolve_to_tmdb_id(imdb_id, media_type, None)
+                        strms = plugins.execute_scraper(s, tmdb_id=tmdb_id, imdb_id=imdb_id, media_type=media_type, season=season, episode=episode)
+                        if strms:
+                            fresh_streams = process_raw_streams(strms, season=season, episode=episode)
+                            break
+                    except Exception as e:
+                        logger.error(f"[AUTO-HEAL] Failed to refresh plugin scraper {target_provider}: {e}")
+
+    if fresh_streams is None:
         fresh_streams = get_torrents(
             imdb_id,
             media_type=media_type,
@@ -6112,6 +6191,10 @@ def extract_stream_headers(stream_entry, url=None):
                         headers[key] = qv[0]
         except Exception:
             pass
+
+    if target_url and isinstance(target_url, str) and "hakunaymatata.com" in target_url.lower():
+        # hakunaymatata.com rejects Mozilla browser User-Agents with HTTP 428 and external Referers with HTTP 429
+        headers = {k: v for k, v in headers.items() if k.lower() not in ("user-agent", "referer")}
 
     return headers
 
@@ -6287,6 +6370,9 @@ def _ping_stream_url(stream):
     url = stream.get("url")
     if not url or not isinstance(url, str) or not (url.startswith("http://") or url.startswith("https://")):
         return stream
+    if " " in url:
+        url = url.replace(" ", "%20")
+        stream["url"] = url
     headers = extract_stream_headers(stream, url)
 
     for attempt in range(2):
@@ -6314,11 +6400,11 @@ def _ping_stream_url(stream):
                     return stream
         except urllib.error.HTTPError as e:
             is_hakuna = isinstance(url, str) and "hakunaymatata.com" in url.lower()
-            if e.code in (401, 403) and not is_hakuna and not any(k.lower() == 'user-agent' for k in headers):
+            if e.code in (428, 429) or is_hakuna:
+                headers = {k: v for k, v in headers.items() if k.lower() not in ('user-agent', 'referer')}
+            elif e.code in (401, 403) and not any(k.lower() == 'user-agent' for k in headers):
                 headers = dict(headers)
                 headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
-            elif e.code == 428 and any(k.lower() == 'user-agent' for k in headers):
-                headers = {k: v for k, v in headers.items() if k.lower() != 'user-agent'}
             try:
                 e.close()
             except Exception:
@@ -6334,11 +6420,11 @@ def _ping_stream_url(stream):
                     return stream
         except urllib.error.HTTPError as e:
             is_hakuna = isinstance(url, str) and "hakunaymatata.com" in url.lower()
-            if e.code in (401, 403) and not is_hakuna and not any(k.lower() == 'user-agent' for k in headers):
+            if e.code in (428, 429) or is_hakuna:
+                headers = {k: v for k, v in headers.items() if k.lower() not in ('user-agent', 'referer')}
+            elif e.code in (401, 403) and not any(k.lower() == 'user-agent' for k in headers):
                 headers = dict(headers)
                 headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
-            elif e.code == 428 and any(k.lower() == 'user-agent' for k in headers):
-                headers = {k: v for k, v in headers.items() if k.lower() != 'user-agent'}
             try:
                 e.close()
             except Exception:
@@ -6568,6 +6654,14 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             if not _stream_matches_source_scope(s, source_scope)
         ] + list(cache_candidates)
 
+    # Disabling plugin providers must also hide plugin cards that were cached
+    # before the toggle (or by an earlier app session). Provider labels alone
+    # cannot identify them reliably once grouping changes, so stream parsing
+    # carries the explicit marker.
+    if not plugins.is_plugins_enabled():
+        cached = [s for s in cached if not s.get("is_nuvio_plugin")]
+        cache_candidates = [s for s in cache_candidates if not s.get("is_nuvio_plugin")]
+
     print(
         f"[STREAM DEBUG] cache key={cache_key!r} cards={len(cached or [])} "
         f"age_seconds={cache_age!r} force={force_refresh} "
@@ -6619,7 +6713,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         )
     ]
 
-    from . import plugins
     plugin_scrapers = (
         plugins.get_enabled_scrapers_for_type(actual_media)
         if plugins.is_plugins_enabled()
@@ -6628,8 +6721,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     if provider_scope:
         plugin_scrapers = [
             s for s in plugin_scrapers
-            if str(s.get("name") or "").strip().casefold() == provider_scope.casefold()
-            or (plugins.is_group_by_repository() and str(s.get("repository_url") or "").strip().casefold() == provider_scope.casefold())
+            if plugins.get_scraper_provider_name(s).strip().casefold() == provider_scope.casefold()
+            or str(s.get("name") or "").strip().casefold() == provider_scope.casefold()
         ]
 
     print(
@@ -6759,12 +6852,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if abort_event and abort_event.is_set():
             return scraper_obj.get("name", "Plugin"), []
         from . import plugins
-        provider_name = scraper_obj.get("name", "Plugin")
-        if plugins.is_group_by_repository():
-            for r in plugins.get_installed_repositories():
-                if r.get("manifest_url") == scraper_obj.get("repository_url"):
-                    provider_name = r.get("name", provider_name)
-                    break
+        provider_name = plugins.get_scraper_provider_name(scraper_obj)
         streams = plugins.execute_scraper(
             scraper_obj, target_tmdb_id, actual_media, season=season, episode=episode, timeout=provider_timeout
         )
@@ -6779,6 +6867,10 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             raw = {
                 "infoHash": c.get("infoHash") or (c.get("hash") if _is_cached_torrent_stream(c) else None),
                 "url": c.get("url"),
+                "externalUrl": c.get("externalUrl"),
+                "sources": c.get("sources") or [],
+                "seeders": c.get("seeders"),
+                "is_external": c.get("is_external"),
                 "ytId": c.get("ytId"),
                 "is_trailer": c.get("is_trailer"),
                 "name": c.get("title") or "",
@@ -6790,7 +6882,9 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 "binge_group": c.get("binge_group"),
                 "addon_names": c.get("addon_names") or [],
                 "behaviorHints": c.get("behaviorHints") or ({"filename": c.get("filename")} if c.get("filename") else {}),
-                "addon_name": c.get("addon_name") or (c.get("addon_names")[0] if c.get("addon_names") else "Cache")
+                "addon_name": c.get("addon_name") or (c.get("addon_names")[0] if c.get("addon_names") else "Cache"),
+                "is_nuvio_plugin": bool(c.get("is_nuvio_plugin")),
+                "plugin_scraper_id": c.get("plugin_scraper_id"),
             }
             all_raw_streams.append(raw)
 
@@ -6803,7 +6897,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     import concurrent.futures
     total_providers = len(all_stream_addons) + len(plugin_scrapers)
-    num_workers = min(max(total_providers, 2), 6) if total_providers > 0 else 1
+    max_workers_limit = 16 if plugin_scrapers else 6
+    num_workers = min(max(total_providers, 2), max_workers_limit) if total_providers > 0 else 1
     if num_workers > 0 and total_providers > 0:
         if abort_event and abort_event.is_set():
             return []
@@ -6819,6 +6914,30 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         collection_deadline = time.monotonic() + provider_collection_timeout
 
         try:
+            # Fire off ID resolution in the background immediately so it is not
+            # queued behind dozens of plugin scrapers.
+            def resolve_and_submit():
+                from .tmdb_helper import resolve_all_provider_ids
+                ids_to_fetch = resolve_all_provider_ids(imdb_id, media_type, title)
+                print(f"[STREAM DEBUG] ID resolver id={imdb_id!r} returned {len(ids_to_fetch or [])} IDs: {ids_to_fetch!r}")
+                return [i for i in (ids_to_fetch or []) if i != imdb_id]
+
+            scoped_provider_cooling = bool(
+                provider_scope
+                and all_stream_addons
+                and all(
+                    is_provider_in_cooldown(_get_provider_host(a.get("manifest_url", "")))
+                    for a in all_stream_addons
+                )
+            )
+            if scoped_provider_cooling:
+                print(f"[STREAM DEBUG] skipping ID resolution: scoped provider {provider_scope!r} is cooling down")
+
+            if not (abort_event and abort_event.is_set()) and not scoped_provider_cooling:
+                resolve_future = executor.submit(resolve_and_submit)
+            else:
+                resolve_future = None
+
             # Submit immediately for any addon that directly supports initial imdb_id
             for addon in all_stream_addons:
                 if abort_event and abort_event.is_set():
@@ -6840,28 +6959,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     print(f"[STREAM DEBUG] direct TMDB ID accepted plugin={scraper.get('name')!r} tmdb_id={initial_tmdb_id!r}")
                     future_to_addon[executor.submit(fetch_from_plugin, scraper, initial_tmdb_id)] = (scraper, initial_tmdb_id)
                     queried_plugin_ids.add(scraper.get("id"))
-
-            # Fire off ID resolution in the background
-            def resolve_and_submit():
-                from .tmdb_helper import resolve_all_provider_ids
-                ids_to_fetch = resolve_all_provider_ids(imdb_id, media_type, title)
-                print(f"[STREAM DEBUG] ID resolver id={imdb_id!r} returned {len(ids_to_fetch or [])} IDs: {ids_to_fetch!r}")
-                return [i for i in (ids_to_fetch or []) if i != imdb_id]
-
-            scoped_provider_cooling = bool(
-                provider_scope
-                and all(
-                    is_provider_in_cooldown(_get_provider_host(a.get("manifest_url", "")))
-                    for a in all_stream_addons
-                )
-            )
-            if scoped_provider_cooling:
-                print(f"[STREAM DEBUG] skipping ID resolution: scoped provider {provider_scope!r} is cooling down")
-
-            if not (abort_event and abort_event.is_set()) and not scoped_provider_cooling:
-                resolve_future = executor.submit(resolve_and_submit)
-            else:
-                resolve_future = None
 
             futures = set(future_to_addon.keys())
             if resolve_future:

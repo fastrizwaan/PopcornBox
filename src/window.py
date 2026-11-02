@@ -3084,6 +3084,26 @@ class MovieDetailsPage(Gtk.Overlay):
             self.update_quality_dropdown()
             self.update_continue_btn()
 
+            if self.window and getattr(self.window, "stream_queue", None) is not None:
+                q_page = getattr(self.window, "stream_queue_details_page", None)
+                q_key = getattr(self.window, "stream_queue_item_key", None)
+                if (q_page is self or q_page is None) and (not q_key or q_key == stream_item_key):
+                    filtered_new = list(new_streams)
+                    if sel_season is not None and sel_episode is not None:
+                        from . import api
+                        filtered_new = [t for t in filtered_new if api.match_stream_to_episode(t, sel_season, sel_episode, ep_title) != api.MATCH_MISMATCH]
+                    source_idx = getattr(self, 'source_idx', 0)
+                    if source_idx == 1:
+                        filtered_new = [t for t in filtered_new if t.get("is_http")]
+                    elif source_idx == 2:
+                        filtered_new = [t for t in filtered_new if not t.get("is_http")]
+                    self.window._extend_stream_queue(filtered_new)
+                    if is_complete and getattr(self.window, "_waiting_for_more_streams", False):
+                        if self.window.stream_queue_index >= len(self.window.stream_queue):
+                            self.window._cancel_stream_waiting_watchdog()
+                            self.window._waiting_for_more_streams = False
+                            self.window._handle_all_streams_exhausted()
+
             if is_complete and not background:
                 self._refresh_other_source_in_background(stream_item_key)
 
@@ -3632,23 +3652,15 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def on_watch_clicked(self, btn=None):
         playback_trace_step("watch clicked", begin_source="watch clicked")
-        # Dedicated network priority: abort other stream fetching and background work immediately
-        if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
-            self.stream_abort_event.set()
+        # Abort trailer and live check background work, but keep stream discovery running for failover
         if hasattr(self, 'page_abort_event') and self.page_abort_event:
             self.page_abort_event.set()
         if hasattr(self, '_live_check_abort_event') and self._live_check_abort_event:
             self._live_check_abort_event.set()
         if hasattr(self, '_trailer_fast_abort') and self._trailer_fast_abort:
             self._trailer_fast_abort.set()
-        self._fetching_streams = False
-        if hasattr(self, '_set_provider_spinner_active'):
-            try:
-                self._set_provider_spinner_active(False)
-            except Exception:
-                pass
         if self.window and hasattr(self.window, "_cancel_all_background_fetching"):
-            self.window._cancel_all_background_fetching()
+            self.window._cancel_all_background_fetching(cancel_streams=False)
 
         raw_t_list = getattr(self, 'current_t_list', []) or []
         
@@ -4669,9 +4681,13 @@ class CineWindow(Adw.ApplicationWindow):
         self._next_ep_prefetch_lock = threading.Lock()
         self.stream_queue = []
         self.stream_queue_index = 0
+        self.stream_queue_details_page = None
+        self.stream_queue_item_key = None
         self.stream_request_id = 0
+        self._waiting_for_more_streams = False
         self._stream_loading_watchdog_id = None
         self._trailer_loading_watchdog_id = None
+        self._stream_waiting_watchdog_id = None
         self._seek_debounce_id = None
         self._is_hls_proxy_active = False
         self._hls_session_id = None
@@ -8118,7 +8134,7 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
 
-    def _cancel_all_background_fetching(self):
+    def _cancel_all_background_fetching(self, cancel_streams=True):
         """Instantly terminate and cancel all in-flight background catalog/search fetching threads and pools.
         
         Called on navigation, tab switches, dropdown changes, card clicks, and view changes
@@ -8193,21 +8209,22 @@ class CineWindow(Adw.ApplicationWindow):
                 while child and child not in seen_children and count < 50:
                     count += 1
                     seen_children.add(child)
-                    if hasattr(child, "stream_abort_event") and child.stream_abort_event and hasattr(child.stream_abort_event, "set"):
-                        child.stream_abort_event.set()
+                    if cancel_streams:
+                        if hasattr(child, "stream_abort_event") and child.stream_abort_event and hasattr(child.stream_abort_event, "set"):
+                            child.stream_abort_event.set()
+                        if hasattr(child, "_fetching_streams"):
+                            child._fetching_streams = False
+                        if hasattr(child, "_set_provider_spinner_active") and callable(child._set_provider_spinner_active):
+                            try:
+                                child._set_provider_spinner_active(False)
+                            except Exception:
+                                pass
                     if hasattr(child, "page_abort_event") and child.page_abort_event and hasattr(child.page_abort_event, "set"):
                         child.page_abort_event.set()
                     if hasattr(child, "_live_check_abort_event") and child._live_check_abort_event and hasattr(child._live_check_abort_event, "set"):
                         child._live_check_abort_event.set()
                     if hasattr(child, "_trailer_fast_abort") and child._trailer_fast_abort and hasattr(child._trailer_fast_abort, "set"):
                         child._trailer_fast_abort.set()
-                    if hasattr(child, "_fetching_streams"):
-                        child._fetching_streams = False
-                    if hasattr(child, "_set_provider_spinner_active") and callable(child._set_provider_spinner_active):
-                        try:
-                            child._set_provider_spinner_active(False)
-                        except Exception:
-                            pass
                     child = child.get_next_sibling() if hasattr(child, "get_next_sibling") else None
             except Exception:
                 pass
@@ -14490,7 +14507,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.is_loading_stream = True
         if hasattr(self, "start_page") and hasattr(self.start_page, "set_visible"):
             self.start_page.set_visible(False)
-        self._cancel_all_background_fetching()
+        self._cancel_all_background_fetching(cancel_streams=False)
         playback_trace("background fetching cancelled")
         curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else None
         if curr_page and curr_page != "player":
@@ -14674,24 +14691,111 @@ class CineWindow(Adw.ApplicationWindow):
         self._handle_youtube_failure(True, message=_("Trailer timed out after 30s"))
         return GLib.SOURCE_REMOVE
 
+    def _start_stream_waiting_watchdog(self, request_id):
+        self._cancel_stream_waiting_watchdog()
+        self._stream_waiting_watchdog_id = GLib.timeout_add_seconds(
+            20,
+            self._on_stream_waiting_timeout,
+            request_id
+        )
+
+    def _cancel_stream_waiting_watchdog(self):
+        wid = getattr(self, "_stream_waiting_watchdog_id", None)
+        if wid is not None:
+            try:
+                GLib.source_remove(wid)
+            except Exception:
+                pass
+            self._stream_waiting_watchdog_id = None
+
+    def _on_stream_waiting_timeout(self, request_id):
+        self._stream_waiting_watchdog_id = None
+        if request_id != getattr(self, "stream_request_id", 0):
+            return GLib.SOURCE_REMOVE
+        if getattr(self, "_waiting_for_more_streams", False):
+            self._waiting_for_more_streams = False
+            if self.stream_queue_index >= len(self.stream_queue or []):
+                self._handle_all_streams_exhausted()
+        return GLib.SOURCE_REMOVE
+
+    def _extend_stream_queue(self, new_streams):
+        if not getattr(self, "stream_queue", None) or not isinstance(new_streams, (list, tuple)):
+            return
+        existing_keys = set()
+        for s in self.stream_queue:
+            if isinstance(s, dict):
+                k = s.get("url") or s.get("magnet") or s.get("infoHash") or s.get("hash") or s.get("ytId")
+                if k:
+                    existing_keys.add(k)
+        to_add = []
+        for st in new_streams:
+            if not isinstance(st, dict):
+                continue
+            k = st.get("url") or st.get("magnet") or st.get("infoHash") or st.get("hash") or st.get("ytId")
+            if k and k not in existing_keys:
+                existing_keys.add(k)
+                to_add.append(st)
+
+        if not to_add:
+            return
+
+        pref_prov = getattr(self, "preferred_direct_provider", None) or getattr(self, "preferred_provider", None)
+        pref_q = getattr(self, "user_selected_quality", None)
+        active_bg = getattr(self, "active_binge_group", None)
+
+        def _prio(t):
+            t_http = bool(t.get("is_http"))
+            t_q = _normalize_stream_quality(t)
+            from . import api
+            same_bg = 1 if (active_bg and api.stream_matches_binge_group(t, active_bg)) else 0
+            same_q = 1 if (pref_q and t_q == pref_q) else 0
+            same_prov = 1 if (pref_prov and _stream_matches_provider(t, pref_prov)) else 0
+            if t_http:
+                tier = 0 if (same_prov and same_q) else (1 if same_prov else (2 if same_q else 3))
+                return (0, tier, -float(t.get("size_gb") or 0.0))
+            else:
+                seeds = int(t.get("seeders") or 0)
+                tier = 0 if same_bg else (1 if (seeds > 0 and same_q) else (2 if seeds > 0 else 3))
+                return (1, tier, -seeds)
+
+        to_add.sort(key=_prio)
+        self.stream_queue.extend(to_add)
+
+        if getattr(self, "_current_playing_item", None) and isinstance(self._current_playing_item, dict):
+            self._current_playing_item["stream_queue"] = list(self.stream_queue)
+
+        logger.info(f"[FAILOVER] Appended {len(to_add)} new streams to queue (total: {len(self.stream_queue)})")
+
+        if getattr(self, "_waiting_for_more_streams", False):
+            self._cancel_stream_waiting_watchdog()
+            self._waiting_for_more_streams = False
+            logger.info(f"[FAILOVER] Resuming playback from extended queue at index {self.stream_queue_index} ({len(self.stream_queue)} candidate streams available)...")
+            self._play_current_stream_from_queue()
+
     def hide_player_loading(self):
         self._cancel_stream_loading_watchdog()
         self._cancel_trailer_loading_watchdog()
+        self._cancel_stream_waiting_watchdog()
         GLib.idle_add(self._hide_player_loading_ui)
 
     def _hide_player_loading_ui(self):
         self.is_loading_stream = False
         self._cancel_stream_loading_watchdog()
         self._cancel_trailer_loading_watchdog()
+        self._cancel_stream_waiting_watchdog()
         if hasattr(self, "player_loading_box"):
             self.player_loading_box.set_visible(False)
 
     def _clear_stream_failover(self):
         self._cancel_stream_loading_watchdog()
         self._cancel_trailer_loading_watchdog()
+        self._cancel_stream_waiting_watchdog()
+        self._waiting_for_more_streams = False
         self.stream_request_id += 1
         self.stream_queue = []
         self.stream_queue_index = 0
+        self.stream_queue_key = None
+        self.stream_queue_details_page = None
 
     def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None, audio_url=None, item_id=None, media_type=None, season=None, episode=None, is_download=False):
         playback_trace_step(
@@ -14734,6 +14838,8 @@ class CineWindow(Adw.ApplicationWindow):
             self._hls_session_id = None
             self._hls_time_offset = 0.0
             self._hls_total_duration = None
+        if url and isinstance(url, str) and url.startswith(("http://", "https://")) and " " in url:
+            url = url.replace(" ", "%20")
         if url and isinstance(url, str) and any(d in url.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
             self.hide_player_loading()
             self._show_toast(_("Opening in web browser..."))
@@ -14925,15 +15031,12 @@ class CineWindow(Adw.ApplicationWindow):
             v_clean = str(v).strip()
             if not k_clean or not v_clean:
                 continue
+            if is_hakuna and k_clean.lower() in ("user-agent", "referer"):
+                # hakunaymatata.com rejects Mozilla browser User-Agents with HTTP 428 and external Referers with HTTP 429
+                continue
             if k_clean.lower() == "user-agent":
-                if is_hakuna and "mozilla" in v_clean.lower():
-                    # hakunaymatata.com rejects Mozilla browser User-Agents with HTTP 428
-                    continue
                 user_agent = v_clean
             elif k_clean.lower() == "referer":
-                if is_hakuna and "vidy.st" in v_clean.lower():
-                    # Leaked referer from previous provider
-                    continue
                 referrer = v_clean
             else:
                 # Do NOT include user-agent or referer here, otherwise MPV sends duplicate
@@ -15440,7 +15543,7 @@ class CineWindow(Adw.ApplicationWindow):
 
     def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page=None, season=None, episode=None, imdb_id=None, media_type=None, stream_subtitles=None):
         playback_trace_step("play_stream_with_failover", str(title or "")[:80], begin_source="play_stream_with_failover")
-        self._cancel_all_background_fetching()
+        self._cancel_all_background_fetching(cancel_streams=False)
         # Mark playback as loading immediately. This prevents the idle-state
         # observer from briefly restoring the player’s Open screen while the
         # playback request is being prepared.
@@ -15631,6 +15734,10 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue_episode = episode
         self.stream_queue_media_type = media_type or (getattr(page, 'media_type', 'movie') if page else 'movie')
         self.stream_queue_item_id = imdb_id or target_id
+        self.stream_queue_details_page = page
+        self.stream_queue_item_key = getattr(page, "_stream_item_key", None) if page else None
+        self._waiting_for_more_streams = False
+        self._cancel_stream_waiting_watchdog()
 
         playback_trace("queue prepared")
         self._play_current_stream_from_queue(self.stream_request_id)
@@ -15659,11 +15766,23 @@ class CineWindow(Adw.ApplicationWindow):
             break
 
         if self.stream_queue_index >= len(self.stream_queue):
-            self._handle_all_streams_exhausted()
+            page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
+            is_fetching = False
+            if page:
+                is_fetching = bool(getattr(page, "_fetching_streams", False))
+            if is_fetching:
+                logger.info("[FAILOVER] Candidate streams exhausted but stream discovery is still in progress; waiting for incoming streams...")
+                self._waiting_for_more_streams = True
+                self.show_player_loading(_("Finding more streams..."), self.stream_queue_title or "Stream")
+                self._start_stream_waiting_watchdog(request_id)
+            else:
+                self._handle_all_streams_exhausted()
             return
 
         torrent = self.stream_queue[self.stream_queue_index]
         magnet = torrent.get("url") or torrent.get("magnet") if isinstance(torrent, dict) else None
+        if magnet and isinstance(magnet, str) and magnet.startswith(("http://", "https://")) and " " in magnet:
+            magnet = magnet.replace(" ", "%20")
         hash_val = torrent.get("hash") or torrent.get("infoHash") if isinstance(torrent, dict) else None
         sources = torrent.get("sources") if isinstance(torrent, dict) else None
         file_index = torrent.get("file_index") if isinstance(torrent, dict) else None
@@ -15817,7 +15936,17 @@ class CineWindow(Adw.ApplicationWindow):
         if not getattr(self, 'stream_queue', None):
             return
         if self.stream_queue_index >= len(self.stream_queue):
-            self._handle_all_streams_exhausted()
+            page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
+            is_fetching = False
+            if page:
+                is_fetching = bool(getattr(page, "_fetching_streams", False))
+            if is_fetching:
+                logger.info("[FAILOVER] Candidate streams exhausted but stream discovery is still in progress; waiting for incoming streams...")
+                self._waiting_for_more_streams = True
+                self.show_player_loading(_("Finding more streams..."), self.stream_queue_title or "Stream")
+                self._start_stream_waiting_watchdog(request_id)
+            else:
+                self._handle_all_streams_exhausted()
             return
 
         failed_st = self.stream_queue[self.stream_queue_index]
@@ -15829,6 +15958,11 @@ class CineWindow(Adw.ApplicationWindow):
             st_headers = api.extract_stream_headers(failed_st)
             magnet = failed_st.get("url") or failed_st.get("magnet")
             if magnet:
+                if isinstance(magnet, str) and magnet.startswith(("http://", "https://")) and " " in magnet:
+                    magnet = magnet.replace(" ", "%20")
+                    failed_st["url"] = magnet
+                    if "magnet" in failed_st:
+                        failed_st["magnet"] = magnet
                 is_hakuna = "hakunaymatata.com" in magnet.lower()
                 if not any(k.lower() == 'user-agent' for k in st_headers):
                     if not is_hakuna:
@@ -15838,11 +15972,10 @@ class CineWindow(Adw.ApplicationWindow):
                         fallback_headers['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
                         self._play_stream(magnet, self.stream_queue_title or "Stream", headers=fallback_headers, preserve_queue=True)
                         return
-                elif any(k.lower() == 'user-agent' for k in st_headers):
-                    logger.info("[FAILOVER] Retrying stream without User-Agent (bypass 428 / bot blocks)")
+                elif any(k.lower() in ('user-agent', 'referer') for k in st_headers):
+                    logger.info("[FAILOVER] Retrying stream without User-Agent/Referer (bypass 428/429 bot blocks)")
                     self._start_stream_loading_watchdog(request_id)
-                    fallback_headers = {k: v for k, v in st_headers.items() if k.lower() != 'user-agent'}
-                    fallback_headers['User-Agent'] = ""
+                    fallback_headers = {k: v for k, v in st_headers.items() if k.lower() not in ('user-agent', 'referer')}
                     self._play_stream(magnet, self.stream_queue_title or "Stream", headers=fallback_headers, preserve_queue=True)
                     return
 
@@ -15932,7 +16065,17 @@ class CineWindow(Adw.ApplicationWindow):
             self._show_toast(msg)
             self._play_current_stream_from_queue(request_id)
         else:
-            self._handle_all_streams_exhausted()
+            page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
+            is_fetching = False
+            if page:
+                is_fetching = bool(getattr(page, "_fetching_streams", False))
+            if is_fetching:
+                logger.info("[FAILOVER] Candidate streams exhausted but stream discovery is still in progress; waiting for incoming streams...")
+                self._waiting_for_more_streams = True
+                self.show_player_loading(_("Finding more streams..."), self.stream_queue_title or "Stream")
+                self._start_stream_waiting_watchdog(request_id)
+            else:
+                self._handle_all_streams_exhausted()
 
     def _handle_all_streams_exhausted(self):
         logger.warning("All candidate streams failed or were exhausted.")

@@ -173,6 +173,56 @@ class TestCancelBackgroundFetching(unittest.TestCase):
         self.assertTrue(detail_child._trailer_fast_abort.is_set())
         self.assertFalse(detail_child._fetching_streams)
 
+    def test_cancel_all_background_fetching_preserves_streams_when_requested(self):
+        win = MagicMock()
+        win.unique_request_id = 1
+        win.discover_request_id = 1
+        win.content_request_id = 1
+        win.search_request_id = 1
+
+        detail_child = MagicMock()
+        detail_child.stream_abort_event = threading.Event()
+        detail_child.page_abort_event = threading.Event()
+        detail_child._live_check_abort_event = threading.Event()
+        detail_child._trailer_fast_abort = threading.Event()
+        detail_child._fetching_streams = True
+        detail_child.get_next_sibling.return_value = None
+
+        win.details_box = MagicMock()
+        win.details_box.get_first_child.return_value = detail_child
+
+        win.person_box = MagicMock()
+        win.person_box.get_first_child.return_value = None
+
+        CineWindow._cancel_all_background_fetching(win, cancel_streams=False)
+
+        # Other events set, but streams preserved for failover!
+        self.assertFalse(detail_child.stream_abort_event.is_set())
+        self.assertTrue(detail_child.page_abort_event.is_set())
+        self.assertTrue(detail_child._live_check_abort_event.is_set())
+        self.assertTrue(detail_child._trailer_fast_abort.is_set())
+        self.assertTrue(detail_child._fetching_streams)
+
+    def test_extend_stream_queue(self):
+        win = MagicMock()
+        win.stream_queue = [{"url": "http://example.com/stream1.mp4", "is_http": True, "addon_name": "Vidlink"}]
+        win.stream_queue_index = 0
+        win._waiting_for_more_streams = True
+        win._stream_waiting_watchdog_id = 42
+        win._current_playing_item = {}
+
+        new_streams = [
+            {"url": "http://example.com/stream1.mp4", "is_http": True, "addon_name": "Vidlink"},
+            {"url": "http://example.com/stream2.mp4", "is_http": True, "addon_name": "Showbox"},
+        ]
+
+        with patch("gi.repository.GLib.source_remove"):
+            CineWindow._extend_stream_queue(win, new_streams)
+
+        self.assertEqual(len(win.stream_queue), 2)
+        self.assertFalse(win._waiting_for_more_streams)
+        win._play_current_stream_from_queue.assert_called_once()
+
     def test_catalog_cache_allow_stale_and_freshness(self):
         import time
         from pathlib import Path

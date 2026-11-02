@@ -13,6 +13,7 @@ import shutil
 import urllib.request
 import urllib.error
 import urllib.parse
+import ssl
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -25,6 +26,11 @@ logger = logging.getLogger("PopcornBox.Plugins")
 
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 RUNNER_BUNDLE_FILENAME = "nuvio_runner.bundle.js"
+
+try:
+    _SSL_CONTEXT = ssl.create_default_context()
+except Exception:
+    _SSL_CONTEXT = None
 
 _js_runtime_cmd = None
 _runtime_checked = False
@@ -59,7 +65,7 @@ def find_js_runtime():
     """
     global _js_runtime_cmd, _runtime_checked
     with _runtime_lock:
-        if _runtime_checked and _js_runtime_cmd is not None:
+        if _runtime_checked:
             return _js_runtime_cmd
 
         bundle_path = get_runner_bundle_path()
@@ -154,6 +160,10 @@ def is_plugins_enabled():
 
 def set_plugins_enabled(enabled):
     database.set_setting("plugins_enabled", bool(enabled))
+    # Cached stream rows embed the provider labels from the previous mode.
+    # Drop them so disabling plugins cannot keep their cards alive and
+    # re-enabling gets a clean, grouped fetch.
+    database.clear_all_cached_streams_async()
 
 
 def is_group_by_repository():
@@ -162,6 +172,7 @@ def is_group_by_repository():
 
 def set_group_by_repository(enabled):
     database.set_setting("plugins_group_by_repository", bool(enabled))
+    database.clear_all_cached_streams_async()
 
 
 def get_scraper_settings(scraper_id):
@@ -191,11 +202,56 @@ def get_scrapers_for_repository(manifest_url):
     return [s for s in get_all_scrapers() if s.get("repository_url") == manifest_url]
 
 
+def get_repository_name(manifest_url, default=None):
+    """Return a repository's display name for one of its scrapers."""
+    if not manifest_url:
+        return default
+    for repo in get_installed_repositories():
+        if repo.get("manifest_url") == manifest_url:
+            return repo.get("name") or default
+    return default
+
+
+def get_scraper_provider_name(scraper):
+    """Return the provider label shown in Streams (repo name when grouping)."""
+    name = (scraper.get("name") if isinstance(scraper, dict) else None) or "Plugin"
+    if is_group_by_repository():
+        return get_repository_name(scraper.get("repository_url"), name)
+    return name
+
+
+
 def get_scraper(scraper_id):
     for s in get_all_scrapers():
         if s.get("id") == scraper_id:
             return s
     return None
+
+
+def get_platform_tags():
+    """Platform tags a Nuvio manifest uses to gate scraper availability."""
+    tags = {"desktop", "jvm"}
+    if sys.platform.startswith("linux"):
+        tags.add("linux")
+    elif sys.platform == "darwin":
+        tags.add("macos")
+    elif sys.platform.startswith("win"):
+        tags.add("windows")
+    return tags
+
+
+def scraper_supported_on_this_platform(info):
+    """Match Nuvio's supportedPlatforms/disabledPlatforms manifest filters."""
+    if not isinstance(info, dict):
+        return False
+    supported = {str(t).strip().lower() for t in (info.get("supportedPlatforms") or []) if t}
+    disabled = {str(t).strip().lower() for t in (info.get("disabledPlatforms") or []) if t}
+    tags = get_platform_tags()
+    if supported and tags.isdisjoint(supported):
+        return False
+    if not tags.isdisjoint(disabled):
+        return False
+    return True
 
 
 def normalize_media_type(media_type):
@@ -230,12 +286,15 @@ def toggle_scraper(scraper_id, enabled):
 
 # --- HTTP Helpers ---
 
-def _http_get_text(url, timeout=10.0):
+def _http_get_text(url, timeout=15.0):
+    """Fetch text resource directly with proper User-Agent and SSL context."""
+    if not url:
+        return ""
     req = urllib.request.Request(
         url,
         headers={"User-Agent": DEFAULT_USER_AGENT, "Accept": "*/*"}
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
 
@@ -265,6 +324,8 @@ def fetch_repository_data(manifest_url):
     # Fetch scraper code in parallel
     scrapers = []
     def _fetch_one_scraper(info):
+        if not isinstance(info, dict) or not scraper_supported_on_this_platform(info):
+            return None
         s_id = str(info.get("id") or "").strip()
         if not s_id:
             return None
@@ -294,10 +355,13 @@ def fetch_repository_data(manifest_url):
             "filename": filename,
             "supported_types": info.get("supportedTypes") or ["movie", "tv"],
             "enabled": bool(info.get("enabled", True)),
+            "manifest_enabled": bool(info.get("enabled", True)),
             "has_settings": bool(info.get("hasSettings", False)),
             "logo": info.get("logo"),
             "content_language": info.get("contentLanguage") or [],
-            "formats": info.get("formats") or [],
+            "formats": info.get("formats") or info.get("supportedFormats") or [],
+            "supported_platforms": info.get("supportedPlatforms") or [],
+            "disabled_platforms": info.get("disabledPlatforms") or [],
             "code": code,
         }
 
@@ -372,12 +436,14 @@ def refresh_repository(manifest_url):
                 break
         return False, f"Failed to refresh: {e}", None
 
-    # Preserve previous user enabled states
+    # Preserve previous user enabled states; default to manifest enabled for new scrapers
     prev_scrapers = {s["id"]: s for s in get_all_scrapers()}
     for s in new_scrapers:
         old = prev_scrapers.get(s["id"])
         if old is not None:
-            s["enabled"] = old.get("enabled", s["enabled"])
+            s["enabled"] = bool(old.get("enabled", s.get("manifest_enabled", True)))
+        else:
+            s["enabled"] = bool(s.get("manifest_enabled", True))
 
     database.save_plugin_repository(repo_info)
     database.save_plugin_scrapers(new_scrapers, replace_for_repo=manifest_url)
@@ -468,34 +534,48 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
 def _format_scraper_results(raw_items, scraper):
     """Convert raw scraper output into PopcornBox stream dictionary entries."""
     formatted = []
-    group_by_repo = is_group_by_repository()
+    provider_name = get_scraper_provider_name(scraper)
+    default_name = scraper.get("name") or "Plugin"
 
-    # Find repo name
-    repo_name = scraper.get("name")
-    if group_by_repo:
-        for r in get_installed_repositories():
-            if r.get("manifest_url") == scraper.get("repository_url"):
-                repo_name = r.get("name", scraper.get("name"))
-                break
+    def _text(value):
+        return "" if value is None else str(value).strip()
 
     for item in raw_items:
         if not isinstance(item, dict):
             continue
+
         url = item.get("url")
         if isinstance(url, dict):
             url = url.get("url")
-        if not url or not isinstance(url, str) or not url.strip():
+        url = _text(url)
+        external_url = _text(item.get("externalUrl"))
+        info_hash = _text(item.get("infoHash"))
+        yt_id = _text(item.get("ytId"))
+        # Nuvio scrapers may return direct URLs, torrent hashes, external
+        # links, or YouTube IDs. Dropping a hash-only result silently emptied
+        # whole providers, so accept every playable source shape here.
+        if not any((url, external_url, info_hash, yt_id)):
             continue
 
-        url = url.strip()
-        name = item.get("name") or item.get("title") or scraper.get("name")
-        title = item.get("title") or item.get("name") or ""
-        quality = item.get("quality") or ""
-        size = item.get("size") or ""
-        language = item.get("language") or ""
-        headers = item.get("headers") or {}
-        subtitles = item.get("subtitles") or []
-        info_hash = item.get("infoHash")
+        if url and url.startswith(("http://", "https://")):
+            url = url.replace(" ", "%20")
+        if external_url and external_url.startswith(("http://", "https://")):
+            external_url = external_url.replace(" ", "%20")
+
+        name = _text(item.get("name") or item.get("provider")) or default_name
+        title = _text(item.get("title"))
+        quality = _text(item.get("quality"))
+        size = _text(item.get("size"))
+        language = _text(item.get("language"))
+        headers = item.get("headers")
+        if not isinstance(headers, dict):
+            headers = {}
+        subtitles = item.get("subtitles")
+        if not isinstance(subtitles, list):
+            subtitles = []
+        sources = item.get("sources")
+        if not isinstance(sources, list):
+            sources = []
 
         desc_parts = [p for p in [quality, size, language] if p]
         desc_line = " • ".join(desc_parts)
@@ -507,24 +587,53 @@ def _format_scraper_results(raw_items, scraper):
         else:
             full_title = title or name
 
-        behavior_hints = dict(item.get("behaviorHints") or {})
+        behavior_hints = item.get("behaviorHints")
+        if not isinstance(behavior_hints, dict):
+            behavior_hints = {}
+        else:
+            behavior_hints = dict(behavior_hints)
         if headers:
-            # Proxy / HTTP headers
-            behavior_hints.setdefault("proxyHeaders", {})["request"] = headers
-            behavior_hints.setdefault("headers", {}).update(headers)
+            # Proxy / HTTP headers. Merge with any hints the scraper supplied
+            # instead of replacing them outright.
+            proxy_headers = behavior_hints.get("proxyHeaders")
+            if not isinstance(proxy_headers, dict):
+                proxy_headers = {}
+            else:
+                proxy_headers = dict(proxy_headers)
+            request_headers = proxy_headers.get("request")
+            if not isinstance(request_headers, dict):
+                request_headers = {}
+            else:
+                request_headers = dict(request_headers)
+            request_headers.update(headers)
+            proxy_headers["request"] = request_headers
+            behavior_hints["proxyHeaders"] = proxy_headers
+            hinted_headers = behavior_hints.get("headers")
+            if not isinstance(hinted_headers, dict):
+                hinted_headers = {}
+            else:
+                hinted_headers = dict(hinted_headers)
+            hinted_headers.update(headers)
+            behavior_hints["headers"] = hinted_headers
 
         formatted.append({
             "name": name,
             "title": full_title,
             "url": url,
+            "externalUrl": external_url,
+            "ytId": yt_id,
             "quality": quality,
             "size": size,
             "headers": headers,
             "subtitles": subtitles,
             "infoHash": info_hash,
+            "fileIdx": item.get("fileIdx"),
+            "sources": sources,
+            "seeders": item.get("seeders"),
+            "peers": item.get("peers"),
             "behaviorHints": behavior_hints,
-            "addon_name": repo_name if group_by_repo else scraper.get("name"),
-            "addon_names": [repo_name if group_by_repo else scraper.get("name")],
+            "addon_name": provider_name,
+            "addon_names": [provider_name],
             "is_nuvio_plugin": True,
             "plugin_scraper_id": scraper.get("id"),
         })
