@@ -57,6 +57,7 @@ cine_sources = [
   'person_page.py',
   'player.py',
   'playlist.py',
+  'plugins.py',
   'preferences.py',
   'save_session.py',
   'shortcuts.py',
@@ -65,6 +66,7 @@ cine_sources = [
   'tmdb_helper.py',
   'utils.py',
   'window.py',
+  'nuvio_runner.bundle.js',
 ]
 
 install_data(cine_sources, install_dir: moduledir)

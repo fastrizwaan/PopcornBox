@@ -12,6 +12,8 @@ import gzip
 import zlib
 import base64
 from . import database
+from . import tmdb_helper
+from . import plugins
 from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids, TMDB_GENRES, fetch_tmdb_standalone_metadata
 import concurrent.futures
 import threading
@@ -2454,8 +2456,16 @@ def get_stream_addons(media_type=None, item_id=None, only_working=True):
     ]
 
 def has_stream_addons(media_type=None, item_id=None, only_working=True):
-    """Return True if there is at least one enabled stream/torrent addon for this media type and item."""
-    return len(get_stream_addons(media_type=media_type, item_id=item_id, only_working=only_working)) > 0
+    """Return True if there is at least one enabled stream/torrent addon or Nuvio plugin for this media type and item."""
+    if len(get_stream_addons(media_type=media_type, item_id=item_id, only_working=only_working)) > 0:
+        return True
+    try:
+        from . import plugins
+        if plugins.is_plugins_enabled() and len(plugins.get_enabled_scrapers_for_type(media_type or "movie")) > 0:
+            return True
+    except Exception:
+        pass
+    return False
 
 def addon_declares_resource(addon, resource_name):
     """Check an addon's declared resources without health or toggle gating.
@@ -6598,11 +6608,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     actual_media = media_type
     addons = [a for a in database.get_addons() if a.get("enabled", True)]
     print(f"[STREAM DEBUG] enabled addons={len(addons)} media={actual_media!r}")
-    if not addons:
-        print(f"[STREAM DEBUG] no enabled addons; returning cached cards={len(cached or [])}")
-        if callback: callback(usable_cached, is_cached=False, is_complete=True)
-        return usable_cached
-        
+
     all_stream_addons = [
         a for a in addons
         if not a.get("manifest_url", "").startswith("builtin://")
@@ -6612,12 +6618,27 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             or str(a.get("name") or "").strip().casefold() == provider_scope.casefold()
         )
     ]
+
+    from . import plugins
+    plugin_scrapers = (
+        plugins.get_enabled_scrapers_for_type(actual_media)
+        if plugins.is_plugins_enabled()
+        else []
+    )
+    if provider_scope:
+        plugin_scrapers = [
+            s for s in plugin_scrapers
+            if str(s.get("name") or "").strip().casefold() == provider_scope.casefold()
+            or (plugins.is_group_by_repository() and str(s.get("repository_url") or "").strip().casefold() == provider_scope.casefold())
+        ]
+
     print(
-        f"[STREAM DEBUG] stream-capable addons={len(all_stream_addons)} provider_scope={provider_scope!r} "
+        f"[STREAM DEBUG] stream-capable addons={len(all_stream_addons)} plugins={len(plugin_scrapers)} "
+        f"provider_scope={provider_scope!r} "
         f"names={[a.get('name', 'Unknown') for a in all_stream_addons]}"
     )
-    if not all_stream_addons:
-        print(f"[STREAM DEBUG] no stream-capable addons; returning cached cards={len(cached or [])}")
+    if not all_stream_addons and not plugin_scrapers:
+        print(f"[STREAM DEBUG] no stream-capable addons or plugins; returning cached cards={len(cached or [])}")
         if callback: callback(usable_cached, is_cached=False, is_complete=True)
         return usable_cached
 
@@ -6734,6 +6755,22 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         print(f"[STREAM DEBUG] addon request done addon={addon.get('name')!r} id={cur_id!r} raw_cards={len(streams or [])}")
         return addon.get("name", "Unknown"), streams
 
+    def fetch_from_plugin(scraper_obj, target_tmdb_id):
+        if abort_event and abort_event.is_set():
+            return scraper_obj.get("name", "Plugin"), []
+        from . import plugins
+        provider_name = scraper_obj.get("name", "Plugin")
+        if plugins.is_group_by_repository():
+            for r in plugins.get_installed_repositories():
+                if r.get("manifest_url") == scraper_obj.get("repository_url"):
+                    provider_name = r.get("name", provider_name)
+                    break
+        streams = plugins.execute_scraper(
+            scraper_obj, target_tmdb_id, actual_media, season=season, episode=episode, timeout=provider_timeout
+        )
+        print(f"[STREAM DEBUG] plugin scraper done scraper={scraper_obj.get('name')!r} raw_cards={len(streams or [])}")
+        return provider_name, streams
+
     all_raw_streams = []
     if cached and not force_refresh:
         cache_seed_streams = usable_cache_candidates if source_scope else usable_cached
@@ -6765,8 +6802,9 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     alias_cache_ids = []
 
     import concurrent.futures
-    num_workers = min(max(len(all_stream_addons), 2), 4) if all_stream_addons else 1
-    if num_workers > 0 and all_stream_addons:
+    total_providers = len(all_stream_addons) + len(plugin_scrapers)
+    num_workers = min(max(total_providers, 2), 6) if total_providers > 0 else 1
+    if num_workers > 0 and total_providers > 0:
         if abort_event and abort_event.is_set():
             return []
         try:
@@ -6777,6 +6815,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             return []
         future_to_addon = {}
         queried_addon_urls = set()
+        queried_plugin_ids = set()
         collection_deadline = time.monotonic() + provider_collection_timeout
 
         try:
@@ -6791,6 +6830,16 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     queried_addon_urls.add(m_url)
                 else:
                     print(f"[STREAM DEBUG] direct ID not supported addon={addon.get('name')!r} id={imdb_id!r}")
+
+            # Submit immediately for any plugin scrapers if TMDB ID is directly known
+            initial_tmdb_id = tmdb_helper.resolve_to_tmdb_id(imdb_id, actual_media, title)
+            if initial_tmdb_id and plugin_scrapers:
+                for scraper in plugin_scrapers:
+                    if abort_event and abort_event.is_set():
+                        return []
+                    print(f"[STREAM DEBUG] direct TMDB ID accepted plugin={scraper.get('name')!r} tmdb_id={initial_tmdb_id!r}")
+                    future_to_addon[executor.submit(fetch_from_plugin, scraper, initial_tmdb_id)] = (scraper, initial_tmdb_id)
+                    queried_plugin_ids.add(scraper.get("id"))
 
             # Fire off ID resolution in the background
             def resolve_and_submit():
@@ -6855,6 +6904,24 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                             queried_addon_urls.add(m_url)
                                             futures.add(new_fut)
                                             break
+                                if plugin_scrapers and len(queried_plugin_ids) < len(plugin_scrapers):
+                                    resolved_tmdb = None
+                                    for cand in (resolved_ids or []):
+                                        if str(cand).isdigit() or str(cand).startswith("tmdb:"):
+                                            resolved_tmdb = str(cand).replace("tmdb:", "")
+                                            break
+                                    if not resolved_tmdb:
+                                        resolved_tmdb = tmdb_helper.resolve_to_tmdb_id(imdb_id, actual_media, title)
+                                    if resolved_tmdb:
+                                        for scraper in plugin_scrapers:
+                                            if scraper.get("id") not in queried_plugin_ids:
+                                                if abort_event and abort_event.is_set():
+                                                    return []
+                                                print(f"[STREAM DEBUG] resolved TMDB ID accepted plugin={scraper.get('name')!r} tmdb_id={resolved_tmdb!r}")
+                                                new_fut = executor.submit(fetch_from_plugin, scraper, resolved_tmdb)
+                                                future_to_addon[new_fut] = (scraper, resolved_tmdb)
+                                                queried_plugin_ids.add(scraper.get("id"))
+                                                futures.add(new_fut)
                                 if is_encoded_id:
                                     canonical_id = next(
                                         (str(i) for i in resolved_ids if str(i).startswith("tt")),
@@ -6870,8 +6937,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                             addon_obj = addon_orig_info[0] if addon_orig_info else None
                             addon_name, streams = future.result()
                             if streams:
-                                # Successful response — clear any previous failure count
-                                if addon_obj:
+                                # Successful response — clear any previous failure count for Stremio addons
+                                if addon_obj and addon_obj.get("manifest_url") and not addon_obj.get("raw_id"):
                                     _record_addon_success(addon_obj.get("manifest_url", ""))
                                 for s in streams:
                                     if check_stream_rate_limit_warning(s):

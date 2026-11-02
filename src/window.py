@@ -86,6 +86,7 @@ import concurrent.futures
 from . import database
 from . import api
 from . import player
+from . import plugins
 from .api import fetch_items, fetch_movie_details, get_torrents_streamed
 from .movie_widget import (
     MovieWidget,
@@ -4415,6 +4416,20 @@ class CineWindow(Adw.ApplicationWindow):
     addon_catalog_status_label: Gtk.Label = Gtk.Template.Child()
     addon_url_entry: Gtk.Entry = Gtk.Template.Child()
     addons_listbox: Gtk.ListBox = Gtk.Template.Child()
+
+    plugin_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
+    plugin_badge_repos: Gtk.Label = Gtk.Template.Child()
+    plugin_badge_providers: Gtk.Label = Gtk.Template.Child()
+    plugin_badge_status: Gtk.Label = Gtk.Template.Child()
+    plugin_enable_globally_row: Adw.SwitchRow = Gtk.Template.Child()
+    plugin_group_by_repo_row: Adw.SwitchRow = Gtk.Template.Child()
+    plugin_repo_url_entry: Gtk.Entry = Gtk.Template.Child()
+    plugin_install_repo_btn: Gtk.Button = Gtk.Template.Child()
+    plugin_install_status_label: Gtk.Label = Gtk.Template.Child()
+    plugin_refresh_all_btn: Gtk.Button = Gtk.Template.Child()
+    plugin_repos_listbox: Gtk.ListBox = Gtk.Template.Child()
+    plugin_provider_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
+    plugin_providers_listbox: Gtk.ListBox = Gtk.Template.Child()
     video_overlay: Gtk.Overlay = Gtk.Template.Child()
     start_page: Adw.StatusPage = Gtk.Template.Child()
     revealer_icon_indicator: Gtk.Revealer = Gtk.Template.Child()
@@ -4772,6 +4787,9 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action("open-chapters-menu", self._on_open_chapters_menu)
         self._create_action("save-session", self._on_save_session)
         self._create_action("open-addons", self._open_addons)
+        self._create_action("open-plugins", self._open_plugins)
+        self._create_action("install-plugin-repo", self._on_install_plugin_repo_clicked)
+        self._create_action("refresh-all-plugin-repos", self._on_refresh_all_plugin_repos_clicked)
         self._create_action("back-to-library", self._back_to_library)
         self._create_action("go-back", self._go_back)
         self._create_action("import-addons", self._import_addons)
@@ -4852,6 +4870,7 @@ class CineWindow(Adw.ApplicationWindow):
             widget.set_direction(Gtk.TextDirection.LTR)
 
         self._setup_addons_page()
+        self._setup_plugins_page()
 
         self.library_stack.connect("notify::visible-child-name", self._on_library_stack_changed)
         self._on_library_stack_changed()
@@ -17965,6 +17984,324 @@ class CineWindow(Adw.ApplicationWindow):
             subtitle = row.get_subtitle().lower() if hasattr(row, "get_subtitle") and row.get_subtitle() else ""
             return search_text in title or search_text in subtitle
 
+    def _setup_plugins_page(self):
+        if not hasattr(self, "plugin_repos_listbox") or not self.plugin_repos_listbox:
+            return
+
+        from . import plugins
+
+        self._syncing_plugin_switches = True
+        try:
+            self.plugin_enable_globally_row.set_active(plugins.is_plugins_enabled())
+            self.plugin_group_by_repo_row.set_active(plugins.is_group_by_repository())
+        finally:
+            self._syncing_plugin_switches = False
+
+        self.plugin_enable_globally_row.connect("notify::active", self._on_plugin_enable_globally_toggled)
+        self.plugin_group_by_repo_row.connect("notify::active", self._on_plugin_group_by_repo_toggled)
+
+        self.plugin_provider_search_entry.connect("search-changed", lambda *a: self.plugin_providers_listbox.invalidate_filter())
+        self.plugin_provider_search_entry.connect("activate", lambda *a: self.plugin_providers_listbox.invalidate_filter())
+
+        self.plugin_repo_url_entry.connect("activate", lambda *a: self._on_install_plugin_repo_clicked())
+
+        self.plugin_providers_listbox.set_filter_func(self._plugin_provider_filter_func)
+
+    def _populate_plugins(self):
+        from . import plugins
+
+        repos = plugins.get_installed_repositories()
+        scrapers = plugins.get_all_scrapers()
+
+        repo_count = len(repos)
+        scraper_count = len(scrapers)
+        self.plugin_badge_repos.set_label(f"{repo_count} repo{'s' if repo_count != 1 else ''}")
+        self.plugin_badge_providers.set_label(f"{scraper_count} provider{'s' if scraper_count != 1 else ''}")
+
+        enabled = plugins.is_plugins_enabled()
+        if enabled:
+            self.plugin_badge_status.set_label(_("Plugins enabled"))
+            self.plugin_badge_status.remove_css_class("plugin-disabled")
+            self.plugin_badge_status.add_css_class("plugin-enabled")
+        else:
+            self.plugin_badge_status.set_label(_("Plugins disabled"))
+            self.plugin_badge_status.remove_css_class("plugin-enabled")
+            self.plugin_badge_status.add_css_class("plugin-disabled")
+
+        self._syncing_plugin_switches = True
+        try:
+            self.plugin_enable_globally_row.set_active(enabled)
+            self.plugin_group_by_repo_row.set_active(plugins.is_group_by_repository())
+        finally:
+            self._syncing_plugin_switches = False
+
+        while self.plugin_repos_listbox.get_first_child() is not None:
+            self.plugin_repos_listbox.remove(self.plugin_repos_listbox.get_first_child())
+
+        if not repos:
+            empty_row = Adw.ActionRow(
+                title=_("No repositories installed"),
+                subtitle=_("Add a repository manifest URL above to install plugin providers.")
+            )
+            empty_row.set_sensitive(False)
+            self.plugin_repos_listbox.append(empty_row)
+        else:
+            for repo in repos:
+                manifest_url = repo.get("manifest_url", "")
+                repo_name = repo.get("name", "Unknown") or "Unknown"
+                repo_desc = repo.get("description") or manifest_url
+                count = repo.get("scraper_count", 0)
+
+                row = Adw.ActionRow(
+                    title=GLib.markup_escape_text(repo_name),
+                    subtitle=GLib.markup_escape_text(repo_desc)
+                )
+
+                icon = Gtk.Image.new_from_icon_name("software-properties-symbolic")
+                icon.set_pixel_size(18)
+                row.add_prefix(icon)
+
+                suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, valign=Gtk.Align.CENTER)
+
+                count_label = Gtk.Label(label=f"{count} provider{'s' if count != 1 else ''}", valign=Gtk.Align.CENTER)
+                count_label.add_css_class("dim-label")
+                count_label.add_css_class("caption")
+                suffix_box.append(count_label)
+
+                ref_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text=_("Refresh repository"), valign=Gtk.Align.CENTER)
+                ref_btn.add_css_class("flat")
+                ref_btn.add_css_class("circular")
+                ref_btn.connect("clicked", lambda b, u=manifest_url: self._on_refresh_single_plugin_repo(u))
+                suffix_box.append(ref_btn)
+
+                del_btn = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text=_("Remove repository"), valign=Gtk.Align.CENTER)
+                del_btn.add_css_class("flat")
+                del_btn.add_css_class("circular")
+                del_btn.connect("clicked", lambda b, u=manifest_url, n=repo_name: self._on_remove_plugin_repo(u, n))
+                suffix_box.append(del_btn)
+
+                row.add_suffix(suffix_box)
+                self.plugin_repos_listbox.append(row)
+
+        self._populate_plugin_providers_list(scrapers)
+
+    def _populate_plugin_providers_list(self, scrapers=None):
+        from . import plugins
+
+        while self.plugin_providers_listbox.get_first_child() is not None:
+            self.plugin_providers_listbox.remove(self.plugin_providers_listbox.get_first_child())
+
+        if scrapers is None:
+            scrapers = plugins.get_all_scrapers()
+
+        if not scrapers:
+            empty_row = Adw.ActionRow(
+                title=_("No providers available"),
+                subtitle=_("Install a plugin repository above to load providers.")
+            )
+            empty_row.set_sensitive(False)
+            self.plugin_providers_listbox.append(empty_row)
+            return
+
+        repo_names = {r.get("manifest_url"): r.get("name", "Plugin Repo") for r in plugins.get_installed_repositories()}
+
+        for scraper in scrapers:
+            s_id = scraper.get("id")
+            s_name = scraper.get("name") or scraper.get("raw_id") or "Provider"
+            s_desc = scraper.get("description") or ""
+            repo_name = repo_names.get(scraper.get("repository_url"), "Plugin Repo")
+            supported_types = scraper.get("supported_types") or ["movie", "tv"]
+            types_str = " | ".join(supported_types)
+            version = scraper.get("version", "1.0.0")
+
+            escaped_repo = GLib.markup_escape_text(f"[{repo_name}]")
+            escaped_name = GLib.markup_escape_text(s_name)
+            escaped_desc = GLib.markup_escape_text(s_desc)
+
+            row = Adw.ActionRow()
+            row.set_use_markup(True)
+            row.set_title(f"<span foreground='#3584e4' font_weight='bold'>{escaped_repo}</span>  <b>{escaped_name}</b>")
+            if escaped_desc:
+                row.set_subtitle(escaped_desc)
+
+            row._provider_name = s_name.lower()
+            row._provider_desc = s_desc.lower()
+            row._repo_name = repo_name.lower()
+            row._supported_types = [t.lower() for t in supported_types]
+
+            pfx = Gtk.Image.new_from_icon_name("application-x-addon-symbolic")
+            pfx.set_pixel_size(18)
+            pfx.add_css_class("accent")
+            row.add_prefix(pfx)
+
+            sfx = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, valign=Gtk.Align.CENTER)
+
+            if types_str:
+                type_badge = Gtk.Label(label=types_str, valign=Gtk.Align.CENTER)
+                type_badge.add_css_class("plugin-tag-label")
+                sfx.append(type_badge)
+
+            ver_badge = Gtk.Label(label=f"v{version}", valign=Gtk.Align.CENTER)
+            ver_badge.add_css_class("dim-label")
+            ver_badge.add_css_class("caption")
+            sfx.append(ver_badge)
+
+            test_btn = Gtk.Button(label=_("Test"), valign=Gtk.Align.CENTER)
+            test_btn.add_css_class("flat")
+            test_btn.add_css_class("pill")
+            test_btn.connect("clicked", lambda b, sid=s_id, sn=s_name: self._on_test_scraper_clicked(sid, sn, b))
+            sfx.append(test_btn)
+
+            sw = Gtk.Switch(valign=Gtk.Align.CENTER)
+            sw.set_active(bool(scraper.get("enabled", True)))
+            sw.connect("notify::active", lambda s, p, sid=s_id: self._on_scraper_switch_toggled(s, sid))
+            sfx.append(sw)
+
+            row.add_suffix(sfx)
+            self.plugin_providers_listbox.append(row)
+
+    def _plugin_provider_filter_func(self, row):
+        if not hasattr(self, "plugin_provider_search_entry") or not self.plugin_provider_search_entry:
+            return True
+        text = self.plugin_provider_search_entry.get_text().strip().lower()
+        if not text:
+            return True
+        p_name = getattr(row, "_provider_name", "")
+        p_desc = getattr(row, "_provider_desc", "")
+        r_name = getattr(row, "_repo_name", "")
+        types = getattr(row, "_supported_types", [])
+        if text in p_name or text in p_desc or text in r_name or any(text in t for t in types):
+            return True
+        return False
+
+    def _on_install_plugin_repo_clicked(self, *args):
+        url = self.plugin_repo_url_entry.get_text().strip()
+        if not url:
+            self._show_toast(_("Please enter a repository URL"))
+            return
+
+        self.plugin_install_status_label.set_text(_("Installing plugin repository..."))
+        self.plugin_install_status_label.set_visible(True)
+        self.plugin_install_repo_btn.set_sensitive(False)
+
+        def worker():
+            from . import plugins
+            success, msg, _info = plugins.install_repository(url)
+
+            def apply_result():
+                self.plugin_install_repo_btn.set_sensitive(True)
+                if success:
+                    self.plugin_repo_url_entry.set_text("")
+                    self.plugin_install_status_label.set_visible(False)
+                    self._populate_plugins()
+                    self._show_toast(msg)
+                else:
+                    self.plugin_install_status_label.set_text(msg)
+                    self.plugin_install_status_label.set_visible(True)
+                    self._show_toast(msg)
+                return False
+
+            GLib.idle_add(apply_result)
+
+        threading.Thread(target=worker, daemon=True, name="PluginRepoInstall").start()
+
+    def _on_refresh_single_plugin_repo(self, manifest_url):
+        self._show_toast(_("Refreshing repository..."))
+
+        def worker():
+            from . import plugins
+            success, msg, _info = plugins.refresh_repository(manifest_url)
+
+            def apply_result():
+                self._populate_plugins()
+                self._show_toast(msg)
+                return False
+
+            GLib.idle_add(apply_result)
+
+        threading.Thread(target=worker, daemon=True, name="PluginRepoRefresh").start()
+
+    def _on_refresh_all_plugin_repos_clicked(self, *args):
+        self._show_toast(_("Refreshing all plugin repositories..."))
+
+        def worker():
+            from . import plugins
+            repos = plugins.get_installed_repositories()
+            count = 0
+            for r in repos:
+                u = r.get("manifest_url")
+                if u:
+                    s, _, _ = plugins.refresh_repository(u)
+                    if s:
+                        count += 1
+
+            def apply_result():
+                self._populate_plugins()
+                self._show_toast(_(f"Refreshed {count} repository(s)"))
+                return False
+
+            GLib.idle_add(apply_result)
+
+        threading.Thread(target=worker, daemon=True, name="PluginRepoRefreshAll").start()
+
+    def _on_remove_plugin_repo(self, manifest_url, repo_name):
+        from . import plugins
+        plugins.remove_repository(manifest_url)
+        self._populate_plugins()
+        self._show_toast(_(f"Removed '{repo_name}'"))
+
+    def _on_test_scraper_clicked(self, scraper_id, scraper_name, test_btn):
+        test_btn.set_sensitive(False)
+        test_btn.set_label(_("Testing..."))
+
+        def worker():
+            from . import plugins
+            started = time.time()
+            success, count, err = plugins.test_scraper(scraper_id)
+            elapsed_ms = int((time.time() - started) * 1000)
+
+            def apply_result():
+                test_btn.set_sensitive(True)
+                test_btn.set_label(_("Test"))
+                if success:
+                    if count > 0:
+                        self._show_toast(_(f"✓ {scraper_name}: {count} stream(s) found ({elapsed_ms}ms)"))
+                    else:
+                        self._show_toast(_(f"⚠ {scraper_name}: 0 streams found ({elapsed_ms}ms)"))
+                else:
+                    self._show_toast(_(f"✗ {scraper_name} test failed: {err}"))
+                return False
+
+            GLib.idle_add(apply_result)
+
+        threading.Thread(target=worker, daemon=True, name="PluginScraperTest").start()
+
+    def _on_scraper_switch_toggled(self, switch, scraper_id):
+        from . import plugins
+        plugins.toggle_scraper(scraper_id, switch.get_active())
+
+    def _on_plugin_enable_globally_toggled(self, row, _pspec):
+        if getattr(self, "_syncing_plugin_switches", False):
+            return
+        active = row.get_active()
+        from . import plugins
+        plugins.set_plugins_enabled(active)
+        if active:
+            self.plugin_badge_status.set_label(_("Plugins enabled"))
+            self.plugin_badge_status.remove_css_class("plugin-disabled")
+            self.plugin_badge_status.add_css_class("plugin-enabled")
+        else:
+            self.plugin_badge_status.set_label(_("Plugins disabled"))
+            self.plugin_badge_status.remove_css_class("plugin-enabled")
+            self.plugin_badge_status.add_css_class("plugin-disabled")
+
+    def _on_plugin_group_by_repo_toggled(self, row, _pspec):
+        if getattr(self, "_syncing_plugin_switches", False):
+            return
+        active = row.get_active()
+        from . import plugins
+        plugins.set_group_by_repository(active)
+
 
     def _is_same_movie(self, movie_a, movie_b):
         if not movie_a or not movie_b:
@@ -18107,6 +18444,9 @@ class CineWindow(Adw.ApplicationWindow):
         elif main_page == "addons":
             self.main_stack.set_visible_child_name("addons")
             self._populate_addons()
+        elif main_page == "plugins":
+            self.main_stack.set_visible_child_name("plugins")
+            self._populate_plugins()
         elif main_page == "player":
             is_active_player = bool(
                 getattr(self, "_current_playing_item", None)
@@ -18217,6 +18557,12 @@ class CineWindow(Adw.ApplicationWindow):
         self._push_current_nav_state()
         self._populate_addons()
         self.main_stack.set_visible_child_name("addons")
+
+    def _open_plugins(self, *args):
+        self._cancel_all_background_fetching()
+        self._push_current_nav_state()
+        self._populate_plugins()
+        self.main_stack.set_visible_child_name("plugins")
 
     def _back_to_library(self, *args):
         self._go_back()

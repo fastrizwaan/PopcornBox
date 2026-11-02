@@ -236,6 +236,7 @@ class Preferences(Adw.Dialog):
     show_anime_button_row: Adw.SwitchRow = Gtk.Template.Child()
     stream_provider_timeout_row: Adw.SpinRow = Gtk.Template.Child()
     stream_provider_retries_row: Adw.SpinRow = Gtk.Template.Child()
+    prefs_nuvio_plugins_row: Adw.ActionRow = Gtk.Template.Child()
     stremio_account_row: Adw.ActionRow = Gtk.Template.Child()
     stremio_login_btn: Gtk.Button = Gtk.Template.Child()
     stremio_logout_btn: Gtk.Button = Gtk.Template.Child()
@@ -303,7 +304,15 @@ class Preferences(Adw.Dialog):
         self._syncing_stremio_switch = False
         self._update_stremio_ui()
 
+        if hasattr(self, "prefs_nuvio_plugins_row") and self.prefs_nuvio_plugins_row:
+            self.prefs_nuvio_plugins_row.connect("activated", self._on_nuvio_plugins_activated)
+
         self.connect("closed", self._disconnect_settings)
+
+    def _on_nuvio_plugins_activated(self, _row):
+        self.close()
+        if hasattr(self.win, "_open_plugins"):
+            self.win._open_plugins()
 
     def _bind_ui(self):
         bindings = [

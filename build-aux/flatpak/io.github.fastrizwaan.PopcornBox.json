@@ -258,7 +258,16 @@
             "sources": [
                 {
                     "type": "dir",
-                    "path": "../../"
+                    "path": "../../",
+                    "skip": [
+                        ".git",
+                        ".flatpak-builder",
+                        "build-dir",
+                        "NuvioDesktop",
+                        "_build",
+                        ".ruff_cache",
+                        "screenshots"
+                    ]
                 }
             ]
         }

@@ -254,6 +254,7 @@ template $CineWindow: Adw.ApplicationWindow {
                   Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
                   Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
                   Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                  Button { action-name: "win.open-plugins"; icon-name: "system-software-install-symbolic"; tooltip-text: _("Plugins"); styles ["flat", "local-nav-btn"] }
                   Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
                 }
 
@@ -614,6 +615,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-plugins"; icon-name: "system-software-install-symbolic"; tooltip-text: _("Plugins"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
               }
               [end]
@@ -686,6 +688,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 ToggleButton hist_active_btn { active: true; child: Adw.ButtonContent { icon-name: "document-open-recent-symbolic"; label: _("History"); }; styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-plugins"; icon-name: "system-software-install-symbolic"; tooltip-text: _("Plugins"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
               }
               [end]
@@ -758,6 +761,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-plugins"; icon-name: "system-software-install-symbolic"; tooltip-text: _("Plugins"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
               }
               [end]
@@ -830,6 +834,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-plugins"; icon-name: "system-software-install-symbolic"; tooltip-text: _("Plugins"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
               }
               [end]
@@ -893,6 +898,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
                 ToggleButton down_active_btn { active: true; child: Adw.ButtonContent { icon-name: "folder-download-symbolic"; label: _("Downloads"); }; styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-plugins"; icon-name: "system-software-install-symbolic"; tooltip-text: _("Plugins"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
               }
             }
@@ -939,6 +945,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
                 ToggleButton addon_active_btn { active: true; child: Adw.ButtonContent { icon-name: "application-x-addon-symbolic"; label: _("Addons"); }; styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-plugins"; icon-name: "system-software-install-symbolic"; tooltip-text: _("Plugins"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
               }
             }
@@ -1015,6 +1022,186 @@ template $CineWindow: Adw.ApplicationWindow {
                   selection-mode: none;
                   styles ["boxed-list"]
                 }
+              };
+            }
+          };
+        }
+
+        Adw.ViewStackPage page_plugins {
+          name: "plugins";
+          child: Box {
+            orientation: vertical;
+            Adw.HeaderBar {
+              [start]
+              Button {
+                icon-name: "go-previous-symbolic";
+                action-name: "win.back-to-library";
+                tooltip-text: _("Library");
+                styles ["flat", "circular"]
+              }
+              [title]
+              Adw.WindowTitle {
+                title: _("Plugins");
+              }
+              [end]
+              MenuButton {
+                valign: center;
+                primary: true;
+                icon-name: "open-menu-symbolic";
+                tooltip-text: _("Main Menu");
+                menu-model: primary_menu;
+              }
+              [end]
+              Box {
+                spacing: 2;
+                Button { action-name: "win.open-continue-watching"; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-watched"; icon-name: "view-visible-symbolic"; tooltip-text: _("Watched"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-downloads"; icon-name: "folder-download-symbolic"; tooltip-text: _("Downloads"); styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-addons"; icon-name: "application-x-addon-symbolic"; tooltip-text: _("Addons"); styles ["flat", "local-nav-btn"] }
+                ToggleButton plugin_active_btn { active: true; child: Adw.ButtonContent { icon-name: "system-software-install-symbolic"; label: _("Plugins"); }; styles ["flat", "local-nav-btn"] }
+                Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
+              }
+            }
+            ScrolledWindow {
+              vexpand: true;
+              hexpand: true;
+              child: Adw.Clamp {
+                maximum-size: 860;
+                tightening-threshold: 600;
+                margin-top: 18;
+                margin-bottom: 32;
+                margin-start: 16;
+                margin-end: 16;
+                child: Box {
+                  orientation: vertical;
+                  spacing: 24;
+
+                  Box {
+                    orientation: vertical;
+                    spacing: 8;
+                    Box {
+                      spacing: 8;
+                      Label {
+                        label: _("OVERVIEW");
+                        xalign: 0;
+                        hexpand: true;
+                        styles ["heading", "dim-label"]
+                      }
+                      Label plugin_badge_repos {
+                        label: "0 repos";
+                        styles ["plugin-pill-badge"]
+                      }
+                      Label plugin_badge_providers {
+                        label: "0 providers";
+                        styles ["plugin-pill-badge"]
+                      }
+                      Label plugin_badge_status {
+                        label: "Plugins enabled";
+                        styles ["plugin-pill-badge", "plugin-enabled"]
+                      }
+                    }
+                    Adw.PreferencesGroup {
+                      Adw.SwitchRow plugin_enable_globally_row {
+                        title: _("Enable plugin providers globally");
+                        subtitle: _("Use plugin providers during stream discovery.");
+                        active: true;
+                      }
+                      Adw.SwitchRow plugin_group_by_repo_row {
+                        title: _("Group plugin providers by repository");
+                        subtitle: _("In Streams, show one provider per repository instead of one per source.");
+                        active: false;
+                      }
+                    }
+                  }
+
+                  Box {
+                    orientation: vertical;
+                    spacing: 8;
+                    Label {
+                      label: _("ADD REPOSITORY");
+                      xalign: 0;
+                      styles ["heading", "dim-label"]
+                    }
+                    Box {
+                      orientation: vertical;
+                      styles ["card"]
+                      spacing: 12;
+                      margin-top: 2;
+                      Box {
+                        orientation: vertical;
+                        margin-start: 14;
+                        margin-end: 14;
+                        margin-top: 14;
+                        margin-bottom: 14;
+                        spacing: 12;
+                        Entry plugin_repo_url_entry {
+                          placeholder-text: _("Plugin manifest URL");
+                          hexpand: true;
+                        }
+                        Button plugin_install_repo_btn {
+                          label: _("Install Plugin Repository");
+                          styles ["suggested-action", "pill"]
+                          halign: fill;
+                          action-name: "win.install-plugin-repo";
+                        }
+                        Label plugin_install_status_label {
+                          visible: false;
+                          xalign: 0;
+                          styles ["caption", "dim-label"]
+                          wrap: true;
+                        }
+                      }
+                    }
+                  }
+
+                  Box {
+                    orientation: vertical;
+                    spacing: 8;
+                    Box {
+                      spacing: 8;
+                      Label {
+                        label: _("INSTALLED REPOSITORIES");
+                        xalign: 0;
+                        hexpand: true;
+                        styles ["heading", "dim-label"]
+                      }
+                      Button plugin_refresh_all_btn {
+                        icon-name: "view-refresh-symbolic";
+                        tooltip-text: _("Refresh all repositories");
+                        styles ["flat", "circular"]
+                        action-name: "win.refresh-all-plugin-repos";
+                      }
+                    }
+                    ListBox plugin_repos_listbox {
+                      selection-mode: none;
+                      styles ["boxed-list"]
+                    }
+                  }
+
+                  Box {
+                    orientation: vertical;
+                    spacing: 8;
+                    Box {
+                      spacing: 8;
+                      Label {
+                        label: _("PROVIDERS");
+                        xalign: 0;
+                        hexpand: true;
+                        styles ["heading", "dim-label"]
+                      }
+                      SearchEntry plugin_provider_search_entry {
+                        placeholder-text: _("Filter providers...");
+                        width-request: 220;
+                      }
+                    }
+                    ListBox plugin_providers_listbox {
+                      selection-mode: none;
+                      styles ["boxed-list"]
+                    }
+                  }
+                };
               };
             }
           };
@@ -1163,6 +1350,7 @@ template $CineWindow: Adw.ApplicationWindow {
                     item (_("Favorites"), "win.open-favorites")
                     item (_("Player"), "win.open-player")
                     item (_("Addons"), "win.open-addons")
+                    item (_("Plugins"), "win.open-plugins")
                   }
                   
                   section {

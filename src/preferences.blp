@@ -211,6 +211,18 @@ template $Preferences: Adw.Dialog {
 						step-increment: 1;
 					};
 				}
+
+				Adw.ActionRow prefs_nuvio_plugins_row {
+					title: _("Nuvio Plugins");
+					subtitle: _("Manage plugin repositories and stream providers");
+					activatable: true;
+
+					[suffix]
+					Image {
+						icon-name: "go-next-symbolic";
+						valign: center;
+					}
+				}
 			}
 
 			Adw.PreferencesGroup {

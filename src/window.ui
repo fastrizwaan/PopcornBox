@@ -428,6 +428,17 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                         </child>
                                         <child>
                                           <object class="GtkButton">
+                                            <property name="action-name">win.open-plugins</property>
+                                            <property name="icon-name">system-software-install-symbolic</property>
+                                            <property name="tooltip-text" translatable="yes">Plugins</property>
+                                            <style>
+                                              <class name="flat"/>
+                                              <class name="local-nav-btn"/>
+                                            </style>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkButton">
                                             <property name="action-name">win.open-player</property>
                                             <property name="icon-name">multimedia-player-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Player</property>
@@ -1056,6 +1067,17 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 </child>
                                 <child>
                                   <object class="GtkButton">
+                                    <property name="action-name">win.open-plugins</property>
+                                    <property name="icon-name">system-software-install-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Plugins</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
                                     <property name="action-name">win.open-player</property>
                                     <property name="icon-name">multimedia-player-symbolic</property>
                                     <property name="tooltip-text" translatable="yes">Player</property>
@@ -1269,6 +1291,17 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                     <property name="action-name">win.open-addons</property>
                                     <property name="icon-name">application-x-addon-symbolic</property>
                                     <property name="tooltip-text" translatable="yes">Addons</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
+                                    <property name="action-name">win.open-plugins</property>
+                                    <property name="icon-name">system-software-install-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Plugins</property>
                                     <style>
                                       <class name="flat"/>
                                       <class name="local-nav-btn"/>
@@ -1498,6 +1531,17 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 </child>
                                 <child>
                                   <object class="GtkButton">
+                                    <property name="action-name">win.open-plugins</property>
+                                    <property name="icon-name">system-software-install-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Plugins</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
                                     <property name="action-name">win.open-player</property>
                                     <property name="icon-name">multimedia-player-symbolic</property>
                                     <property name="tooltip-text" translatable="yes">Player</property>
@@ -1719,6 +1763,17 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 </child>
                                 <child>
                                   <object class="GtkButton">
+                                    <property name="action-name">win.open-plugins</property>
+                                    <property name="icon-name">system-software-install-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Plugins</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
                                     <property name="action-name">win.open-player</property>
                                     <property name="icon-name">multimedia-player-symbolic</property>
                                     <property name="tooltip-text" translatable="yes">Player</property>
@@ -1888,6 +1943,17 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 </child>
                                 <child>
                                   <object class="GtkButton">
+                                    <property name="action-name">win.open-plugins</property>
+                                    <property name="icon-name">system-software-install-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Plugins</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
                                     <property name="action-name">win.open-player</property>
                                     <property name="icon-name">multimedia-player-symbolic</property>
                                     <property name="tooltip-text" translatable="yes">Player</property>
@@ -2028,6 +2094,17 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 </child>
                                 <child>
                                   <object class="GtkButton">
+                                    <property name="action-name">win.open-plugins</property>
+                                    <property name="icon-name">system-software-install-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Plugins</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
                                     <property name="action-name">win.open-player</property>
                                     <property name="icon-name">multimedia-player-symbolic</property>
                                     <property name="tooltip-text" translatable="yes">Player</property>
@@ -2151,6 +2228,370 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                     </style>
                                   </object>
                                 </child>
+                              </object>
+                            </property>
+                          </object>
+                        </child>
+                      </object>
+                    </property>
+                  </object>
+                </child>
+                <child>
+                  <object class="AdwViewStackPage" id="page_plugins">
+                    <property name="name">plugins</property>
+                    <property name="child">
+                      <object class="GtkBox">
+                        <property name="orientation">1</property>
+                        <child>
+                          <object class="AdwHeaderBar">
+                            <child type="start">
+                              <object class="GtkButton">
+                                <property name="icon-name">go-previous-symbolic</property>
+                                <property name="action-name">win.back-to-library</property>
+                                <property name="tooltip-text" translatable="yes">Library</property>
+                                <style>
+                                  <class name="flat"/>
+                                  <class name="circular"/>
+                                </style>
+                              </object>
+                            </child>
+                            <child type="title">
+                              <object class="AdwWindowTitle">
+                                <property name="title" translatable="yes">Plugins</property>
+                              </object>
+                            </child>
+                            <child type="end">
+                              <object class="GtkMenuButton">
+                                <property name="valign">3</property>
+                                <property name="primary">true</property>
+                                <property name="icon-name">open-menu-symbolic</property>
+                                <property name="tooltip-text" translatable="yes">Main Menu</property>
+                                <property name="menu-model">primary_menu</property>
+                              </object>
+                            </child>
+                            <child type="end">
+                              <object class="GtkBox">
+                                <property name="spacing">2</property>
+                                <child>
+                                  <object class="GtkButton">
+                                    <property name="action-name">win.open-continue-watching</property>
+                                    <property name="icon-name">media-playback-start-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Continue Watching</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
+                                    <property name="action-name">win.open-favorites</property>
+                                    <property name="icon-name">starred-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Favorites</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
+                                    <property name="action-name">win.open-watched</property>
+                                    <property name="icon-name">view-visible-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Watched</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
+                                    <property name="action-name">win.open-history</property>
+                                    <property name="icon-name">document-open-recent-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">History</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
+                                    <property name="action-name">win.open-downloads</property>
+                                    <property name="icon-name">folder-download-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Downloads</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
+                                    <property name="action-name">win.open-addons</property>
+                                    <property name="icon-name">application-x-addon-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Addons</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkToggleButton" id="plugin_active_btn">
+                                    <property name="active">true</property>
+                                    <property name="child">
+                                      <object class="AdwButtonContent">
+                                        <property name="icon-name">system-software-install-symbolic</property>
+                                        <property name="label" translatable="yes">Plugins</property>
+                                      </object>
+                                    </property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkButton">
+                                    <property name="action-name">win.open-player</property>
+                                    <property name="icon-name">multimedia-player-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Player</property>
+                                    <style>
+                                      <class name="flat"/>
+                                      <class name="local-nav-btn"/>
+                                    </style>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkScrolledWindow">
+                            <property name="vexpand">true</property>
+                            <property name="hexpand">true</property>
+                            <property name="child">
+                              <object class="AdwClamp">
+                                <property name="maximum-size">860</property>
+                                <property name="tightening-threshold">600</property>
+                                <property name="margin-top">18</property>
+                                <property name="margin-bottom">32</property>
+                                <property name="margin-start">16</property>
+                                <property name="margin-end">16</property>
+                                <property name="child">
+                                  <object class="GtkBox">
+                                    <property name="orientation">1</property>
+                                    <property name="spacing">24</property>
+                                    <child>
+                                      <object class="GtkBox">
+                                        <property name="orientation">1</property>
+                                        <property name="spacing">8</property>
+                                        <child>
+                                          <object class="GtkBox">
+                                            <property name="spacing">8</property>
+                                            <child>
+                                              <object class="GtkLabel">
+                                                <property name="label" translatable="yes">OVERVIEW</property>
+                                                <property name="xalign">0</property>
+                                                <property name="hexpand">true</property>
+                                                <style>
+                                                  <class name="heading"/>
+                                                  <class name="dim-label"/>
+                                                </style>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkLabel" id="plugin_badge_repos">
+                                                <property name="label">0 repos</property>
+                                                <style>
+                                                  <class name="plugin-pill-badge"/>
+                                                </style>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkLabel" id="plugin_badge_providers">
+                                                <property name="label">0 providers</property>
+                                                <style>
+                                                  <class name="plugin-pill-badge"/>
+                                                </style>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkLabel" id="plugin_badge_status">
+                                                <property name="label">Plugins enabled</property>
+                                                <style>
+                                                  <class name="plugin-pill-badge"/>
+                                                  <class name="plugin-enabled"/>
+                                                </style>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="AdwPreferencesGroup">
+                                            <child>
+                                              <object class="AdwSwitchRow" id="plugin_enable_globally_row">
+                                                <property name="title" translatable="yes">Enable plugin providers globally</property>
+                                                <property name="subtitle" translatable="yes">Use plugin providers during stream discovery.</property>
+                                                <property name="active">true</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="AdwSwitchRow" id="plugin_group_by_repo_row">
+                                                <property name="title" translatable="yes">Group plugin providers by repository</property>
+                                                <property name="subtitle" translatable="yes">In Streams, show one provider per repository instead of one per source.</property>
+                                                <property name="active">false</property>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </child>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkBox">
+                                        <property name="orientation">1</property>
+                                        <property name="spacing">8</property>
+                                        <child>
+                                          <object class="GtkLabel">
+                                            <property name="label" translatable="yes">ADD REPOSITORY</property>
+                                            <property name="xalign">0</property>
+                                            <style>
+                                              <class name="heading"/>
+                                              <class name="dim-label"/>
+                                            </style>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkBox">
+                                            <property name="orientation">1</property>
+                                            <style>
+                                              <class name="card"/>
+                                            </style>
+                                            <property name="spacing">12</property>
+                                            <property name="margin-top">2</property>
+                                            <child>
+                                              <object class="GtkBox">
+                                                <property name="orientation">1</property>
+                                                <property name="margin-start">14</property>
+                                                <property name="margin-end">14</property>
+                                                <property name="margin-top">14</property>
+                                                <property name="margin-bottom">14</property>
+                                                <property name="spacing">12</property>
+                                                <child>
+                                                  <object class="GtkEntry" id="plugin_repo_url_entry">
+                                                    <property name="placeholder-text" translatable="yes">Plugin manifest URL</property>
+                                                    <property name="hexpand">true</property>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkButton" id="plugin_install_repo_btn">
+                                                    <property name="label" translatable="yes">Install Plugin Repository</property>
+                                                    <style>
+                                                      <class name="suggested-action"/>
+                                                      <class name="pill"/>
+                                                    </style>
+                                                    <property name="halign">0</property>
+                                                    <property name="action-name">win.install-plugin-repo</property>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkLabel" id="plugin_install_status_label">
+                                                    <property name="visible">false</property>
+                                                    <property name="xalign">0</property>
+                                                    <style>
+                                                      <class name="caption"/>
+                                                      <class name="dim-label"/>
+                                                    </style>
+                                                    <property name="wrap">true</property>
+                                                  </object>
+                                                </child>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </child>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkBox">
+                                        <property name="orientation">1</property>
+                                        <property name="spacing">8</property>
+                                        <child>
+                                          <object class="GtkBox">
+                                            <property name="spacing">8</property>
+                                            <child>
+                                              <object class="GtkLabel">
+                                                <property name="label" translatable="yes">INSTALLED REPOSITORIES</property>
+                                                <property name="xalign">0</property>
+                                                <property name="hexpand">true</property>
+                                                <style>
+                                                  <class name="heading"/>
+                                                  <class name="dim-label"/>
+                                                </style>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkButton" id="plugin_refresh_all_btn">
+                                                <property name="icon-name">view-refresh-symbolic</property>
+                                                <property name="tooltip-text" translatable="yes">Refresh all repositories</property>
+                                                <style>
+                                                  <class name="flat"/>
+                                                  <class name="circular"/>
+                                                </style>
+                                                <property name="action-name">win.refresh-all-plugin-repos</property>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkListBox" id="plugin_repos_listbox">
+                                            <property name="selection-mode">0</property>
+                                            <style>
+                                              <class name="boxed-list"/>
+                                            </style>
+                                          </object>
+                                        </child>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkBox">
+                                        <property name="orientation">1</property>
+                                        <property name="spacing">8</property>
+                                        <child>
+                                          <object class="GtkBox">
+                                            <property name="spacing">8</property>
+                                            <child>
+                                              <object class="GtkLabel">
+                                                <property name="label" translatable="yes">PROVIDERS</property>
+                                                <property name="xalign">0</property>
+                                                <property name="hexpand">true</property>
+                                                <style>
+                                                  <class name="heading"/>
+                                                  <class name="dim-label"/>
+                                                </style>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkSearchEntry" id="plugin_provider_search_entry">
+                                                <property name="placeholder-text" translatable="yes">Filter providers...</property>
+                                                <property name="width-request">220</property>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkListBox" id="plugin_providers_listbox">
+                                            <property name="selection-mode">0</property>
+                                            <style>
+                                              <class name="boxed-list"/>
+                                            </style>
+                                          </object>
+                                        </child>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </property>
                               </object>
                             </property>
                           </object>
@@ -2351,6 +2792,10 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                               <item>
                                                 <attribute name="label" translatable="yes">Addons</attribute>
                                                 <attribute name="action">win.open-addons</attribute>
+                                              </item>
+                                              <item>
+                                                <attribute name="label" translatable="yes">Plugins</attribute>
+                                                <attribute name="action">win.open-plugins</attribute>
                                               </item>
                                             </section>
                                             <section>

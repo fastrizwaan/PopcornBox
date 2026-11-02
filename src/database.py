@@ -173,6 +173,10 @@ def _read_db():
                 data["continue_watching"] = []
             if "downloads" not in data:
                 data["downloads"] = []
+            if "plugin_repositories" not in data:
+                data["plugin_repositories"] = []
+            if "plugin_scrapers" not in data:
+                data["plugin_scrapers"] = []
             if "settings" not in data:
                 data["settings"] = {}
             if "hide_adult_content" not in data["settings"]:
@@ -1806,6 +1810,65 @@ def is_addon_streams_enabled(addon):
     if not addon or not addon.get("enabled", True):
         return False
     return bool(addon.get("streams_enabled", True))
+
+# --- Nuvio Plugins ---
+
+def get_plugin_repositories():
+    return list(_read_db().get("plugin_repositories", []))
+
+def save_plugin_repository(repo):
+    if not isinstance(repo, dict) or not repo.get("manifest_url"):
+        return
+    with _db_lock:
+        db = _read_db()
+        repos = db.setdefault("plugin_repositories", [])
+        manifest_url = repo.get("manifest_url")
+        repos = [r for r in repos if r.get("manifest_url") != manifest_url]
+        repos.append(dict(repo))
+        db["plugin_repositories"] = repos
+        _write_db(db)
+
+def remove_plugin_repository(manifest_url):
+    if not manifest_url:
+        return
+    with _db_lock:
+        db = _read_db()
+        repos = db.setdefault("plugin_repositories", [])
+        db["plugin_repositories"] = [r for r in repos if r.get("manifest_url") != manifest_url]
+        scrapers = db.setdefault("plugin_scrapers", [])
+        db["plugin_scrapers"] = [s for s in scrapers if s.get("repository_url") != manifest_url]
+        _write_db(db)
+    clear_all_cached_streams()
+
+def get_plugin_scrapers():
+    return list(_read_db().get("plugin_scrapers", []))
+
+def save_plugin_scrapers(scrapers, replace_for_repo=None):
+    if not isinstance(scrapers, list):
+        return
+    with _db_lock:
+        db = _read_db()
+        existing = db.setdefault("plugin_scrapers", [])
+        if replace_for_repo:
+            existing = [s for s in existing if s.get("repository_url") != replace_for_repo]
+        existing_ids = {s.get("id") for s in scrapers if s.get("id")}
+        existing = [s for s in existing if s.get("id") not in existing_ids]
+        existing.extend(scrapers)
+        db["plugin_scrapers"] = existing
+        _write_db(db)
+    clear_all_cached_streams()
+
+def toggle_plugin_scraper(scraper_id, enabled):
+    if not scraper_id:
+        return
+    with _db_lock:
+        db = _read_db()
+        for s in db.setdefault("plugin_scrapers", []):
+            if s.get("id") == scraper_id:
+                s["enabled"] = bool(enabled)
+                break
+        _write_db(db)
+    clear_all_cached_streams()
 
 # --- SQLite Metadata & Stream Cache ---
 
