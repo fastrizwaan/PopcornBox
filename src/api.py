@@ -21,6 +21,8 @@ import queue
 import contextlib
 import re
 
+logger = logging.getLogger(__name__)
+
 def _create_ssl_context():
     try:
         # Keep the platform CA store and hostname verification enabled. Add-on
@@ -6088,7 +6090,7 @@ def refresh_stream(imdb_id, media_type="movie", season=None, episode=None, old_s
                     try:
                         from . import tmdb_helper
                         tmdb_id = tmdb_helper.resolve_to_tmdb_id(imdb_id, media_type, None)
-                        strms = plugins.execute_scraper(s, tmdb_id=tmdb_id, imdb_id=imdb_id, media_type=media_type, season=season, episode=episode)
+                        strms = plugins.execute_scraper(s, tmdb_id=tmdb_id, media_type=media_type, season=season, episode=episode)
                         if strms:
                             fresh_streams = process_raw_streams(strms, season=season, episode=episode)
                             break
@@ -7029,6 +7031,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                         except Exception as e:
                             print(f"Error resolving IDs: {e}")
                     else:
+                        addon_obj = None
                         try:
                             addon_orig_info = future_to_addon.get(future, (None, None))
                             addon_obj = addon_orig_info[0] if addon_orig_info else None

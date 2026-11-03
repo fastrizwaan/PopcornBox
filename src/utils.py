@@ -368,7 +368,10 @@ def get_display_param():
 
     def get_pointer(d):
         ctypes.pythonapi.PyCapsule_GetPointer.restype = ctypes.c_void_p
-        ctypes.pythonapi.PyCapsule_GetPointer.argtypes = (ctypes.py_object,)
+        ctypes.pythonapi.PyCapsule_GetPointer.argtypes = (
+            ctypes.py_object,
+            ctypes.c_char_p,
+        )
         return ctypes.pythonapi.PyCapsule_GetPointer(d.__gpointer__, None)
 
     try:

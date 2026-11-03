@@ -17,7 +17,6 @@ import bisect
 import hashlib
 import logging
 import re
-import socketserver
 import threading
 import time
 import urllib.error
@@ -205,10 +204,32 @@ class HlsSession:
 
         sliced = self.segments[start_idx:]
         out = []
+        sequence_tag = f"#EXT-X-MEDIA-SEQUENCE:{self.media_sequence + start_idx}"
+        sequence_written = False
         for h in self.header_lines:
+            if h.startswith("#EXT-X-MEDIA-SEQUENCE:"):
+                if not sequence_written:
+                    out.append(sequence_tag)
+                    sequence_written = True
+                continue
+
             out.append(h)
-            if h.startswith("#EXT-X-TARGETDURATION:"):
-                out.append(f"#EXT-X-MEDIA-SEQUENCE:{self.media_sequence + start_idx}")
+
+        if not sequence_written:
+            target_duration_index = next(
+                (
+                    index
+                    for index, line in enumerate(out)
+                    if line.startswith("#EXT-X-TARGETDURATION:")
+                ),
+                None,
+            )
+            sequence_index = (
+                target_duration_index + 1
+                if target_duration_index is not None
+                else (1 if out and out[0] == "#EXTM3U" else 0)
+            )
+            out.insert(sequence_index, sequence_tag)
         for _dur, inf_line, full_url in sliced:
             out.append(inf_line)
             out.append(full_url)

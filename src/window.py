@@ -18374,13 +18374,13 @@ class CineWindow(Adw.ApplicationWindow):
             for r in repos:
                 u = r.get("manifest_url")
                 if u:
-                    s, _, _ = plugins.refresh_repository(u)
-                    if s:
+                    ok, _msg, _info = plugins.refresh_repository(u)
+                    if ok:
                         count += 1
 
             def apply_result():
                 self._populate_plugins()
-                self._show_toast(_(f"Refreshed {count} repository(s)"))
+                self._show_toast(_("Refreshed %s repository(s)") % count)
                 return False
 
             GLib.idle_add(apply_result)
@@ -18391,7 +18391,7 @@ class CineWindow(Adw.ApplicationWindow):
         from . import plugins
         plugins.remove_repository(manifest_url)
         self._populate_plugins()
-        self._show_toast(_(f"Removed '{repo_name}'"))
+        self._show_toast(_("Removed '%s'") % repo_name)
 
     def _on_test_scraper_clicked(self, scraper_id, scraper_name, test_btn):
         test_btn.set_sensitive(False)
