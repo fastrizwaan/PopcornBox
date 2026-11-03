@@ -1,6 +1,23 @@
 using Gtk 4.0;
 using Adw 1;
 
+menu playlist_add_menu {
+	item {
+		label: _("Add Files");
+		action: "win.add-playlist-files";
+	}
+
+	item {
+		label: _("Add Folder");
+		action: "win.add-playlist-folder";
+	}
+
+	item {
+		label: _("Add URL");
+		action: "win.add-url";
+	}
+}
+
 template $Playlist: Adw.Dialog {
 	content-width: 610;
 	presentation-mode: bottom_sheet;
@@ -21,22 +38,7 @@ template $Playlist: Adw.Dialog {
 						icon-name: "list-add-symbolic";
 						tooltip-text: _("Add");
 
-						menu-model: menu {
-							item {
-								label: _("Add Files");
-								action: "win.add-playlist-files";
-							}
-
-							item {
-								label: _("Add Folder");
-								action: "win.add-playlist-folder";
-							}
-
-							item {
-								label: _("Add URL");
-								action: "win.add-url";
-							}
-						};
+						menu-model: playlist_add_menu;
 					}
 
 					[start]
