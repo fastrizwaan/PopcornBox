@@ -22,10 +22,9 @@ import re
 from gettext import gettext as _
 from .utils import KEY_REMAP
 
-gi.require_version("Adw", "1")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
-from gi.repository import Adw, Gdk, Gtk
+from gi.repository import Gdk, Gtk
 
 INTERNAL_BINDINGS = f"""\
 UP               no-osd add volume 5; show-text "{_("Volume")}: ${{volume}}%" #{_("Volume Increase")}
@@ -184,7 +183,7 @@ def get_section_name(cmd):
 
 def populate_shortcuts_dialog_mpv(dialog, mpv_bindings):
     """
-    Populates an Adw.ShortcutsDialog, joining multiple keys
+    Populates a Gtk.ShortcutsWindow, joining multiple keys
     if they trigger the same command.
     """
     # Key: (label, section_title), Value: List of gtk_accelerators
@@ -244,15 +243,15 @@ def populate_shortcuts_dialog_mpv(dialog, mpv_bindings):
         # e.g. "<Control>q q" shows both shortcuts for the same item
         sections[target].append((label, " ".join(accels)))
 
-    for title, items in sections.items():
+    for index, (title, items) in enumerate(sections.items()):
         if items:
-            section_widget = Adw.ShortcutsSection(  # pyright: ignore[reportAttributeAccessIssue]
-                title=title
+            section_widget = Gtk.ShortcutsSection(
+                title=title, section_name=f"mpv-{index}"
             )
-            dialog.add(section_widget)
+            group_widget = Gtk.ShortcutsGroup()
+            section_widget.add_group(group_widget)
             for label, accels in items:
-                section_widget.add(
-                    Adw.ShortcutsItem(  # pyright: ignore[reportAttributeAccessIssue]
-                        title=label, accelerator=accels
-                    )
+                group_widget.add_shortcut(
+                    Gtk.ShortcutsShortcut(title=label, accelerator=accels)
                 )
+            dialog.add_section(section_widget)

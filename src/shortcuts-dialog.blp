@@ -1,90 +1,96 @@
 using Gtk 4.0;
-using Adw 1;
 
-Adw.ShortcutsDialog shortcuts_dialog {
-  content-width: 514;
+Gtk.ShortcutsWindow shortcuts_dialog {
+  title: _("Keyboard Shortcuts");
+  default-width: 620;
+  default-height: 560;
+  modal: true;
+  section-name: "general";
 
-  Adw.ShortcutsSection {
+  Gtk.ShortcutsSection {
+    section-name: "general";
     title: _("General");
 
-    Adw.ShortcutsItem {
-      title: _("New Window");
-      action-name: "app.new-window";
-    }
+    Gtk.ShortcutsGroup {
+      Gtk.ShortcutsShortcut {
+        title: _("New Window");
+        action-name: "app.new-window";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Open Files");
-      action-name: "win.clear-and-add";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Open Files");
+        action-name: "win.clear-and-add";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Open Folder");
-      action-name: "win.open-folder";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Open Folder");
+        action-name: "win.open-folder";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Open URL");
-      action-name: "win.open-url";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Open URL");
+        action-name: "win.open-url";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Add Files to Playlist");
-      action-name: "win.add-playlist-files";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Add Files to Playlist");
+        action-name: "win.add-playlist-files";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Add Folder to Playlist");
-      action-name: "win.add-playlist-folder";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Add Folder to Playlist");
+        action-name: "win.add-playlist-folder";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Add URL to Playlist");
-      action-name: "win.add-url";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Add URL to Playlist");
+        action-name: "win.add-url";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Open Subtitles Menu");
-      action-name: "win.open-sub-menu";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Open Subtitles Menu");
+        action-name: "win.open-sub-menu";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Open Audio Menu");
-      action-name: "win.open-audio-menu";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Open Audio Menu");
+        action-name: "win.open-audio-menu";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Open Chapters Menu");
-      action-name: "win.open-chapters-menu";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Open Chapters Menu");
+        action-name: "win.open-chapters-menu";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Watch History");
-      action-name: "win.open-watch-history";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Watch History");
+        action-name: "win.open-watch-history";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Show Shortcuts");
-      action-name: "win.custom-shortcuts";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Show Shortcuts");
+        action-name: "win.custom-shortcuts";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Close Window");
-      action-name: "win.quit";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Close Window");
+        action-name: "win.quit";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Save Session");
-      action-name: "win.save-session";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Save Session");
+        action-name: "win.save-session";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Save Session and Close");
-      action-name: "win.save-session-close";
-    }
+      Gtk.ShortcutsShortcut {
+        title: _("Save Session and Close");
+        action-name: "win.save-session-close";
+      }
 
-    Adw.ShortcutsItem {
-      title: _("Quit");
-      action-name: "app.quit";
+      Gtk.ShortcutsShortcut {
+        title: _("Quit");
+        action-name: "app.quit";
+      }
     }
   }
 }

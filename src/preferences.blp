@@ -441,10 +441,16 @@ template $Preferences: Adw.Dialog {
 			}
 
 			Adw.PreferencesGroup {
-				Adw.ButtonRow open_config_row {
+				Adw.ActionRow open_config_row {
 					title: _("Open Config Folder");
-					end-icon-name: "pan-end-symbolic";
+					activatable: true;
 					activated => $_on_open_config_dir();
+
+					[suffix]
+					Image {
+						icon-name: "pan-end-symbolic";
+						valign: center;
+					}
 				}
 			}
 		};

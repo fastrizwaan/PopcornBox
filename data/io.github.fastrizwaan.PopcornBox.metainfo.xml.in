@@ -70,6 +70,13 @@
   </requires>
 
   <releases>
+    <release version="2.3.3" date="2026-11-03">
+      <description translate="no">
+        <ul>
+          <li>Improved compatibility with supported Linux desktop libraries.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.3.2" date="2026-11-03">
       <description translate="no">
         <ul>

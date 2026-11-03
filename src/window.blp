@@ -14,7 +14,8 @@ template $CineWindow: Adw.ApplicationWindow {
 
     setters {
       controls_separator.visible: false;
-      controls_wrap_box.child-spacing: 2;
+      controls_wrap_box.row-spacing: 2;
+      controls_wrap_box.column-spacing: 2;
     }
   }
 
@@ -1385,16 +1386,19 @@ template $CineWindow: Adw.ApplicationWindow {
               orientation: vertical;
               visible: false;
 
-              Adw.WrapBox controls_wrap_box {
-                align: 0.5;
+              Gtk.FlowBox controls_wrap_box {
+                selection-mode: none;
+                homogeneous: false;
+                min-children-per-line: 1;
+                max-children-per-line: 20;
+                row-spacing: 4;
+                column-spacing: 4;
+                hexpand: true;
+                halign: fill;
                 valign: center;
                 margin-top: 10;
                 margin-start: 13;
                 margin-end: 13;
-                child-spacing: 4;
-                wrap-reverse: true;
-                justify: spread;
-                justify-last-line: true;
 
                 Button previous_btn {
                   styles [

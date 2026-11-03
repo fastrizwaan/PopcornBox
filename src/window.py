@@ -4449,7 +4449,7 @@ class CineWindow(Adw.ApplicationWindow):
     title_widget: Adw.WindowTitle = Gtk.Template.Child()
     headerbar: Adw.HeaderBar = Gtk.Template.Child()
     controls_box: Gtk.Box = Gtk.Template.Child()
-    controls_wrap_box: Adw.WrapBox = Gtk.Template.Child()
+    controls_wrap_box: Gtk.FlowBox = Gtk.Template.Child()
     controls_separator: Gtk.Separator = Gtk.Template.Child()
     audio_only_icon: Gtk.Image = Gtk.Template.Child()
     revealer_ui: Gtk.Revealer = Gtk.Template.Child()
@@ -4861,11 +4861,13 @@ class CineWindow(Adw.ApplicationWindow):
             "/io/github/fastrizwaan/PopcornBox/shortcuts-dialog.ui"
         )
         self.shortcuts_dialog = cast(
-            Adw.ShortcutsDialog,  # pyright: ignore[reportAttributeAccessIssue]
+            Gtk.ShortcutsWindow,
             builder.get_object("shortcuts_dialog"),
         )
         populate_shortcuts_dialog_mpv(self.shortcuts_dialog, self.bindings)
-        self.shortcuts_dialog.present(self)
+        self.shortcuts_dialog.set_application(self.app)
+        self.shortcuts_dialog.set_transient_for(self)
+        self.shortcuts_dialog.present()
 
     def _present_history(self, *args):
         history_dialog = HistoryDialog(self)
