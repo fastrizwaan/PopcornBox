@@ -32,7 +32,7 @@ A Linux media client for discovering and playing movies, series, anime, and othe
 
 ## Install or build
 
-PopcornBox is packaged as a Flatpak. To build and install the current source locally, use a Linux system with Flatpak, Flatpak Builder, and the GNOME 50 runtime/SDK available:
+PopcornBox is distributed as an AppImage and Flatpak. To build and install the Flatpak locally, use a Linux system with Flatpak, Flatpak Builder, and the GNOME 50 runtime/SDK available:
 
 ```bash
 git clone https://github.com/fastrizwaan/PopcornBox.git
@@ -59,10 +59,14 @@ flatpak build-bundle ~/.local/share/flatpak/repo io.github.fastrizwaan.PopcornBo
 
 ```
 
+## GitHub release builds
+
+Push a numeric version tag such as `2.3` to build an x86_64 AppImage and Flatpak bundle. GitHub Actions attaches both packages to the matching GitHub release. You can also run **Build Linux releases** from the Actions tab to build downloadable artifacts without publishing a release.
+
 ## Project details
 
 - **Version:** 2.3
-- **Platform:** GNU/Linux (Flatpak)
+- **Platform:** GNU/Linux (AppImage, Flatpak)
 - **UI:** Python, GTK4, Libadwaita
 - **Playback:** MPV with libtorrent-backed streaming support
 - **License:** GPL-3.0-or-later

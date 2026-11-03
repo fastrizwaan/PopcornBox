@@ -14,3 +14,5 @@ __pycache__/
 moved/
 .freebuff
 NuvioDesktop
+AppDir/
+_appimage_build/

@@ -1,0 +1,132 @@
+name: Build Linux releases
+
+on:
+  push:
+    tags:
+      - '[0-9]*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    name: Build AppImage
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Read and check application version
+        id: version
+        shell: bash
+        run: |
+          version="$(sed -nE "s/^[[:space:]]*version: '([^']+)',/\1/p" meson.build | head -n1)"
+          if [[ -z "$version" ]]; then
+            echo "Could not read the Meson project version." >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "$version" ]]; then
+            echo "Release tag $GITHUB_REF_NAME does not match project version $version." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            appstream \
+            blueprint-compiler \
+            desktop-file-utils \
+            gettext \
+            libadwaita-1-dev \
+            libgtk-4-dev \
+            meson \
+            ninja-build
+
+      - name: Build AppDir
+        run: |
+          meson setup _appimage_build --prefix=/usr --buildtype=release
+          meson compile -C _appimage_build
+          DESTDIR="$GITHUB_WORKSPACE/AppDir" meson install -C _appimage_build
+
+      - name: Package AppImage
+        uses: AppImageCrafters/build-appimage@master
+        with:
+          recipe: AppImageBuilder.yml
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          UPDATE_INFO: gh-releases-zsync|fastrizwaan|PopcornBox|latest|*x86_64.AppImage.zsync
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: PopcornBox-AppImage
+          path: |
+            *.AppImage
+            *.AppImage.zsync
+          if-no-files-found: error
+          retention-days: 14
+
+  flatpak:
+    name: Build Flatpak
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Check release tag
+        shell: bash
+        run: |
+          version="$(sed -nE "s/^[[:space:]]*version: '([^']+)',/\1/p" meson.build | head -n1)"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "$version" ]]; then
+            echo "Release tag $GITHUB_REF_NAME does not match project version $version." >&2
+            exit 1
+          fi
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: build-aux/flatpak/io.github.fastrizwaan.PopcornBox.json
+          bundle: PopcornBox-x86_64.flatpak
+          upload-artifact: false
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: PopcornBox-Flatpak
+          path: PopcornBox-x86_64.flatpak
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [appimage, flatpak]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --verify-tag
+          fi
