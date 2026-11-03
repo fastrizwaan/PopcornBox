@@ -1,6 +1,68 @@
 using Gtk 4.0;
 using Adw 1;
 
+menu primary_menu {
+  section {
+    submenu {
+      label: _("Open Media");
+      item (_("Open Files"), "win.clear-and-add")
+      item (_("Open Folder"), "win.open-folder")
+      item (_("Open URL"), "win.open-url")
+      item (_("Add Files"), "win.add-playlist-files")
+      item (_("Add Folder"), "win.add-playlist-folder")
+      item (_("Add URL"), "win.add-url")
+      item (_("Add Subtitle Track"), "win.add-sub-tracks")
+      item (_("Add Audio Track"), "win.add-audio-tracks")
+    }
+  }
+  section {
+    item (_("Continue Watching"), "win.open-continue-watching")
+    item (_("History"), "win.open-history")
+    item (_("Downloads"), "win.open-downloads")
+    item (_("Watched"), "win.open-watched")
+    item (_("Favorites"), "win.open-favorites")
+    item (_("Player"), "win.open-player")
+    item (_("Addons"), "win.open-addons")
+    item (_("Plugins"), "win.open-plugins")
+  }
+  section {
+    item (_("Watch History"), "win.open-watch-history")
+    item (_("New Window"), "app.new-window")
+    item (_("Preferences"), "app.preferences")
+    item (_("Keyboard Shortcuts"), "win.custom-shortcuts")
+    item (_("About PopcornBox"), "app.about")
+  }
+  section {
+    item (_("Save Session"), "win.save-session")
+    item (_("Save Session and Close"), "win.save-session-close")
+    item (_("Clear Session"), "win.clear-session")
+  }
+}
+
+menu subtitles_menu {}
+menu audio_tracks_menu {}
+menu video_tracks_menu {}
+menu chapters_menu {}
+
+menu player_context_menu {
+  section {
+    item (_("Play/Pause"), "win.play-pause")
+    item (_("Previous"), "win.previous")
+    item (_("Next"), "win.next")
+  }
+  section {
+    item (_("Open Files"), "win.clear-and-add")
+    item (_("Open Folder"), "win.open-folder")
+    item (_("Open URL"), "win.open-url")
+  }
+  section {
+    item (_("Preferences"), "app.preferences")
+    item (_("Watch History"), "win.open-history")
+    item (_("Playlist"), "win.open-playlist-dialog")
+  }
+}
+
+
 template $CineWindow: Adw.ApplicationWindow {
   name: "io-github-fastrizwaan-PopcornBox";
   title: _("PopcornBox");
@@ -1329,45 +1391,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 icon-name: "open-menu-symbolic";
                 tooltip-text: _("Main Menu");
 
-                menu-model: menu primary_menu {
-                  section {
-                    submenu {
-                      label: _("Open Media");
-                      item (_("Open Files"), "win.clear-and-add")
-                      item (_("Open Folder"), "win.open-folder")
-                      item (_("Open URL"), "win.open-url")
-                      item (_("Add Files"), "win.add-playlist-files")
-                      item (_("Add Folder"), "win.add-playlist-folder")
-                      item (_("Add URL"), "win.add-url")
-                      item (_("Add Subtitle Track"), "win.add-sub-tracks")
-                      item (_("Add Audio Track"), "win.add-audio-tracks")
-                    }
-                  }
-                  section {
-                    item (_("Continue Watching"), "win.open-continue-watching")
-                    item (_("History"), "win.open-history")
-                    item (_("Downloads"), "win.open-downloads")
-                    item (_("Watched"), "win.open-watched")
-                    item (_("Favorites"), "win.open-favorites")
-                    item (_("Player"), "win.open-player")
-                    item (_("Addons"), "win.open-addons")
-                    item (_("Plugins"), "win.open-plugins")
-                  }
-                  
-                  section {
-                    item (_("Watch History"), "win.open-watch-history")
-                    item (_("New Window"), "app.new-window")
-                    item (_("Preferences"), "app.preferences")
-                    item (_("Keyboard Shortcuts"), "win.custom-shortcuts")
-                    item (_("About PopcornBox"), "app.about")
-                  }
-
-                  section {
-                    item (_("Save Session"), "win.save-session")
-                    item (_("Save Session and Close"), "win.save-session-close")
-                    item (_("Clear Session"), "win.clear-session")
-                  }
-                };
+                menu-model: primary_menu;
               }
             }
 
@@ -1484,7 +1508,7 @@ template $CineWindow: Adw.ApplicationWindow {
                   icon-name: "cine-subtitles-symbolic";
                   tooltip-text: _("Subtitles");
 
-                  menu-model: menu subtitles_menu {};
+                  menu-model: subtitles_menu;
                 }
 
                 MenuButton audio_tracks_menu_btn {
@@ -1499,7 +1523,7 @@ template $CineWindow: Adw.ApplicationWindow {
                   icon-name: "cine-audio-symbolic";
                   tooltip-text: _("Audio");
 
-                  menu-model: menu audio_tracks_menu {};
+                  menu-model: audio_tracks_menu;
                 }
 
                 MenuButton video_tracks_menu_btn {
@@ -1513,7 +1537,7 @@ template $CineWindow: Adw.ApplicationWindow {
                   icon-name: "cine-video-symbolic";
                   tooltip-text: _("Video");
 
-                  menu-model: menu video_tracks_menu {};
+                  menu-model: video_tracks_menu;
                 }
 
                 MenuButton chapters_menu_btn {
@@ -1528,7 +1552,7 @@ template $CineWindow: Adw.ApplicationWindow {
                   icon-name: "cine-chapters-symbolic";
                   tooltip-text: _("Chapters");
 
-                  menu-model: menu chapters_menu {};
+                  menu-model: chapters_menu;
                 }
 
                 Separator controls_separator {
@@ -1861,25 +1885,7 @@ template $CineWindow: Adw.ApplicationWindow {
           has-arrow: false;
           halign: start;
 
-          menu-model: menu {
-            section {
-              item (_("Play/Pause"), "win.play-pause")
-              item (_("Previous"), "win.previous")
-              item (_("Next"), "win.next")
-            }
-
-            section {
-              item (_("Open Files"), "win.clear-and-add")
-              item (_("Open Folder"), "win.open-folder")
-              item (_("Open URL"), "win.open-url")
-            }
-
-            section {
-              item (_("Preferences"), "app.preferences")
-              item (_("Watch History"), "win.open-history")
-              item (_("Playlist"), "win.open-playlist-dialog")
-            }
-          };
+          menu-model: player_context_menu;
         }
       };
       }
