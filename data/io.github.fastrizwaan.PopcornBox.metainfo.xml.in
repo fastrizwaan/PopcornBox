@@ -70,6 +70,13 @@
   </requires>
 
   <releases>
+    <release version="2.3" date="2026-11-03">
+      <description translate="no">
+        <ul>
+          <li>Updated the application version to 2.3</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.2" date="2026-10-22">
       <description translate="no">
         <ul>

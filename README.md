@@ -1,4 +1,4 @@
-# PopcornBox 2.2
+# PopcornBox 2.3
 
 A Linux media client for discovering and playing movies, series, anime, and other media through Stremio-compatible addons. PopcornBox combines catalog browsing, search, a local library, and an integrated MPV-based player in a GTK4 and Libadwaita desktop app.
 
@@ -61,7 +61,7 @@ flatpak build-bundle ~/.local/share/flatpak/repo io.github.fastrizwaan.PopcornBo
 
 ## Project details
 
-- **Version:** 2.2
+- **Version:** 2.3
 - **Platform:** GNU/Linux (Flatpak)
 - **UI:** Python, GTK4, Libadwaita
 - **Playback:** MPV with libtorrent-backed streaming support
