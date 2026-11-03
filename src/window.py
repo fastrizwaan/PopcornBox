@@ -4458,7 +4458,7 @@ class CineWindow(Adw.ApplicationWindow):
     drop_icon: Gtk.Image = Gtk.Template.Child()
     player_loading_box: Gtk.Box = Gtk.Template.Child()
     player_buffering_label: Gtk.Label = Gtk.Template.Child()
-    spinner: Adw.Spinner = Gtk.Template.Child()
+    spinner: Gtk.Spinner = Gtk.Template.Child()
     next_episode_revealer: Gtk.Revealer = Gtk.Template.Child()
     next_ep_label: Gtk.Label = Gtk.Template.Child()
     next_ep_play_btn: Gtk.Button = Gtk.Template.Child()
@@ -5404,7 +5404,7 @@ class CineWindow(Adw.ApplicationWindow):
         )
 
         if isinstance(self.visible_dialog, Playlist):
-            self.visible_dialog.spinner.set_visible(True)
+            self.visible_dialog._set_spinner_active(True)
 
     def _on_search_addons(self, *args):
         dialog = Adw.Window(title="Search Addons", default_width=600, default_height=500)
@@ -5539,7 +5539,7 @@ class CineWindow(Adw.ApplicationWindow):
             logger.warning(f"Dialog error: {e}")
         finally:
             if isinstance(self.visible_dialog, Playlist):
-                self.visible_dialog.spinner.set_visible(False)
+                self.visible_dialog._set_spinner_active(False)
 
     def _on_open_sub_menu(self, *args):
         self._show_ui()
@@ -6232,7 +6232,7 @@ class CineWindow(Adw.ApplicationWindow):
             except GLib.Error as e:
                 logger.warning(f"File error path: {self.loaded_path}")
                 idle_add_once(self._show_toast, _("File Error") + f": {e.message}")
-                self.spinner.set_visible(False)
+                self._set_player_spinner_active(False)
                 return
 
         drop.read_value_async(target_type, GLib.PRIORITY_DEFAULT, None, on_read_done)
@@ -6840,7 +6840,7 @@ class CineWindow(Adw.ApplicationWindow):
         @self.mpv.event_callback("start-file")
         def on_start_file(_event):
             playback_trace("mpv start-file")
-            idle_add_once(self.spinner.set_visible, True)
+            idle_add_once(self._set_player_spinner_active, True)
             self.loaded_path = str(self.mpv.path)
             self._subtitles_configured_for_file = False
             self._stream_media_started = True
@@ -6850,7 +6850,7 @@ class CineWindow(Adw.ApplicationWindow):
             playback_trace("mpv playback-restart")
             def update():
                 self.hide_player_loading()
-                self.spinner.set_visible(False)
+                self._set_player_spinner_active(False)
                 if hasattr(self, "gl_area"):
                     self.gl_area.queue_render()
             idle_add_once(update)
@@ -6866,7 +6866,7 @@ class CineWindow(Adw.ApplicationWindow):
                 try:
                     self._next_episode_transition_in_progress = False
                     self.hide_player_loading()
-                    self.spinner.set_visible(False)
+                    self._set_player_spinner_active(False)
                     if hasattr(self, "gl_area"):
                         self.gl_area.queue_render()
                     if hasattr(self, 'details_box') and self.details_box.get_first_child():
@@ -6932,7 +6932,7 @@ class CineWindow(Adw.ApplicationWindow):
                 curr_pos = self.mpv.playlist_pos
 
                 if reason == b"error":
-                    idle_add_once(self.spinner.set_visible, False)
+                    idle_add_once(self._set_player_spinner_active, False)
                     idle_add_once(self.start_page.set_sensitive, True)
 
                     # Avoid stopping playback on last file/folder error
@@ -6973,7 +6973,7 @@ class CineWindow(Adw.ApplicationWindow):
                             self.shuffle_toggle_btn.set_active(False)
                             self.error_count = 0
                 elif reason == b"eof":
-                    idle_add_once(self.spinner.set_visible, False)
+                    idle_add_once(self._set_player_spinner_active, False)
                     idle_add_once(self.start_page.set_sensitive, True)
                     if not self.mpv.keep_open and self.mpv.idle_active and not self.startup:
                         def _handle_eof():
@@ -6983,7 +6983,7 @@ class CineWindow(Adw.ApplicationWindow):
                                 self._close_player(remove_torrent=False)
                         idle_add_once(_handle_eof)
                 else:
-                    idle_add_once(self.spinner.set_visible, False)
+                    idle_add_once(self._set_player_spinner_active, False)
                     idle_add_once(self.start_page.set_sensitive, True)
             except mpv.ShutdownError:
                 pass
@@ -7080,7 +7080,7 @@ class CineWindow(Adw.ApplicationWindow):
                     if hasattr(self, "player_loading_box"):
                         self.player_loading_box.set_visible(True)
                     if hasattr(self, "spinner"):
-                        self.spinner.set_visible(True)
+                        self._set_player_spinner_active(True)
                     if hasattr(self, "player_buffering_label"):
                         self.player_buffering_label.set_text(_("Buffering..."))
                 else:
@@ -14499,6 +14499,14 @@ class CineWindow(Adw.ApplicationWindow):
         self.person_box.append(page)
         self.main_stack.set_visible_child_name("person")
 
+    def _set_player_spinner_active(self, active):
+        if active:
+            self.spinner.set_visible(True)
+            self.spinner.start()
+        else:
+            self.spinner.stop()
+            self.spinner.set_visible(False)
+
     def show_player_loading(self, text="Fetching metadata...", title=None):
         playback_trace("show_player_loading", str(text or ""))
         # Set transition state synchronously. The idle-active observer can run
@@ -14530,7 +14538,7 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "player_loading_box") and hasattr(self.player_loading_box, "set_visible"):
             self.player_loading_box.set_visible(True)
         if hasattr(self, "spinner") and hasattr(self.spinner, "set_visible"):
-            self.spinner.set_visible(True)
+            self._set_player_spinner_active(True)
         if hasattr(self, "player_buffering_label") and hasattr(self.player_buffering_label, "set_text"):
             self.player_buffering_label.set_text(text)
             
@@ -14596,7 +14604,7 @@ class CineWindow(Adw.ApplicationWindow):
                 if hasattr(self, "player_loading_box") and not self.player_loading_box.get_visible():
                     self.player_loading_box.set_visible(True)
                 if hasattr(self, "spinner") and not self.spinner.get_visible():
-                    self.spinner.set_visible(True)
+                    self._set_player_spinner_active(True)
             return False
         GLib.idle_add(_apply)
 

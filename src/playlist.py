@@ -54,7 +54,7 @@ class Playlist(Adw.Dialog):
 
     title_widget: Adw.WindowTitle = Gtk.Template.Child()
     toast_overlay: Adw.ToastOverlay = Gtk.Template.Child()
-    spinner: Adw.Spinner = Gtk.Template.Child()
+    spinner: Gtk.Spinner = Gtk.Template.Child()
     playlist_clamp: Adw.Clamp = Gtk.Template.Child()
     playlist_list_view: Gtk.ListView = Gtk.Template.Child()
     factory: Gtk.SignalListItemFactory = Gtk.Template.Child()
@@ -310,6 +310,14 @@ class Playlist(Adw.Dialog):
             obj.disconnect(handler_id)
             list_item.handler_id = None
 
+    def _set_spinner_active(self, active):
+        if active:
+            self.spinner.set_visible(True)
+            self.spinner.start()
+        else:
+            self.spinner.stop()
+            self.spinner.set_visible(False)
+
     def _on_drop_enter(self, target, _x, _y):
         self.drop_indicator_revealer.set_reveal_child(True)
         drop = target.get_current_drop()
@@ -329,14 +337,14 @@ class Playlist(Adw.Dialog):
             # showing the spinner then would leave it stuck visible.
             if target.get_current_drop() is None:
                 return
-            self.spinner.set_visible(True)
+            self._set_spinner_active(True)
 
         drop.read_value_async(target_type, GLib.PRIORITY_DEFAULT, None, on_read_done)
 
         return True
 
     def _on_drop_leave(self, _target):
-        self.spinner.set_visible(False)
+        self._set_spinner_active(False)
         self.drop_indicator_revealer.set_reveal_child(False)
 
     def _on_drop(self, _target, value, _x, _y):
@@ -382,7 +390,7 @@ class Playlist(Adw.Dialog):
                 elif isinstance(item, str):  # URL string
                     self.mpv.loadfile(item, "append-play")
         finally:
-            self.spinner.set_visible(False)
+            self._set_spinner_active(False)
 
     def _on_row_drag_prepare(self, _source, _x, _y, list_item):
         index = list_item.get_item().position

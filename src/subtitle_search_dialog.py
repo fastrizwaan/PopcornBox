@@ -172,7 +172,7 @@ class SubtitleSearchDialog(Adw.Dialog):
 
         # 1. Loading page
         loading_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, valign=Gtk.Align.CENTER)
-        self.spinner = Adw.Spinner()
+        self.spinner = Gtk.Spinner()
         self.spinner.set_size_request(40, 40)
         self.lbl_loading = Gtk.Label(label=_("Searching OpenSubtitles..."), css_classes=["title-4", "dim-label"])
         loading_box.append(self.spinner)
@@ -226,6 +226,7 @@ class SubtitleSearchDialog(Adw.Dialog):
         self._is_searching = True
 
         self.stack.set_visible_child_name("loading")
+        self.spinner.start()
         self.btn_search.set_sensitive(False)
         self.lbl_count.set_text("")
         if query:
@@ -249,6 +250,7 @@ class SubtitleSearchDialog(Adw.Dialog):
                 if current_id != self._search_id:
                     return False
                 self._is_searching = False
+                self.spinner.stop()
                 self.btn_search.set_sensitive(True)
                 self._all_subtitles = subs
                 self._apply_filter()

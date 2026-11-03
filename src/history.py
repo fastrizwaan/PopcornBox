@@ -39,7 +39,7 @@ class HistoryDialog(Adw.Dialog):
     toast_overlay: Adw.ToastOverlay = Gtk.Template.Child()
     clear_btn: Gtk.Button = Gtk.Template.Child()
     hist_box: Gtk.Box = Gtk.Template.Child()
-    spinner: Adw.Spinner = Gtk.Template.Child()
+    spinner: Gtk.Spinner = Gtk.Template.Child()
     history_prefs_page: Adw.PreferencesPage = Gtk.Template.Child()
     placeholder_img: Gtk.Image = Gtk.Template.Child()
 
@@ -65,7 +65,12 @@ class HistoryDialog(Adw.Dialog):
 
         self._populate_history()
 
+    def _hide_spinner(self):
+        self.spinner.stop()
+        self.spinner.set_visible(False)
+
     def _populate_history(self, load_all=False):
+        self.spinner.start()
         self.spinner.set_visible(True)
 
         for group in list(self._groups.values()):
@@ -205,7 +210,7 @@ class HistoryDialog(Adw.Dialog):
             self.placeholder_img.set_visible(True)
             self.history_prefs_page.set_visible(False)
 
-        idle_add_once(self.spinner.set_visible, False)
+        idle_add_once(self._hide_spinner)
 
     def _on_row_right_click(self, _gesture, _n_press, x, y, row, path):
         def on_launch_finished(launcher, result):
