@@ -326,6 +326,16 @@ flowboxchild:selected {
   color: rgba(255, 255, 255, 0.5);
 }
 
+.pt-card-rating {
+  font-size: 11px;
+  font-weight: 600;
+  color: #f5c518;
+}
+
+.pt-card-meta-row {
+  margin-top: 1px;
+}
+
 .card-remove-btn {
   background-color: rgba(0, 0, 0, 0.75);
   color: #ffffff;

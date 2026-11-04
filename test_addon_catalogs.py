@@ -231,31 +231,76 @@ class TestAddonCatalogs(unittest.TestCase):
     def test_movie_widget_resolves_missing_title_dynamically(self):
         """MovieWidget initializes with cached title if available, or updates dynamically via _apply_resolved_meta."""
         from src.movie_widget import MovieWidget
-        database.save_cached_metadata("tt27165187", "movie", {
-            "id": "tt27165187",
-            "title": "The End of Oak Street",
-            "year": "2026",
-            "medium_cover_image": "https://example.com/poster.jpg"
-        })
+        from unittest.mock import patch
+        with patch.object(database, "METADATA_HYDRATION_ENABLED", True):
+            database.save_cached_metadata("tt27165187", "movie", {
+                "id": "tt27165187",
+                "title": "The End of Oak Street",
+                "year": "2026",
+                "medium_cover_image": "https://example.com/poster.jpg"
+            })
 
-        # Item initially without title
-        item_data = {"id": "tt27165187", "type": "movie"}
-        widget = MovieWidget(item_data, lambda *a: None)
-        # Should be hydrated immediately on init
-        self.assertEqual(item_data.get("title"), "The End of Oak Street")
-        self.assertEqual(widget.title_label.get_label(), "The End of Oak Street")
-        self.assertIsNotNone(widget.year_label)
-        self.assertEqual(widget.year_label.get_label(), "2026")
+            # Item initially without title
+            item_data = {"id": "tt27165187", "type": "movie"}
+            widget = MovieWidget(item_data, lambda *a: None)
+            # Should be hydrated immediately on init
+            self.assertEqual(item_data.get("title"), "The End of Oak Street")
+            self.assertEqual(widget.title_label.get_label(), "The End of Oak Street")
+            self.assertIsNotNone(widget.year_label)
+            self.assertEqual(widget.year_label.get_label(), "2026")
 
-        # Test _apply_resolved_meta dynamic update
-        database.delete_cached_metadata("tt99999999")
-        fresh_item = {"id": "tt99999999", "type": "movie"}
-        fresh_widget = MovieWidget(fresh_item, lambda *a: None)
-        self.assertEqual(fresh_widget.title_label.get_label(), "Unknown")
-        fresh_widget._apply_resolved_meta("Dynamic Movie", "2027", "https://example.com/dyn.jpg")
-        self.assertEqual(fresh_widget.title_label.get_label(), "Dynamic Movie")
-        self.assertEqual(fresh_item.get("title"), "Dynamic Movie")
-        self.assertEqual(fresh_item.get("year"), "2027")
+            # Test _apply_resolved_meta dynamic update
+            database.delete_cached_metadata("tt99999999")
+            fresh_item = {"id": "tt99999999", "type": "movie"}
+            fresh_widget = MovieWidget(fresh_item, lambda *a: None)
+            self.assertEqual(fresh_widget.title_label.get_label(), "Unknown")
+            fresh_widget._apply_resolved_meta("Dynamic Movie", "2027", "https://example.com/dyn.jpg", rating=8.4)
+            self.assertEqual(fresh_widget.title_label.get_label(), "Dynamic Movie")
+            self.assertEqual(fresh_item.get("title"), "Dynamic Movie")
+            self.assertEqual(fresh_item.get("year"), "2027")
+            self.assertEqual(fresh_widget.year_label.get_label(), "2027")
+            self.assertEqual(fresh_widget.rating_label.get_label(), "★ 8.4")
+            self.assertTrue(fresh_widget.rating_label.get_visible())
+
+    def test_movie_widget_year_and_rating_card_layout(self):
+        """MovieWidget renders year left-aligned and TMDB rating right-aligned in a meta row."""
+        from src.movie_widget import MovieWidget, format_card_rating
+
+        # Card with both year and rating
+        item_both = {"id": "tt11111111", "title": "Both Meta", "year": "2025", "rating": 7.9}
+        w_both = MovieWidget(item_both, lambda *a: None)
+        self.assertEqual(w_both.year_label.get_label(), "2025")
+        self.assertTrue(w_both.year_label.get_visible())
+        self.assertEqual(w_both.rating_label.get_label(), "★ 7.9")
+        self.assertTrue(w_both.rating_label.get_visible())
+        self.assertTrue(w_both.meta_box.get_visible())
+        # Alignment check: year left-aligned, rating right-aligned
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gtk
+        self.assertEqual(w_both.year_label.get_halign(), Gtk.Align.START)
+        self.assertEqual(w_both.rating_label.get_halign(), Gtk.Align.END)
+
+        # Card with only rating (e.g. from imdbRating)
+        item_rating = {"id": "tt22222222", "title": "Rating Only", "imdbRating": "8.1"}
+        w_rating = MovieWidget(item_rating, lambda *a: None)
+        self.assertFalse(w_rating.year_label.get_visible())
+        self.assertEqual(w_rating.rating_label.get_label(), "★ 8.1")
+        self.assertTrue(w_rating.rating_label.get_visible())
+        self.assertTrue(w_rating.meta_box.get_visible())
+
+        # Card with only year
+        item_year = {"id": "tt33333333", "title": "Year Only", "year": "1999"}
+        w_year = MovieWidget(item_year, lambda *a: None)
+        self.assertTrue(w_year.year_label.get_visible())
+        self.assertEqual(w_year.year_label.get_label(), "1999")
+        self.assertFalse(w_year.rating_label.get_visible())
+        self.assertTrue(w_year.meta_box.get_visible())
+
+        # Formatting helper checks
+        self.assertEqual(format_card_rating({"vote_average": 6.8}), "★ 6.8")
+        self.assertEqual(format_card_rating({"rating": 0}), "")
+        self.assertEqual(format_card_rating({"rating": "N/A"}), "")
 
     def test_fallback_poster_generation_cancellation(self):
         """fetch_fallback_poster respects task_gen and aborts immediately if generation is stale."""
@@ -275,18 +320,20 @@ class TestAddonCatalogs(unittest.TestCase):
 
     def test_hydrate_missing_catalog_items_fast_cache_pass(self):
         """hydrate_missing_catalog_items updates items in-place instantly from metadata_cache."""
-        database.save_cached_metadata("tt77777777", "movie", {
-            "id": "tt77777777",
-            "title": "Instant Movie",
-            "year": "2028",
-            "medium_cover_image": "https://example.com/instant.jpg"
-        })
-        items = [{"id": "tt77777777", "type": "movie", "title": ""}]
-        updated = api.hydrate_missing_catalog_items(items, media_type="movie")
-        self.assertTrue(updated)
-        self.assertEqual(items[0]["title"], "Instant Movie")
-        self.assertEqual(items[0]["year"], "2028")
-        self.assertEqual(items[0]["medium_cover_image"], "https://example.com/instant.jpg")
+        from unittest.mock import patch
+        with patch.object(database, "METADATA_HYDRATION_ENABLED", True):
+            database.save_cached_metadata("tt77777777", "movie", {
+                "id": "tt77777777",
+                "title": "Instant Movie",
+                "year": "2028",
+                "medium_cover_image": "https://example.com/instant.jpg"
+            })
+            items = [{"id": "tt77777777", "type": "movie", "title": ""}]
+            updated = api.hydrate_missing_catalog_items(items, media_type="movie")
+            self.assertTrue(updated)
+            self.assertEqual(items[0]["title"], "Instant Movie")
+            self.assertEqual(items[0]["year"], "2028")
+            self.assertEqual(items[0]["medium_cover_image"], "https://example.com/instant.jpg")
 
     def test_catalog_cache_never_stores_or_returns_empty(self):
         """Empty lists must not be persisted to catalog_cache, and existing empty entries return None."""

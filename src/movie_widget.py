@@ -653,6 +653,58 @@ def load_remote_image(first, second=None, width=None, height=None, on_error=None
     )
 
 
+def format_card_rating(movie_data):
+    """Format rating value for display on movie cards (e.g., '★ 7.5')."""
+    if not isinstance(movie_data, dict):
+        return ""
+    val = (
+        movie_data.get("rating")
+        or movie_data.get("imdbRating")
+        or movie_data.get("vote_average")
+        or movie_data.get("tmdb_rating")
+    )
+    if val is None:
+        return ""
+    val_str = str(val).strip()
+    if not val_str or val_str.lower() in ("n/a", "none", "null", "0", "0.0"):
+        return ""
+    try:
+        clean = val_str.replace("★", "").replace("⭐", "").strip()
+        f_val = float(clean)
+        if 0.0 < f_val <= 10.0:
+            return f"★ {f_val:.1f}"
+        if 10.0 < f_val <= 100.0:
+            return f"★ {f_val / 10.0:.1f}"
+    except (ValueError, TypeError):
+        pass
+    return ""
+
+
+def _dispatch_meta_resolved(callback, title, year, poster, is_adult=False, rating=None):
+    """Safely invoke meta-resolved callbacks supporting varying argument counts."""
+    if not callable(callback):
+        return
+    import inspect
+    try:
+        sig = inspect.signature(callback)
+        param_count = len(sig.parameters)
+        has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values())
+        if has_varargs or param_count >= 5:
+            callback(title, year, poster, is_adult, rating)
+        elif param_count == 4:
+            callback(title, year, poster, is_adult)
+        else:
+            callback(title, year, poster)
+    except Exception:
+        try:
+            callback(title, year, poster, is_adult, rating)
+        except TypeError:
+            try:
+                callback(title, year, poster, is_adult)
+            except TypeError:
+                callback(title, year, poster)
+
+
 def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=130, height=195, on_meta_resolved=None, task_gen=None, is_priority=False):
     if not item_id:
         return
@@ -662,6 +714,7 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
     found_title = None
     found_year = None
     found_poster = None
+    found_rating = None
     is_adult = False
 
     # 0. Check local database cache first (instant SQLite read)
@@ -673,17 +726,20 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
             cached_title = existing.get("title") or existing.get("name")
             cached_poster = existing.get("medium_cover_image") or existing.get("poster")
             cached_year = str(existing.get("year", "")) if existing.get("year") else ""
+            cached_rating = existing.get("rating") or existing.get("imdbRating") or existing.get("vote_average")
             if cached_title and cached_title != "Unknown":
                 found_title = cached_title
             if cached_poster:
                 found_poster = cached_poster
             if cached_year:
                 found_year = cached_year
+            if cached_rating:
+                found_rating = cached_rating
 
             if found_poster and poster_widget and not is_adult:
                 GLib.idle_add(load_image_into_picture, found_poster, poster_widget, width, height, None, is_priority)
-            if on_meta_resolved and (found_title or found_poster or is_adult):
-                GLib.idle_add(on_meta_resolved, found_title, found_year, found_poster, is_adult)
+            if on_meta_resolved and (found_title or found_poster or is_adult or found_rating):
+                GLib.idle_add(_dispatch_meta_resolved, on_meta_resolved, found_title, found_year, found_poster, is_adult, found_rating)
             if (found_title and found_poster) or is_adult:
                 return
     except Exception:
@@ -718,6 +774,8 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                     found_title = cm.get("name")
                 if not found_year and cm.get("year"):
                     found_year = str(cm.get("year"))
+                if not found_rating and (cm.get("imdbRating") or cm.get("rating") or cm.get("vote_average")):
+                    found_rating = cm.get("imdbRating") or cm.get("rating") or cm.get("vote_average")
         except Exception:
             pass
 
@@ -738,6 +796,8 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                     found_title = details.get("title") or details.get("name")
                 if not found_year:
                     found_year = str(details.get("year", ""))
+                if not found_rating and (details.get("imdbRating") or details.get("rating") or details.get("vote_average")):
+                    found_rating = details.get("imdbRating") or details.get("rating") or details.get("vote_average")
         except Exception:
             pass
 
@@ -779,7 +839,7 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
             pass
 
     # Save to database cache
-    if found_poster or found_title or found_year or is_adult:
+    if found_poster or found_title or found_year or found_rating or is_adult:
         try:
             cached = database.get_cached_metadata(item_id, item_type) or {}
             if found_poster:
@@ -789,6 +849,8 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                 cached["title"] = found_title
             if found_year:
                 cached["year"] = found_year
+            if found_rating:
+                cached["rating"] = found_rating
             if is_adult:
                 cached["adult"] = True
             cached["id"] = item_id
@@ -802,8 +864,8 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
     if found_poster and poster_widget and not is_adult:
         GLib.idle_add(load_image_into_picture, found_poster, poster_widget, width, height, None, is_priority)
 
-    if on_meta_resolved and (found_title or found_year or found_poster or is_adult):
-        GLib.idle_add(on_meta_resolved, found_title, found_year, found_poster, is_adult)
+    if on_meta_resolved and (found_title or found_year or found_poster or found_rating or is_adult):
+        GLib.idle_add(_dispatch_meta_resolved, on_meta_resolved, found_title, found_year, found_poster, is_adult, found_rating)
 
     # A card with no poster anywhere in its chain of lookups is the other half of
     # the permanently-blank grid: no URL means no download, so no download can
@@ -904,6 +966,8 @@ class MovieWidget(Gtk.Box):
                         movie_data["description"] = c_desc
                     if cached.get("imdbRating") and not movie_data.get("imdbRating"):
                         movie_data["imdbRating"] = str(cached["imdbRating"])
+                    if cached.get("rating") and not movie_data.get("rating"):
+                        movie_data["rating"] = str(cached["rating"])
                     if cached.get("runtime") and not movie_data.get("runtime"):
                         movie_data["runtime"] = str(cached["runtime"])
                     if cached.get("cast") and not movie_data.get("cast"):
@@ -957,18 +1021,42 @@ class MovieWidget(Gtk.Box):
         self.append(self.title_label)
         
         year_str = str(movie_data.get("year", "")) or str(movie_data.get("releaseInfo", ""))
-        self.year_label = None
-        if year_str:
-            self.year_label = Gtk.Label(label=year_str)
-            self.year_label.set_halign(Gtk.Align.START)
-            self.year_label.add_css_class("pt-card-year")
-            self.append(self.year_label)
+        rating_str = format_card_rating(movie_data)
+
+        self.meta_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        self.meta_box.set_hexpand(True)
+        self.meta_box.set_halign(Gtk.Align.FILL)
+        self.meta_box.add_css_class("pt-card-meta-row")
+
+        self.year_label = Gtk.Label(label=year_str)
+        self.year_label.set_halign(Gtk.Align.START)
+        self.year_label.set_hexpand(True)
+        self.year_label.set_xalign(0.0)
+        self.year_label.add_css_class("pt-card-year")
+        self.year_label.set_visible(bool(year_str))
+        self.meta_box.append(self.year_label)
+
+        self.rating_label = Gtk.Label(label=rating_str)
+        self.rating_label.set_halign(Gtk.Align.END)
+        self.rating_label.set_hexpand(True)
+        self.rating_label.set_xalign(1.0)
+        self.rating_label.add_css_class("pt-card-rating")
+        self.rating_label.set_visible(bool(rating_str))
+        self.meta_box.append(self.rating_label)
+
+        self.meta_box.set_visible(bool(year_str or rating_str))
+        self.append(self.meta_box)
 
         cat_name = movie_data.get("catalog_name")
         addon_name = movie_data.get("addon_name")
         tooltip_lines = [title_text]
+        sub_meta = []
         if year_str:
-            tooltip_lines.append(f"({year_str})")
+            sub_meta.append(f"({year_str})")
+        if rating_str:
+            sub_meta.append(rating_str)
+        if sub_meta:
+            tooltip_lines.append(" ".join(sub_meta))
         genres = movie_data.get("genres")
         if genres and isinstance(genres, list):
             tooltip_lines.append(" • ".join(str(g) for g in genres[:3]))
@@ -987,9 +1075,14 @@ class MovieWidget(Gtk.Box):
         self.set_tooltip_text("\n".join(tooltip_lines))
 
         # Keep the callback path available if metadata hydration is enabled.
-        def _on_card_hydrated(t, y, p):
+        def _on_card_hydrated(t, y, p, *args):
             try:
-                self._apply_resolved_meta(t, y, p)
+                r = args[1] if len(args) >= 2 else (args[0] if len(args) == 1 else None)
+                if not r and item_id:
+                    cached_m = database.get_cached_metadata(item_id)
+                    if cached_m:
+                        r = cached_m.get("imdbRating") or cached_m.get("rating") or cached_m.get("vote_average")
+                self._apply_resolved_meta(t, y, p, rating=r)
             except Exception:
                 pass
             return False
@@ -1016,7 +1109,7 @@ class MovieWidget(Gtk.Box):
             self._hydration_cb = None
         Gtk.Box.do_unroot(self)
 
-    def _apply_resolved_meta(self, title, year, poster_url, is_adult=False):
+    def _apply_resolved_meta(self, title, year, poster_url, is_adult=False, rating=None, *args, **kwargs):
         try:
             from . import api
             if is_adult or (database.is_adult_content_hidden() and api.is_adult_item(self.movie_data)):
@@ -1030,11 +1123,18 @@ class MovieWidget(Gtk.Box):
                 self.movie_data["year"] = str(year)
                 if hasattr(self, "year_label") and self.year_label:
                     self.year_label.set_label(str(year))
-                elif hasattr(self, "title_label") and self.title_label:
-                    self.year_label = Gtk.Label(label=str(year))
-                    self.year_label.set_halign(Gtk.Align.START)
-                    self.year_label.add_css_class("pt-card-year")
-                    self.append(self.year_label)
+                    self.year_label.set_visible(True)
+                if hasattr(self, "meta_box") and self.meta_box:
+                    self.meta_box.set_visible(True)
+            if rating:
+                formatted_rating = format_card_rating({"rating": rating})
+                if formatted_rating:
+                    self.movie_data["rating"] = rating
+                    if hasattr(self, "rating_label") and self.rating_label:
+                        self.rating_label.set_label(formatted_rating)
+                        self.rating_label.set_visible(True)
+                    if hasattr(self, "meta_box") and self.meta_box:
+                        self.meta_box.set_visible(True)
             # A card can also arrive with a poster URL that simply does not work.
             # If the tile is still blank and fallback found a different picture for
             # the same title, that is the fix the user is waiting on -- paint it.
@@ -1055,8 +1155,14 @@ class MovieWidget(Gtk.Box):
             addon_name = self.movie_data.get("addon_name")
             t_lines = [self.movie_data.get("title", "Unknown")]
             y_val = self.movie_data.get("year")
+            r_val = format_card_rating(self.movie_data)
+            sub_m = []
             if y_val:
-                t_lines.append(f"({y_val})")
+                sub_m.append(f"({y_val})")
+            if r_val:
+                sub_m.append(r_val)
+            if sub_m:
+                t_lines.append(" ".join(sub_m))
             genres = self.movie_data.get("genres")
             if genres and isinstance(genres, list):
                 t_lines.append(" • ".join(str(g) for g in genres[:3]))
@@ -1268,7 +1374,7 @@ class ContinueWatchingWidget(Gtk.Box):
             sub_label.add_css_class("pt-card-year")
             self.append(sub_label)
 
-    def _apply_resolved_meta(self, title, year, poster_url, is_adult=False):
+    def _apply_resolved_meta(self, title, year, poster_url, is_adult=False, *args, **kwargs):
         try:
             from . import database, api
             if is_adult or (database.is_adult_content_hidden() and api.is_adult_item(self.item_data)):
