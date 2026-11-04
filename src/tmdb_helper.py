@@ -162,7 +162,7 @@ def is_similar_title(t1, t2):
     if not w1_sig or not w2_sig:
         return bool(w1 & w2)
     overlap = len(w1_sig & w2_sig)
-    return (overlap / min(len(w1_sig), len(w2_sig))) >= 0.6
+    return (overlap / max(len(w1_sig), len(w2_sig))) >= 0.6
 
 def _tmdb_id_to_imdb(tmdb_id, tmdb_type="movie"):
     """Map a TMDB numeric ID to an IMDb ``tt`` ID."""
@@ -515,7 +515,7 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
     return result_list
 
 
-def resolve_to_tmdb_id(item_id, media_type="movie", title=None):
+def resolve_to_tmdb_id(item_id, media_type="movie", title=None, year=None):
     """
     Resolves an item_id (IMDB tt..., raw digits, tmdb:..., ctmdb....) or title to a numeric TMDB ID.
     Returns string of digits (e.g. '550') or None.
@@ -576,7 +576,18 @@ def resolve_to_tmdb_id(item_id, media_type="movie", title=None):
         except Exception:
             pass
 
-    # Search by title as fallback with title variants
+    year_match = re.search(r"\b((?:18|19|20)\d{2})\b", str(year or ""))
+    expected_year = year_match.group(1) if year_match else None
+
+    def result_year(result):
+        release_date = result.get("release_date") or result.get("first_air_date") or ""
+        return str(release_date)[:4] if len(str(release_date)) >= 4 else ""
+
+    def title_key(value):
+        return " ".join(re.findall(r"\w+", str(value or "").casefold()))
+
+    # Search by title as fallback with title variants. Prefer exact title/year
+    # results and reject known year mismatches before considering fuzzy matches.
     if title and title != "Loading..." and api_key:
         variants = normalize_title_variants(title)
         for v in variants:
@@ -584,15 +595,21 @@ def resolve_to_tmdb_id(item_id, media_type="movie", title=None):
                 search_url = f"https://api.themoviedb.org/3/search/{c_type}?api_key={api_key}&query={urllib.parse.quote(v)}"
                 data = _get_cached_request(search_url, max_age_hours=METADATA_CACHE_HOURS, timeout=2.5)
                 if data and data.get("results"):
-                    for res0 in data["results"]:
+                    results = data["results"]
+                    exact_results = [
+                        result for result in results
+                        if title_key(result.get("name") or result.get("title")) == title_key(v)
+                        and (not expected_year or not result_year(result) or result_year(result) == expected_year)
+                    ]
+                    for res0 in exact_results:
+                        if res0.get("id"):
+                            return str(res0["id"])
+                    for res0 in results:
+                        if expected_year and result_year(res0) and result_year(res0) != expected_year:
+                            continue
                         r_name = res0.get("name") or res0.get("title") or ""
                         if is_similar_title(v, r_name):
                             return str(res0["id"])
-                    # If no similar title matched among results, accept first result if it starts with the variant
-                    res0 = data["results"][0]
-                    r_name = (res0.get("name") or res0.get("title") or "").lower()
-                    if v.lower() in r_name or r_name in v.lower():
-                        return str(res0["id"])
             except Exception:
                 pass
 
@@ -1928,7 +1945,7 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None, for
     }
 
 
-def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, poster=None):
+def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, poster=None, year=None):
     """
     Fetch comprehensive metadata directly from TMDB when Cinemeta or other addons fail or return incomplete metadata.
     Returns metadata dict compatible with PopcornBox UI (MovieDetailsPage, database cache).
@@ -1938,7 +1955,9 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
 
     api_key = get_tmdb_api_key()
     c_type = "tv" if media_type in ["series", "anime", "tv", "tvshow"] else "movie"
-    tmdb_id = resolve_to_tmdb_id(item_id, media_type, title)
+    tmdb_id = resolve_to_tmdb_id(item_id, media_type, title, year=year)
+    expected_year_match = re.search(r"\b((?:18|19|20)\d{2})\b", str(year or ""))
+    expected_year = expected_year_match.group(1) if expected_year_match else None
 
     # If TMDB ID could not be resolved, try public Stremio TMDB addon with item_id
     if not tmdb_id:
@@ -1947,8 +1966,17 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
             addon_data = _get_cached_request(addon_url, max_age_hours=METADATA_CACHE_HOURS)
             if addon_data and "meta" in addon_data:
                 meta = addon_data["meta"]
+                meta_year = str(meta.get("year") or "")[:4]
+                if expected_year and meta_year and meta_year != expected_year:
+                    return None
+                meta_id = str(meta.get("id") or "")
+                addon_tmdb_id = meta_id.split(":", 1)[1].split(":", 1)[0] if meta_id.startswith("tmdb:") else None
                 return {
                     "id": meta.get("id") or item_id,
+                    "tmdb_id": str(tmdb_id) if tmdb_id else addon_tmdb_id,
+                    "imdb_id": meta.get("imdb_id"),
+                    "metadata_source": "tmdb",
+                    "rating_source": "IMDb" if meta.get("imdbRating") else "TMDB",
                     "title": meta.get("name") or title or "Media Item",
                     "year": str(meta.get("year", "")),
                     "medium_cover_image": meta.get("poster") or poster or "",
@@ -1974,6 +2002,36 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
         except Exception:
             pass
 
+    def tmdb_data_year(tmdb_data):
+        release_date = tmdb_data.get("release_date") or tmdb_data.get("first_air_date") or ""
+        return str(release_date)[:4] if len(str(release_date)) >= 4 else ""
+
+    # If an IMDb ID resolves to a TMDB entry from a different year than the
+    # selected card, retry by exact TMDB title/year search before using it.
+    year_conflict = bool(data and expected_year and tmdb_data_year(data) and tmdb_data_year(data) != expected_year)
+    if year_conflict and title:
+        alternate_id = resolve_to_tmdb_id(None, media_type, title, year=expected_year)
+        if alternate_id and str(alternate_id) != str(tmdb_id):
+            tmdb_id = str(alternate_id)
+            try:
+                url = f"https://api.themoviedb.org/3/{c_type}/{tmdb_id}?api_key={api_key}&append_to_response=external_ids,credits,videos,content_ratings,release_dates"
+                alternate_data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS)
+                if alternate_data and (not tmdb_data_year(alternate_data) or tmdb_data_year(alternate_data) == expected_year):
+                    data = alternate_data
+                else:
+                    data = None
+            except Exception:
+                data = None
+        else:
+            data = None
+    elif year_conflict:
+        data = None
+
+    if year_conflict and not data:
+        # Do not let the public addon repeat the same stale-ID lookup after the
+        # official TMDB record failed the card's year check.
+        return None
+
     if not data:
         # Fallback to public Stremio TMDB addon
         try:
@@ -1981,8 +2039,15 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
             addon_data = _get_cached_request(addon_url, max_age_hours=METADATA_CACHE_HOURS)
             if addon_data and "meta" in addon_data:
                 meta = addon_data["meta"]
+                meta_year = str(meta.get("year") or "")[:4]
+                if expected_year and meta_year and meta_year != expected_year:
+                    return None
                 return {
                     "id": meta.get("id") or (f"tmdb:{tmdb_id}" if not str(item_id).startswith("tt") else item_id),
+                    "tmdb_id": str(tmdb_id),
+                    "imdb_id": meta.get("imdb_id"),
+                    "metadata_source": "tmdb",
+                    "rating_source": "IMDb" if meta.get("imdbRating") else "TMDB",
                     "title": meta.get("name") or title or "Media Item",
                     "year": str(meta.get("year", "")),
                     "medium_cover_image": meta.get("poster") or poster or "",
@@ -2000,7 +2065,8 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
         return None
 
     # Parse TMDB API response
-    imdb_id = data.get("external_ids", {}).get("imdb_id") or (item_id if str(item_id).startswith("tt") else f"tmdb:{tmdb_id}")
+    imdb_id = data.get("external_ids", {}).get("imdb_id")
+    item_reference_id = imdb_id or f"tmdb:{tmdb_id}"
     clean_title = data.get("title") or data.get("name") or title or "Media Item"
     overview = data.get("overview") or "No synopsis available."
     rel_date = data.get("release_date") or data.get("first_air_date") or ""
@@ -2060,7 +2126,7 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
                     for ep in s_data["episodes"]:
                         ep_num = ep.get("episode_number")
                         out.append({
-                            "id": f"{imdb_id}:{s_num}:{ep_num}",
+                            "id": f"{item_reference_id}:{s_num}:{ep_num}",
                             "title": ep.get("name") or f"Episode {ep_num}",
                             "name": ep.get("name") or f"Episode {ep_num}",
                             "season": s_num,
@@ -2097,7 +2163,11 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
     lang_name = database.LANGUAGE_CODE_MAP.get(orig_lang.lower()) if orig_lang else None
 
     return {
-        "id": imdb_id,
+        "id": item_reference_id,
+        "imdb_id": imdb_id if str(imdb_id).startswith("tt") else None,
+        "tmdb_id": str(tmdb_id),
+        "metadata_source": "tmdb",
+        "rating_source": "TMDB",
         "title": clean_title,
         "year": year,
         "medium_cover_image": poster_url,

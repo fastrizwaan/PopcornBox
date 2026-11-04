@@ -1801,7 +1801,15 @@ class MovieDetailsPage(Gtk.Overlay):
             if self._destroyed or _is_event_set(getattr(self, 'page_abort_event', None)):
                 return
             from . import api
-            details = api.fetch_movie_details(item_id, self.media_type, title=self.movie_stub.get("title"), use_cache=not force_refresh, poster=existing_poster)
+            details = api.fetch_movie_details(
+                item_id,
+                self.media_type,
+                title=self.movie_stub.get("title"),
+                use_cache=not force_refresh,
+                poster=existing_poster,
+                prefer_tmdb=self.media_type in ("movie", "series", "anime"),
+                expected_year=self.movie_stub.get("year"),
+            )
             if self._destroyed or _is_event_set(getattr(self, 'page_abort_event', None)):
                 return
             if details:
@@ -1825,7 +1833,10 @@ class MovieDetailsPage(Gtk.Overlay):
                         if tr:
                             self._apply_trailer_url(tr, fetch_id)
                         else:
-                            self._start_fast_trailer_fetch(item_id, fetch_id, fast_abort)
+                            trailer_lookup_id = item_id
+                            if str(details.get("metadata_source", "")).lower() == "tmdb" and details.get("tmdb_id"):
+                                trailer_lookup_id = f"tmdb:{details['tmdb_id']}"
+                            self._start_fast_trailer_fetch(trailer_lookup_id, fetch_id, fast_abort)
                         # Step 3: Automatically fetch/revalidate streams for active movie or series episode
                         if self.media_type not in ["series", "anime", "tv"] or self.sidebar_stack.get_visible_child_name() == "streams" or getattr(self, '_user_navigated_to_streams', False):
                             print(
@@ -1850,6 +1861,8 @@ class MovieDetailsPage(Gtk.Overlay):
                     try:
                         from .tmdb_helper import fetch_credits_and_companies
                         c_id = details.get("id") or item_id
+                        if str(details.get("metadata_source", "")).lower() == "tmdb" and details.get("tmdb_id"):
+                            c_id = f"tmdb:{details['tmdb_id']}"
                         c_title = details.get("title") or self.movie_stub.get("title")
                         cc = fetch_credits_and_companies(c_id, self.media_type, title=c_title)
                         if self._destroyed or _is_event_set(getattr(self, 'page_abort_event', None)):
@@ -2295,6 +2308,18 @@ class MovieDetailsPage(Gtk.Overlay):
         self.meta_label.set_text(meta_str)
         
         imdb_id = details.get("imdb_id") or details.get("id")
+        tmdb_id = details.get("tmdb_id")
+        tmdb_metadata = str(details.get("metadata_source", "")).lower() == "tmdb" and bool(tmdb_id)
+        rating_source = details.get("rating_source") or ("TMDB" if tmdb_metadata else "IMDb")
+        rating_uses_tmdb = rating_source == "TMDB" and bool(tmdb_id)
+        rating_page_id = tmdb_id if rating_uses_tmdb else imdb_id
+        rating_page_url = None
+        if rating_page_id:
+            if rating_uses_tmdb:
+                tmdb_kind = "tv" if self.media_type in ("series", "anime", "tv") else "movie"
+                rating_page_url = f"https://www.themoviedb.org/{tmdb_kind}/{rating_page_id}"
+            else:
+                rating_page_url = f"https://www.imdb.com/title/{rating_page_id}/"
         imdb_rating = details.get("imdbRating") or details.get("rating") or details.get("vote_average") or ""
         if imdb_rating:
             try:
@@ -2302,20 +2327,20 @@ class MovieDetailsPage(Gtk.Overlay):
                     imdb_rating = f"{float(imdb_rating):.1f}"
             except Exception:
                 pass
-        if imdb_id and imdb_rating:
-            self.imdb_btn.set_label(f"IMDb {imdb_rating}")
+        if rating_page_url and imdb_rating:
+            self.imdb_btn.set_label(f"{rating_source} {imdb_rating}")
             self.imdb_btn.set_visible(True)
             self.meta_dot.set_visible(True)
-            def on_imdb_clicked(btn):
-                open_uri(f"https://www.imdb.com/title/{imdb_id}/", self.window)
-            self._imdb_btn_hid = self.imdb_btn.connect("clicked", on_imdb_clicked)
-        elif imdb_id:
-            self.imdb_btn.set_label("IMDb")
+            def on_rating_clicked(btn):
+                open_uri(rating_page_url, self.window)
+            self._imdb_btn_hid = self.imdb_btn.connect("clicked", on_rating_clicked)
+        elif rating_page_url:
+            self.imdb_btn.set_label(rating_source)
             self.imdb_btn.set_visible(True)
             self.meta_dot.set_visible(True)
-            def on_imdb_clicked(btn):
-                open_uri(f"https://www.imdb.com/title/{imdb_id}/", self.window)
-            self._imdb_btn_hid = self.imdb_btn.connect("clicked", on_imdb_clicked)
+            def on_rating_clicked(btn):
+                open_uri(rating_page_url, self.window)
+            self._imdb_btn_hid = self.imdb_btn.connect("clicked", on_rating_clicked)
         else:
             self.imdb_btn.set_visible(False)
             self.meta_dot.set_visible(False)

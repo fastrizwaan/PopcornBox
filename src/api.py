@@ -4672,19 +4672,21 @@ def enrich_metadata_with_language_and_genres(res, imdb_id, media_type="movie", t
 
     return res
 
-def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=None):
+def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=None, expected_year=None):
     if not res or not isinstance(res, dict):
         return res
 
+    is_tmdb_metadata = str(res.get("metadata_source", "")).lower() == "tmdb"
+
     # Preserve existing valid poster from parameter or database cache before replacing with addon poster
     existing = database.get_cached_metadata(imdb_id)
-    existing_poster = poster or (existing.get("medium_cover_image") if existing else None)
+    existing_poster = poster or (existing.get("medium_cover_image") if existing and not is_tmdb_metadata else None)
 
     if existing_poster:
         res["medium_cover_image"] = existing_poster
     else:
         current_poster = res.get("medium_cover_image", "")
-        if not current_poster and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
+        if not current_poster and not is_tmdb_metadata and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
             effective_title = title or res.get("title") or res.get("name")
             # Run fallback poster fetchers in parallel with short timeout
             def _fetch_tmdb_poster():
@@ -4757,11 +4759,11 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
                         pass
 
     if not res.get("trailer"):
-        res_tr = extract_trailer_id(res) or (extract_trailer_id(existing) if existing else None)
+        res_tr = extract_trailer_id(res) or (extract_trailer_id(existing) if existing and not is_tmdb_metadata else None)
         if res_tr:
             res["trailer"] = res_tr
 
-    if not res.get("trailer") and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
+    if not res.get("trailer") and not is_tmdb_metadata and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
         try:
             c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
             cm_url = f"https://v3-cinemeta.strem.io/meta/{c_type}/{urllib.parse.quote(str(imdb_id), safe=':')}.json"
@@ -4773,7 +4775,7 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
         except Exception:
             pass
 
-    if existing and existing.get("background") and not res.get("background"):
+    if existing and existing.get("background") and not res.get("background") and not is_tmdb_metadata:
         res["background"] = existing["background"]
 
     # For series/anime/tv: if no videos were returned by any source, synthesize a fallback S1:E1
@@ -4791,15 +4793,15 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
         }]
 
     desc = str(res.get("description", "")).strip()
-    if not desc or desc in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD") or not res.get("background") or not res.get("runtime"):
+    if not is_tmdb_metadata and (not desc or desc in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD") or not res.get("background") or not res.get("runtime")):
         try:
-            tmdb_extra = fetch_tmdb_standalone_metadata(imdb_id, media_type=media_type, title=title, poster=poster)
+            tmdb_extra = fetch_tmdb_standalone_metadata(imdb_id, media_type=media_type, title=title, poster=poster, year=expected_year)
             if tmdb_extra:
                 res = merge_metadata(res, tmdb_extra)
         except Exception:
             pass
 
-    if not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
+    if not is_tmdb_metadata and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
         res = enrich_metadata_with_language_and_genres(res, imdb_id, media_type, title)
 
     if is_valid_meta(res):
@@ -4808,15 +4810,19 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
             database.save_cached_metadata(res.get("id"), media_type, res)
     return res
 
-def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True, poster=None):
+def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True, poster=None, prefer_tmdb=False, expected_year=None):
     if isinstance(imdb_id, list):
         if not imdb_id: return {}
         col_id = next((i for i in imdb_id if str(i).startswith('ctmdb.')), None)
         if col_id:
             primary_id = col_id
+        elif prefer_tmdb:
+            primary_id = next((i for i in imdb_id if str(i).startswith("tmdb:")), None)
+            if not primary_id:
+                primary_id = next((i for i in imdb_id if str(i).startswith('tt')), imdb_id[0])
         else:
             primary_id = next((i for i in imdb_id if str(i).startswith('tt')), imdb_id[0])
-        return fetch_movie_details(primary_id, media_type, title, use_cache, poster)
+        return fetch_movie_details(primary_id, media_type, title, use_cache, poster, prefer_tmdb, expected_year)
 
     if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
         parts = str(imdb_id).split("||")
@@ -4883,6 +4889,54 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
     orig_item_id = str(imdb_id or "").strip()
     is_custom_provider = any(orig_item_id.startswith(p) for p in ["dsx:", "bpx-", "bolly:", "hub:", "tpb_ctl:"])
+
+    # Card detail pages can request TMDB as the primary metadata source. This
+    # path deliberately bypasses IMDb/Cinemeta title resolution; a stable IMDb
+    # ID is mapped to TMDB with /find, while title search is only a fallback.
+    if prefer_tmdb and media_type in ["movie", "series", "anime"]:
+        cached_tmdb = database.get_cached_metadata(orig_item_id, media_type) if orig_item_id else None
+        expected_year_match = re.search(r"\b((?:18|19|20)\d{2})\b", str(expected_year or ""))
+        expected_year_value = expected_year_match.group(1) if expected_year_match else None
+        if use_cache and cached_tmdb and is_valid_meta(cached_tmdb) and str(cached_tmdb.get("metadata_source", "")).lower() == "tmdb":
+            cached_year = str(cached_tmdb.get("year") or "")[:4]
+            if not expected_year_value or not cached_year or cached_year == expected_year_value:
+                if poster:
+                    cached_tmdb["medium_cover_image"] = poster
+                return cached_tmdb
+
+        try:
+            tmdb_res = fetch_tmdb_standalone_metadata(
+                orig_item_id, media_type=media_type, title=title, poster=poster, year=expected_year_value
+            )
+        except Exception as e:
+            print(f"[TMDB] Primary detail lookup failed for {orig_item_id!r}: {e}")
+            tmdb_res = None
+
+        if tmdb_res and is_valid_meta(tmdb_res):
+            requested_id = orig_item_id
+            resolved_imdb_id = tmdb_res.get("imdb_id") or (
+                tmdb_res.get("id") if str(tmdb_res.get("id", "")).startswith("tt") else None
+            )
+            # If a stale tt ID was corrected by matching the card's year, cache
+            # under TMDB's resolved IMDb ID instead of poisoning the stale ID.
+            cache_id = requested_id
+            if requested_id.startswith("tt") and resolved_imdb_id and resolved_imdb_id != requested_id:
+                cache_id = str(resolved_imdb_id)
+            elif requested_id.startswith("tt") and tmdb_res.get("tmdb_id") and not resolved_imdb_id:
+                cache_id = f"tmdb:{tmdb_res['tmdb_id']}"
+            tmdb_res["id"] = cache_id or tmdb_res.get("id")
+            tmdb_res["metadata_source"] = "tmdb"
+            saved = _save_and_return_meta(
+                tmdb_res, cache_id or tmdb_res.get("id"), media_type, title, poster=poster,
+                expected_year=expected_year_value,
+            )
+            if requested_id and cache_id != requested_id:
+                saved["id"] = requested_id
+            return saved
+
+        # Keep the catalog card's own title/description visible when TMDB has no
+        # safe match; do not fall through to an IMDb text search and replace it.
+        return None
 
     # Resolve TMDB ids to IMDB format if needed
     resolved_imdb = resolve_to_imdb_id(imdb_id, media_type, title)

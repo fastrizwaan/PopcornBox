@@ -2635,18 +2635,21 @@ def save_cached_metadata(item_id, media_type, details):
             cursor = conn.cursor()
             now = time.time()
             if isinstance(details, dict):
-                # Merge with existing record in metadata_cache so rich fields are never lost
-                try:
-                    cursor.execute("SELECT data FROM metadata_cache WHERE id = ?", (str(item_id),))
-                    row = cursor.fetchone()
-                    if row and row[0]:
-                        existing_meta = json.loads(row[0])
-                        if isinstance(existing_meta, dict):
-                            for k, v in existing_meta.items():
-                                if k not in details or not details[k]:
-                                    details[k] = v
-                except Exception:
-                    pass
+                # Keep richer existing fields for addon metadata, but treat
+                # verified TMDB responses as authoritative to avoid carrying a
+                # mismatched title/backdrop into the refreshed record.
+                if str(details.get("metadata_source", "")).lower() != "tmdb":
+                    try:
+                        cursor.execute("SELECT data FROM metadata_cache WHERE id = ?", (str(item_id),))
+                        row = cursor.fetchone()
+                        if row and row[0]:
+                            existing_meta = json.loads(row[0])
+                            if isinstance(existing_meta, dict):
+                                for k, v in existing_meta.items():
+                                    if k not in details or not details[k]:
+                                        details[k] = v
+                    except Exception:
+                        pass
 
                 if details.get("name") and not details.get("title"):
                     details["title"] = details["name"]
