@@ -2899,8 +2899,16 @@ class MovieDetailsPage(Gtk.Overlay):
             self.selected_video = selected_video
         video_id = selected_video.get("id") if (selected_video and isinstance(selected_video, dict)) else None
         
-        details_id = getattr(self, "movie_details", {}).get("id") if hasattr(self, "movie_details") and self.movie_details else None
-        item_id = video_id or (details_id if (details_id and str(details_id).startswith("tt")) else None) or self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
+        movie_details = getattr(self, "movie_details", {}) or {}
+        known_tmdb_id = movie_details.get("tmdb_id")
+        expected_year = movie_details.get("year")
+        details_id = movie_details.get("id")
+        if str(movie_details.get("metadata_source", "")).lower() == "tmdb" and movie_details.get("tmdb_id"):
+            resolved_imdb_id = movie_details.get("imdb_id")
+            details_id = resolved_imdb_id if str(resolved_imdb_id or "").startswith("tt") else f"tmdb:{movie_details['tmdb_id']}"
+        item_id = video_id or (
+            details_id if details_id and str(details_id).startswith(("tt", "tmdb:")) else None
+        ) or self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
         # Alias IDs are useful for metadata resolution, but the stream endpoint
         # expects one provider ID. `get_torrents_streamed` normalizes too, while
         # doing this here keeps request keys and UI diagnostics unambiguous.
@@ -3236,6 +3244,8 @@ class MovieDetailsPage(Gtk.Overlay):
                     force_refresh=force,
                     provider_scope=provider_scope,
                     source_scope=source_scope,
+                    known_tmdb_id=known_tmdb_id,
+                    expected_year=expected_year,
                 )
                 print(f"[STREAM DEBUG] worker API returned generation={current_gen}")
             except RuntimeError as e:
@@ -5515,7 +5525,13 @@ class CineWindow(Adw.ApplicationWindow):
                     if not details:
                         print("No details returned for selected item.")
                         return
-                    streams = api.get_torrents_streamed(details["id"], media_type=item_type, title=item.get("title") or details.get("name"))
+                    streams = api.get_torrents_streamed(
+                        details["id"],
+                        media_type=item_type,
+                        title=item.get("title") or details.get("name"),
+                        known_tmdb_id=details.get("tmdb_id"),
+                        expected_year=details.get("year"),
+                    )
                     direct_stream = next(
                         (s["url"] for s in streams if s.get("is_http") and s.get("url")),
                         None,
@@ -16875,6 +16891,8 @@ class CineWindow(Adw.ApplicationWindow):
                     abort_event=abort_event,
                     title=series_title or next_title,
                     ep_title=next_title,
+                    known_tmdb_id=(getattr(page, "movie_details", {}) or {}).get("tmdb_id"),
+                    expected_year=(getattr(page, "movie_details", {}) or {}).get("year"),
                 )
             except Exception as e:
                 logger.debug(f"[PREFETCH] next episode request failed key={cache_key!r}: {e}")

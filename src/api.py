@@ -4917,21 +4917,24 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             resolved_imdb_id = tmdb_res.get("imdb_id") or (
                 tmdb_res.get("id") if str(tmdb_res.get("id", "")).startswith("tt") else None
             )
-            # If a stale tt ID was corrected by matching the card's year, cache
-            # under TMDB's resolved IMDb ID instead of poisoning the stale ID.
+            # If a stale tt/TMDB ID was corrected by the card's year, cache
+            # under the resolved identity instead of poisoning the stale ID.
             cache_id = requested_id
+            resolved_tmdb_id = str(tmdb_res.get("tmdb_id") or "")
             if requested_id.startswith("tt") and resolved_imdb_id and resolved_imdb_id != requested_id:
                 cache_id = str(resolved_imdb_id)
             elif requested_id.startswith("tt") and tmdb_res.get("tmdb_id") and not resolved_imdb_id:
                 cache_id = f"tmdb:{tmdb_res['tmdb_id']}"
+            elif requested_id.startswith("tmdb:"):
+                requested_tmdb_id = requested_id.split(":", 1)[1].split(":", 1)[0]
+                if resolved_tmdb_id and resolved_tmdb_id != requested_tmdb_id:
+                    cache_id = f"tmdb:{resolved_tmdb_id}"
             tmdb_res["id"] = cache_id or tmdb_res.get("id")
             tmdb_res["metadata_source"] = "tmdb"
             saved = _save_and_return_meta(
                 tmdb_res, cache_id or tmdb_res.get("id"), media_type, title, poster=poster,
                 expected_year=expected_year_value,
             )
-            if requested_id and cache_id != requested_id:
-                saved["id"] = requested_id
             return saved
 
         # Keep the catalog card's own title/description visible when TMDB has no
@@ -5886,6 +5889,8 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             "addon_names": source_addon_names,
             "is_nuvio_plugin": bool(s.get("is_nuvio_plugin")),
             "plugin_scraper_id": s.get("plugin_scraper_id"),
+            # Preserved so the cache-filter can evict results for a different item.
+            "plugin_scraper_tmdb_id": s.get("plugin_scraper_tmdb_id"),
         }
 
         if season is not None and episode is not None:
@@ -6566,12 +6571,47 @@ def _merge_parsed_streams(primary, secondary):
     return merged
 
 
-def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None):
+def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None, known_tmdb_id=None, expected_year=None):
     original_id = imdb_id
     # Callers may pass the full alias list used by metadata lookup. Addon
     # stream URLs and prefix checks require a single concrete provider ID.
     if isinstance(imdb_id, (list, tuple)):
         imdb_id = next((candidate for candidate in imdb_id if candidate), None)
+
+    # Details pages already resolve the selected item to TMDB. Reuse that
+    # verified ID for Nuvio scrapers instead of doing a second title/IMDb
+    # lookup here. Accept either a numeric ID or the common tmdb:<id> form.
+    known_tmdb_id = str(known_tmdb_id or "").strip()
+    if known_tmdb_id.startswith("tmdb:"):
+        known_tmdb_id = known_tmdb_id.split(":", 1)[1].split(":", 1)[0]
+    if not known_tmdb_id.isdigit():
+        known_tmdb_id = None
+
+    expected_year = str(expected_year or "").strip()[:4]
+    if len(expected_year) != 4 or not expected_year.isdigit():
+        expected_year = ""
+    is_movie_request = str(media_type or "movie").strip().lower() not in ("series", "show", "tvshow", "tv_show", "anime", "tv")
+
+    def _filter_wrong_movie_year(streams):
+        """Drop only streams that explicitly label themselves with another year."""
+        if not expected_year or not is_movie_request:
+            return list(streams or [])
+        accepted = []
+        for stream in streams or []:
+            if not isinstance(stream, dict):
+                accepted.append(stream)
+                continue
+            hints = stream.get("behaviorHints") or {}
+            text = " ".join(str(value or "") for value in (
+                stream.get("title"), stream.get("stream_title"), stream.get("name"),
+                stream.get("filename"), hints.get("filename") if isinstance(hints, dict) else "",
+            ))
+            years = set(re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", text))
+            if years and expected_year not in years:
+                print(f"[STREAM DEBUG] discarded wrong-year stream expected={expected_year} found={sorted(years)!r}")
+                continue
+            accepted.append(stream)
+        return accepted
 
     print(
         f"[STREAM DEBUG] API start original_id={original_id!r} normalized_id={imdb_id!r} "
@@ -6718,6 +6758,32 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         cached = [s for s in cached if not s.get("is_nuvio_plugin")]
         cache_candidates = [s for s in cache_candidates if not s.get("is_nuvio_plugin")]
 
+    # Drop cached Nuvio plugin streams that were fetched for a different TMDB
+    # item.  This can happen when two movies share an IMDb ID in the cache (a
+    # stale entry) or when the details page corrects the item ID after a first
+    # lookup stored results under the old TMDB ID.  Stremio addon streams are
+    # keyed by provider URL (which embeds the item ID) so they are not affected.
+    if known_tmdb_id:
+        def _has_wrong_tmdb(stream):
+            if not isinstance(stream, dict):
+                return False
+            stored_tmdb = stream.get("plugin_scraper_tmdb_id")
+            if not stored_tmdb:
+                return False
+            return str(stored_tmdb).strip() != str(known_tmdb_id).strip()
+
+        wrong_before = sum(1 for s in cached if _has_wrong_tmdb(s))
+        if wrong_before:
+            print(
+                f"[STREAM DEBUG] dropping {wrong_before} cached plugin stream(s) "
+                f"with wrong TMDB ID (expected {known_tmdb_id!r})"
+            )
+        cached = [s for s in cached if not _has_wrong_tmdb(s)]
+        cache_candidates = [s for s in cache_candidates if not _has_wrong_tmdb(s)]
+
+    cached = _filter_wrong_movie_year(cached)
+    cache_candidates = _filter_wrong_movie_year(cache_candidates)
+
     print(
         f"[STREAM DEBUG] cache key={cache_key!r} cards={len(cached or [])} "
         f"age_seconds={cache_age!r} force={force_refresh} "
@@ -6780,9 +6846,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             if plugins.get_scraper_provider_name(s).strip().casefold() == provider_scope.casefold()
             or str(s.get("name") or "").strip().casefold() == provider_scope.casefold()
         ]
+    plugin_scrapers_before_dedup = len(plugin_scrapers)
+    plugin_scrapers = plugins.deduplicate_scrapers(plugin_scrapers)
 
     print(
-        f"[STREAM DEBUG] stream-capable addons={len(all_stream_addons)} plugins={len(plugin_scrapers)} "
+        f"[STREAM DEBUG] stream-capable addons={len(all_stream_addons)} "
+        f"plugins={len(plugin_scrapers)} unique/{plugin_scrapers_before_dedup} enabled "
         f"provider_scope={provider_scope!r} "
         f"names={[a.get('name', 'Unknown') for a in all_stream_addons]}"
     )
@@ -6941,6 +7010,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 "addon_name": c.get("addon_name") or (c.get("addon_names")[0] if c.get("addon_names") else "Cache"),
                 "is_nuvio_plugin": bool(c.get("is_nuvio_plugin")),
                 "plugin_scraper_id": c.get("plugin_scraper_id"),
+                "plugin_scraper_tmdb_id": c.get("plugin_scraper_tmdb_id"),
             }
             all_raw_streams.append(raw)
 
@@ -6974,9 +7044,13 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             # queued behind dozens of plugin scrapers.
             def resolve_and_submit():
                 from .tmdb_helper import resolve_all_provider_ids
-                ids_to_fetch = resolve_all_provider_ids(imdb_id, media_type, title)
+                resolver_ids = [imdb_id]
+                if known_tmdb_id:
+                    resolver_ids.append(f"tmdb:{known_tmdb_id}")
+                ids_to_fetch = resolve_all_provider_ids(resolver_ids, media_type, title)
                 print(f"[STREAM DEBUG] ID resolver id={imdb_id!r} returned {len(ids_to_fetch or [])} IDs: {ids_to_fetch!r}")
-                return [i for i in (ids_to_fetch or []) if i != imdb_id]
+                requested_ids = {str(i) for i in resolver_ids if i}
+                return [i for i in (ids_to_fetch or []) if str(i) not in requested_ids]
 
             scoped_provider_cooling = bool(
                 provider_scope
@@ -7006,8 +7080,24 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 else:
                     print(f"[STREAM DEBUG] direct ID not supported addon={addon.get('name')!r} id={imdb_id!r}")
 
-            # Submit immediately for any plugin scrapers if TMDB ID is directly known
-            initial_tmdb_id = tmdb_helper.resolve_to_tmdb_id(imdb_id, actual_media, title)
+            # Submit immediately for any plugin scrapers if TMDB ID is directly known.
+            # Prefer the verified known_tmdb_id from the details page; only fall back to
+            # a title-based resolve when the details page did not supply a TMDB ID, and
+            # log clearly so stale lookups are distinguishable in the debug output.
+            initial_tmdb_id = known_tmdb_id
+            if not initial_tmdb_id and plugin_scrapers:
+                initial_tmdb_id = tmdb_helper.resolve_to_tmdb_id(imdb_id, actual_media, title)
+                if initial_tmdb_id:
+                    print(
+                        f"[STREAM DEBUG] TMDB ID resolved from title for plugins: "
+                        f"id={imdb_id!r} title={title!r} → tmdb_id={initial_tmdb_id!r} "
+                        f"(known_tmdb_id was not supplied by the details page)"
+                    )
+                else:
+                    print(
+                        f"[STREAM DEBUG] No TMDB ID available for plugins: "
+                        f"id={imdb_id!r} title={title!r} — plugin scrapers will wait for ID resolver"
+                    )
             if initial_tmdb_id and plugin_scrapers:
                 for scraper in plugin_scrapers:
                     if abort_event and abort_event.is_set():
@@ -7064,7 +7154,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                             resolved_tmdb = str(cand).replace("tmdb:", "")
                                             break
                                     if not resolved_tmdb:
-                                        resolved_tmdb = tmdb_helper.resolve_to_tmdb_id(imdb_id, actual_media, title)
+                                        resolved_tmdb = known_tmdb_id or tmdb_helper.resolve_to_tmdb_id(imdb_id, actual_media, title)
                                     if resolved_tmdb:
                                         for scraper in plugin_scrapers:
                                             if scraper.get("id") not in queried_plugin_ids:
@@ -7090,6 +7180,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                             addon_orig_info = future_to_addon.get(future, (None, None))
                             addon_obj = addon_orig_info[0] if addon_orig_info else None
                             addon_name, streams = future.result()
+                            streams = _filter_wrong_movie_year(streams)
                             if streams:
                                 # Successful response — clear any previous failure count for Stremio addons
                                 if addon_obj and addon_obj.get("manifest_url") and not addon_obj.get("raw_id"):

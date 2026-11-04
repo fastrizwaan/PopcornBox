@@ -1287,7 +1287,7 @@ def _normalize_stream_for_storage(stream):
     if not stream or not isinstance(stream, dict):
         return None
     res = {}
-    for k in ["url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "seeders", "stream_title", "title", "filename", "is_http", "is_external", "ytId", "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles", "saved_at", "binge_group", "expires_at", "has_expiring_credentials", "is_nuvio_plugin", "plugin_scraper_id"]:
+    for k in ["url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "seeders", "stream_title", "title", "filename", "is_http", "is_external", "ytId", "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles", "saved_at", "binge_group", "expires_at", "has_expiring_credentials", "is_nuvio_plugin", "plugin_scraper_id", "plugin_scraper_tmdb_id"]:
         if k in stream and stream[k] is not None:
             res[k] = stream[k]
     if "addon_name" in stream and "addon_names" not in res:

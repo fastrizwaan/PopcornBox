@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import json
+import hashlib
 import time
 import shutil
 import urllib.request
@@ -279,6 +280,85 @@ def get_enabled_scrapers_for_type(media_type):
     ]
 
 
+def deduplicate_scrapers(scrapers):
+    """Collapse byte-identical scraper copies while retaining their labels.
+
+    Plugin repositories often republish the same scraper. Running each copy
+    launches another Deno process and sends the same provider request. Only
+    collapse copies when their code and saved settings match, and the code
+    does not depend on its repository-specific SCRAPER_ID.
+
+    Scrapers that differ only in name (but share identical code and settings)
+    are collapsed into a single execution. The duplicate names are stored in
+    ``_duplicate_provider_names`` on the surviving entry so the UI can still
+    show all labels.
+
+    Scrapers whose code contains the literal token ``SCRAPER_ID`` are always
+    kept independent because their behaviour depends on the per-repo ID baked
+    into the code.
+    """
+    unique = []
+    signatures = {}
+    group_by_repository = is_group_by_repository()
+    repository_names = {
+        str(repo.get("manifest_url") or ""): str(repo.get("name") or "")
+        for repo in get_installed_repositories()
+    } if group_by_repository else {}
+    try:
+        settings_by_id = database.get_setting("plugins_scraper_settings", {}) or {}
+    except Exception:
+        settings_by_id = {}
+
+    def _provider_label(scraper):
+        name = str(scraper.get("name") or "Plugin")
+        if group_by_repository:
+            return repository_names.get(str(scraper.get("repository_url") or "")) or name
+        return name
+
+    for scraper in scrapers or []:
+        code = str(scraper.get("code") or "")
+        scraper_id = scraper.get("id")
+        # Keep scrapers that use their own ID in code independent: the token
+        # SCRAPER_ID is a placeholder the runner replaces with the actual
+        # repository-scoped ID, so two copies are behaviorally different.
+        if not code or re.search(r"\bSCRAPER_ID\b", code):
+            unique.append(scraper)
+            continue
+        try:
+            settings = settings_by_id.get(scraper_id, {})
+            settings_json = json.dumps(settings, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        except (TypeError, ValueError):
+            unique.append(scraper)
+            continue
+
+        signature = hashlib.sha256((code + "\0" + settings_json).encode("utf-8")).hexdigest()
+        canonical = signatures.get(signature)
+        if canonical is None:
+            canonical = dict(scraper)
+            canonical["_duplicate_provider_names"] = []
+            signatures[signature] = canonical
+            unique.append(canonical)
+            continue
+
+        # This scraper is byte-for-byte identical to one already queued.
+        # Record its label so the UI can attribute results to both repos.
+        duplicate_label = _provider_label(scraper)
+        labels = canonical["_duplicate_provider_names"]
+        primary_label = _provider_label(canonical)
+        if duplicate_label and duplicate_label != primary_label and duplicate_label not in labels:
+            labels.append(duplicate_label)
+        logger.debug(
+            "Duplicate scraper collapsed: %r (from %r) is identical to %r (from %r); "
+            "one Deno process will run for both.",
+            scraper.get("name"),
+            scraper.get("repository_url"),
+            canonical.get("name"),
+            canonical.get("repository_url"),
+        )
+
+    return unique
+
+
 def toggle_scraper(scraper_id, enabled):
     """Enable or disable a specific scraper."""
     database.toggle_plugin_scraper(scraper_id, bool(enabled))
@@ -454,20 +534,59 @@ def refresh_repository(manifest_url):
 
 # --- Scraper Execution ---
 
+
+# Sentinel values for execute_scraper error classification.
+SCRAPER_ERROR_NO_RUNTIME = "no_runtime"
+SCRAPER_ERROR_NO_CODE = "no_code"
+SCRAPER_ERROR_TIMEOUT = "timeout"
+SCRAPER_ERROR_CRASH = "crash"
+SCRAPER_ERROR_INVALID_JSON = "invalid_json"
+SCRAPER_ERROR_EMPTY = "empty"
+
+
 def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, timeout=25):
     """
     Executes a single scraper JS code in the sandboxed runner.
     Returns a list of raw stream dictionaries.
+
+    On failure, returns an empty list.  Callers that need to distinguish
+    failure reasons can inspect the ``_scraper_error`` attribute attached to
+    the returned list object.  Possible values:
+
+      - ``SCRAPER_ERROR_NO_RUNTIME`` – Deno/Node.js not found on the system
+      - ``SCRAPER_ERROR_NO_CODE``    – scraper has no downloaded code
+      - ``SCRAPER_ERROR_TIMEOUT``    – JS process exceeded *timeout* seconds
+      - ``SCRAPER_ERROR_CRASH``      – runner exited with non-zero status
+      - ``SCRAPER_ERROR_INVALID_JSON`` – runner produced unparseable output
+      - ``SCRAPER_ERROR_EMPTY``      – runner returned a valid empty array
+
+    A normal non-empty result list has ``_scraper_error = None``.
     """
+    def _err(reason, streams=None):
+        # Use a tagged list subclass so the caller can distinguish failure
+        # reasons without breaking `isinstance(result, list)` checks.
+        class _ErrorList(list):
+            pass
+
+        result = _ErrorList(streams or [])
+        result._scraper_error = reason
+        return result
+
     cmd = find_js_runtime()
     if not cmd:
-        logger.warning("Cannot execute scraper: No JS runtime (Deno/Node.js) found.")
-        return []
+        logger.warning(
+            "Cannot execute scraper %r: No JS runtime (Deno/Node.js) found on this system.",
+            scraper.get("name"),
+        )
+        return _err(SCRAPER_ERROR_NO_RUNTIME)
 
     code = scraper.get("code")
     if not code:
-        logger.warning(f"Scraper {scraper.get('id')} has no code")
-        return []
+        logger.warning(
+            "Scraper %r has no downloaded code; refresh its repository.",
+            scraper.get("name"),
+        )
+        return _err(SCRAPER_ERROR_NO_CODE)
 
     norm_type = normalize_media_type(media_type)
     tmdb_key = tmdb_helper.get_tmdb_api_key() or "b030404650f279792a8d3287232358e3"
@@ -494,29 +613,66 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
         )
         input_data = json.dumps(payload)
         stdout, stderr = proc.communicate(input_data, timeout=timeout)
-        if proc.returncode != 0 and stderr:
-            logger.debug(f"Scraper {scraper.get('name')} runner stderr: {stderr[:200]}")
 
-        # The runner outputs the JSON array on the last line of stdout
+        if proc.returncode != 0:
+            if stderr:
+                logger.warning(
+                    "Scraper %r exited with code %d. stderr: %s",
+                    scraper.get("name"),
+                    proc.returncode,
+                    stderr[:300],
+                )
+            else:
+                logger.warning(
+                    "Scraper %r exited with code %d (no stderr).",
+                    scraper.get("name"),
+                    proc.returncode,
+                )
+            if not stdout.strip():
+                return _err(SCRAPER_ERROR_CRASH)
+
+        # The runner outputs the JSON array on the last line of stdout.
         lines = [line.strip() for line in stdout.strip().split("\n") if line.strip()]
         if not lines:
-            return []
+            logger.debug(
+                "Scraper %r produced no output for TMDB %s (%s).",
+                scraper.get("name"),
+                tmdb_id,
+                norm_type,
+            )
+            return _err(SCRAPER_ERROR_EMPTY)
 
-        # Find the last valid JSON array line
+        # Find the last valid JSON array line.
         for line in reversed(lines):
             if line.startswith("[") and line.endswith("]"):
                 try:
                     items = json.loads(line)
                     if isinstance(items, list):
-                        return _format_scraper_results(items, scraper)
-                except Exception:
+                        formatted = _format_scraper_results(items, scraper, queried_tmdb_id=tmdb_id)
+                        if not formatted:
+                            return _err(SCRAPER_ERROR_EMPTY, formatted)
+                        return formatted
+                except json.JSONDecodeError:
                     pass
 
-        # Fallback: parse entire stdout
-        items = json.loads(stdout.strip())
-        if isinstance(items, list):
-            return _format_scraper_results(items, scraper)
-        return []
+        # Fallback: try to parse entire stdout as JSON.
+        try:
+            items = json.loads(stdout.strip())
+            if isinstance(items, list):
+                formatted = _format_scraper_results(items, scraper, queried_tmdb_id=tmdb_id)
+                if not formatted:
+                    return _err(SCRAPER_ERROR_EMPTY, formatted)
+                return formatted
+        except json.JSONDecodeError:
+            pass
+
+        logger.warning(
+            "Scraper %r returned output that could not be parsed as a JSON array. "
+            "First 200 chars: %r",
+            scraper.get("name"),
+            stdout[:200],
+        )
+        return _err(SCRAPER_ERROR_INVALID_JSON)
 
     except subprocess.TimeoutExpired:
         try:
@@ -524,17 +680,32 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
             proc.wait(timeout=2)
         except Exception:
             pass
-        logger.info(f"Scraper {scraper.get('name')} timed out after {timeout}s")
-        return []
+        logger.info(
+            "Scraper %r timed out after %ds for TMDB %s (%s).",
+            scraper.get("name"),
+            timeout,
+            tmdb_id,
+            norm_type,
+        )
+        return _err(SCRAPER_ERROR_TIMEOUT)
     except Exception as e:
-        logger.warning(f"Error executing scraper {scraper.get('name')}: {e}")
-        return []
+        logger.warning(
+            "Unexpected error executing scraper %r: %s: %s",
+            scraper.get("name"),
+            type(e).__name__,
+            e,
+        )
+        return _err(SCRAPER_ERROR_CRASH)
 
 
-def _format_scraper_results(raw_items, scraper):
+def _format_scraper_results(raw_items, scraper, queried_tmdb_id=None):
     """Convert raw scraper output into PopcornBox stream dictionary entries."""
     formatted = []
     provider_name = get_scraper_provider_name(scraper)
+    provider_names = [provider_name]
+    for duplicate_name in scraper.get("_duplicate_provider_names", []):
+        if duplicate_name and duplicate_name not in provider_names:
+            provider_names.append(duplicate_name)
     default_name = scraper.get("name") or "Plugin"
 
     def _text(value):
@@ -633,9 +804,12 @@ def _format_scraper_results(raw_items, scraper):
             "peers": item.get("peers"),
             "behaviorHints": behavior_hints,
             "addon_name": provider_name,
-            "addon_names": [provider_name],
+            "addon_names": provider_names,
             "is_nuvio_plugin": True,
             "plugin_scraper_id": scraper.get("id"),
+            # Record the TMDB ID that was used to query this scraper so the
+            # stream layer can discard results cached under a different item.
+            "plugin_scraper_tmdb_id": str(queried_tmdb_id) if queried_tmdb_id is not None else None,
         })
 
     return formatted
@@ -649,6 +823,10 @@ def test_scraper(scraper_id):
     scraper = get_scraper(scraper_id)
     if not scraper:
         return False, 0, "Provider not found"
+    if not is_runtime_available():
+        return False, 0, "No Deno or Node.js runtime is available to run this provider"
+    if not scraper.get("code"):
+        return False, 0, "This provider has no downloaded scraper code; refresh its repository"
 
     media_type = "movie" if scraper_supports_type(scraper, "movie") else "tv"
     season = 1 if media_type == "tv" else None
@@ -673,7 +851,7 @@ def fetch_plugin_streams(tmdb_id, media_type, season=None, episode=None, on_stre
     if not is_plugins_enabled():
         return []
 
-    scrapers = get_enabled_scrapers_for_type(media_type)
+    scrapers = deduplicate_scrapers(get_enabled_scrapers_for_type(media_type))
     if not scrapers:
         return []
 

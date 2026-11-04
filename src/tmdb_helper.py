@@ -162,7 +162,7 @@ def is_similar_title(t1, t2):
     if not w1_sig or not w2_sig:
         return bool(w1 & w2)
     overlap = len(w1_sig & w2_sig)
-    return (overlap / max(len(w1_sig), len(w2_sig))) >= 0.6
+    return (overlap / max(len(w1_sig), len(w2_sig))) >= 0.75
 
 def _tmdb_id_to_imdb(tmdb_id, tmdb_type="movie"):
     """Map a TMDB numeric ID to an IMDb ``tt`` ID."""
@@ -408,9 +408,8 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
         return [res] if res else []
 
     def _title_match(metas, t_lower):
-        # Prefer an exact (case-insensitive) title match so "Escape" does not
-        # resolve to "Escape Room"; only then accept a contained match.
-        contained = None
+        # A contained match such as "Escape" -> "Escape Room" can select a
+        # different film. Stream ID resolution only accepts an exact title.
         for m in metas:
             m_id = m.get("imdb_id") or m.get("id", "")
             if not str(m_id).startswith("tt"):
@@ -420,9 +419,7 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
                 continue
             if m_name == t_lower:
                 return str(m_id)
-            if contained is None and (m_name in t_lower or t_lower in m_name):
-                contained = str(m_id)
-        return contained
+        return None
 
     def task_tt():
         has_tt_curr = any(str(i).startswith("tt") for i in ids)
@@ -464,11 +461,20 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
                     search_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/catalog/{c_type}/tmdb.top/search={urllib.parse.quote(title)}.json"
                     search_data = _get_cached_request(search_url, max_age_hours=METADATA_CACHE_HOURS, timeout=3.0)
                     if search_data and "metas" in search_data:
-                        for m in search_data["metas"]:
-                            m_id = m.get("id")
+                        metas = search_data["metas"]
+                        target_name = str(title).strip().casefold()
+                        exact = next((m for m in metas if str(m.get("name") or m.get("title") or "").strip().casefold() == target_name), None)
+                        if exact:
+                            m_id = exact.get("id")
                             if m_id and str(m_id).startswith("tmdb:"):
                                 res.append(str(m_id))
-                                break
+                        if not exact:
+                            for m in metas:
+                                m_id = m.get("id")
+                                m_name = m.get("name") or m.get("title") or ""
+                                if m_id and str(m_id).startswith("tmdb:") and is_similar_title(title, m_name):
+                                    res.append(str(m_id))
+                                    break
                 except Exception:
                     pass
         return res
