@@ -138,6 +138,47 @@ class TestEpisodeSelection(unittest.TestCase):
             self.assertIn("S1:E5", page.continue_label.get_text(), "Continue button should still show S1:E5")
             self.assertEqual(page.episode_dropdown.get_selected(), 4, "Dropdown index should remain 4 (episode 5)")
 
+    def test_continue_watching_zero_position_next_episode_selection(self):
+        """Verify that an advanced next episode in Continue Watching with position 0.0 is preserved."""
+        from src.window import MovieDetailsPage
+        from src import database
+
+        videos = [
+            {"id": "tt39281887:1:1", "season": 1, "episode": 1, "title": "Episode 1"},
+            {"id": "tt39281887:1:2", "season": 1, "episode": 2, "title": "Episode 2"},
+            {"id": "tt39281887:1:3", "season": 1, "episode": 3, "title": "Episode 3"},
+        ]
+        details = {
+            "id": "tt39281887",
+            "title": "Jaadugar: A Witch in Mongolia",
+            "type": "series",
+            "videos": videos,
+        }
+
+        # Episode 1 completed, continue watching advanced to Episode 2 with position 0.0
+        stub = {
+            "id": "tt39281887",
+            "title": "Jaadugar: A Witch in Mongolia",
+            "type": "series",
+            "season": 1,
+            "episode": 2,
+            "position": 0.0,
+            "duration": 0.0
+        }
+        database.save_continue_watching(stub)
+
+        mock_win = MagicMock()
+        mock_win.active_details_page = None
+
+        with patch.object(MovieDetailsPage, "load_details_async"), \
+             patch.object(MovieDetailsPage, "fetch_torrents_async"):
+            page = MovieDetailsPage(stub, mock_win)
+            page.build_ui(details)
+
+            self.assertEqual(page.selected_season, 1)
+            self.assertEqual(page.selected_episode, 2)
+            self.assertIn("S1:E2", page.continue_label.get_text())
+
     def test_no_obsolete_action_buttons_on_streams_page(self):
         """Verify MovieDetailsPage does not have the old row4_box, watch_btn, or download_btn."""
         from src.window import MovieDetailsPage

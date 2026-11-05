@@ -712,6 +712,112 @@ class TestNextEpisodePrefetch(unittest.TestCase):
             self._join_prefetch_threads()
         self.assertIsNone(getattr(self.win, "_next_ep_prefetched", None))
 
+    def test_continue_watching_no_details_page_next_episode_target_and_has_next(self):
+        self.win.details_box = FakeBox()
+        self.win._current_playing_item = {
+            "id": "tt1234567",
+            "imdb_id": "tt1234567",
+            "title": "Test Show",
+            "type": "series",
+            "season": 1,
+            "episode": 1,
+        }
+        self.win._get_videos_for_current_page = CineWindow._get_videos_for_current_page.__get__(self.win, CineWindow)
+        with patch.object(database, "get_cached_metadata", return_value={"videos": VIDEOS}), \
+             patch("src.window.settings.get_boolean", return_value=True):
+            self.assertTrue(self.win._has_next_episode())
+            target = self.win._get_next_episode_target()
+            self.assertEqual(target, (1, 2, "Second"))
+
+    def test_continue_watching_unrelated_details_page_ignored(self):
+        unrelated_page = FakeSeriesPage(season=5, episode=9, media_type="series")
+        unrelated_page.movie_details = {"imdb_id": "tt9999999", "title": "Other Show"}
+        unrelated_page.movie_stub = {"id": "tt9999999", "title": "Other Show"}
+        self.win.details_box = FakeBox()
+        self.win.details_box.append(unrelated_page)
+        self.win._current_playing_item = {
+            "id": "tt1234567",
+            "imdb_id": "tt1234567",
+            "title": "Test Show",
+            "type": "series",
+            "season": 1,
+            "episode": 1,
+        }
+        self.win._get_videos_for_current_page = CineWindow._get_videos_for_current_page.__get__(self.win, CineWindow)
+        with patch.object(database, "get_cached_metadata", return_value={"videos": VIDEOS}), \
+             patch("src.window.settings.get_boolean", return_value=True):
+            self.assertFalse(self.win._is_page_for_current_item(unrelated_page))
+            self.assertTrue(self.win._has_next_episode())
+            target = self.win._get_next_episode_target()
+            self.assertEqual(target, (1, 2, "Second"))
+
+    def test_continue_watching_no_details_page_prefetch(self):
+        self.win.details_box = FakeBox()
+        self.win._current_playing_item = {
+            "id": "tt1234567",
+            "imdb_id": "tt1234567",
+            "title": "Test Show",
+            "type": "series",
+            "season": 1,
+            "episode": 1,
+        }
+        self.win._get_videos_for_current_page = CineWindow._get_videos_for_current_page.__get__(self.win, CineWindow)
+        direct = self._direct_card()
+        with patch.object(database, "get_cached_metadata", return_value={"videos": VIDEOS}), \
+             patch("src.window.settings.get_boolean", return_value=True), \
+             patch("src.api.get_torrents_streamed", return_value=[direct]) as mock_fetch:
+            self.assertTrue(self.win._prefetch_next_episode_streams())
+            self._join_prefetch_threads()
+        mock_fetch.assert_called_once()
+        self.assertEqual(mock_fetch.call_args.args[0], "tt1234567")
+        self.assertEqual(mock_fetch.call_args.kwargs.get("season"), 1)
+        self.assertEqual(mock_fetch.call_args.kwargs.get("episode"), 2)
+        staged = self.win._take_prefetched_next_episode_streams(1, 2)
+        self.assertIsNotNone(staged)
+
+    def test_continue_watching_no_details_page_play_next_episode_with_prefetched_stream(self):
+        self.win.details_box = FakeBox()
+        self.win._current_playing_item = {
+            "id": "tt1234567",
+            "imdb_id": "tt1234567",
+            "title": "Test Show",
+            "type": "series",
+            "season": 1,
+            "episode": 1,
+        }
+        self.win._get_videos_for_current_page = CineWindow._get_videos_for_current_page.__get__(self.win, CineWindow)
+        direct = self._direct_card()
+        self.win._next_ep_prefetched = {
+            "key": "tt1234567:S1:E2",
+            "season": 1,
+            "episode": 2,
+            "streams": [direct],
+        }
+        with patch.object(database, "get_cached_metadata", return_value={"videos": VIDEOS}), \
+             patch("src.window.settings.get_boolean", return_value=True):
+            self.assertTrue(self.win._try_play_next_episode())
+
+        self.win.play_stream_with_failover.assert_called_once()
+        queue = self.win.play_stream_with_failover.call_args.args[0]
+        self.assertEqual(queue[0]["url"], "https://cdn.example/e2.mp4")
+        kwargs = self.win.play_stream_with_failover.call_args.kwargs
+        self.assertEqual(kwargs.get("season"), 1)
+        self.assertEqual(kwargs.get("episode"), 2)
+        self.assertEqual(self.win._current_playing_item.get("season"), 1)
+        self.assertEqual(self.win._current_playing_item.get("episode"), 2)
+        database.save_continue_watching.assert_called()
+
+    def test_handle_eof_triggers_auto_play_next_when_playing_from_continue_watching(self):
+        self.win._handle_eof = CineWindow._handle_eof.__get__(self.win, CineWindow)
+        self.win._is_auto_play_next_enabled = MagicMock(return_value=True)
+        self.win._is_playing_trailer = MagicMock(return_value=False)
+        self.win._try_play_next_episode = MagicMock(return_value=True)
+        self.win._close_player = MagicMock()
+
+        self.win._handle_eof()
+        self.win._try_play_next_episode.assert_called_once()
+        self.win._close_player.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

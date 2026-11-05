@@ -342,8 +342,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 if tt_m.group(1) not in alias_ids:
                     self.movie_stub.setdefault("alias_ids", []).append(tt_m.group(1))
 
-        self.selected_season = None
-        self.selected_episode = None
+        self.selected_season = self.movie_stub.get("season")
+        self.selected_episode = self.movie_stub.get("episode")
         # Set once the user explicitly picks an episode/season, so later
         # background build_ui() refreshes never clobber the active selection
         # with a stale Continue Watching resume point.
@@ -2086,7 +2086,7 @@ class MovieDetailsPage(Gtk.Overlay):
         has_progress = False
         if cw_item:
             pos = float(cw_item.get("position") or 0.0)
-            if pos > 0 or cw_item.get("stream_url") or cw_item.get("magnet") or cw_item.get("stream_queue"):
+            if pos > 0 or cw_item.get("stream_url") or cw_item.get("magnet") or cw_item.get("stream_queue") or cw_item.get("season") is not None or cw_item.get("episode") is not None:
                 has_progress = True
             elif working_stream:
                 has_progress = True
@@ -2484,28 +2484,38 @@ class MovieDetailsPage(Gtk.Overlay):
                     + [self.movie_stub.get("imdb_id"), item_id]
                 ) if value
             ))
-            resume_item = (
-                None if getattr(self, "_user_selected_episode", False)
-                else database.get_continue_watching_item(resume_ids)
-            )
-            if resume_item:
-                resume_season = resume_item.get("season")
-                resume_episode = resume_item.get("episode")
-                resume_position = float(resume_item.get("position") or 0)
-                if resume_season is not None and resume_episode is not None and (
-                    # A remembered link or selected stream does not mean the
-                    # user watched this episode. Old dropdown-only records and
-                    # zero-position streams otherwise override the fresh-open
-                    # S1:E1 default. Restore only a genuine playback position.
-                    resume_position > 5.0
-                ):
-                    self.selected_season = resume_season
-                    self.selected_episode = resume_episode
-                    self._preferred_series_season = resume_season
-                    self._preferred_series_episode = resume_episode
-                    print(f"[SERIES DEBUG] restoring playback position S{resume_season}E{resume_episode} for {resume_ids[0] if resume_ids else item_id}")
-                else:
-                    print(f"[SERIES DEBUG] ignoring Continue Watching entry without playback evidence for {resume_ids[0] if resume_ids else item_id}")
+            explicit_s = self.movie_stub.get("season")
+            explicit_ep = self.movie_stub.get("episode")
+            if explicit_s is not None and explicit_ep is not None and not getattr(self, "_user_selected_episode", False):
+                self.selected_season = explicit_s
+                self.selected_episode = explicit_ep
+                self._preferred_series_season = explicit_s
+                self._preferred_series_episode = explicit_ep
+                print(f"[SERIES DEBUG] restoring explicit season/episode S{explicit_s}E{explicit_ep} for {resume_ids[0] if resume_ids else item_id}")
+            else:
+                resume_item = (
+                    None if getattr(self, "_user_selected_episode", False)
+                    else database.get_continue_watching_item(resume_ids)
+                )
+                if resume_item:
+                    resume_season = resume_item.get("season")
+                    resume_episode = resume_item.get("episode")
+                    resume_position = float(resume_item.get("position") or 0)
+                    is_cw = any(
+                        database._continue_watching_item_ids(cw).intersection(resume_ids)
+                        for cw in database.get_continue_watching()
+                    )
+                    if resume_season is not None and resume_episode is not None and (
+                        # Restore genuine playback position (> 5s) or explicit Continue Watching row (e.g. advanced next ep)
+                        resume_position > 5.0 or is_cw
+                    ):
+                        self.selected_season = resume_season
+                        self.selected_episode = resume_episode
+                        self._preferred_series_season = resume_season
+                        self._preferred_series_episode = resume_episode
+                        print(f"[SERIES DEBUG] restoring playback position S{resume_season}E{resume_episode} for {resume_ids[0] if resume_ids else item_id}")
+                    else:
+                        print(f"[SERIES DEBUG] ignoring Continue Watching entry without playback evidence for {resume_ids[0] if resume_ids else item_id}")
             if not hasattr(self, "_preferred_series_season"):
                 self._preferred_series_season = 1
                 self._preferred_series_episode = None
@@ -7032,12 +7042,7 @@ class CineWindow(Adw.ApplicationWindow):
                     idle_add_once(self.spinner.set_visible, False)
                     idle_add_once(self.start_page.set_sensitive, True)
                     if not self.mpv.keep_open and self.mpv.idle_active and not self.startup:
-                        def _handle_eof():
-                            if self._is_playing_trailer():
-                                self._close_player(remove_torrent=False)
-                            elif not self._try_play_next_episode():
-                                self._close_player(remove_torrent=False)
-                        idle_add_once(_handle_eof)
+                        idle_add_once(self._handle_eof)
                 else:
                     idle_add_once(self.spinner.set_visible, False)
                     idle_add_once(self.start_page.set_sensitive, True)
@@ -12096,7 +12101,21 @@ class CineWindow(Adw.ApplicationWindow):
                 item_data["magnet"] = magnet
 
         self._current_playing_item = dict(item_data)
-        
+        if season is not None:
+            self.selected_season = season
+        if episode is not None:
+            self.selected_episode = episode
+
+        if p_id and item_data.get("type", "movie") in ["series", "anime", "tv"]:
+            cached = database.get_cached_metadata(p_id, item_data.get("type", "series"))
+            if not cached or not cached.get("videos"):
+                def _warm_meta():
+                    try:
+                        api.fetch_movie_details(p_id, media_type=item_data.get("type", "series"), title=title)
+                    except Exception:
+                        pass
+                threading.Thread(target=_warm_meta, daemon=True, name="MetadataWarmer").start()
+
         self._pending_seek_position = position if position > RESUME_MIN_POSITION_SECONDS else None
         
         curr_page = self.main_stack.get_visible_child_name() if hasattr(self, "main_stack") else "library"
@@ -12151,9 +12170,18 @@ class CineWindow(Adw.ApplicationWindow):
                 headers = api.extract_stream_headers(item_data["selected_torrent"], url=target)
             else:
                 headers = api.extract_stream_headers({}, url=target)
-            self._play_stream(target, title, headers=headers, start_time=self._pending_seek_position)
+            self._play_stream(
+                target,
+                title,
+                headers=headers,
+                start_time=self._pending_seek_position,
+                item_id=p_id,
+                media_type=item_data.get("type", "movie"),
+                season=season,
+                episode=episode,
+            )
         else:
-            self._on_movie_clicked(item_data)
+            self._on_movie_clicked(item_data, auto_play=True)
 
     def _on_remove_continue_watching(self, item_data, widget):
         from . import database
@@ -14527,7 +14555,7 @@ class CineWindow(Adw.ApplicationWindow):
         # Deliver first slice synchronously so the viewport fills instantly without delay
         _deliver_next_slice(0)
 
-    def _on_movie_clicked(self, movie_data, push_history=True):
+    def _on_movie_clicked(self, movie_data, push_history=True, auto_play=False):
         if push_history:
             self._push_current_nav_state()
 
@@ -14563,6 +14591,9 @@ class CineWindow(Adw.ApplicationWindow):
             
         print(f"[CARD CLICK Step 3] Creating MovieDetailsPage widget...")
         page = MovieDetailsPage(movie_data, on_back, window=self)
+        if auto_play:
+            page._auto_play_on_streams_loaded = True
+            page._auto_play_next = True
         self.details_box.append(page)
         self.main_stack.set_visible_child_name("details")
         print(f"[CARD CLICK Step 4] Switched main stack to details view.")
@@ -15815,6 +15846,17 @@ class CineWindow(Adw.ApplicationWindow):
                 # the JSON database rewrite or remote scrobble work.
                 database.save_continue_watching_async(self._current_playing_item)
 
+            if target_id and (media_type in ("series", "anime", "tv") or season is not None):
+                cached_meta_chk = database.get_cached_metadata(target_id, media_type)
+                if not cached_meta_chk or not cached_meta_chk.get("videos"):
+                    def _warm_meta():
+                        try:
+                            from . import api
+                            api.fetch_movie_details(target_id, media_type=media_type, title=item_title)
+                        except Exception:
+                            pass
+                    threading.Thread(target=_warm_meta, daemon=True, name="MetadataWarmer").start()
+
             logger.info(f"[SUBS] Queued subtitle request for stream: imdb_id={imdb_id}, media_type={media_type}, S{season}E{episode}, title={title}")
             self._pending_subtitle_request = {
                 "imdb_id": imdb_id,
@@ -16251,15 +16293,51 @@ class CineWindow(Adw.ApplicationWindow):
         self.hide_player_loading()
         logger.warning("No direct HTTP streams found for this item.")
 
-    def _get_videos_for_current_page(self, page):
-        if not page: return []
-        videos = getattr(page, 'videos', None) or (getattr(page, 'movie_details', {}) or {}).get("videos") or (getattr(page, 'movie_stub', {}) or {}).get("videos") or []
-        if not videos and hasattr(page, 'movie_stub'):
+    def _is_page_for_current_item(self, page):
+        if not page or not hasattr(self, "_current_playing_item") or not self._current_playing_item:
+            return False
+        cur_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
+        if not cur_id:
+            return False
+        cur_aliases = set(str(a) for a in (self._current_playing_item.get("alias_ids") or [cur_id]) if a)
+        cur_aliases.add(str(cur_id))
+
+        page_stub = getattr(page, "movie_stub", {}) or {}
+        page_details = getattr(page, "movie_details", {}) or {}
+        page_id = page_details.get("imdb_id") or page_details.get("id") or page_stub.get("imdb_id") or page_stub.get("id")
+        if not page_id:
+            return False
+        page_aliases = set(str(a) for a in (page_stub.get("alias_ids") or [page_id]) if a)
+        page_aliases.add(str(page_id))
+
+        return bool(cur_aliases.intersection(page_aliases))
+
+    def _get_videos_for_current_page(self, page=None):
+        if page and (self._is_page_for_current_item(page) or not getattr(self, "_current_playing_item", None)):
+            videos = getattr(page, 'videos', None) or (getattr(page, 'movie_details', {}) or {}).get("videos") or (getattr(page, 'movie_stub', {}) or {}).get("videos") or []
+            if videos:
+                return videos
+            if hasattr(page, 'movie_stub'):
+                from . import database
+                p_id = page.movie_stub.get("id") or page.movie_stub.get("imdb_id")
+                cached = database.get_cached_metadata(p_id)
+                if cached and cached.get("videos"):
+                    return cached.get("videos", [])
+        # Fall back to current playing item metadata if page is missing or unrelated
+        cur_item = getattr(self, "_current_playing_item", None) or {}
+        if cur_item:
             from . import database
-            cached = database.get_cached_metadata(page.movie_stub.get("id"))
-            if cached:
-                videos = cached.get("videos", [])
-        return videos
+            item_id = cur_item.get("id") or cur_item.get("imdb_id")
+            if item_id:
+                alias_ids = list(cur_item.get("alias_ids") or [item_id])
+                cached = database.get_cached_metadata(alias_ids, cur_item.get("type", "series"))
+                if cached and cached.get("videos"):
+                    return cached.get("videos", [])
+        if page:
+            videos = getattr(page, 'videos', None) or (getattr(page, 'movie_details', {}) or {}).get("videos") or (getattr(page, 'movie_stub', {}) or {}).get("videos") or []
+            if videos:
+                return videos
+        return []
 
     def _is_playing_trailer(self):
         playing_item = getattr(self, "_current_playing_item", {}) or {}
@@ -16305,7 +16383,7 @@ class CineWindow(Adw.ApplicationWindow):
             return False
 
     def _get_next_episode_target(self):
-        """Resolve the next episode of the page currently being watched.
+        """Resolve the next episode of the item currently being watched.
 
         Returns a (season, episode, title) tuple, or None when the current item
         is a trailer/channel or the series has no later episode. Single source of
@@ -16314,44 +16392,66 @@ class CineWindow(Adw.ApplicationWindow):
         if self._is_playing_trailer():
             return None
         page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
-        if not page or getattr(page, 'is_channel', False):
+        valid_page = page if (page and (self._is_page_for_current_item(page) or not getattr(self, "_current_playing_item", None))) else None
+        if valid_page and getattr(valid_page, 'is_channel', False):
             return None
-        videos = self._get_videos_for_current_page(page)
-        if not videos or len(videos) <= 1:
+
+        cur_item = getattr(self, "_current_playing_item", None) or {}
+        media_type = (getattr(valid_page, 'media_type', None) if valid_page else None) or cur_item.get("type") or 'series'
+        if media_type not in ("series", "anime", "tv"):
             return None
-        current_season = getattr(page, 'selected_season', 1) or 1
-        current_episode = getattr(page, 'selected_episode', None)
+
+        current_season = None
+        current_episode = None
+        if valid_page:
+            current_season = getattr(valid_page, 'selected_season', None)
+            current_episode = getattr(valid_page, 'selected_episode', None)
+        if current_season is None:
+            current_season = cur_item.get("season", 1) or 1
+        if current_episode is None:
+            current_episode = cur_item.get("episode", None)
+
         if current_episode is None:
             return None
 
+        videos = self._get_videos_for_current_page(valid_page)
         target_season = current_season
         target_episode = current_episode + 1
-        eps_in_season = [v for v in videos if v.get("season", 1) == current_season]
-        if not any(e.get("episode") == target_episode for e in eps_in_season):
-            target_season = current_season + 1
-            eps_in_next_season = [v for v in videos if v.get("season", 1) == target_season]
-            if not eps_in_next_season:
-                return None
-            target_episode = min((e.get("episode", 1) for e in eps_in_next_season), default=1)
+        next_title = None
 
-        next_v = next(
-            (v for v in videos if v.get("season", 1) == target_season and v.get("episode") == target_episode),
-            None,
-        )
-        next_title = (next_v.get("title") or next_v.get("name")) if next_v else None
+        if videos:
+            eps_in_season = [v for v in videos if v.get("season", 1) == current_season]
+            if any(e.get("episode") == target_episode for e in eps_in_season):
+                pass
+            else:
+                target_season = current_season + 1
+                eps_in_next_season = [v for v in videos if v.get("season", 1) == target_season]
+                if not eps_in_next_season:
+                    return None
+                target_episode = min((e.get("episode", 1) for e in eps_in_next_season), default=1)
+
+            next_v = next(
+                (v for v in videos if v.get("season", 1) == target_season and v.get("episode") == target_episode),
+                None,
+            )
+            next_title = (next_v.get("title") or next_v.get("name")) if next_v else None
+        else:
+            target_season = current_season
+            target_episode = current_episode + 1
+            next_title = None
+
         return target_season, target_episode, next_title
 
     def _has_next_episode(self):
-        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
-        if not page:
+        if self._is_playing_trailer():
             return False
-        if getattr(page, 'is_channel', False):
-            if self._is_playing_trailer():
-                return False
-            eps = getattr(page, 'current_episodes', []) or self._get_videos_for_current_page(page)
+        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+        valid_page = page if (page and (self._is_page_for_current_item(page) or not getattr(self, "_current_playing_item", None))) else None
+        if valid_page and getattr(valid_page, 'is_channel', False):
+            eps = getattr(valid_page, 'current_episodes', []) or self._get_videos_for_current_page(valid_page)
             if not eps or len(eps) <= 1:
                 return False
-            sel_v = getattr(page, 'selected_video', None)
+            sel_v = getattr(valid_page, 'selected_video', None)
             if sel_v:
                 sel_id = sel_v.get("id")
                 curr_idx = next((i for i, v in enumerate(eps) if v.get("id") == sel_id), -1)
@@ -16363,7 +16463,7 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_next_ep_play_clicked(self, *args):
         self.next_ep_dismissed = True
         self._set_next_episode_banner_visible(False)
-        self._try_play_next_episode()
+        self._try_play_next_episode(force=True)
 
     @Gtk.Template.Callback()
     def _on_next_ep_dismiss_clicked(self, *args):
@@ -16377,9 +16477,10 @@ class CineWindow(Adw.ApplicationWindow):
             return
             
         page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
-        videos = self._get_videos_for_current_page(page) if page else []
+        valid_page = page if (page and (self._is_page_for_current_item(page) or not getattr(self, "_current_playing_item", None))) else None
+        videos = self._get_videos_for_current_page(valid_page) if valid_page else []
         if not videos:
-            cached = database.get_cached_metadata(item_id)
+            cached = database.get_cached_metadata(item_id, item.get("type", "series"))
             if cached:
                 videos = cached.get("videos", [])
         
@@ -16411,9 +16512,6 @@ class CineWindow(Adw.ApplicationWindow):
             next_item["position"] = 0.0
             next_item["progress"] = 0.0
             next_item["duration"] = 0.0
-            next_item["stream_url"] = None
-            next_item["stream_queue"] = []
-            next_item["selected_torrent"] = None
             base_title = next_item.get("title", "")
             import re
             base_title = re.sub(r'\s*\(S\d+E\d+\)', '', base_title).strip()
@@ -16421,9 +16519,20 @@ class CineWindow(Adw.ApplicationWindow):
             next_item["stream_title"] = f"{base_title} (S{target_season:02d}E{target_episode:02d})"
             from time import time as _time
             next_item["last_watched"] = int(_time())
+
+            primary_id = (next_item.get("alias_ids") or [item_id])[0]
+            pack_stream = database.get_working_stream(primary_id, target_season, target_episode)
+            if pack_stream and not pack_stream.get("is_http"):
+                next_item["selected_torrent"] = pack_stream
+                next_item["stream_url"] = pack_stream.get("url") or pack_stream.get("magnet")
+                next_item["stream_queue"] = [pack_stream]
+                next_item["stream_queue_index"] = 0
+            else:
+                next_item["stream_url"] = None
+                next_item["stream_queue"] = []
+                next_item["selected_torrent"] = None
             
             database.save_continue_watching(next_item)
-            primary_id = (next_item.get("alias_ids") or [item_id])[0]
             database.set_setting(f"last_s_{primary_id}", target_season)
             database.set_setting(f"last_ep_{primary_id}_{target_season}", target_episode)
             self._current_playing_item = next_item
@@ -16434,23 +16543,24 @@ class CineWindow(Adw.ApplicationWindow):
             if hasattr(self, "_update_continue_watching_section"):
                 self._update_continue_watching_section()
 
-    def _try_play_next_episode(self):
+    def _try_play_next_episode(self, force=False):
         if self._is_playing_trailer():
             return False
-        self.next_ep_auto_triggered = False
-        page = self.details_box.get_first_child()
-        if not page:
+        if not force and not self._is_auto_play_next_enabled():
             return False
-        if getattr(page, 'is_channel', False):
-            eps = getattr(page, 'current_episodes', []) or self._get_videos_for_current_page(page)
+        self.next_ep_auto_triggered = False
+        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+        valid_page = page if (page and (self._is_page_for_current_item(page) or not getattr(self, "_current_playing_item", None))) else None
+        if valid_page and getattr(valid_page, 'is_channel', False):
+            eps = getattr(valid_page, 'current_episodes', []) or self._get_videos_for_current_page(valid_page)
             if not eps or len(eps) <= 1:
                 return False
-            sel_v = getattr(page, 'selected_video', None)
+            sel_v = getattr(valid_page, 'selected_video', None)
             curr_idx = -1
             if sel_v:
                 curr_idx = next((i for i, v in enumerate(eps) if v.get("id") == sel_v.get("id")), -1)
             if curr_idx < 0:
-                curr_ep = getattr(page, 'selected_episode', None)
+                curr_ep = getattr(valid_page, 'selected_episode', None)
                 if curr_ep is not None:
                     curr_idx = next((i for i, v in enumerate(eps) if v.get("episode") == curr_ep), -1)
             next_idx = curr_idx + 1
@@ -16465,40 +16575,31 @@ class CineWindow(Adw.ApplicationWindow):
             load_msg = f"Loading {next_title}..."
             videos = eps
             current_season = target_season
+            media_type = "channel"
         else:
-            videos = self._get_videos_for_current_page(page)
-            if not videos or len(videos) <= 1:
+            target = self._get_next_episode_target()
+            if not target:
                 return False
-                
-            current_season = getattr(page, 'selected_season', 1) or 1
-            current_episode = getattr(page, 'selected_episode', None)
-            if current_episode is None:
-                return False
-                
-            next_ep = current_episode + 1
-            eps_in_season = [v for v in videos if v.get("season", 1) == current_season]
-            found_next_ep = any(e.get("episode") == next_ep for e in eps_in_season)
-            
-            target_season = current_season
-            target_episode = next_ep
-            
-            if not found_next_ep:
-                target_season = current_season + 1
-                eps_in_next_season = [v for v in videos if v.get("season", 1) == target_season]
-                if not eps_in_next_season:
-                    return False
-                
-                target_episode = min((e.get("episode", 1) for e in eps_in_next_season), default=1)
-                
-            next_v = next((v for v in videos if v.get("season", 1) == target_season and v.get("episode") == target_episode), None)
-            next_title = (next_v.get("title") or next_v.get("name")) if next_v else None
-            if getattr(page, 'media_type', '') in ["series", "anime", "tv"]:
+            target_season, target_episode, next_title = target
+            cur_item = getattr(self, "_current_playing_item", None) or {}
+            media_type = (getattr(valid_page, 'media_type', None) if valid_page else None) or cur_item.get("type") or 'series'
+            current_season = (getattr(valid_page, 'selected_season', 1) if valid_page else None) or cur_item.get("season", 1) or 1
+            videos = self._get_videos_for_current_page(valid_page)
+
+            next_v = next(
+                (v for v in videos if v.get("season", 1) == target_season and v.get("episode") == target_episode),
+                None,
+            )
+            if not next_title and next_v:
+                next_title = next_v.get("title") or next_v.get("name")
+
+            if media_type in ["series", "anime", "tv"]:
                 msg = f"Playing next: Season {target_season} Episode {target_episode}"
                 load_msg = f"Loading Season {target_season} Episode {target_episode}..."
             else:
                 msg = f"Playing next: {next_title or f'Part {target_episode}'}"
                 load_msg = f"Loading {next_title or f'Part {target_episode}'}..."
-            
+
         self._show_toast(msg)
         # From here until the next file reports file-loaded, the progress
         # observer may still deliver the old episode's clock. Block a second
@@ -16529,8 +16630,8 @@ class CineWindow(Adw.ApplicationWindow):
             cur_torrent = self.stream_queue[self.stream_queue_index]
         if not cur_torrent and hasattr(self, '_current_playing_item') and self._current_playing_item:
             cur_torrent = self._current_playing_item.get("selected_torrent")
-        if not cur_torrent and page:
-            cur_torrent = getattr(page, 'selected_torrent', None) or getattr(page, 'remembered_working_stream', None)
+        if not cur_torrent and valid_page:
+            cur_torrent = getattr(valid_page, 'selected_torrent', None) or getattr(valid_page, 'remembered_working_stream', None)
         if not cur_torrent:
             cur_torrent = getattr(self, 'selected_torrent', None)
 
@@ -16555,7 +16656,7 @@ class CineWindow(Adw.ApplicationWindow):
                 files_data = [{"name": f.get("path") or f.get("name") or "", "size": f.get("size", 0)} for f in torrent_files]
                 matched_idx = api.find_matching_file_index(
                     files_data,
-                    season=target_season if getattr(page, 'media_type', '') in ["series", "anime", "tv"] else None,
+                    season=target_season if media_type in ["series", "anime", "tv"] else None,
                     episode=target_episode,
                     title=next_title,
                     strict=True
@@ -16582,15 +16683,17 @@ class CineWindow(Adw.ApplicationWindow):
                 reused_stream = prefetched_streams[0]
 
         if reused_stream:
-            page.selected_torrent = reused_stream
-            page.remembered_working_stream = reused_stream
+            if valid_page:
+                valid_page.selected_torrent = reused_stream
+                valid_page.remembered_working_stream = reused_stream
+                valid_page._auto_play_next = False
             self.selected_torrent = reused_stream
             self.remembered_working_stream = reused_stream
-            page._auto_play_next = False
         else:
-            page._auto_play_next = True
-            page.selected_torrent = None
-            page.remembered_working_stream = None
+            if valid_page:
+                valid_page._auto_play_next = True
+                valid_page.selected_torrent = None
+                valid_page.remembered_working_stream = None
             self.selected_torrent = None
             self.remembered_working_stream = None
 
@@ -16601,9 +16704,12 @@ class CineWindow(Adw.ApplicationWindow):
             active_bg = cur_item.get("binge_group") or (cur_item.get("behaviorHints") or {}).get("bingeGroup")
         if active_bg:
             self.active_binge_group = active_bg
-            if page:
-                page.active_binge_group = active_bg
-            primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0] if page else None
+            if valid_page:
+                valid_page.active_binge_group = active_bg
+            primary_id = (
+                (valid_page.movie_stub.get("alias_ids") or [valid_page.movie_stub.get("id") or valid_page.movie_stub.get("imdb_id")])[0]
+                if valid_page and getattr(valid_page, "movie_stub", None) else None
+            ) or ((getattr(self, "_current_playing_item", None) or {}).get("id"))
             if primary_id:
                 from . import database
                 database.set_setting(f"active_binge_group_{primary_id}", active_bg)
@@ -16617,9 +16723,12 @@ class CineWindow(Adw.ApplicationWindow):
                 prov = anames[0] if anames else cur_st.get("addon_name")
         if prov:
             self.preferred_direct_provider = prov
-            if page:
-                page.preferred_direct_provider = prov
-            primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0] if page else None
+            if valid_page:
+                valid_page.preferred_direct_provider = prov
+            primary_id = (
+                (valid_page.movie_stub.get("alias_ids") or [valid_page.movie_stub.get("id") or valid_page.movie_stub.get("imdb_id")])[0]
+                if valid_page and getattr(valid_page, "movie_stub", None) else None
+            ) or ((getattr(self, "_current_playing_item", None) or {}).get("id"))
             if primary_id:
                 from . import database
                 database.set_setting(f"preferred_direct_provider_{primary_id}", prov)
@@ -16632,29 +16741,39 @@ class CineWindow(Adw.ApplicationWindow):
                 gen_prov = anames[0] if anames else cur_st.get("addon_name")
         if gen_prov:
             self.preferred_provider = gen_prov
-            if page:
-                page.preferred_provider = gen_prov
-            primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0] if page else None
+            if valid_page:
+                valid_page.preferred_provider = gen_prov
+            primary_id = (
+                (valid_page.movie_stub.get("alias_ids") or [valid_page.movie_stub.get("id") or valid_page.movie_stub.get("imdb_id")])[0]
+                if valid_page and getattr(valid_page, "movie_stub", None) else None
+            ) or ((getattr(self, "_current_playing_item", None) or {}).get("id"))
             if primary_id:
                 from . import database
                 database.set_setting(f"preferred_provider_{primary_id}", gen_prov)
 
         # Carry over preferred resolution/quality
-        cur_q = getattr(page, 'user_selected_quality', None) or getattr(self, 'user_selected_quality', None)
+        cur_q = (getattr(valid_page, 'user_selected_quality', None) if valid_page else None) or getattr(self, 'user_selected_quality', None)
         if not cur_q and getattr(self, 'stream_queue', None) and self.stream_queue_index < len(self.stream_queue):
             cur_st = self.stream_queue[self.stream_queue_index]
             if isinstance(cur_st, dict):
                 cur_q = _normalize_stream_quality(cur_st)
         if cur_q:
             self.user_selected_quality = cur_q
-            page.user_selected_quality = cur_q
-            primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0]
+            if valid_page:
+                valid_page.user_selected_quality = cur_q
+            primary_id = (
+                (valid_page.movie_stub.get("alias_ids") or [valid_page.movie_stub.get("id") or valid_page.movie_stub.get("imdb_id")])[0]
+                if valid_page and getattr(valid_page, "movie_stub", None) else None
+            ) or ((getattr(self, "_current_playing_item", None) or {}).get("id"))
             if primary_id:
                 from . import database
                 database.set_setting(f"preferred_quality_{primary_id}", cur_q)
                 database.set_setting("preferred_quality", cur_q)
         
-        primary_id = (page.movie_stub.get("alias_ids") or [page.movie_stub.get("id") or page.movie_stub.get("imdb_id")])[0]
+        primary_id = (
+            (valid_page.movie_stub.get("alias_ids") or [valid_page.movie_stub.get("id") or valid_page.movie_stub.get("imdb_id")])[0]
+            if valid_page and getattr(valid_page, "movie_stub", None) else None
+        ) or ((getattr(self, "_current_playing_item", None) or {}).get("id"))
         if primary_id:
             from . import database
             database.set_setting(f"last_s_{primary_id}", target_season)
@@ -16664,25 +16783,25 @@ class CineWindow(Adw.ApplicationWindow):
                 database.save_series_pack_torrent(primary_id, reused_stream, season=target_season)
 
             # Immediately record next episode in Continue Watching
-            page_details = getattr(page, "movie_details", {}) or {}
+            page_details = getattr(valid_page, "movie_details", {}) or {} if valid_page else {}
             playing_item = getattr(self, "_current_playing_item", None)
             playing_item = playing_item if isinstance(playing_item, dict) else {}
             cov = (
                 page_details.get("medium_cover_image")
-                or (getattr(page, "movie_stub", {}) or {}).get("medium_cover_image")
+                or (getattr(valid_page, "movie_stub", {}) or {}).get("medium_cover_image")
                 or page_details.get("poster")
-                or (getattr(page, "movie_stub", {}) or {}).get("poster")
+                or (getattr(valid_page, "movie_stub", {}) or {}).get("poster")
                 or playing_item.get("medium_cover_image")
                 or playing_item.get("poster")
             )
             m_title = (
                 page_details.get("title")
-                or (getattr(page, "movie_stub", {}) or {}).get("title")
-                or (getattr(page, "movie_stub", {}) or {}).get("name")
+                or (getattr(valid_page, "movie_stub", {}) or {}).get("title")
+                or (getattr(valid_page, "movie_stub", {}) or {}).get("name")
                 or playing_item.get("title")
                 or "Unknown"
             )
-            m_type = getattr(page, "media_type", None) or playing_item.get("type", "series")
+            m_type = (getattr(valid_page, "media_type", None) if valid_page else None) or playing_item.get("type", "series")
             import re
             base_t = re.sub(r'\s*\(S\d+E\d+\)', '', m_title).strip()
             from time import time as _time
@@ -16704,48 +16823,46 @@ class CineWindow(Adw.ApplicationWindow):
             self._current_playing_item = next_cw
             if hasattr(self, "_update_continue_watching_section"):
                 self._update_continue_watching_section()
+        else:
+            base_t = next_title or "Stream"
+            m_type = media_type
         
-        # Keep the page selection in sync before driving the dropdowns. The
-        # season callback derives the default episode from selected_episode, so
-        # without this it would keep the old episode number in the new season.
-        page.selected_season = target_season
-        page.selected_episode = target_episode
-        page.selected_video = next_v
+        # Keep the page selection in sync before driving the dropdowns.
+        if valid_page:
+            valid_page.selected_season = target_season
+            valid_page.selected_episode = target_episode
+            valid_page.selected_video = next_v
 
-        # When a warmed/reused stream is available, the dropdown callbacks must
-        # not start another provider lookup for the episode being played.
-        page._suppress_stream_reload = bool(reused_stream)
-        try:
-            if target_season != current_season:
-                seasons = sorted(list(set([v.get("season", 1) for v in videos])))
-                if target_season in seasons:
-                    idx = seasons.index(target_season)
-                    if hasattr(page, 'season_dropdown'):
-                        page.season_dropdown.set_selected(idx)
-            else:
-                ep_nums = [e.get('episode') for e in (getattr(page, 'current_episodes', None) or [])]
-                if target_episode in ep_nums:
-                    idx = ep_nums.index(target_episode)
-                    prev_idx = page.episode_dropdown.get_selected()
-                    page.episode_dropdown.set_selected(idx)
-                    if prev_idx == idx and hasattr(page, '_on_episode_dropdown_changed'):
-                        page._on_episode_dropdown_changed(page.episode_dropdown)
-                elif not reused_stream and hasattr(page, 'fetch_torrents_async'):
-                    page.fetch_torrents_async(force=False)
-        finally:
-            page._suppress_stream_reload = False
+            # When a warmed/reused stream is available, the dropdown callbacks must
+            # not start another provider lookup for the episode being played.
+            valid_page._suppress_stream_reload = bool(reused_stream)
+            try:
+                if target_season != current_season:
+                    seasons = sorted(list(set([v.get("season", 1) for v in videos])))
+                    if target_season in seasons:
+                        idx = seasons.index(target_season)
+                        if hasattr(valid_page, 'season_dropdown'):
+                            valid_page.season_dropdown.set_selected(idx)
+                else:
+                    ep_nums = [e.get('episode') for e in (getattr(valid_page, 'current_episodes', None) or [])]
+                    if target_episode in ep_nums:
+                        idx = ep_nums.index(target_episode)
+                        prev_idx = valid_page.episode_dropdown.get_selected()
+                        valid_page.episode_dropdown.set_selected(idx)
+                        if prev_idx == idx and hasattr(valid_page, '_on_episode_dropdown_changed'):
+                            valid_page._on_episode_dropdown_changed(valid_page.episode_dropdown)
+                    elif not reused_stream and hasattr(valid_page, 'fetch_torrents_async'):
+                        valid_page.fetch_torrents_async(force=False)
+            finally:
+                valid_page._suppress_stream_reload = False
 
-        if reused_stream:
-            # The dropdown callbacks reset selected_torrent from remembered
-            # state; restore the stream that is actually about to play.
-            page.selected_torrent = reused_stream
-            page.remembered_working_stream = reused_stream
-            self.selected_torrent = reused_stream
-            self.remembered_working_stream = reused_stream
-            page._auto_play_next = False
+            if reused_stream:
+                valid_page.selected_torrent = reused_stream
+                valid_page.remembered_working_stream = reused_stream
+                valid_page._auto_play_next = False
 
         if reused_stream:
-            display_title = next_title or (f"Season {target_season} Episode {target_episode}" if getattr(page, 'media_type', '') in ["series", "anime", "tv"] else f"Part {target_episode}")
+            display_title = next_title or (f"Season {target_season} Episode {target_episode}" if m_type in ["series", "anime", "tv"] else f"Part {target_episode}")
             self.play_stream_with_failover(
                 prefetched_streams or [reused_stream],
                 initial_index=0,
@@ -16753,10 +16870,60 @@ class CineWindow(Adw.ApplicationWindow):
                 season=target_season,
                 episode=target_episode,
                 imdb_id=primary_id,
-                media_type=getattr(page, 'media_type', 'series')
+                media_type=m_type
             )
-                
+        elif valid_page and hasattr(valid_page, 'fetch_torrents_async'):
+            valid_page._auto_play_next = True
+            valid_page.fetch_torrents_async(force=False)
+        else:
+            display_title = next_title or (f"Season {target_season} Episode {target_episode}" if m_type in ["series", "anime", "tv"] else f"Part {target_episode}")
+            def _fetch_next_streams_and_play():
+                try:
+                    from . import api
+                    streams = api.get_torrents_streamed(
+                        primary_id,
+                        m_type,
+                        season=target_season,
+                        episode=target_episode,
+                        title=base_t or next_title,
+                        ep_title=next_title,
+                        known_tmdb_id=(getattr(self, "_current_playing_item", {}) or {}).get("tmdb_id"),
+                        expected_year=(getattr(self, "_current_playing_item", {}) or {}).get("year"),
+                    )
+                except Exception as e:
+                    logger.error(f"Error fetching streams for next episode: {e}")
+                    streams = []
+
+                def _play_on_main():
+                    if streams:
+                        direct = self._rank_direct_streams_for_playback(streams)
+                        queue = direct if direct else streams
+                        self.play_stream_with_failover(
+                            queue,
+                            initial_index=0,
+                            title=display_title,
+                            season=target_season,
+                            episode=target_episode,
+                            imdb_id=primary_id,
+                            media_type=m_type
+                        )
+                    else:
+                        self.hide_player_loading()
+                        self._next_episode_transition_in_progress = False
+                        self._show_toast(_("No streams found for next episode."))
+                        self._close_player(remove_torrent=False)
+
+                GLib.idle_add(_play_on_main)
+
+            threading.Thread(target=_fetch_next_streams_and_play, daemon=True, name="next-episode-fetcher").start()
+
         return True
+
+    def _handle_eof(self):
+        if self._is_playing_trailer() or getattr(self, "next_ep_dismissed", False):
+            self._close_player(remove_torrent=False)
+        elif not (self._is_auto_play_next_enabled() and self._try_play_next_episode()):
+            self._close_player(remove_torrent=False)
 
     # How long before the end of an episode the next episode's streams are
     # refreshed, and the minimum delay between two pre-fetches of the same
@@ -16818,7 +16985,7 @@ class CineWindow(Adw.ApplicationWindow):
                 provider = anames[0] if anames else cur_st.get("addon_name")
         if not provider:
             page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
-            if page:
+            if page and (self._is_page_for_current_item(page) or not getattr(self, "_current_playing_item", None)):
                 provider = getattr(page, "preferred_direct_provider", None) or getattr(page, "preferred_provider", None)
         if not provider:
             provider = getattr(self, "preferred_provider", None)
@@ -16836,7 +17003,7 @@ class CineWindow(Adw.ApplicationWindow):
                 quality = _normalize_stream_quality(cur_st)
         if not quality:
             page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
-            if page:
+            if page and (self._is_page_for_current_item(page) or not getattr(self, "_current_playing_item", None)):
                 quality = getattr(page, "user_selected_quality", None)
         if not quality:
             from . import database
@@ -16878,18 +17045,23 @@ class CineWindow(Adw.ApplicationWindow):
         if not self._is_auto_play_next_enabled() or self._is_playing_trailer():
             return False
         page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
-        if not page or getattr(page, 'is_channel', False):
-            return False
-        media_type = getattr(page, 'media_type', None) or 'series'
+        valid_page = page if (page and (self._is_page_for_current_item(page) or not getattr(self, "_current_playing_item", None))) else None
+        cur_item = getattr(self, "_current_playing_item", None) or {}
+
+        media_type = getattr(valid_page, 'media_type', None) or cur_item.get("type") or cur_item.get("media_type") or 'series'
         if media_type not in ("series", "anime", "tv"):
+            return False
+        if valid_page and getattr(valid_page, 'is_channel', False):
             return False
 
         # Cheap O(1) gate: resolving the target walks the episode list, so skip
         # that walk entirely while this episode's pre-fetch is still warm.
+        cur_season = getattr(valid_page, 'selected_season', None) or getattr(self, "selected_season", None) or cur_item.get("season", 1) or 1
+        cur_episode = getattr(valid_page, 'selected_episode', None) or getattr(self, "selected_episode", None) or cur_item.get("episode")
         source = (
-            id(page),
-            getattr(page, 'selected_season', 1) or 1,
-            getattr(page, 'selected_episode', None),
+            id(valid_page) if valid_page else (cur_item.get("id") or cur_item.get("imdb_id")),
+            cur_season,
+            cur_episode,
         )
         now = time.time()
         last_at = getattr(self, "_next_ep_prefetch_at", 0.0) or 0.0
@@ -16903,22 +17075,30 @@ class CineWindow(Adw.ApplicationWindow):
             # window so the progress observer does not re-walk the episode list
             # (and hit the metadata cache) on every tick of the final two
             # minutes.
-            videos = self._get_videos_for_current_page(page)
-            if videos and getattr(page, 'selected_episode', None) is not None:
+            videos = self._get_videos_for_current_page(valid_page)
+            if videos and cur_episode is not None:
                 self._next_ep_prefetch_source = source
                 self._next_ep_prefetch_at = now
             return False
         target_season, target_episode, next_title = target
 
         item_id = (
-            getattr(page, 'movie_details', {}).get("imdb_id")
-            or getattr(page, 'movie_details', {}).get("id")
-            or (getattr(page, 'movie_stub', {}) or {}).get("imdb_id")
-            or (getattr(page, 'movie_stub', {}) or {}).get("id")
+            (getattr(valid_page, 'movie_details', {}) or {}).get("imdb_id")
+            or (getattr(valid_page, 'movie_details', {}) or {}).get("id")
+            or (getattr(valid_page, 'movie_stub', {}) or {}).get("imdb_id")
+            or (getattr(valid_page, 'movie_stub', {}) or {}).get("id")
+            or cur_item.get("imdb_id")
+            or cur_item.get("id")
         )
         if not item_id:
             return False
-        series_title = (getattr(page, 'movie_stub', {}) or {}).get("title") or (getattr(page, 'movie_stub', {}) or {}).get("name")
+        series_title = (
+            (getattr(valid_page, 'movie_stub', {}) or {}).get("title")
+            or (getattr(valid_page, 'movie_stub', {}) or {}).get("name")
+            or cur_item.get("series_title")
+            or cur_item.get("title")
+            or cur_item.get("name")
+        )
         try:
             cache_key = api.get_stream_cache_key(item_id, media_type, target_season, target_episode)
         except Exception:
@@ -16946,8 +17126,8 @@ class CineWindow(Adw.ApplicationWindow):
                     abort_event=abort_event,
                     title=series_title or next_title,
                     ep_title=next_title,
-                    known_tmdb_id=(getattr(page, "movie_details", {}) or {}).get("tmdb_id"),
-                    expected_year=(getattr(page, "movie_details", {}) or {}).get("year"),
+                    known_tmdb_id=(getattr(valid_page, "movie_details", {}) or {}).get("tmdb_id") or cur_item.get("tmdb_id"),
+                    expected_year=(getattr(valid_page, "movie_details", {}) or {}).get("year") or cur_item.get("year"),
                 )
             except Exception as e:
                 logger.debug(f"[PREFETCH] next episode request failed key={cache_key!r}: {e}")
