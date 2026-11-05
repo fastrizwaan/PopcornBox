@@ -184,6 +184,21 @@ def _merge_stream_lists(*stream_lists):
             merged.append(stream)
     return merged
 
+def _discover_item_release_sort_key(item):
+    """Return the most precise release value available for newest-first Discover ordering."""
+    if not isinstance(item, dict):
+        return ""
+    from . import api
+    if api.is_future_item(item):
+        return ""
+    for key in ("release_date", "first_air_date", "released", "releaseInfo", "release_info", "year"):
+        value = item.get(key)
+        if value is not None:
+            value = str(value).strip()
+            if value and value.lower() not in ("unknown", "n/a", "none"):
+                return value
+    return ""
+
 def _extract_active_discover_query(win) -> str:
     q_fn = getattr(win, "_discover_result_search_query", None)
     if callable(q_fn):
@@ -7472,7 +7487,7 @@ class CineWindow(Adw.ApplicationWindow):
             filter_type = getattr(self, "_current_discover_type", "all")
             filter_addon = getattr(self, "_current_discover_addon", None)
             self._sync_library_genre_dropdown_selection(self.current_genre)
-            self._sync_library_sort_dropdown_selection(getattr(self, "current_sort", "Popular"))
+            self._sync_library_sort_dropdown_selection(getattr(self, "current_sort", "Recent"))
             self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=filter_addon)
         self.back_to_discover_btn.connect("clicked", on_back_to_discover_clicked)
         
@@ -7519,7 +7534,7 @@ class CineWindow(Adw.ApplicationWindow):
             self.current_language = None
             self.current_country = None
             self.current_network = None
-            self.current_sort = "Popular"
+            self.current_sort = "Recent"
             self.current_discover_search_query = ""
             self.current_search_query = ""
             self._unique_section_scope = None
@@ -8058,7 +8073,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.current_media_type = "movie"
         self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json", "media_type": "movie", "display_name": "Popular Movies"}
         self.current_genre = None
-        self.current_sort = "Popular"
+        self.current_sort = "Recent"
         self.current_year = None
         self.current_language = None
         self.current_country = None
@@ -8374,7 +8389,7 @@ class CineWindow(Adw.ApplicationWindow):
         if m_type == "all":
             m_type = getattr(self, "current_media_type", "movie")
 
-        cur_sort = getattr(self, "current_sort", "Popular")
+        cur_sort = getattr(self, "current_sort", "Recent")
 
         if cur_sort == "Year" or (len(str(cur_sort)) == 4 and str(cur_sort).isdigit()):
             # Context: Years (All Years first, then current year to 1960)
@@ -8453,7 +8468,7 @@ class CineWindow(Adw.ApplicationWindow):
         model = self.library_sort_dropdown.get_model()
         if not model:
             return
-        target = sort_or_year or "Popular"
+        target = sort_or_year or "Recent"
         target_idx = 0
         found = False
         for i in range(model.get_n_items()):
@@ -8507,7 +8522,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         items = base_items + cat_names
 
-        current_selected = getattr(self, "current_sort", "Popular")
+        current_selected = getattr(self, "current_sort", "Recent")
         context_mode = f"sort:{target_type}:{len(items)}"
         if getattr(self, "_current_sort_context", None) == context_mode and hasattr(self.library_sort_dropdown, "get_model"):
             model = self.library_sort_dropdown.get_model()
@@ -8539,7 +8554,7 @@ class CineWindow(Adw.ApplicationWindow):
             elif current_selected and len(current_selected) == 4 and current_selected.isdigit() and "Year" in items:
                 target_idx = items.index("Year")
             else:
-                self.current_sort = items[0] if items else "Popular"
+                self.current_sort = "Recent" if "Recent" in items else (items[0] if items else "Recent")
 
             self.library_sort_dropdown.set_selected(target_idx)
         except Exception as e:
@@ -8635,7 +8650,7 @@ class CineWindow(Adw.ApplicationWindow):
                     "display_name": "Popular Content"
                 }
 
-        cur_sort = getattr(self, "current_sort", "Popular")
+        cur_sort = getattr(self, "current_sort", "Recent")
 
         cat_map = getattr(self, "_dropdown_catalogs_map", {})
         if cur_sort in cat_map:
@@ -8782,7 +8797,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._set_discover_spinner_active(True)
         val_str = selected_item.get_string()
 
-        cur_sort = getattr(self, "current_sort", "Popular")
+        cur_sort = getattr(self, "current_sort", "Recent")
         if cur_sort == "Year" or (len(str(cur_sort)) == 4 and str(cur_sort).isdigit()):
             if val_str in ("All Years", _("All Years"), "All", _("All")):
                 self.current_year = None
@@ -10616,6 +10631,9 @@ class CineWindow(Adw.ApplicationWindow):
         from .movie_widget import MovieWidget
         SLICE_SIZE = 6
         slices = [items[i:i + SLICE_SIZE] for i in range(0, len(items), SLICE_SIZE)]
+        recent_first = str(getattr(self, "current_sort", "Recent") or "Recent").strip().lower() in (
+            "recent", "new", "latest"
+        )
 
         def _append_next(slice_idx):
             if req_id != getattr(self, "unique_request_id", 0) or _is_event_set(abort_ev):
@@ -10632,7 +10650,24 @@ class CineWindow(Adw.ApplicationWindow):
                             break
                         child = child.get_next_sibling()
                     for it in chunk:
-                        self.unique_flowbox.append(MovieWidget(it, self._on_movie_clicked))
+                        if api.is_future_item(it):
+                            continue
+                        card = MovieWidget(it, self._on_movie_clicked)
+                        if recent_first:
+                            release_key = _discover_item_release_sort_key(it)
+                            card._discover_release_sort_key = release_key
+                            position = 0
+                            child = self.unique_flowbox.get_first_child()
+                            while child:
+                                existing_card = child.get_child() if hasattr(child, "get_child") else child
+                                existing_key = getattr(existing_card, "_discover_release_sort_key", "")
+                                if release_key > existing_key:
+                                    break
+                                position += 1
+                                child = child.get_next_sibling()
+                            self.unique_flowbox.insert(card, position)
+                        else:
+                            self.unique_flowbox.append(card)
                     GLib.idle_add(self._update_flowbox_empty_state, self.unique_flowbox)
                 GLib.idle_add(_append_next, slice_idx + 1)
             return False
@@ -10726,6 +10761,9 @@ class CineWindow(Adw.ApplicationWindow):
         cur_network = getattr(self, "current_network", None)
         if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
             cur_network = None
+        cur_sort = getattr(self, "current_sort", "Recent")
+        if not isinstance(cur_sort, str):
+            cur_sort = "Recent"
         unique_lock = self._unique_lock
 
         def worker():
@@ -10896,7 +10934,7 @@ class CineWindow(Adw.ApplicationWindow):
                             from . import tmdb_helper
                             network_name = cat_info.get("network") or cur_network
                             network_key = str(network_name or "").casefold()
-                            network_cache_key = (f"tmdb-network:{network_key}:{m_type}:{cur_genre or ''}:"
+                            network_cache_key = (f"tmdb-network:{network_key}:{m_type}:{cur_sort}:{cur_genre or ''}:"
                                                  f"{cur_year or ''}:{cur_lang or ''}:{cur_country or ''}:p{page}:unique50")
                             network_cache_age = 24 if tmdb_helper.is_india_watch_provider(network_name) else database.CATALOG_CACHE_HOURS
                             items = database.get_cached_catalog(
@@ -10906,7 +10944,7 @@ class CineWindow(Adw.ApplicationWindow):
                                 items, total_pages = tmdb_helper.fetch_network_catalog_page(
                                     network_name, media_type=m_type, page=page, limit=50,
                                     genre=cur_genre, year=cur_year, language=cur_lang,
-                                    country=cur_country,
+                                    country=cur_country, sort_mode=cur_sort,
                                 )
                                 cat_info["tmdb_total_pages"] = max(
                                     int(cat_info.get("tmdb_total_pages") or 0), int(total_pages or 0)
@@ -10998,6 +11036,7 @@ class CineWindow(Adw.ApplicationWindow):
                                 items = api.filter_items_by_country(items, cur_country, media_type=m_type)
                             if database.is_adult_content_hidden():
                                 items = [it for it in items if not api.is_adult_item(it)]
+                            items = [it for it in items if not api.is_future_item(it)]
                             debug_log(f"unique tmdb: '{req_country or req_lang}' -> {len(items)} items (page {page})",
                                       f"TMDb reports {cat_info.get('tmdb_total_pages') or '?'} pages")
                             return (key, page, items, raw_count, False)
@@ -11917,7 +11956,7 @@ class CineWindow(Adw.ApplicationWindow):
             self._syncing_discover_toolbar = False
 
         self._sync_library_genre_dropdown_selection(self.current_genre)
-        self._sync_library_sort_dropdown_selection(getattr(self, "current_sort", "Popular"))
+        self._sync_library_sort_dropdown_selection(getattr(self, "current_sort", "Recent"))
 
         disp_title = str(title or (self.current_catalog.get("display_name") if self.current_catalog else "Catalog"))
         cur_y = getattr(self, "current_year", None)
@@ -12184,9 +12223,9 @@ class CineWindow(Adw.ApplicationWindow):
         threading.Thread(target=_fetch_worker, daemon=True, name="DiscoverManifestFetch").start()
 
     def _get_discover_catalog_list(self, filter_media_type=None, filter_addon_url=None, force_refresh=False, is_home=False):
-        cur_sort = getattr(self, "current_sort", "Popular")
+        cur_sort = getattr(self, "current_sort", "Recent")
         if not isinstance(cur_sort, str):
-            cur_sort = "Popular"
+            cur_sort = "Recent"
         cur_year = getattr(self, "current_year", None)
         if not isinstance(cur_year, (str, int)) or str(cur_year) in ("All Years", _("All Years"), "All"):
             cur_year = None
@@ -12922,9 +12961,9 @@ class CineWindow(Adw.ApplicationWindow):
         cur_year = getattr(self, "current_year", None)
         if not isinstance(cur_year, (str, int)) or str(cur_year) in ("All Years", _("All Years"), "All"):
             cur_year = None
-        cur_sort = getattr(self, "current_sort", "Popular")
+        cur_sort = getattr(self, "current_sort", "Recent")
         if not isinstance(cur_sort, str):
-            cur_sort = "Popular"
+            cur_sort = "Recent"
         return f"{cat_btn}|{getattr(self, '_current_discover_type', 'all')}|{getattr(self, '_current_discover_addon', None) or 'all'}|{cur_genre or 'all'}|{cur_year or 'all'}|{cur_lang or 'all'}|{cur_country or 'all'}|{cur_network or 'all'}|{cur_sort}"
 
     def _refresh_discover_page(self, filter_media_type=None, filter_addon_url=None, custom_title=None, force_refresh=False):
@@ -13156,7 +13195,8 @@ class CineWindow(Adw.ApplicationWindow):
                         self.language_dropdown.set_selected(0)
                     finally:
                         self._syncing_discover_toolbar = False
-                self._sync_library_sort_dropdown_selection("Popular")
+                self.current_sort = "Recent"
+                self._sync_library_sort_dropdown_selection("Recent")
                 self._sync_library_genre_dropdown_selection(None)
                 self._refresh_discover_page(filter_media_type=self._current_discover_type or "all", filter_addon_url=None, force_refresh=True)
 
@@ -13297,7 +13337,8 @@ class CineWindow(Adw.ApplicationWindow):
                             network_name = row_info.get("network") or cur_network
                             req_page = max(1, int(row_info.get("tmdb_page") or 1))
                             network_key = str(network_name or "").casefold()
-                            tmdb_key = (f"tmdb-network:{network_key}:{m_type}:{getattr(self, 'current_genre', None) or ''}:"
+                            network_sort = str(getattr(self, "current_sort", "Recent") or "Recent")
+                            tmdb_key = (f"tmdb-network:{network_key}:{m_type}:{network_sort}:{getattr(self, 'current_genre', None) or ''}:"
                                         f"{getattr(self, 'current_year', None) or ''}:{getattr(self, 'current_language', None) or ''}:"
                                         f"{getattr(self, 'current_country', None) or ''}:p{req_page}:row{DISCOVER_ROW_CARD_LIMIT}")
                             network_cache_age = 24 if tmdb_helper.is_india_watch_provider(network_name) else database.CATALOG_CACHE_HOURS
@@ -13319,6 +13360,7 @@ class CineWindow(Adw.ApplicationWindow):
                             row_info["tmdb_total_pages"] = total_pages
                             if database.is_adult_content_hidden():
                                 items = [it for it in (items or []) if not api.is_adult_item(it)]
+                            items = [it for it in (items or []) if not api.is_future_item(it)]
                             debug_log(
                                 f"discover TMDb network page {req_page}: {network_name} -> {len(items or [])} items",
                                 f"TMDb reports {total_pages} pages",
@@ -13398,6 +13440,7 @@ class CineWindow(Adw.ApplicationWindow):
                                 ]
                             if database.is_adult_content_hidden():
                                 items = [it for it in items if not api.is_adult_item(it)]
+                            items = [it for it in items if not api.is_future_item(it)]
                             debug_log(f"discover tmdb page {req_page}: '{req_country or req_lang}' -> {len(items) if items else 0} items", f"TMDb reports {total_pages} pages")
                             return (row_info, items)
 
@@ -13558,6 +13601,7 @@ class CineWindow(Adw.ApplicationWindow):
                                 items = [it for it in items if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(current_y)]
                             if database.is_adult_content_hidden():
                                 items = [it for it in items if not api.is_adult_item(it)]
+                            items = [it for it in items if not api.is_future_item(it)]
                         debug_log(f"discover row FETCHED from API: '{row_title}'", f"Got {len(items) if items else 0} items")
                         return (row_info, items)
                     except Exception as e:
@@ -13778,7 +13822,8 @@ class CineWindow(Adw.ApplicationWindow):
                                         self.language_dropdown.set_selected(0)
                                     finally:
                                         self._syncing_discover_toolbar = False
-                                self._sync_library_sort_dropdown_selection("Popular")
+                                self.current_sort = "Recent"
+                                self._sync_library_sort_dropdown_selection("Recent")
                                 self._sync_library_genre_dropdown_selection(None)
                                 self._refresh_discover_page(filter_media_type=self._current_discover_type or "all", filter_addon_url=None, force_refresh=True)
 
@@ -13861,6 +13906,12 @@ class CineWindow(Adw.ApplicationWindow):
         sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         sec_row.add_css_class("discover-row-box")
 
+        sort_mode = str(getattr(self, "current_sort", "Recent") or "Recent").strip().lower()
+        items = [it for it in (items or []) if not api.is_future_item(it)]
+        if sort_mode in ("recent", "new", "latest"):
+            # Cached and freshly fetched rows use the same newest-first order.
+            items = sorted(items, key=_discover_item_release_sort_key, reverse=True)
+
         display_items = items[:DISCOVER_ROW_CARD_LIMIT]
         if row_info.get("_source") == "tmdb_country" and target_box is not None:
             # What this view already showed; the next TMDb page is fetched
@@ -13872,6 +13923,8 @@ class CineWindow(Adw.ApplicationWindow):
             seen_ids.update(str(it.get("id")) for it in display_items if it.get("id"))
         for it in display_items:
             if database.is_adult_content_hidden() and api.is_adult_item(it):
+                continue
+            if api.is_future_item(it):
                 continue
             if not it.get("type"):
                 it["type"] = m_type
@@ -14435,6 +14488,8 @@ class CineWindow(Adw.ApplicationWindow):
         valid_items = []
         for item in items:
             if database.is_adult_content_hidden() and api.is_adult_item(item):
+                continue
+            if api.is_future_item(item):
                 continue
             item_id = item.get("id") or item.get("imdb_id")
             if seen_ids is not None and item_id:

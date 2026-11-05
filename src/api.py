@@ -14,7 +14,7 @@ import base64
 from . import database
 from . import tmdb_helper
 from . import plugins
-from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids, TMDB_GENRES, fetch_tmdb_standalone_metadata
+from .tmdb_helper import resolve_to_imdb_id, resolve_all_provider_ids, TMDB_GENRES, fetch_tmdb_standalone_metadata, is_future_item
 import concurrent.futures
 import threading
 import queue

@@ -2099,6 +2099,15 @@ def _get_cache_db():
             _cache_conn.execute("DELETE FROM catalog_cache")
             _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('strict_imdb_genres_v2', '1')")
             _cache_conn.commit()
+        cur.execute("SELECT val FROM cache_meta WHERE key = 'clean_future_items_v1'")
+        if not cur.fetchone():
+            from datetime import date
+            current_year = date.today().year
+            _cache_conn.execute("DELETE FROM item_genres WHERE CAST(year AS INTEGER) > ?", (current_year,))
+            _cache_conn.execute("DELETE FROM item_countries WHERE CAST(year AS INTEGER) > ?", (current_year,))
+            _cache_conn.execute("DELETE FROM catalog_cache WHERE cache_key LIKE 'tmdb-%'")
+            _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('clean_future_items_v1', '1')")
+            _cache_conn.commit()
     except Exception:
         pass
 
@@ -3480,6 +3489,10 @@ def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None,
                 yr_str = str(year).strip()
                 query += " AND (ig.year LIKE ? OR json_extract(m.data, '$.year') LIKE ?)"
                 params.extend([f"{yr_str}%", f"{yr_str}%"])
+            else:
+                from datetime import date
+                query += " AND (ig.year IS NULL OR ig.year = '' OR CAST(ig.year AS INTEGER) <= ?)"
+                params.append(date.today().year)
 
             # Deduplicate rows that point to the same underlying IMDb/TMDB
             # item. Keep this after all WHERE predicates; placing it in the
@@ -4310,8 +4323,9 @@ def get_cached_catalog(cache_key, max_age_hours=CATALOG_CACHE_HOURS, allow_stale
     if found_data is not None:
         if is_adult_content_hidden():
             from . import api
-            return [it for it in found_data if not api.is_adult_item(it)]
-        return found_data
+            found_data = [it for it in found_data if not api.is_adult_item(it)]
+        from .api import is_future_item
+        return [it for it in found_data if not is_future_item(it)]
 
     # 2. SQLite cache check
     try:
@@ -4347,8 +4361,9 @@ def get_cached_catalog(cache_key, max_age_hours=CATALOG_CACHE_HOURS, allow_stale
                 _MEM_CATALOG_CACHE[cache_key] = (data, updated_at)
             if is_adult_content_hidden():
                 from . import api
-                return [it for it in data if not api.is_adult_item(it)]
-            return data
+                data = [it for it in data if not api.is_adult_item(it)]
+            from .api import is_future_item
+            return [it for it in data if not is_future_item(it)]
     except Exception as e:
         print(f"Error reading catalog cache: {e}")
     return None
@@ -4385,6 +4400,10 @@ def save_cached_catalog(cache_key, items):
     if is_adult_content_hidden():
         from . import api
         items = [it for it in items if not api.is_adult_item(it)]
+    from .api import is_future_item
+    items = [it for it in items if not is_future_item(it)]
+    if not items:
+        return
 
     # Pre-enrich items with any existing metadata from metadata_cache
     try:

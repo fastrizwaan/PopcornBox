@@ -44,6 +44,36 @@ _RESOLVER_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=6)
 import atexit
 atexit.register(_RESOLVER_EXECUTOR.shutdown, wait=False, cancel_futures=True)
 
+def is_future_item(item, today_str=None, current_year=None):
+    """Check if an item's release date or year is in the future."""
+    if not isinstance(item, dict):
+        return False
+    from datetime import date
+    if today_str is None:
+        today_str = date.today().isoformat()
+    if current_year is None:
+        current_year = date.today().year
+
+    # 1. Primary specific date fields (YYYY-MM-DD or ISO timestamp)
+    for key in ("release_date", "first_air_date", "released"):
+        val = item.get(key)
+        if val and isinstance(val, str):
+            val = val.strip()
+            if len(val) >= 10 and val[:4].isdigit() and val[5:7].isdigit() and val[8:10].isdigit():
+                return val[:10] > today_str
+            elif len(val) >= 4 and val[:4].isdigit():
+                return int(val[:4]) > current_year
+
+    # 2. Fall back to year / releaseInfo
+    for key in ("year", "releaseInfo", "release_info"):
+        val = item.get(key)
+        if val is not None:
+            val = str(val).strip()
+            if len(val) >= 4 and val[:4].isdigit():
+                return int(val[:4]) > current_year
+
+    return False
+
 def get_tmdb_api_key():
     import os
     import time as _time
@@ -984,11 +1014,14 @@ def fetch_company_details(entity_id, entity_type="company"):
                 if info_data:
                     is_network = True
 
-        movie_url = f"https://api.themoviedb.org/3/discover/movie?api_key={api_key}&with_companies={entity_id}&sort_by=popularity.desc&page=1"
+        from datetime import date
+        today = date.today().isoformat()
+
+        movie_url = f"https://api.themoviedb.org/3/discover/movie?api_key={api_key}&with_companies={entity_id}&sort_by=popularity.desc&primary_release_date.lte={today}&page=1"
         if is_network:
-            tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_networks={entity_id}&sort_by=popularity.desc&page=1"
+            tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_networks={entity_id}&sort_by=popularity.desc&first_air_date.lte={today}&page=1"
         else:
-            tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_companies={entity_id}&sort_by=popularity.desc&page=1"
+            tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_companies={entity_id}&sort_by=popularity.desc&first_air_date.lte={today}&page=1"
 
         raw_movies = {}
         raw_tv = {}
@@ -1009,8 +1042,12 @@ def fetch_company_details(entity_id, entity_type="company"):
             poster_path = item.get("poster_path")
             if not mid or not poster_path:
                 continue
+            if is_future_item(item, today_str=today):
+                continue
             title = item.get("title") or item.get("original_title") or "Unknown"
             rel_date = item.get("release_date") or ""
+            if rel_date and rel_date > today:
+                continue
             year = rel_date[:4] if len(rel_date) >= 4 else ""
             poster = f"https://image.tmdb.org/t/p/w300{poster_path}"
             movies.append({
@@ -1036,8 +1073,12 @@ def fetch_company_details(entity_id, entity_type="company"):
             poster_path = item.get("poster_path")
             if not sid or not poster_path:
                 continue
+            if is_future_item(item, today_str=today):
+                continue
             title = item.get("name") or item.get("original_name") or "Unknown"
             rel_date = item.get("first_air_date") or ""
+            if rel_date and rel_date > today:
+                continue
             year = rel_date[:4] if len(rel_date) >= 4 else ""
             poster = f"https://image.tmdb.org/t/p/w300{poster_path}"
             series.append({
@@ -1225,6 +1266,9 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
     else:
         return [], 0
 
+    from datetime import date
+    today = date.today().isoformat()
+    recent_first = sort_mode is None or str(sort_mode).strip().lower() in ("recent", "new", "latest")
     items = []
     total_pages = 0
     for kind in kinds:
@@ -1243,10 +1287,11 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
             continue
         params = {
             "api_key": api_key,
-            "sort_by": (("first_air_date.desc" if kind == "tv" else "primary_release_date.desc") if sort_mode and str(sort_mode).lower() in ("recent", "new", "latest") else "popularity.desc"),
+            "sort_by": ("first_air_date.desc" if kind == "tv" else "primary_release_date.desc") if recent_first else "popularity.desc",
             "include_adult": "false",
             "page": page,
         }
+        params["primary_release_date.lte" if kind == "movie" else "first_air_date.lte"] = today
         if use_provider_for_kind:
             params.update({
                 "with_watch_providers": watch_provider_id,
@@ -1286,8 +1331,12 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
             poster_path = entry.get("poster_path")
             if not tmdb_id or not poster_path:
                 continue
+            if is_future_item(entry, today_str=today):
+                continue
             title = entry.get("title") or entry.get("name") or entry.get("original_title") or entry.get("original_name") or "Unknown"
             released = entry.get("release_date") or entry.get("first_air_date") or ""
+            if released and released > today:
+                continue
             poster = f"https://image.tmdb.org/t/p/w300{poster_path}"
             items.append({
                 "id": f"tmdb:{tmdb_id}",
@@ -1307,7 +1356,10 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
                 "networks": ([{"id": network_id, "name": name}] if kind == "tv" and network_id and not use_provider_for_kind else []),
                 "watch_providers": ([{"provider_id": watch_provider_id, "provider_name": name, "region": "IN"}] if use_provider_for_kind else []),
             })
-    items.sort(key=lambda item: item.get("popularity", 0), reverse=True)
+    if recent_first:
+        items.sort(key=lambda item: str(item.get("release_date") or ""), reverse=True)
+    else:
+        items.sort(key=lambda item: item.get("popularity", 0), reverse=True)
     return items[:max(1, int(limit or 36))], min(total_pages, _MAX_NETWORK_PAGES)
 
 _TMDB_MOVIE_GENRES = {
@@ -1427,8 +1479,12 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
     language_name = language or (database.LANGUAGE_CODE_MAP.get(lang_code) if lang_code else None)
     skip_ids = set(exclude_ids or ())
 
+    from datetime import date
+    today = date.today().isoformat()
+    recent_first = sort_mode is None or str(sort_mode).strip().lower() in ("recent", "new", "latest")
+
     def _sort_by(kind):
-        if sort_mode == "Recent":
+        if recent_first:
             return "primary_release_date.desc" if kind == "movie" else "first_air_date.desc"
         if sort_mode == "Featured":
             return "vote_average.desc"
@@ -1441,6 +1497,7 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
             "include_adult": "false",
             "page": page,
         }
+        params["primary_release_date.lte" if kind == "movie" else "first_air_date.lte"] = today
         if iso and not origin_lang:
             params["with_origin_country"] = iso
             if lang_code:
@@ -1476,10 +1533,9 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
     # Cached pages answer first and cost nothing. Read every URL through the
     # cache before asking for anything, then fetch only the pages this filter does
     # not already have: a filter the user has browsed fills the row from disk
-    # without opening a single request. A row's own order stays the popularity
-    # sort at the end of this function - "cached before network" is a promise
-    # about when results reach the UI, made in window.py's delivery slices, not
-    # one that should out-rank what TMDb says is most relevant.
+    # without opening a single request. The final item order follows the selected
+    # sort mode (newest release date by default); reading cache first only avoids
+    # a request and does not change the ordering.
     cached_pages = []
     missing = []
     for kind, url in requests:
@@ -1539,13 +1595,17 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
                     continue
                 if skip_ids and f"tmdb:{mid}" in skip_ids:
                     continue
+                if is_future_item(entry, today_str=today):
+                    continue
+                rel_date = entry.get("release_date") or entry.get("first_air_date") or ""
+                if rel_date and rel_date > today:
+                    continue
                 seen_ids.add(mid)
                 title = (
                     entry.get("title") or entry.get("name")
                     or entry.get("original_title") or entry.get("original_name")
                     or "Unknown"
                 )
-                rel_date = entry.get("release_date") or entry.get("first_air_date") or ""
                 year_str = rel_date[:4] if len(rel_date) >= 4 else ""
                 poster = f"https://image.tmdb.org/t/p/w300{poster_path}"
                 backdrop_path = entry.get("backdrop_path")
@@ -1583,7 +1643,10 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
                     "original_language": entry.get("original_language") or "",
                 })
 
-    items.sort(key=lambda it: (it.get("popularity", 0.0), it.get("vote_count", 0)), reverse=True)
+    if recent_first:
+        items.sort(key=lambda it: str(it.get("release_date") or ""), reverse=True)
+    else:
+        items.sort(key=lambda it: (it.get("popularity", 0.0), it.get("vote_count", 0)), reverse=True)
     return items[:limit], total_pages
 
 
