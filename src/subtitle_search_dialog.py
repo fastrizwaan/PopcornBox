@@ -63,7 +63,7 @@ class SubtitleSearchDialog(Adw.Dialog):
     filter by language, and insert subtitles directly into MPV.
     """
 
-    def __init__(self, window, title="", imdb_id=None, media_type="movie", season=None, episode=None, **kwargs):
+    def __init__(self, window, title="", imdb_id=None, media_type="movie", season=None, episode=None, item_context=None, **kwargs):
         super().__init__(**kwargs)
         self.window = window
         self.initial_title = str(title or "").strip()
@@ -71,6 +71,7 @@ class SubtitleSearchDialog(Adw.Dialog):
         self.initial_media_type = media_type or "movie"
         self.initial_season = season
         self.initial_episode = episode
+        self.item_context = dict(item_context or {})
 
         self._all_subtitles = []
         self._search_id = 0
@@ -120,7 +121,7 @@ class SubtitleSearchDialog(Adw.Dialog):
 
         # Media type toggle
         self.type_dropdown = Gtk.DropDown.new_from_strings([_("Movie"), _("Series")])
-        is_series = self.initial_media_type in ["series", "tv", "anime"] or self.initial_season is not None
+        is_series = self.initial_media_type in ["series", "tv", "anime"] or self.initial_season is not None or self.initial_episode is not None
         self.type_dropdown.set_selected(1 if is_series else 0)
         self.type_dropdown.connect("notify::selected", self._on_type_changed)
         filter_box.append(self.type_dropdown)
@@ -229,7 +230,10 @@ class SubtitleSearchDialog(Adw.Dialog):
         self.btn_search.set_sensitive(False)
         self.lbl_count.set_text("")
         if query:
-            self.window_title.set_subtitle(query)
+            context_label = query
+            if is_series and season is not None and episode is not None:
+                context_label = f"{query} · S{season:02d}E{episode:02d}"
+            self.window_title.set_subtitle(context_label)
 
         def worker():
             logger.info(f"[SUB_SEARCH] Searching query='{query}', imdb_id='{imdb_id}', type='{media_type}', S{season}E{episode}")
@@ -379,8 +383,7 @@ class SubtitleSearchDialog(Adw.Dialog):
                     try:
                         # In MPV: add subtitle, select it, and turn on sub-visibility
                         track_title = f"OpenSubtitles ({lang.upper()}) - {clean_name[:35]}"
-                        self.window.mpv.command("sub-add", file_path, "select", track_title, lang)
-                        self.window.mpv["sub-visibility"] = "yes"
+                        self.window._apply_external_subtitle(file_path, lang=lang, title=track_title, remember=True, item_context=self.item_context)
                         self.window._show_toast(_("Loaded subtitle: {} ({})").format(clean_name[:30], lang.upper()))
                         logger.info(f"[SUB_SEARCH] Successfully injected subtitle track: {track_title} from {file_path}")
                         self.close()

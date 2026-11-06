@@ -5443,40 +5443,88 @@ class CineWindow(Adw.ApplicationWindow):
         self._open_add_dialog(_("Add Subtitle"), "sub-add")
 
     def _on_search_subtitles_dialog(self, _action=None, _param=None):
-        playing = getattr(self, "_current_playing_item", None) or {}
+        playing = dict(getattr(self, "_current_playing_item", None) or {})
+        page = None
+        details = {}
+        stub = {}
+        if hasattr(self, "details_box"):
+            try:
+                page = self.details_box.get_first_child()
+                if page:
+                    details = getattr(page, "movie_details", {}) or {}
+                    stub = getattr(page, "movie_stub", {}) or {}
+            except Exception:
+                page = None
 
-        title = playing.get("title") or getattr(self, "stream_queue_title", "")
+        item_id = playing.get("imdb_id") or playing.get("id") or playing.get("tmdb_id")
+        if not item_id:
+            item_id = details.get("imdb_id") or details.get("id") or stub.get("imdb_id") or stub.get("id")
+        if not item_id:
+            item_id = getattr(self, "current_imdb_id", None)
+
+        media_type = str(playing.get("type") or getattr(page, "media_type", None) or getattr(self, "selected_media_type", "movie") or "movie").lower()
+        season = playing.get("season")
+        episode = playing.get("episode")
+        is_series = media_type in ("series", "tv", "anime") or season is not None or episode is not None
+        if is_series:
+            if season is None:
+                season = getattr(self, "stream_queue_season", None)
+            if episode is None:
+                episode = getattr(self, "stream_queue_episode", None)
+            stream_label = playing.get("stream_title") or getattr(self, "stream_queue_title", "") or ""
+            if season is None or episode is None:
+                import re
+                match = re.search(r"[sS](\d+)[eE](\d+)", str(stream_label)) or re.search(r"(\d+)x(\d+)", str(stream_label))
+                if match:
+                    if season is None:
+                        season = int(match.group(1))
+                    if episode is None:
+                        episode = int(match.group(2))
+            if season is None:
+                season = getattr(self, "selected_season", None)
+            if episode is None:
+                episode = getattr(self, "selected_episode", None)
+            media_type = "anime" if media_type == "anime" else "series"
+        else:
+            season = None
+            episode = None
+            media_type = "movie"
+
+        title = playing.get("title") or playing.get("name") or details.get("title") or details.get("name") or stub.get("title") or stub.get("name") or getattr(self, "stream_queue_title", "")
         if not title:
             try:
                 title = self.mpv.media_title or self.mpv.filename or ""
             except Exception:
                 title = ""
 
-        imdb_id = playing.get("imdb_id") or playing.get("id") or getattr(self, "current_imdb_id", None)
-        if not imdb_id and hasattr(self, "details_box"):
-            try:
-                child = self.details_box.get_first_child()
-                if child and hasattr(child, "imdb_id"):
-                    imdb_id = child.imdb_id
-            except Exception:
-                pass
-
-        media_type = playing.get("type") or getattr(self, "selected_media_type", "movie")
-        season = playing.get("season")
-        if season is None:
-            season = getattr(self, "selected_season", None)
-        episode = playing.get("episode")
-        if episode is None:
-            episode = getattr(self, "selected_episode", None)
+        item_context = dict(playing)
+        if not item_context.get("id"):
+            item_context["id"] = item_id
+        if not item_context.get("imdb_id"):
+            item_context["imdb_id"] = item_id
+        item_context["type"] = media_type
+        item_context["season"] = season
+        item_context["episode"] = episode
+        if not item_context.get("title"):
+            item_context["title"] = title
+        item_context["year"] = item_context.get("year") or details.get("year") or stub.get("year")
+        extra_ids = [details.get("imdb_id"), details.get("id"), details.get("tmdb_id"), stub.get("imdb_id"), stub.get("id")]
+        aliases = list(item_context.get("alias_ids") or [])
+        for extra_id in extra_ids:
+            if extra_id and extra_id not in (item_context.get("id"), item_context.get("imdb_id"), item_context.get("tmdb_id")) and extra_id not in aliases:
+                aliases.append(extra_id)
+        if aliases:
+            item_context["alias_ids"] = aliases
 
         from .subtitle_search_dialog import SubtitleSearchDialog
         dialog = SubtitleSearchDialog(
             window=self,
             title=title,
-            imdb_id=imdb_id,
+            imdb_id=item_id,
             media_type=media_type,
             season=season,
             episode=episode,
+            item_context=item_context,
         )
         dialog.present(self)
 
@@ -5645,7 +5693,7 @@ class CineWindow(Adw.ApplicationWindow):
                 path = file.get_path() or file.get_uri()
 
                 if mode == "sub-add":
-                    self.mpv.sub_add(path)
+                    self._apply_external_subtitle(path, lang="und", title=os.path.basename(path), remember=True, copy_to_managed=True)
                 elif mode == "audio-add":
                     self.mpv.audio_add(path)
                 else:
@@ -6153,6 +6201,125 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_next_clicked(self, *args):
         self._navigate_playlist(+1)
 
+    def _external_subtitle_setting_keys(self, item=None):
+        item = item if isinstance(item, dict) else getattr(self, "_current_playing_item", None)
+        if not isinstance(item, dict):
+            return []
+        item_ids = [item.get("imdb_id"), item.get("id"), item.get("item_id"), item.get("tmdb_id")]
+        aliases = item.get("alias_ids")
+        if isinstance(aliases, (list, tuple, set)):
+            item_ids.extend(aliases)
+        season = item.get("season")
+        episode = item.get("episode")
+        suffix = f"_{season if season is not None else ''}_{episode if episode is not None else ''}"
+        keys = []
+        for item_id in item_ids:
+            if not item_id:
+                continue
+            raw_id = str(item_id).strip()
+            for candidate_id in (raw_id, raw_id.split(":", 1)[-1] if raw_id.startswith("cinemeta:") else None):
+                if candidate_id:
+                    key = f"saved_external_subtitle_{candidate_id}{suffix}"
+                    if key not in keys:
+                        keys.append(key)
+            if raw_id.startswith("tt") and ":" in raw_id:
+                key = f"saved_external_subtitle_{raw_id.split(':', 1)[0]}{suffix}"
+                if key not in keys:
+                    keys.append(key)
+
+        title = item.get("title") or item.get("name")
+        if title:
+            import re
+            media_type = str(item.get("type") or "movie").lower()
+            if media_type in ("tv", "anime"):
+                media_type = "series"
+            title_key = re.sub(r"[^\w]+", "_", str(title).strip().casefold()).strip("_")
+            year = str(item.get("year") or "")
+            if title_key:
+                key = f"saved_external_subtitle_title_{media_type}_{year}_{title_key}{suffix}"
+                if key not in keys:
+                    keys.append(key)
+        return keys
+
+    def _get_saved_external_subtitle(self, item=None):
+        from . import database
+        for key in self._external_subtitle_setting_keys(item):
+            saved = database.get_setting(key, None)
+            if isinstance(saved, dict) and saved.get("path"):
+                logger.info(f"[SUBS] Found saved subtitle preference for {key}")
+                return saved
+        return None
+
+    def _clear_saved_external_subtitle(self, item=None):
+        from . import database
+        for key in self._external_subtitle_setting_keys(item):
+            database.set_setting(key, None)
+
+    def _copy_external_subtitle_to_managed_dir(self, path):
+        if not path:
+            return None
+        path = str(path)
+        if path.startswith("file://"):
+            try:
+                import urllib.parse
+                parsed = urllib.parse.urlparse(path)
+                path = urllib.parse.unquote(parsed.path)
+            except Exception:
+                pass
+        if not os.path.isfile(path):
+            return path
+        try:
+            import shutil
+            import uuid
+            from . import database
+            subtitle_dir = os.path.realpath(os.path.join(database.CONFIG_DIR, "subtitles"))
+            source_path = os.path.realpath(path)
+            if os.path.commonpath([source_path, subtitle_dir]) == subtitle_dir:
+                return source_path
+            os.makedirs(subtitle_dir, exist_ok=True)
+            basename = os.path.basename(source_path)
+            stem, ext = os.path.splitext(basename)
+            safe_stem = "".join(char for char in stem if char.isalnum() or char in (" ", "-", "_", ".")).strip() or "subtitle"
+            target_path = os.path.join(subtitle_dir, f"manual_{uuid.uuid4().hex[:10]}_{safe_stem[:48]}{ext or '.srt'}")
+            shutil.copy2(source_path, target_path)
+            return target_path
+        except Exception as e:
+            logger.warning(f"[SUBS] Could not copy subtitle into app storage: {e}")
+            return path
+
+    def _remember_external_subtitle(self, path, lang=None, title=None, copy_to_managed=False, item_context=None):
+        if not path:
+            return None
+        saved_path = self._copy_external_subtitle_to_managed_dir(path) if copy_to_managed else str(path)
+        keys = []
+        for key in self._external_subtitle_setting_keys(item_context) + self._external_subtitle_setting_keys():
+            if key not in keys:
+                keys.append(key)
+        if not keys:
+            return saved_path
+        from . import database
+        preference = {
+            "path": saved_path,
+            "lang": str(lang or "und"),
+            "title": str(title or os.path.basename(saved_path)),
+        }
+        for key in keys:
+            database.set_setting(key, preference)
+        logger.info(f"[SUBS] Saved external subtitle preference for {keys[0]} -> {saved_path}")
+        return saved_path
+
+    def _apply_external_subtitle(self, path, lang=None, title=None, remember=True, copy_to_managed=False, item_context=None):
+        if not path:
+            return None
+        lang = str(lang or "und")
+        saved_path = self._copy_external_subtitle_to_managed_dir(path) if copy_to_managed else str(path)
+        track_title = title or f"External ({lang})"
+        self.mpv.command("sub-add", saved_path, "select", track_title, lang)
+        self.mpv["sub-visibility"] = "yes"
+        if remember:
+            self._remember_external_subtitle(saved_path, lang=lang, title=track_title, item_context=item_context)
+        return saved_path
+
     def _on_subtitle_selected(self, action, parameter):
         track_id = parameter.get_int32()
         if track_id > 0:
@@ -6161,8 +6328,23 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             self.mpv.sid = track_id
+            tracks = getattr(self.mpv, "track_list", []) or []
+            selected_track = next((track for track in tracks if track.get("type") == "sub" and int(track.get("id", 0)) == track_id), None)
+            if selected_track:
+                external_path = selected_track.get("external-filename") or selected_track.get("external_filename")
+                is_external = bool(selected_track.get("external") or external_path)
+                if is_external and external_path:
+                    self._remember_external_subtitle(
+                        external_path,
+                        lang=selected_track.get("lang"),
+                        title=selected_track.get("title"),
+                        copy_to_managed=True,
+                    )
+                elif not is_external:
+                    self._clear_saved_external_subtitle()
         else:
             self.mpv.sid = "no"
+            self._clear_saved_external_subtitle()
         action.set_state(parameter)
 
     def _on_audio_selected(self, action, parameter):
@@ -6412,7 +6594,7 @@ class CineWindow(Adw.ApplicationWindow):
                 name = cast(str, item.get_basename()).lower()
                 if name.endswith(SUB_EXTS):
                     if not self.mpv.core_idle:
-                        self.mpv.command("sub-add", path, "select")
+                        self._apply_external_subtitle(path, lang="und", title=name, remember=True, copy_to_managed=True)
                     continue
 
                 if mime_type.startswith(("video/", "audio/", "image/")) or is_url:
@@ -7255,6 +7437,18 @@ class CineWindow(Adw.ApplicationWindow):
                     action.set_state(  # pyright: ignore[reportAttributeAccessIssue]
                         GLib.Variant("i", val)
                     )
+                if name == "sid" and val > 0:
+                    tracks = getattr(self.mpv, "track_list", []) or []
+                    selected = next((track for track in tracks if track.get("type") == "sub" and int(track.get("id", 0)) == val), None)
+                    if selected:
+                        external_path = selected.get("external-filename") or selected.get("external_filename")
+                        if selected.get("external") or external_path:
+                            self._remember_external_subtitle(
+                                external_path,
+                                lang=selected.get("lang"),
+                                title=selected.get("title"),
+                                copy_to_managed=True,
+                            )
 
             idle_add_once(set_track)
 
@@ -15537,6 +15731,13 @@ class CineWindow(Adw.ApplicationWindow):
         if self._is_playing_trailer() or getattr(self.mpv, "idle_active", False):
             return
 
+        saved_subtitle = self._get_saved_external_subtitle()
+        if saved_subtitle:
+            saved_path = str(saved_subtitle.get("path") or "")
+            if saved_path.startswith(("http://", "https://")) or os.path.exists(saved_path):
+                return
+            self._clear_saved_external_subtitle()
+
         from . import api
         best_embedded = api.find_best_subtitle_track(track_list, only_embedded=True)
         if best_embedded:
@@ -15557,6 +15758,27 @@ class CineWindow(Adw.ApplicationWindow):
             return
         if self._is_playing_trailer() or getattr(self.mpv, "idle_active", False):
             return
+
+        saved_subtitle = self._get_saved_external_subtitle()
+        if saved_subtitle:
+            saved_path = str(saved_subtitle.get("path") or "")
+            if saved_path.startswith(("http://", "https://")) or os.path.exists(saved_path):
+                try:
+                    self._apply_external_subtitle(
+                        saved_path,
+                        lang=saved_subtitle.get("lang"),
+                        title=saved_subtitle.get("title"),
+                        remember=False,
+                    )
+                    self._pending_subtitle_request = None
+                    self._subtitles_configured_for_file = True
+                    logger.info(f"[SUBS] Reused saved external subtitle: {saved_path}")
+                    return
+                except Exception as e:
+                    logger.warning(f"[SUBS] Could not reuse saved external subtitle {saved_path}: {e}")
+            else:
+                logger.info(f"[SUBS] Saved subtitle file is missing: {saved_path}")
+                self._clear_saved_external_subtitle()
 
         from . import api
         tracks = getattr(self.mpv, "track_list", []) or []
@@ -15720,7 +15942,10 @@ class CineWindow(Adw.ApplicationWindow):
             added_count = 0
             for path, lang, select in list(self.pending_subtitles):
                 mode = "select" if select else "auto"
-                self.mpv.command("sub-add", path, mode, f"External ({lang})", lang)
+                if select:
+                    self._apply_external_subtitle(path, lang=lang, title=f"External ({lang})", remember=True)
+                else:
+                    self.mpv.command("sub-add", path, mode, f"External ({lang})", lang)
                 added_count += 1
                 logger.info(f"[SUBS] Injected subtitle into MPV: {lang} ({mode}) -> {path}")
             self.pending_subtitles.clear()
