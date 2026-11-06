@@ -17,6 +17,35 @@ def _get_cached_request(*args, **kwargs):
 # api at module level would be circular.
 METADATA_CACHE_HOURS = None
 
+# Treat movies shorter than a feature length as shorts. TMDB movie discover
+# supports this directly; title search resolves runtime from cached movie details.
+MIN_TMDB_MOVIE_RUNTIME_MINUTES = 40
+
+
+def _runtime_minutes(value):
+    """Parse TMDB runtime values while leaving unknown formats unclassified."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if value > 0 else None
+    raw = str(value).strip().lower()
+    if not raw:
+        return None
+    clock = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", raw)
+    if clock:
+        hours, minutes = int(clock.group(1)), int(clock.group(2))
+        return float(hours * 60 + minutes) if hours or minutes else None
+    hours = re.search(r"(\d+)\s*(?:h|hr|hrs|hour|hours)\b", raw)
+    minutes = re.search(r"(\d+)\s*(?:m|min|mins|minute|minutes)\b", raw)
+    if hours or minutes:
+        total = (int(hours.group(1)) * 60 if hours else 0) + (int(minutes.group(1)) if minutes else 0)
+        return float(total) if total > 0 else None
+    numeric = re.search(r"\d+(?:\.\d+)?", raw)
+    if numeric:
+        parsed = float(numeric.group(0))
+        return parsed if parsed > 0 else None
+    return None
+
 
 DEFAULT_TMDB_API_KEY = "68e094699525b18a70bab2f86b1fa706"
 
@@ -1017,7 +1046,7 @@ def fetch_company_details(entity_id, entity_type="company"):
         from datetime import date
         today = date.today().isoformat()
 
-        movie_url = f"https://api.themoviedb.org/3/discover/movie?api_key={api_key}&with_companies={entity_id}&sort_by=popularity.desc&primary_release_date.lte={today}&page=1"
+        movie_url = f"https://api.themoviedb.org/3/discover/movie?api_key={api_key}&with_companies={entity_id}&with_runtime.gte={MIN_TMDB_MOVIE_RUNTIME_MINUTES}&sort_by=popularity.desc&primary_release_date.lte={today}&page=1"
         if is_network:
             tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_networks={entity_id}&sort_by=popularity.desc&first_air_date.lte={today}&page=1"
         else:
@@ -1292,6 +1321,8 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
             "page": page,
         }
         params["primary_release_date.lte" if kind == "movie" else "first_air_date.lte"] = today
+        if kind == "movie":
+            params["with_runtime.gte"] = MIN_TMDB_MOVIE_RUNTIME_MINUTES
         if use_provider_for_kind:
             params.update({
                 "with_watch_providers": watch_provider_id,
@@ -1498,6 +1529,8 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
             "page": page,
         }
         params["primary_release_date.lte" if kind == "movie" else "first_air_date.lte"] = today
+        if kind == "movie":
+            params["with_runtime.gte"] = MIN_TMDB_MOVIE_RUNTIME_MINUTES
         if iso and not origin_lang:
             params["with_origin_country"] = iso
             if lang_code:
@@ -1741,6 +1774,36 @@ def fetch_title_search_page(query, media_type="all", page=1, limit=50):
         if multi_data:
             fetched.append(("multi", "", multi_data))
 
+    # TMDB's text-search payload omits runtime, so resolve movie durations in
+    # parallel. Results are cached by URL; failures stay visible because their
+    # duration is unknown. TV entries deliberately skip this lookup.
+    movie_ids = {
+        str(entry.get("id"))
+        for _kind, _app_type, data in cached + fetched
+        for entry in ((data or {}).get("results", []) or [])
+        if entry.get("id") and (
+            (_kind == "movie" and _app_type == "movie")
+            or (_kind == "multi" and entry.get("media_type") == "movie")
+        )
+    }
+    movie_runtime_by_id = {}
+    if api_key and movie_ids:
+        def _fetch_movie_runtime(tmdb_id):
+            url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={api_key}"
+            try:
+                detail = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0) or {}
+                return tmdb_id, _runtime_minutes(detail.get("runtime"))
+            except Exception:
+                return tmdb_id, None
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, len(movie_ids))) as executor:
+                for tmdb_id, runtime in executor.map(_fetch_movie_runtime, movie_ids):
+                    if runtime is not None:
+                        movie_runtime_by_id[tmdb_id] = runtime
+        except RuntimeError:
+            pass
+
     total_pages = 0
     items, seen_ids = [], set()
     for _kind, app_type, data in cached + fetched:
@@ -1757,6 +1820,9 @@ def fetch_title_search_page(query, media_type="all", page=1, limit=50):
             tmdb_id = entry.get("id")
             poster_path = entry.get("poster_path")
             if not tmdb_id or not poster_path:
+                continue
+            runtime = movie_runtime_by_id.get(str(tmdb_id)) if app_type == "movie" else None
+            if runtime is not None and runtime < MIN_TMDB_MOVIE_RUNTIME_MINUTES:
                 continue
             item_id = f"tmdb:{tmdb_id}"
             if item_id in seen_ids:
@@ -1781,6 +1847,7 @@ def fetch_title_search_page(query, media_type="all", page=1, limit=50):
                 "genres": [TMDB_GENRES[gid] for gid in genre_ids], "genre_ids": genre_ids,
                 "original_language": entry.get("original_language") or "",
                 "language": database.LANGUAGE_CODE_MAP.get(str(entry.get("original_language") or "").lower(), ""),
+                **({"runtime": f"{int(runtime)} min"} if runtime is not None else {}),
             })
 
     return items[:limit], min(total_pages, _MAX_TITLE_SEARCH_PAGES)
