@@ -818,6 +818,43 @@ class TestNextEpisodePrefetch(unittest.TestCase):
         self.win._try_play_next_episode.assert_called_once()
         self.win._close_player.assert_not_called()
 
+    def test_external_and_embed_streams_filtered_from_api_process_raw_streams(self):
+        from src import api
+        raw_streams = [
+            {"name": "Valid Direct", "url": "https://cdn.example.com/movie.mp4"},
+            {"name": "External URL", "externalUrl": "https://example.com/watch-movie"},
+            {"name": "Embed Vidfast", "url": "https://vidfast.pro/embed/movie/123"},
+            {"name": "Embed Vidsrc", "url": "https://vidsrc.to/embed/movie/123"},
+            {"name": "External Flag", "is_external": True, "url": "https://some-web-page.com/player"},
+        ]
+        processed = api.process_raw_streams(raw_streams)
+        self.assertEqual(len(processed), 1)
+        self.assertEqual(processed[0]["url"], "https://cdn.example.com/movie.mp4")
+
+    def test_stream_queue_skips_external_streams_without_opening_browser(self):
+        self.win._play_current_stream_from_queue = CineWindow._play_current_stream_from_queue.__get__(self.win, CineWindow)
+        self.win.show_player_loading = MagicMock()
+        self.win._start_stream_loading_watchdog = MagicMock()
+        self.win._try_next_stream_in_queue = MagicMock()
+        self.win.stream_request_id = 1
+        self.win.stream_queue_title = "Test Show"
+
+        external_stream = {
+            "is_external": True,
+            "externalUrl": "https://example.com/watch",
+            "url": "https://example.com/watch",
+            "stream_title": "External Web Stream"
+        }
+        self.win.stream_queue = [external_stream]
+        self.win.stream_queue_index = 0
+
+        with patch("src.window.open_uri") as mock_open_uri, \
+             patch("src.window.settings.get_boolean", return_value=True):
+            self.win._play_current_stream_from_queue(1)
+
+        mock_open_uri.assert_not_called()
+        self.win._try_next_stream_in_queue.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

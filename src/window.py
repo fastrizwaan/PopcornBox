@@ -3907,12 +3907,9 @@ class MovieDetailsPage(Gtk.Overlay):
             
         is_direct = bool(self.selected_torrent.get("is_http"))
         if self.selected_torrent.get("is_external") or (self.selected_torrent.get("url") and any(d in str(self.selected_torrent.get("url")).lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"])):
-            ext_url = self.selected_torrent.get("externalUrl") or self.selected_torrent.get("url")
-            if ext_url:
-                if self.window:
-                    self.window._show_toast(_("Opening in web browser..."))
-                open_uri(ext_url, self.window if self.window else None)
-                return
+            if self.window:
+                self.window._show_toast(_("Web page streams cannot be played."))
+            return
 
         all_matching = getattr(self, 'torrents', []) or []
         if sel_prov_name != "All Providers":
@@ -4063,15 +4060,17 @@ class MovieDetailsPage(Gtk.Overlay):
             self._download_http_stream(url, torrent, headers)
             return
 
+        if is_external:
+            if self.window:
+                self.window._show_toast(_("Web page streams cannot be downloaded."))
+            return
+
         try:
             open_uri(url, self.window)
         except Exception as e:
             print("Open URL error:", e)
         if hasattr(self, 'progress_label') and self.progress_label:
-            if is_direct_http:
-                self.progress_label.set_text("Opening stream in browser...")
-            else:
-                self.progress_label.set_text("Opening stream URL...")
+            self.progress_label.set_text("Opening stream URL...")
 
     def _download_http_stream(self, url, torrent, headers):
         """Download a direct HTTP stream directly to Downloads."""
@@ -4275,8 +4274,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if magnet and any(d in magnet.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
             if self.window:
                 self.window.hide_player_loading()
-                self.window._show_toast(_("Opening in web browser..."))
-            open_uri(magnet, self.window if self.window else None)
+                self.window._show_toast(_("Web page streams cannot be played."))
             return
 
         if not (magnet.startswith("http://") or magnet.startswith("https://")):
@@ -7014,7 +7012,6 @@ class CineWindow(Adw.ApplicationWindow):
                         ))
                     )
                     is_trailer = is_yt or bool(getattr(self, "_current_playing_item", {}).get("is_trailer"))
-                    is_web = self.loaded_path and isinstance(self.loaded_path, str) and any(d in self.loaded_path.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"])
 
                     if is_yt and not getattr(self, "_youtube_safe_mode_active", False):
                         logger.warning(f"[YouTube] Direct MPV playback failed ({error}), falling back to safe mode")
@@ -7026,10 +7023,6 @@ class CineWindow(Adw.ApplicationWindow):
 
                     if is_trailer:
                         idle_add_once(self._handle_youtube_failure, True)
-                    elif is_web:
-                        idle_add_once(self._show_toast, _("Opening in web browser..."))
-                        idle_add_once(open_uri, self.loaded_path, self)
-                        idle_add_once(self._close_player, remove_torrent=False)
                     elif getattr(self, "stream_queue", None) and len(self.stream_queue) > 0:
                         idle_add_once(self._try_next_stream_in_queue)
                     else:
@@ -12046,6 +12039,8 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _finish_continue_watching_play(self, item_data, working_stream, title, p_id, position):
         if not item_data: return
+        season = item_data.get("season")
+        episode = item_data.get("episode")
         stream_url = item_data.get("stream_url")
         magnet = item_data.get("magnet")
         stream_queue = item_data.get("stream_queue")
@@ -12138,10 +12133,9 @@ class CineWindow(Adw.ApplicationWindow):
             )
         elif magnet or (stream_url and str(stream_url).startswith(("http://", "https://", "magnet:"))):
             target = stream_url or magnet
-            if target and any(d in target.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
+            if target and any(d in str(target).lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
                 self.hide_player_loading()
-                self._show_toast(_("Opening in web browser..."))
-                open_uri(target, self)
+                self._show_toast(_("Web page streams cannot be played."))
                 return
             if str(target).startswith("magnet:"):
                 fake_stream = {
@@ -14969,8 +14963,11 @@ class CineWindow(Adw.ApplicationWindow):
             url = url.replace(" ", "%20")
         if url and isinstance(url, str) and any(d in url.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
             self.hide_player_loading()
-            self._show_toast(_("Opening in web browser..."))
-            open_uri(url, self)
+            if getattr(self, "stream_queue", None) and self.stream_queue_index < len(self.stream_queue) - 1:
+                self._try_next_stream_in_queue()
+            else:
+                self._show_toast(_("Web page streams cannot be played."))
+                self._close_player(remove_torrent=False)
             return
         # Hide the idle-player welcome screen before switching stacks or asking
         # MPV to load. show_player_loading() is often queued through GLib, which
@@ -15956,11 +15953,14 @@ class CineWindow(Adw.ApplicationWindow):
         from . import api
         headers = api.extract_stream_headers(torrent, url=magnet)
 
-        if torrent.get("is_external") or (isinstance(torrent, dict) and torrent.get("externalUrl")):
-            ext_url = torrent.get("externalUrl") or magnet
-            self.hide_player_loading()
-            self._show_toast(_("Opening in web browser..."))
-            open_uri(ext_url, self)
+        is_external_or_embed = (
+            torrent.get("is_external")
+            or bool(isinstance(torrent, dict) and torrent.get("externalUrl") and not torrent.get("is_http") and not torrent.get("infoHash"))
+            or bool(magnet and isinstance(magnet, str) and any(d in magnet.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]))
+        )
+        if is_external_or_embed:
+            logger.info(f"[STREAM] Skipping non-media external stream in queue: {torrent.get('stream_title') or torrent.get('title') or magnet}")
+            self._try_next_stream_in_queue()
             return
 
         is_yt_stream = bool(

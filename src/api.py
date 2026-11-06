@@ -5740,6 +5740,11 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
         is_external = bool(s.get("is_external") or (external_url and not raw_stream_url))
         stream_url = raw_stream_url or external_url
         
+        # Filter out non-media external HTML pages and embeds (not playable in MPV)
+        is_embed_or_html = any(d in stream_url.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "/embed/"])
+        if not info_hash and not yt_id and (is_external or is_embed_or_html):
+            continue
+
         is_http = False
         if stream_url.startswith("http://") or stream_url.startswith("https://"):
             if not stream_url.split('?')[0].endswith(".torrent"):
