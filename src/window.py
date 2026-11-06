@@ -242,6 +242,61 @@ def _filter_items_from_available_addons(items):
             kept.append(item)
     return kept
 
+def _stream_identity(stream):
+    if not isinstance(stream, dict):
+        return None
+    link = stream.get("url") or stream.get("magnet")
+    if link:
+        return ("link", str(link))
+    hash_value = stream.get("hash") or stream.get("infoHash")
+    if hash_value:
+        file_index = stream.get("file_index")
+        if file_index is None:
+            file_index = stream.get("fileIdx")
+        return ("hash", str(hash_value).lower(), str(file_index or ""))
+    fallback_id = stream.get("ytId") or stream.get("externalUrl")
+    if fallback_id:
+        return ("id", str(fallback_id).strip().lower())
+    return ("object", id(stream))
+
+
+def _fresh_stream_candidates(refreshed, fresh_queue, previous):
+    """Return newly fetched playable links, excluding the known dead link."""
+    previous_identity = _stream_identity(previous)
+    candidates = []
+    seen = set()
+    ordered = []
+    if _stream_link_changed(refreshed, previous):
+        ordered.append(refreshed)
+    if isinstance(fresh_queue, (list, tuple)):
+        ordered.extend(fresh_queue)
+    for stream in ordered:
+        if not isinstance(stream, dict):
+            continue
+        identity = _stream_identity(stream)
+        if identity is None or identity == previous_identity or identity in seen:
+            continue
+        seen.add(identity)
+        stream["_refreshed"] = True
+        candidates.append(stream)
+    return candidates
+
+
+def _merge_fresh_stream_queue(primary, fallback=(), exclude_streams=()):
+    excluded = {_stream_identity(stream) for stream in (exclude_streams or ())}
+    merged = []
+    seen = set()
+    for stream in list(primary or ()) + list(fallback or ()):
+        if not isinstance(stream, dict):
+            continue
+        identity = _stream_identity(stream)
+        if identity is not None and (identity in excluded or identity in seen):
+            continue
+        if identity is not None:
+            seen.add(identity)
+        merged.append(stream)
+    return merged
+
 def _stream_link_changed(refreshed, previous):
     """True when a refresh actually produced a different playable link."""
     if not isinstance(refreshed, dict) or not refreshed:
@@ -12010,15 +12065,21 @@ class CineWindow(Adw.ApplicationWindow):
                         old_stream=cur_ws,
                         provider=target_prov
                     )
-                    if _stream_link_changed(refreshed, cur_ws):
-                        cur_ws = refreshed
-                        database.save_working_stream(p_id, season, episode, refreshed)
-                        cur_item["selected_torrent"] = refreshed
-                        cur_item["stream_url"] = refreshed.get("url") or refreshed.get("magnet")
+                    fresh_candidates = _fresh_stream_candidates(refreshed, fresh_queue, cur_ws)
+                    if fresh_candidates:
+                        cur_ws = fresh_candidates[0]
+                        database.save_working_stream(p_id, season, episode, cur_ws)
+                        cur_item["selected_torrent"] = cur_ws
+                        cur_item["stream_url"] = cur_ws.get("url") or cur_ws.get("magnet")
+                        if cur_ws.get("magnet"):
+                            cur_item["magnet"] = cur_ws["magnet"]
+                        else:
+                            cur_item.pop("magnet", None)
                         cur_item["last_refreshed"] = time.time()
-                        if fresh_queue:
-                            cur_item["stream_queue"] = [refreshed] + [s for s in fresh_queue if s != refreshed and (s.get("url") or s.get("magnet")) != (refreshed.get("url") or refreshed.get("magnet"))]
-                            cur_item["stream_queue_index"] = 0
+                        cur_item["stream_queue"] = _merge_fresh_stream_queue(
+                            fresh_candidates, cur_item.get("stream_queue") or (), exclude_streams=[working_stream]
+                        )
+                        cur_item["stream_queue_index"] = 0
                         database.save_continue_watching(cur_item)
                 except Exception as e:
                     logger.error(f"Error refreshing stale stream on continue click: {e}")
@@ -12736,14 +12797,21 @@ class CineWindow(Adw.ApplicationWindow):
                             old_stream=working_st,
                             provider=target_prov
                         )
-                        if _stream_link_changed(refreshed, working_st):
+                        fresh_candidates = _fresh_stream_candidates(refreshed, fresh_queue, working_st)
+                        if fresh_candidates:
+                            refreshed = fresh_candidates[0]
                             database.save_working_stream(item_id, item.get("season"), item.get("episode"), refreshed)
                             item["selected_torrent"] = refreshed
                             item["stream_url"] = refreshed.get("url") or refreshed.get("magnet")
+                            if refreshed.get("magnet"):
+                                item["magnet"] = refreshed["magnet"]
+                            else:
+                                item.pop("magnet", None)
                             item["last_refreshed"] = _time.time()
-                            if fresh_queue:
-                                item["stream_queue"] = [refreshed] + [s for s in fresh_queue if s != refreshed and (s.get("url") or s.get("magnet")) != (refreshed.get("url") or refreshed.get("magnet"))]
-                                item["stream_queue_index"] = 0
+                            item["stream_queue"] = _merge_fresh_stream_queue(
+                                fresh_candidates, item.get("stream_queue") or (), exclude_streams=[working_st]
+                            )
+                            item["stream_queue_index"] = 0
                             database.save_continue_watching(item)
                             logger.info(f"[CW-REFRESH] Proactively refreshed stream for {item.get('title')} from provider {target_prov}")
                     except Exception as ex:
@@ -16144,19 +16212,37 @@ class CineWindow(Adw.ApplicationWindow):
                         old_stream=failed_st,
                         provider=target_prov
                     )
-                    if refreshed and isinstance(refreshed, dict) and refreshed.get("url") != failed_st.get("url"):
-                        logger.info(f"[AUTO-HEAL] Refreshed expired stream link for provider {target_prov}")
+                    fresh_candidates = _fresh_stream_candidates(refreshed, fresh_queue, failed_st)
+                    if fresh_candidates:
+                        chosen_stream = fresh_candidates[0]
+                        logger.info(f"[AUTO-HEAL] Using a fresh stream candidate for provider {target_prov}")
                         if p_id:
-                            database.save_working_stream(p_id, season, episode, refreshed)
-                        refreshed["_refreshed"] = True
+                            database.save_working_stream(p_id, season, episode, chosen_stream)
 
                         def _apply_refreshed():
                             if request_id != getattr(self, "stream_request_id", 0):
                                 return
-                            self.stream_queue[self.stream_queue_index] = refreshed
+                            queue = list(getattr(self, "stream_queue", []) or [])
+                            current_index = int(getattr(self, "stream_queue_index", 0) or 0)
+                            remaining = queue[current_index + 1:] if current_index < len(queue) else []
+                            retry_queue = _merge_fresh_stream_queue(
+                                fresh_candidates, remaining, exclude_streams=[failed_st]
+                            )
+                            if not retry_queue:
+                                self._advance_to_next_stream_in_queue(request_id, failed_st)
+                                return
+                            self.stream_queue = queue[:current_index] + retry_queue
+                            self.stream_queue_index = current_index
+                            chosen = retry_queue[0]
                             if getattr(self, "_current_playing_item", None):
-                                self._current_playing_item["selected_torrent"] = refreshed
-                                self._current_playing_item["stream_url"] = refreshed.get("url")
+                                self._current_playing_item["selected_torrent"] = chosen
+                                self._current_playing_item["stream_url"] = chosen.get("url") or chosen.get("magnet")
+                                if chosen.get("magnet"):
+                                    self._current_playing_item["magnet"] = chosen["magnet"]
+                                else:
+                                    self._current_playing_item.pop("magnet", None)
+                                self._current_playing_item["stream_queue"] = list(self.stream_queue)
+                                self._current_playing_item["stream_queue_index"] = current_index
                                 self._current_playing_item["last_refreshed"] = time.time()
                                 database.save_continue_watching(self._current_playing_item)
                             self._play_current_stream_from_queue(request_id)
