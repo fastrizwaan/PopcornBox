@@ -1683,6 +1683,164 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
     return items[:limit], total_pages
 
 
+TMDB_BUILTIN_ADDON_ID = "popcornbox.catalog"
+TMDB_BUILTIN_MANIFEST_URL = "builtin://popcornbox-catalog"
+
+
+def get_default_tmdb_catalogs(media_type="all"):
+    """Return the built-in TMDb movie and series catalogs in display order."""
+    mt = str(media_type or "all").strip().lower()
+    if mt in ("movie", "movies", "film", "films"):
+        kinds = (("movie", "Movies"),)
+    elif mt in ("series", "show", "shows", "tv", "tvshow", "tvshows"):
+        kinds = (("series", "Series"),)
+    elif mt in ("all", "movie_series", "movies_series", "movie+series", "movies+series", "discover", ""):
+        kinds = (("movie", "Movies"), ("series", "Series"))
+    else:
+        return []
+
+    catalogs = []
+    for kind, label in kinds:
+        for catalog_id, catalog_name, tmdb_sort in (
+            ("new-on-streaming", "New on streaming", "date"),
+            ("popular", "Popular", "popular"),
+        ):
+            display_name = f"Popcorn Box Catalog — {catalog_name} — {label}"
+            catalogs.append({
+                "_source": "tmdb_catalog",
+                "addon_id": TMDB_BUILTIN_ADDON_ID,
+                "addon_name": "Popcorn Box Catalog",
+                "media_type": kind,
+                "catalog_id": catalog_id,
+                "catalog_name": catalog_name,
+                "display_name": display_name,
+                "title": display_name,
+                "manifest_url": TMDB_BUILTIN_MANIFEST_URL,
+                "tmdb_sort": tmdb_sort,
+                "supports_pagination": True,
+            })
+    return catalogs
+
+
+def fetch_default_tmdb_catalog_page(catalog_id, media_type="movie", page=1, limit=50, region=None):
+    """Fetch one page from the built-in TMDb Popular or New on streaming catalog.
+
+    TMDb's discover endpoint reports current watch availability rather than the
+    date a title was added to a streaming service. The streaming feed therefore
+    selects currently streamable titles and orders them by their release date.
+    """
+    catalog_key = str(catalog_id or "").strip().lower().replace("_", "-")
+    if catalog_key in ("new", "new-on-streaming", "new-on-streaming-movies", "new-on-streaming-series"):
+        is_streaming = True
+    elif catalog_key in ("popular", "popular-movies", "popular-series"):
+        is_streaming = False
+    else:
+        return [], 0
+
+    try:
+        page = max(1, int(page or 1))
+    except (TypeError, ValueError):
+        page = 1
+    if page > _MAX_DISCOVER_PAGES:
+        return [], 0
+
+    mt = str(media_type or "movie").strip().lower()
+    if mt in ("movie", "movies", "film", "films"):
+        kind, app_type = "movie", "movie"
+    elif mt in ("series", "show", "shows", "tv", "tvshow", "tvshows"):
+        kind, app_type = "tv", "series"
+    else:
+        return [], 0
+
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return [], 0
+
+    from datetime import date
+    today = date.today().isoformat()
+    watch_region = str(region or database.get_setting("tmdb_watch_region", "IN") or "IN").strip().upper()
+    params = {
+        "api_key": api_key,
+        "include_adult": "false",
+        "page": page,
+        "sort_by": ("primary_release_date.desc" if kind == "movie" else "first_air_date.desc") if is_streaming
+                   else "popularity.desc",
+    }
+    params["primary_release_date.lte" if kind == "movie" else "first_air_date.lte"] = today
+    if kind == "movie":
+        params["with_runtime.gte"] = MIN_TMDB_MOVIE_RUNTIME_MINUTES
+    if is_streaming:
+        params["watch_region"] = watch_region
+        params["with_watch_monetization_types"] = "flatrate|free|ads"
+        if kind == "movie":
+            params["region"] = watch_region
+            params["with_release_type"] = "4"
+
+    url = f"https://api.themoviedb.org/3/discover/{kind}?" + urllib.parse.urlencode(params)
+    try:
+        page_data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0) or {}
+    except Exception:
+        page_data = {}
+
+    try:
+        total_pages = min(int(page_data.get("total_pages") or 0), _MAX_DISCOVER_PAGES)
+    except (TypeError, ValueError):
+        total_pages = 0
+
+    items = []
+    seen_ids = set()
+    for entry in page_data.get("results", []) or []:
+        tmdb_id = entry.get("id")
+        poster_path = entry.get("poster_path")
+        if not tmdb_id or not poster_path or tmdb_id in seen_ids or is_future_item(entry, today_str=today):
+            continue
+        release_date = str(entry.get("release_date") or entry.get("first_air_date") or "")
+        if release_date and release_date > today:
+            continue
+        seen_ids.add(tmdb_id)
+        title = (
+            entry.get("title") or entry.get("name")
+            or entry.get("original_title") or entry.get("original_name") or "Unknown"
+        )
+        genre_ids = [gid for gid in (entry.get("genre_ids") or []) if gid in TMDB_GENRES]
+        vote_average = entry.get("vote_average")
+        try:
+            rating = round(float(vote_average), 1) if vote_average else None
+        except (TypeError, ValueError):
+            rating = None
+        backdrop_path = entry.get("backdrop_path")
+        poster = f"https://image.tmdb.org/t/p/w300{poster_path}"
+        items.append({
+            "id": f"tmdb:{tmdb_id}",
+            "raw_id": tmdb_id,
+            "title": title,
+            "name": title,
+            "type": app_type,
+            "media_type": app_type,
+            "poster": poster,
+            "medium_cover_image": poster,
+            "background": f"https://image.tmdb.org/t/p/w780{backdrop_path}" if backdrop_path else "",
+            "year": release_date[:4] if len(release_date) >= 4 else "",
+            "rating": rating,
+            "vote_count": entry.get("vote_count", 0),
+            "popularity": entry.get("popularity", 0.0),
+            "release_date": release_date,
+            "overview": (entry.get("overview") or "").strip(),
+            "country": "",
+            "countries": [],
+            "language": database.LANGUAGE_CODE_MAP.get(str(entry.get("original_language") or "").lower()) or "",
+            "genres": [TMDB_GENRES[gid] for gid in genre_ids],
+            "genre_ids": genre_ids,
+            "original_language": entry.get("original_language") or "",
+        })
+
+    if is_streaming:
+        items.sort(key=lambda item: str(item.get("release_date") or ""), reverse=True)
+    else:
+        items.sort(key=lambda item: (item.get("popularity", 0.0), item.get("vote_count", 0)), reverse=True)
+    return items[:limit], total_pages
+
+
 def fetch_title_search_page(query, media_type="all", page=1, limit=50):
     """Fetch one cache-first TMDb title-search page for movies and/or series.
 

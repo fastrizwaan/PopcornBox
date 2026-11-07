@@ -63,12 +63,29 @@ HISTORY_LIMIT = 100
 
 DEFAULT_ADDONS = [
     {
+        "id": "popcornbox.catalog",
+        "name": "Popcorn Box Catalog",
+        "version": "1.0.0",
+        "description": "Movie and series catalogs powered by TMDB.",
+        "manifest_url": "builtin://popcornbox-catalog",
+        "enabled": True,
+        "catalogs_enabled": True,
+        "resources": ["catalog"],
+        "types": ["movie", "series"],
+        "catalogs": [
+            {"type": "movie", "id": "new-on-streaming", "name": "New on streaming"},
+            {"type": "movie", "id": "popular", "name": "Popular"},
+            {"type": "series", "id": "new-on-streaming", "name": "New on streaming"},
+            {"type": "series", "id": "popular", "name": "Popular"},
+        ],
+    },
+    {
         "id": "cinemeta",
         "name": "Cinemeta",
         "version": "3.0.0",
         "description": "Provides movies and series catalogs from IMDb.",
         "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
-        "enabled": True,
+        "enabled": False,
         "resources": ["catalog", "meta"],
         "types": ["movie", "series"],
         "idPrefixes": ["tt"],
@@ -168,6 +185,7 @@ def _read_db():
         try:
             with open(DB_FILE, "r") as f:
                 data = json.load(f)
+            migrated = False
             # Migrate older databases
             if "history" not in data:
                 data["history"] = []
@@ -185,6 +203,8 @@ def _read_db():
                 data["settings"]["hide_adult_content"] = True
             if "addons" not in data:
                 data["addons"] = list(DEFAULT_ADDONS)
+                data.setdefault("settings", {})["cinemeta_disabled_by_default_v1"] = True
+                migrated = True
             else:
                 # Remove unbundled default addons (Anime Kitsu and IPTV Org)
                 unbundled_ids = {"anime-kitsu", "local.iptv-org"}
@@ -251,6 +271,23 @@ def _read_db():
                     if not found:
                         data["addons"].append(default_addon)
                         migrated = True
+
+                # Disable Cinemeta once for existing installs while preserving it
+                # in Addons. The marker prevents later reads from overriding a
+                # user's explicit choice to enable it again.
+                settings = data.setdefault("settings", {})
+                cinemeta_default_marker = "cinemeta_disabled_by_default_v1"
+                if not settings.get(cinemeta_default_marker):
+                    for addon in data.get("addons", []):
+                        if (
+                            addon.get("id") == "cinemeta"
+                            or "cinemeta" in str(addon.get("manifest_url", "")).lower()
+                        ):
+                            if addon.get("enabled", True):
+                                addon["enabled"] = False
+                                migrated = True
+                    settings[cinemeta_default_marker] = True
+                    migrated = True
 
                 # Migrate HdHub catalogs if missing or empty
                 for a in data["addons"]:
@@ -337,8 +374,8 @@ def _read_db():
                             a["types"] = ["movie", "series"]
                         migrated = True
 
-                if migrated:
-                    _write_db(data)
+            if migrated:
+                _write_db(data)
             _json_cache = data
             _json_cache_valid = True
             return data

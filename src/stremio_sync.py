@@ -953,7 +953,7 @@ def sync_addons(force=False):
         for l_addon in fresh_local_addons:
             m_url = l_addon.get("manifest_url")
             l_id = l_addon.get("id")
-            if not m_url or m_url in seen_pushed_urls:
+            if not m_url or m_url.startswith("builtin:") or m_url in seen_pushed_urls:
                 continue
             if m_url in user_removed_urls or (l_id and l_id in user_removed_ids):
                 continue

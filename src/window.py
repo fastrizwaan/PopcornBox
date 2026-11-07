@@ -8014,13 +8014,16 @@ class CineWindow(Adw.ApplicationWindow):
                 else:
                     self.category_btn_stack.set_visible_child_name("discover")
                 
-                from . import api
+                from . import api, tmdb_helper
                 cat_info = None
                 self._syncing_dropdowns = True
                 try:
                     if hasattr(self, "media_type_keys") and m_type in self.media_type_keys:
                         self.media_type_dropdown.set_selected(self.media_type_keys.index(m_type))
-                    self.all_catalogs = api.get_available_catalogs(m_type)
+                    self.all_catalogs = (
+                        tmdb_helper.get_default_tmdb_catalogs(m_type)
+                        + api.get_available_catalogs(m_type)
+                    )
                     target_idx = 0
                     for idx, c in enumerate(self.all_catalogs):
                         if c.get("catalog_id") == c_id and c.get("manifest_url") == m_url:
@@ -11139,6 +11142,65 @@ class CineWindow(Adw.ApplicationWindow):
                             debug_log(f"unique query cache: '{cat_info.get('query')}' -> {len(items)} items (page {page})")
                             return (key, page, items, raw_count, True)
 
+                        if cat_info.get("_source") == "tmdb_catalog":
+                            # Popcorn Box Catalog is built into the app, so it
+                            # cannot be fetched through a Stremio manifest. Feed
+                            # its TMDb pages directly into Unique just like the
+                            # regular See All grid does.
+                            from . import tmdb_helper
+                            if page > tmdb_helper._MAX_DISCOVER_PAGES:
+                                return (key, page, [], 0, False)
+                            tmdb_cache_key = f"tmdb-default-unique:{c_id}:{m_type}:p{page}"
+                            items = database.get_cached_catalog(
+                                tmdb_cache_key,
+                                max_age_hours=database.CATALOG_CACHE_HOURS,
+                            )
+                            from_cache = bool(items)
+                            if not items:
+                                items, total_pages = tmdb_helper.fetch_default_tmdb_catalog_page(
+                                    catalog_id=c_id,
+                                    media_type=m_type,
+                                    page=page,
+                                    limit=50,
+                                )
+                                cat_info["tmdb_total_pages"] = max(
+                                    int(cat_info.get("tmdb_total_pages") or 0),
+                                    int(total_pages or 0),
+                                )
+                                if items and not _is_event_set(abort_ev):
+                                    database.save_cached_catalog(tmdb_cache_key, items)
+                            if _is_event_set(abort_ev):
+                                return None
+                            items = items or []
+                            for item in items:
+                                item.setdefault("addon_name", a_name or "Popcorn Box Catalog")
+                                item.setdefault("catalog_name", c_name)
+                                item.setdefault("catalog_id", c_id)
+                                item.setdefault("manifest_url", m_url)
+                                item.setdefault("type", m_type)
+                            raw_count = len(items)
+                            filtered = items
+                            if cur_genre:
+                                filtered = api.filter_items_by_genre(filtered, cur_genre, media_type=m_type)
+                            if cur_lang:
+                                filtered = api.filter_items_by_genre(filtered, cur_lang, media_type=m_type)
+                            if cur_country:
+                                filtered = api.filter_items_by_country(filtered, cur_country, media_type=m_type)
+                            if cur_year:
+                                year_prefix = str(cur_year).strip()
+                                filtered = [
+                                    item for item in filtered
+                                    if str(item.get("year") or item.get("releaseInfo") or "").strip().startswith(year_prefix)
+                                ]
+                            if database.is_adult_content_hidden():
+                                filtered = [item for item in filtered if not api.is_adult_item(item)]
+                            filtered = [item for item in filtered if not api.is_future_item(item)]
+                            debug_log(
+                                f"unique TMDb catalog '{c_id}' ({m_type}) -> {len(filtered)} items (page {page})",
+                                f"TMDb reports {cat_info.get('tmdb_total_pages') or '?'} pages",
+                            )
+                            return (key, page, filtered, raw_count, from_cache)
+
                         if cat_info.get("_source") == "tmdb_search":
                             from . import tmdb_helper
                             query = str(cat_info.get("query") or "").strip()
@@ -11934,7 +11996,9 @@ class CineWindow(Adw.ApplicationWindow):
                         cached = [it for it in cached if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(year))]
                     if cached and not _is_event_set(abort_ev):
                         database.save_cached_catalog(cache_key, cached)
-                    if cached and cur_sort_val == "Recent":
+                    if cached and catalog.get("_source") == "tmdb_catalog":
+                        cached.sort(key=lambda it: str(it.get("release_date") or ""), reverse=True)
+                    elif cached and cur_sort_val == "Recent":
                         cached.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
                     def apply_cached(cached_items=cached):
                         if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
@@ -11965,7 +12029,16 @@ class CineWindow(Adw.ApplicationWindow):
                     self.is_fetching_content = False
                     return
                 yr_str = str(year) if year and str(year) not in ("All Years", "All", _("All Years")) else ""
-                if active_discover_type == "all" and (year or cur_sort_val == "Year" or cat_id == "year"):
+                if catalog.get("_source") == "tmdb_catalog":
+                    from . import tmdb_helper
+                    items, total_pages = tmdb_helper.fetch_default_tmdb_catalog_page(
+                        catalog_id=cat_id,
+                        media_type=media_type,
+                        page=page_to_fetch,
+                        limit=80,
+                    )
+                    catalog["tmdb_total_pages"] = total_pages
+                elif active_discover_type == "all" and (year or cur_sort_val == "Year" or cat_id == "year"):
                     def _fetch_sub(mt):
                         if _is_event_set(abort_ev):
                             return []
@@ -12084,7 +12157,9 @@ class CineWindow(Adw.ApplicationWindow):
                     items = api.filter_items_by_country(items, cur_country, media_type=media_type)
                 if items and year and cat_id != "year":
                     items = [it for it in items if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(year))]
-                if items and cur_sort_val == "Recent":
+                if items and catalog.get("_source") == "tmdb_catalog":
+                    items.sort(key=lambda it: str(it.get("release_date") or ""), reverse=True)
+                elif items and cur_sort_val == "Recent":
                     items.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
             except Exception as e:
                 logger.error(f"Error fetching content: {e}")
@@ -12148,16 +12223,25 @@ class CineWindow(Adw.ApplicationWindow):
         self._syncing_discover_toolbar = True
         try:
             self.current_media_type = media_type
+            # A Home row opened with See All is scoped to that row's media type.
+            # Keeping the Home "all" value here makes year catalogs fetch both
+            # movies and series even when the selected row is series-only.
+            self._current_discover_type = (
+                "all"
+                if str(media_type).strip().lower() in ("all", "movie_series", "movies_series", "movie+series", "movies+series", "discover")
+                else media_type
+            )
             self.current_genre = preserved_genre
 
-            from . import api
+            from . import api, tmdb_helper
             if hasattr(self, "_catalog_list_cache") and media_type in self._catalog_list_cache:
-                self.all_catalogs = self._catalog_list_cache[media_type]
+                provider_catalogs = list(self._catalog_list_cache[media_type])
             else:
-                self.all_catalogs = api.get_available_catalogs(media_type)
+                provider_catalogs = api.get_available_catalogs(media_type)
                 if not hasattr(self, "_catalog_list_cache"):
                     self._catalog_list_cache = {}
-                self._catalog_list_cache[media_type] = self.all_catalogs
+                self._catalog_list_cache[media_type] = provider_catalogs
+            self.all_catalogs = tmdb_helper.get_default_tmdb_catalogs(media_type) + provider_catalogs
 
             target_cat = catalog
             target_idx = 0
@@ -12187,7 +12271,9 @@ class CineWindow(Adw.ApplicationWindow):
             else:
                 self.genre_dropdown.set_visible(False)
             c_id = str(self.current_catalog.get("catalog_id", "")).lower()
-            if c_id in ["top", "kitsu-anime-trending"]:
+            if self.current_catalog.get("_source") == "tmdb_catalog":
+                self.current_sort = "Recent"
+            elif c_id in ["top", "kitsu-anime-trending"]:
                 self.current_sort = "Popular"
             elif c_id in ["imdbrating", "kitsu-anime-top"]:
                 self.current_sort = "Featured"
@@ -12559,12 +12645,12 @@ class CineWindow(Adw.ApplicationWindow):
         addons = database.get_addons()
         rows = []
         
-        # Priority order: Cinemeta first, then Anime, TMDB, Bharat Binge, WATCHO, IPTV, etc.
+        # Keep TMDB first, then Anime and the remaining addon catalogs.
         def addon_sort_key(addon):
             name = addon.get('name', '').lower()
-            if 'cinemeta' in name: return 0
+            if 'popcorn box catalog' in name or 'tmdb' in name or 'movie database' in name: return 0
             if 'kitsu' in name or 'animestream' in name or 'onlyanimes' in name or 'anime' in name: return 1
-            if 'tmdb' in name or 'movie database' in name: return 2
+            if 'cinemeta' in name: return 2
             if 'iptv' in name or 'channel' in name: return 8
             return 5
 
@@ -12575,9 +12661,18 @@ class CineWindow(Adw.ApplicationWindow):
         for addon in sorted_addons:
             addon_name = addon.get('name', 'Addon')
             m_url = addon.get('manifest_url', '')
-            if not m_url or m_url.startswith('builtin:'):
+            if not m_url:
                 continue
             if filter_addon_url and m_url != filter_addon_url:
+                continue
+            if m_url.startswith('builtin:'):
+                if (
+                    m_url == "builtin://popcornbox-catalog"
+                    and filter_addon_url == m_url
+                    and addon.get("catalogs_enabled", True)
+                ):
+                    from . import tmdb_helper
+                    rows.extend(tmdb_helper.get_default_tmdb_catalogs(filter_media_type))
                 continue
             if not filter_addon_url and not addon.get("catalogs_enabled", True):
                 continue
@@ -12722,6 +12817,23 @@ class CineWindow(Adw.ApplicationWindow):
                         'title': row_title
                     })
 
+        # The built-in TMDB catalogs lead unfiltered views even when no TMDB
+        # Stremio addon is installed. Filtered views use their dedicated TMDB
+        # rows below so the selected genre, country, language, or network remains
+        # authoritative.
+        popcorn_catalog = next(
+            (a for a in addons if a.get("id") == "popcornbox.catalog"), None
+        )
+        if (
+            not filter_addon_url
+            and popcorn_catalog
+            and popcorn_catalog.get("enabled", True)
+            and popcorn_catalog.get("catalogs_enabled", True)
+            and not (cur_genre or cur_year or cur_lang or cur_country or cur_network)
+        ):
+            from . import tmdb_helper
+            rows = tmdb_helper.get_default_tmdb_catalogs(filter_media_type) + rows
+
         # If no provider can filter this genre/language/country, use matching items indexed in
         # the local metadata database instead of leaving Discover empty. When a
         # provider does support the genre/language/country, keep provider rows only so the list
@@ -12849,6 +12961,8 @@ class CineWindow(Adw.ApplicationWindow):
 
         # Prioritize rows matching current_sort
         def catalog_priority_key(row):
+            if row.get("_source") == "tmdb_catalog":
+                return 0 if row.get("tmdb_sort") == "date" else 1
             cid = str(row.get("catalog_id", "")).lower()
             cname = str(row.get("catalog_name", "")).lower()
             if cur_year or cur_sort == "Recent":
@@ -12875,6 +12989,9 @@ class CineWindow(Adw.ApplicationWindow):
             # "all" media type would sort them behind every provider row.
             if row.get("_source") == "genre_cache":
                 return -2
+            if row.get("_source") == "tmdb_catalog":
+                row_type = str(row.get("media_type") or "").strip().lower()
+                return -4 if row_type == "movie" else -3
             if row.get("_source") in ("tmdb_country", "tmdb_network"):
                 return -1
             row_type = str(row.get("media_type") or row.get("raw_type") or "").strip().lower()
@@ -12929,7 +13046,11 @@ class CineWindow(Adw.ApplicationWindow):
         while child := self.content_flowbox.get_first_child():
             self.content_flowbox.remove(child)
             
-        cw_items = _filter_items_from_available_addons(database.get_continue_watching())
+        # Continue Watching is saved playback progress, not a live catalog row.
+        # Keep it visible when the catalog addon that originally supplied the
+        # title (for example Cinemeta) is disabled; the saved stream metadata is
+        # still available independently.
+        cw_items = database.get_continue_watching()
         for item in cw_items:
             card = ContinueWatchingWidget(
                 item,
@@ -13044,21 +13165,26 @@ class CineWindow(Adw.ApplicationWindow):
             debug_log("_update_continue_watching_section SKIPPED (not home or library inactive)")
             return
 
-        target_box = None
-        if hasattr(self, "_discover_views"):
-            for k, v in self._discover_views.items():
-                if (k.startswith("home|") or k == "all|all") and "box" in v:
-                    target_box = v["box"]
-                    break
-        if not target_box and is_home and hasattr(self, "discover_box"):
-            target_box = self.discover_box
+        # `discover_box` is updated whenever Home restores a cached view. Prefer
+        # that active box over the first Home-like entry in `_discover_views`,
+        # which may be an older detached view left behind by a previous filter.
+        target_box = getattr(self, "discover_box", None)
+        if not target_box and hasattr(self, "_discover_views"):
+            try:
+                active_key = self._get_discover_view_key()
+            except Exception:
+                active_key = None
+            active_view = self._discover_views.get(active_key) if active_key else None
+            if active_view:
+                target_box = active_view.get("box")
             
         if not target_box:
             debug_log("_update_continue_watching_section SKIPPED (no target_box for home)")
             return
             
         debug_log("_update_continue_watching_section START")
-        cw_items = _filter_items_from_available_addons(database.get_continue_watching())
+        # Saved playback progress must survive disabling its catalog source.
+        cw_items = database.get_continue_watching()
         visible_card_count, card_width = self._discover_row_card_metrics()
         display_cw_items = cw_items[:max(DISCOVER_ROW_CARD_LIMIT, visible_card_count)]
         debug_log(f"_update_continue_watching_section DB returned {len(cw_items)} items (displaying {len(display_cw_items)})")
@@ -13579,6 +13705,37 @@ class CineWindow(Adw.ApplicationWindow):
                         c_id = row_info.get("catalog_id")
                         m_url = row_info.get("manifest_url")
                         row_title = row_info.get("title", "Catalog")
+
+                        if row_info.get("_source") == "tmdb_catalog":
+                            from . import tmdb_helper
+                            req_page = max(1, int(row_info.get("tmdb_page") or 1))
+                            tmdb_key = (
+                                f"tmdb-default:{c_id}:{m_type}:p{req_page}:"
+                                f"row{DISCOVER_ROW_CARD_LIMIT}"
+                            )
+                            items = database.get_cached_catalog(
+                                tmdb_key, max_age_hours=database.CATALOG_CACHE_HOURS
+                            )
+                            total_pages = int(row_info.get("tmdb_total_pages") or 0)
+                            if not items:
+                                items, page_total = tmdb_helper.fetch_default_tmdb_catalog_page(
+                                    catalog_id=c_id,
+                                    media_type=m_type,
+                                    page=req_page,
+                                    limit=DISCOVER_ROW_CARD_LIMIT,
+                                )
+                                total_pages = max(total_pages, int(page_total or 0))
+                                if items and not _is_event_set(abort_ev):
+                                    database.save_cached_catalog(tmdb_key, items)
+                            row_info["tmdb_total_pages"] = total_pages
+                            if database.is_adult_content_hidden():
+                                items = [it for it in (items or []) if not api.is_adult_item(it)]
+                            items = [it for it in (items or []) if not api.is_future_item(it)]
+                            debug_log(
+                                f"discover TMDB catalog {c_id} -> {len(items)} items",
+                                f"TMDB reports {total_pages} pages",
+                            )
+                            return (row_info, items or [])
 
                         if row_info.get("_source") == "genre_cache":
                             current_l = getattr(self, "current_language", None)
@@ -14171,7 +14328,9 @@ class CineWindow(Adw.ApplicationWindow):
             "catalog_id": c_id,
             "catalog_name": c_name,
             "manifest_url": m_url,
-            "display_name": row_title
+            "display_name": row_title,
+            "_source": row_info.get("_source"),
+            "tmdb_sort": row_info.get("tmdb_sort"),
         }
         if row_info.get("_source") == "tmdb_network":
             see_all_btn.connect("clicked", lambda *_a: self._open_network_see_all())
@@ -14192,7 +14351,9 @@ class CineWindow(Adw.ApplicationWindow):
 
         sort_mode = str(getattr(self, "current_sort", "Recent") or "Recent").strip().lower()
         items = [it for it in (items or []) if not api.is_future_item(it)]
-        if sort_mode in ("recent", "new", "latest"):
+        if row_info.get("_source") == "tmdb_catalog":
+            items = sorted(items, key=lambda item: str(item.get("release_date") or ""), reverse=True)
+        elif sort_mode in ("recent", "new", "latest"):
             # Cached and freshly fetched rows use the same newest-first order.
             items = sorted(items, key=_discover_item_release_sort_key, reverse=True)
 
@@ -14449,14 +14610,24 @@ class CineWindow(Adw.ApplicationWindow):
         return name
 
     def _prepare_menu_data(self, media_type):
-        from . import api
-        catalogs = api.get_available_catalogs(media_type)
+        from . import api, database, tmdb_helper
+        popcorn_catalog = next(
+            (a for a in database.get_addons() if a.get("id") == tmdb_helper.TMDB_BUILTIN_ADDON_ID),
+            None,
+        )
+        catalogs = []
+        if popcorn_catalog and popcorn_catalog.get("enabled", True) and popcorn_catalog.get("catalogs_enabled", True):
+            catalogs.extend(tmdb_helper.get_default_tmdb_catalogs(media_type))
+        catalogs.extend(api.get_available_catalogs(media_type))
         
         addons_map = {}
         for cat in catalogs:
             addon_name = cat.get("addon_name") or "Addon"
             m_url = cat.get("manifest_url") or ""
-            if not m_url or not api.is_addon_online(m_url):
+            if not m_url or (
+                m_url != tmdb_helper.TMDB_BUILTIN_MANIFEST_URL
+                and not api.is_addon_online(m_url)
+            ):
                 continue
             key = (addon_name, m_url)
             if key not in addons_map:
@@ -14500,14 +14671,14 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _prepare_discover_catalog_data(self):
         """Prepare list of (addon_name, manifest_url) for addons with browsable catalogs. Runs in background thread."""
-        from . import database, api
+        from . import database, api, tmdb_helper
         addons = database.get_addons()
 
         def addon_sort_key(addon):
             name = addon.get('name', '').lower()
-            if 'cinemeta' in name: return 0
+            if 'popcorn box catalog' in name or 'tmdb' in name or 'movie database' in name: return 0
             if 'kitsu' in name or 'animestream' in name or 'onlyanimes' in name or 'anime' in name: return 1
-            if 'tmdb' in name or 'movie database' in name: return 2
+            if 'cinemeta' in name: return 2
             if 'iptv' in name or 'channel' in name: return 8
             return 5
 
@@ -14517,7 +14688,16 @@ class CineWindow(Adw.ApplicationWindow):
         for addon in sorted_addons:
             addon_name = addon.get('name', 'Addon')
             m_url = addon.get('manifest_url', '')
-            if not m_url or m_url.startswith('builtin:') or m_url in seen_urls:
+            if not m_url or m_url in seen_urls:
+                continue
+            if m_url == tmdb_helper.TMDB_BUILTIN_MANIFEST_URL:
+                if addon.get("catalogs_enabled", True) and any(
+                    api.is_catalog_browsable(c) for c in (addon.get("catalogs") or [])
+                ):
+                    seen_urls.add(m_url)
+                    result_addons.append((addon_name, m_url))
+                continue
+            if m_url.startswith('builtin:'):
                 continue
             if not api.is_addon_online(m_url):
                 continue
@@ -14748,7 +14928,11 @@ class CineWindow(Adw.ApplicationWindow):
                 auto_fills = int(getattr(self, "_content_auto_fill_count", 0))
             except (ValueError, TypeError):
                 auto_fills = 0
-            if auto_fills < 3:
+            # A wide, tall window can show more than four catalog pages before
+            # the grid gains a scrollbar. Keep filling while the viewport is
+            # short of content, with a generous safety cap for providers that
+            # repeat page one or return unusually large pages.
+            if auto_fills < 12:
                 self._content_auto_fill_count = auto_fills + 1
                 if getattr(self, "current_catalog", None):
                     self._fetch_content_page()
@@ -18024,6 +18208,9 @@ class CineWindow(Adw.ApplicationWindow):
             self._populate_installed_addons(scroll_to_url=scroll_to_url)
 
     def _probe_addon_status_async(self, manifest_url, status_label, addon_name="Unknown", force_network=False):
+        if str(manifest_url or "").startswith("builtin:"):
+            self._apply_addon_status(status_label, True, _("Built in"))
+            return
         from . import api
 
         def worker():
@@ -18127,6 +18314,13 @@ class CineWindow(Adw.ApplicationWindow):
 
         from . import database, api
         addons = database.get_addons()
+        addons = sorted(
+            addons,
+            key=lambda addon: (
+                0 if addon.get("id") == "popcornbox.catalog" else
+                1 if "tmdb" in str(addon.get("name", "")).lower() else 2
+            ),
+        )
         debug_log(f"_populate_installed_addons DB returned {len(addons)} addons")
         self._addon_status_widgets = {}
         target_row = None
