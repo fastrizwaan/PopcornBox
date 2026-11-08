@@ -1495,6 +1495,16 @@ class MovieDetailsPage(Gtk.Overlay):
                     all_addons.add(name)
         except Exception:
             pass
+        try:
+            from . import plugins
+            if plugins.is_plugins_enabled():
+                mtype = getattr(self, 'media_type', 'movie')
+                for s in plugins.get_enabled_scrapers_for_type(mtype):
+                    pname = plugins.get_scraper_provider_name(s)
+                    if pname:
+                        all_addons.add(pname)
+        except Exception:
+            pass
         for t in getattr(self, 'torrents', []):
             for a in t.get("addon_names", []):
                 if a and a not in unavailable:

@@ -454,7 +454,15 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
             # Addon with no idPrefixes might support any prefix or default tt
             needed_prefixes.add("tt")
 
-    needs_tmdb = any(p.startswith("tmdb") for p in needed_prefixes)
+    has_enabled_plugins = False
+    try:
+        from . import plugins
+        if plugins.is_plugins_enabled() and len(plugins.get_enabled_scrapers_for_type(media_type or "movie")) > 0:
+            has_enabled_plugins = True
+    except Exception:
+        has_enabled_plugins = False
+
+    needs_tmdb = has_enabled_plugins or any(p.startswith("tmdb") for p in needed_prefixes)
     has_tt = any(str(i).startswith("tt") for i in ids)
 
     # If we already have tt... and don't need tmdb, return immediately!
@@ -505,6 +513,13 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
             root_tt_id = str(tt_id).split(":")[0] if tt_id else None
             if root_tt_id:
                 try:
+                    direct_tmdb = resolve_to_tmdb_id(root_tt_id, media_type, title)
+                    if direct_tmdb:
+                        res.append(f"tmdb:{direct_tmdb}")
+                        return res
+                except Exception:
+                    pass
+                try:
                     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                     meta_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/meta/{c_type}/{root_tt_id}.json"
                     meta_data = _get_cached_request(meta_url, max_age_hours=METADATA_CACHE_HOURS, timeout=3.0)
@@ -515,6 +530,13 @@ def resolve_all_provider_ids(item_id, media_type="movie", title=None):
                 except Exception:
                     pass
             if not res and title and title != "Loading...":
+                try:
+                    direct_tmdb = resolve_to_tmdb_id(None, media_type, title)
+                    if direct_tmdb:
+                        res.append(f"tmdb:{direct_tmdb}")
+                        return res
+                except Exception:
+                    pass
                 try:
                     c_type = "series" if media_type in ["series", "anime", "tv"] else "movie"
                     search_url = f"https://94c8cb9f702d-tmdb-addon.baby-beamup.club/catalog/{c_type}/tmdb.top/search={urllib.parse.quote(title)}.json"

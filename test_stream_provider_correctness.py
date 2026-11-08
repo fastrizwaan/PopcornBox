@@ -632,5 +632,210 @@ class TestStremioAddonIdPrefixCheck(unittest.TestCase):
         self.assertTrue(api.has_stream_resource(addon, media_type="series", item_id="tt0000002"))
 
 
+# ===========================================================================
+# 8. Addon and Plugin coexistence and conflict resolution
+# ===========================================================================
+
+class TestAddonPluginCoexistence(unittest.TestCase):
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        patcher = patch.object(database, "DB_FILE", Path(self.td.name) / "db.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        database._json_cache = None
+        database._json_cache_valid = False
+        api.clear_stream_url_cache()
+
+    def tearDown(self):
+        database._json_cache = None
+        database._json_cache_valid = False
+        self.td.cleanup()
+
+    def test_resolve_all_provider_ids_needs_tmdb_when_plugins_enabled(self):
+        """When plugins are enabled, resolve_all_provider_ids must resolve TMDB ID even if addons only declare tt."""
+        from src import tmdb_helper
+        mock_addon = {
+            "id": "torrentio",
+            "name": "Torrentio",
+            "manifest_url": "https://torrentio.strem.fun/manifest.json",
+            "enabled": True,
+            "streams_enabled": True,
+            "idPrefixes": ["tt"],
+            "types": ["movie", "series"],
+        }
+        mock_scraper = {
+            "id": "repo:scraper1",
+            "name": "Scraper 1",
+            "enabled": True,
+            "supported_types": ["movie"],
+        }
+        with patch.object(database, "get_addons", return_value=[mock_addon]), \
+             patch.object(plugins, "is_plugins_enabled", return_value=True), \
+             patch.object(plugins, "get_enabled_scrapers_for_type", return_value=[mock_scraper]), \
+             patch.object(tmdb_helper, "resolve_to_tmdb_id", return_value="603"):
+            resolved = tmdb_helper.resolve_all_provider_ids("tt0133093", "movie", "The Matrix")
+            self.assertIn("tt0133093", resolved)
+            self.assertIn("tmdb:603", resolved)
+
+    def test_get_torrents_streamed_fetches_both_addons_and_plugins_without_known_tmdb_id(self):
+        """When known_tmdb_id is None, both addons and plugins must receive and execute their requests."""
+        mock_addon = {
+            "id": "torrentio",
+            "name": "Torrentio",
+            "manifest_url": "https://torrentio.test/manifest.json",
+            "enabled": True,
+            "streams_enabled": True,
+            "idPrefixes": ["tt"],
+            "types": ["movie"],
+            "resources": [{"name": "stream", "types": ["movie"], "idPrefixes": ["tt"]}],
+        }
+        mock_scraper = {
+            "id": "repo:fast_scraper",
+            "raw_id": "fast_scraper",
+            "name": "FastScraper",
+            "repository_url": "https://example.com/manifest.json",
+            "supported_types": ["movie"],
+            "enabled": True,
+            "code": SIMPLE_JS,
+            "_duplicate_provider_names": [],
+        }
+
+        def fake_execute(scraper, tmdb_id, media_type, **kwargs):
+            return [
+                {
+                    "name": scraper.get("name"),
+                    "title": f"Plugin 1080p for TMDB {tmdb_id}",
+                    "url": "https://plugin.test/movie.mp4",
+                    "is_nuvio_plugin": True,
+                    "addon_name": scraper.get("name"),
+                    "addon_names": [scraper.get("name")],
+                    "plugin_scraper_id": scraper.get("id"),
+                    "plugin_scraper_tmdb_id": str(tmdb_id),
+                }
+            ]
+
+        def fake_addon_streams(addon, url, **kwargs):
+            return [
+                {
+                    "name": addon.get("name"),
+                    "title": "Addon 1080p Stream",
+                    "url": "https://addon.test/stream.mp4",
+                }
+            ]
+
+        with patch.object(database, "get_addons", return_value=[mock_addon]), \
+             patch.object(plugins, "is_plugins_enabled", return_value=True), \
+             patch.object(plugins, "get_all_scrapers", return_value=[mock_scraper]), \
+             patch.object(plugins, "get_enabled_scrapers_for_type", return_value=[mock_scraper]), \
+             patch.object(plugins, "execute_scraper", side_effect=fake_execute), \
+             patch.object(api, "_request_addon_streams", side_effect=fake_addon_streams), \
+             patch("src.tmdb_helper.resolve_to_tmdb_id", return_value="603"), \
+             patch("src.tmdb_helper.resolve_all_provider_ids", return_value=["tt0133093", "tmdb:603"]):
+            result = api.get_torrents_streamed("tt0133093", "movie", force_refresh=True)
+
+        addon_names = {s.get("addon_name") for s in result}
+        self.assertIn("Torrentio", addon_names, "Addon stream must be present in results")
+        self.assertIn("FastScraper", addon_names, "Plugin stream must be present in results")
+        self.assertTrue(any(s.get("is_nuvio_plugin") for s in result), "Result must contain plugin stream")
+
+    def test_cache_with_only_addon_streams_refreshes_missing_plugins(self):
+        """A cache with only addon streams must not be treated as fresh when plugins are enabled."""
+        cache_key = api.get_stream_cache_key("tt0133093", "movie")
+        cached_addon_stream = {
+            "hash": hashlib.md5(b"addon_url").hexdigest(),
+            "url": "https://addon.test/movie.mp4",
+            "is_http": True,
+            "addon_name": "Torrentio",
+            "addon_names": ["Torrentio"],
+            "quality": "1080p",
+            "stream_title": "1080p",
+            "saved_at": __import__("time").time(),
+            "is_nuvio_plugin": False,
+        }
+        database.save_cached_streams_full(
+            cache_key, cache_key + ":source:direct", cache_key + ":source:torrent",
+            [cached_addon_stream],
+        )
+
+        mock_addon = {
+            "id": "torrentio",
+            "name": "Torrentio",
+            "manifest_url": "https://torrentio.test/manifest.json",
+            "enabled": True,
+            "streams_enabled": True,
+            "idPrefixes": ["tt"],
+            "types": ["movie"],
+        }
+        mock_scraper = {
+            "id": "repo:new_scraper",
+            "raw_id": "new_scraper",
+            "name": "NewScraper",
+            "repository_url": "https://example.com/manifest.json",
+            "supported_types": ["movie"],
+            "enabled": True,
+            "code": SIMPLE_JS,
+            "_duplicate_provider_names": [],
+        }
+
+        called_scrapers = []
+        def fake_execute(scraper, tmdb_id, media_type, **kwargs):
+            called_scrapers.append(scraper.get("name"))
+            return [
+                {
+                    "name": scraper.get("name"),
+                    "title": "Fresh Plugin Stream",
+                    "url": "https://fresh.test/video.mp4",
+                    "is_nuvio_plugin": True,
+                    "addon_name": scraper.get("name"),
+                    "addon_names": [scraper.get("name")],
+                    "plugin_scraper_id": scraper.get("id"),
+                    "plugin_scraper_tmdb_id": str(tmdb_id),
+                }
+            ]
+
+        with patch.object(database, "get_addons", return_value=[mock_addon]), \
+             patch.object(plugins, "is_plugins_enabled", return_value=True), \
+             patch.object(plugins, "get_all_scrapers", return_value=[mock_scraper]), \
+             patch.object(plugins, "get_enabled_scrapers_for_type", return_value=[mock_scraper]), \
+             patch.object(plugins, "execute_scraper", side_effect=fake_execute), \
+             patch.object(api, "_request_addon_streams", return_value=[cached_addon_stream]), \
+             patch("src.tmdb_helper.resolve_to_tmdb_id", return_value="603"):
+            # force_refresh=False: should NOT skip provider refresh because plugins are missing from cache
+            result = api.get_torrents_streamed("tt0133093", "movie", force_refresh=False, known_tmdb_id="603")
+
+        self.assertIn("NewScraper", called_scrapers, "Plugin scraper must be called despite existing addon cache")
+        self.assertTrue(any(s.get("is_nuvio_plugin") for s in result), "Result must contain plugin stream")
+
+    def test_dedup_merges_plugin_metadata_onto_addon_stream(self):
+        """When an addon and a plugin return identical stream URLs, the merged stream must carry plugin metadata."""
+        addon_raw = {
+            "url": "https://shared.test/stream.mp4",
+            "name": "Torrentio",
+            "title": "1080p WebRip",
+            "addon_name": "Torrentio",
+            "addon_names": ["Torrentio"],
+            "is_nuvio_plugin": False,
+        }
+        plugin_raw = {
+            "url": "https://shared.test/stream.mp4",
+            "name": "PluginProvider",
+            "title": "1080p WebRip",
+            "addon_name": "PluginProvider",
+            "addon_names": ["PluginProvider"],
+            "is_nuvio_plugin": True,
+            "plugin_scraper_id": "repo:plugin",
+            "plugin_scraper_tmdb_id": "603",
+        }
+        merged = api.process_raw_streams([addon_raw, plugin_raw])
+        self.assertEqual(len(merged), 1, "Duplicate streams must collapse to 1 entry")
+        entry = merged[0]
+        self.assertIn("Torrentio", entry.get("addon_names", []))
+        self.assertIn("PluginProvider", entry.get("addon_names", []))
+        self.assertTrue(entry.get("is_nuvio_plugin"), "Merged stream must retain is_nuvio_plugin flag")
+        self.assertEqual(entry.get("plugin_scraper_id"), "repo:plugin")
+        self.assertEqual(entry.get("plugin_scraper_tmdb_id"), "603")
+
+
 if __name__ == "__main__":
     unittest.main()
