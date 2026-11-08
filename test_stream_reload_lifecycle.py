@@ -315,7 +315,7 @@ class TestStreamReloadLifecycle(unittest.TestCase):
 
         self.assertFalse(api.is_provider_in_cooldown(manifest))
 
-    def test_provider_dropdown_omits_offline_and_cooling_providers(self):
+    def test_provider_dropdown_lists_results_and_omits_empty_providers(self):
         from src import api, database
 
         addons = [
@@ -361,7 +361,7 @@ class TestStreamReloadLifecycle(unittest.TestCase):
 
         model = page.provider_dropdown.get_model()
         strings = [model.get_string(i) for i in range(model.get_n_items())]
-        self.assertEqual(strings, ["All Providers", "CachedOnlyProvider", "OnlineProvider"])
+        self.assertEqual(strings, ["All Providers", "CachedOnlyProvider", "OfflineProvider", "OnlineProvider"])
 
     def test_source_toggle_fetches_torrents_when_none_loaded(self):
         page = self._make_page(stub={"id": "tt0106179", "title": "The X-Files", "type": "movie"})

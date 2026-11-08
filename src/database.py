@@ -63,29 +63,12 @@ HISTORY_LIMIT = 100
 
 DEFAULT_ADDONS = [
     {
-        "id": "popcornbox.catalog",
-        "name": "Popcorn Box Catalog",
-        "version": "1.0.0",
-        "description": "Movie and series catalogs powered by TMDB.",
-        "manifest_url": "builtin://popcornbox-catalog",
-        "enabled": True,
-        "catalogs_enabled": True,
-        "resources": ["catalog"],
-        "types": ["movie", "series"],
-        "catalogs": [
-            {"type": "movie", "id": "new-on-streaming", "name": "New on streaming"},
-            {"type": "movie", "id": "popular", "name": "Popular"},
-            {"type": "series", "id": "new-on-streaming", "name": "New on streaming"},
-            {"type": "series", "id": "popular", "name": "Popular"},
-        ],
-    },
-    {
         "id": "cinemeta",
         "name": "Cinemeta",
         "version": "3.0.0",
         "description": "Provides movies and series catalogs from IMDb.",
         "manifest_url": "https://v3-cinemeta.strem.io/manifest.json",
-        "enabled": False,
+        "enabled": True,
         "resources": ["catalog", "meta"],
         "types": ["movie", "series"],
         "idPrefixes": ["tt"],
@@ -203,9 +186,31 @@ def _read_db():
                 data["settings"]["hide_adult_content"] = True
             if "addons" not in data:
                 data["addons"] = list(DEFAULT_ADDONS)
-                data.setdefault("settings", {})["cinemeta_disabled_by_default_v1"] = True
                 migrated = True
             else:
+                # Retire the old bundled Popcorn Box catalog from existing installs.
+                old_builtin_ids = {"popcornbox.catalog"}
+                initial_count = len(data["addons"])
+                data["addons"] = [
+                    addon for addon in data["addons"]
+                    if addon.get("id") not in old_builtin_ids
+                    and addon.get("manifest_url") != "builtin://popcornbox-catalog"
+                ]
+                if len(data["addons"]) != initial_count:
+                    migrated = True
+                    try:
+                        with _cache_db_lock:
+                            conn = _get_cache_db()
+                            c = conn.cursor()
+                            c.execute("DELETE FROM catalog_cache WHERE cache_key LIKE 'tmdb-default%'")
+                            conn.commit()
+                    except Exception:
+                        pass
+                    with _MEM_CATALOG_LOCK:
+                        for cache_key in list(_MEM_CATALOG_CACHE):
+                            if str(cache_key).startswith("tmdb-default"):
+                                del _MEM_CATALOG_CACHE[cache_key]
+
                 # Remove unbundled default addons (Anime Kitsu and IPTV Org)
                 unbundled_ids = {"anime-kitsu", "local.iptv-org"}
                 initial_count = len(data["addons"])
@@ -215,8 +220,9 @@ def _read_db():
                     and "anime-kitsu.strem.fun" not in str(a.get("manifest_url", "")).lower()
                     and "iptv-org.github.io" not in str(a.get("manifest_url", "")).lower()
                 ]
-                migrated = (len(data["addons"]) != initial_count)
-                if migrated:
+                unbundled_removed = len(data["addons"]) != initial_count
+                migrated = migrated or unbundled_removed
+                if unbundled_removed:
                     removed_defs = set(data.get("settings", {}).get("removed_default_addons", []))
                     removed_defs.update(unbundled_ids)
                     data.setdefault("settings", {})["removed_default_addons"] = list(removed_defs)
@@ -272,20 +278,18 @@ def _read_db():
                         data["addons"].append(default_addon)
                         migrated = True
 
-                # Disable Cinemeta once for existing installs while preserving it
-                # in Addons. The marker prevents later reads from overriding a
-                # user's explicit choice to enable it again.
+                # Apply the enabled-by-default change once to existing installs.
+                # Subsequent reads preserve the user's own toggle choice.
                 settings = data.setdefault("settings", {})
-                cinemeta_default_marker = "cinemeta_disabled_by_default_v1"
+                cinemeta_default_marker = "cinemeta_enabled_by_default_v2"
                 if not settings.get(cinemeta_default_marker):
                     for addon in data.get("addons", []):
                         if (
                             addon.get("id") == "cinemeta"
                             or "cinemeta" in str(addon.get("manifest_url", "")).lower()
-                        ):
-                            if addon.get("enabled", True):
-                                addon["enabled"] = False
-                                migrated = True
+                        ) and not addon.get("enabled", True):
+                            addon["enabled"] = True
+                            migrated = True
                     settings[cinemeta_default_marker] = True
                     migrated = True
 

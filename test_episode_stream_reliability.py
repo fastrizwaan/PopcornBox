@@ -63,8 +63,8 @@ class TestEpisodeStreamReliability(unittest.TestCase):
         self.assertEqual(fail_count, 0)
         self.assertFalse(is_blocked)
 
-    def test_provider_dropdown_lists_installed_providers_on_init(self):
-        """Provider dropdown must list all active stream providers immediately, not just 'All Providers'."""
+    def test_provider_dropdown_hides_installed_providers_without_results(self):
+        """Only providers with streams for the current item should be selectable."""
         mock_addon = {
             "name": "PlavioHD",
             "manifest_url": "https://plaviohd.example/manifest.json",
@@ -88,7 +88,46 @@ class TestEpisodeStreamReliability(unittest.TestCase):
             self.assertIsNotNone(model)
             items = [model.get_string(i) for i in range(model.get_n_items())]
             self.assertIn("All Providers", items)
-            self.assertIn("PlavioHD", items)
+            self.assertEqual(items, ["All Providers"])
+
+    def test_render_streams_list_shows_all_results_and_provider_sources(self):
+        movie_stub = {
+            "id": "tt39281887",
+            "title": "Jaadugar",
+            "type": "movie"
+        }
+        with patch("src.database.get_addons", return_value=[]), \
+             patch("src.api.get_torrents_streamed"), \
+             patch.object(MovieDetailsPage, "load_details_async"):
+            page = MovieDetailsPage(movie_stub, on_back=lambda: None)
+            streams = []
+            provider_names = ["Addon One", "Addon Two", "Plugin Provider"]
+            for i in range(55):
+                provider = provider_names[i % len(provider_names)]
+                streams.append({
+                    "title": f"Stream {i}",
+                    "stream_title": f"Stream {i} 1080p",
+                    "is_http": True,
+                    "url": f"https://example.com/{i}.mp4",
+                    "addon_names": [provider],
+                    "is_nuvio_plugin": provider == "Plugin Provider",
+                })
+            page.torrents = streams
+            page.current_t_list = streams
+
+            page.update_provider_dropdown_model()
+            page.render_streams_list()
+
+            model = page.provider_dropdown.get_model()
+            providers = [model.get_string(i) for i in range(model.get_n_items())]
+            self.assertEqual(providers, ["All Providers", "Addon One", "Addon Two", "Plugin Provider"])
+
+            child_count = 0
+            child = page.streams_list_box.get_first_child()
+            while child is not None:
+                child_count += 1
+                child = child.get_next_sibling()
+            self.assertEqual(child_count, 55)
 
     def test_render_streams_list_shows_loading_while_fetching(self):
         """render_streams_list must not show 'No streams available' prematurely while streams are in-flight."""

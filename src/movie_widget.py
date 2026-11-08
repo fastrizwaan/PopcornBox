@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from .utils import debug_log
 from . import database
@@ -45,9 +46,42 @@ atexit.register(_image_pool.shutdown, wait=False, cancel_futures=True)
 atexit.register(_disk_pool.shutdown, wait=False, cancel_futures=True)
 atexit.register(_meta_fallback_pool.shutdown, wait=False, cancel_futures=True)
 
-_MEMORY_PIXBUF_CACHE = {}
+_MEMORY_PIXBUF_CACHE = OrderedDict()
 _MEMORY_PIXBUF_LOCK = threading.Lock()
-_MAX_MEMORY_PIXBUFS = 500
+_MEMORY_PIXBUF_CACHE_BYTES = 0
+_MAX_MEMORY_PIXBUF_CACHE_BYTES = 32 * 1024 * 1024
+
+
+def _get_memory_cached_pixbuf(key):
+    with _MEMORY_PIXBUF_LOCK:
+        entry = _MEMORY_PIXBUF_CACHE.get(key)
+        if entry is None:
+            return None
+        _MEMORY_PIXBUF_CACHE.move_to_end(key)
+        return entry[0]
+
+
+def _cache_memory_pixbuf(key, pixbuf):
+    global _MEMORY_PIXBUF_CACHE_BYTES
+    try:
+        byte_size = int(pixbuf.get_rowstride()) * int(pixbuf.get_height())
+    except Exception:
+        return
+    if byte_size <= 0 or byte_size > _MAX_MEMORY_PIXBUF_CACHE_BYTES:
+        return
+
+    with _MEMORY_PIXBUF_LOCK:
+        old_entry = _MEMORY_PIXBUF_CACHE.pop(key, None)
+        if old_entry is not None:
+            _MEMORY_PIXBUF_CACHE_BYTES -= old_entry[1]
+        while (
+            _MEMORY_PIXBUF_CACHE
+            and _MEMORY_PIXBUF_CACHE_BYTES + byte_size > _MAX_MEMORY_PIXBUF_CACHE_BYTES
+        ):
+            _, (_, evicted_bytes) = _MEMORY_PIXBUF_CACHE.popitem(last=False)
+            _MEMORY_PIXBUF_CACHE_BYTES -= evicted_bytes
+        _MEMORY_PIXBUF_CACHE[key] = (pixbuf, byte_size)
+        _MEMORY_PIXBUF_CACHE_BYTES += byte_size
 
 # url -> Event for image downloads currently in progress. Grids frequently
 # show the same poster in several rows; without this, each card downloaded it.
@@ -351,8 +385,7 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
 
     # 1. Fast in-memory pixbuf cache check
     mem_key = (url, width, height, crop)
-    with _MEMORY_PIXBUF_LOCK:
-        cached_pixbuf = _MEMORY_PIXBUF_CACHE.get(mem_key)
+    cached_pixbuf = _get_memory_cached_pixbuf(mem_key)
     if cached_pixbuf:
         GLib.idle_add(_apply_pixbuf, picture_widget, cached_pixbuf, url)
         return
@@ -396,8 +429,7 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
 
                 if not owner:
                     inflight.wait(timeout=8.0)
-                    with _MEMORY_PIXBUF_LOCK:
-                        cached_pixbuf = _MEMORY_PIXBUF_CACHE.get(mem_key)
+                    cached_pixbuf = _get_memory_cached_pixbuf(mem_key)
                     if cached_pixbuf:
                         if is_priority or is_image_generation_active(task_gen):
                             GLib.idle_add(_apply_pixbuf, picture_widget, cached_pixbuf, url)
@@ -590,10 +622,7 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                             new_h = height
                         pixbuf = pixbuf.scale_simple(new_w, new_h, GdkPixbuf.InterpType.BILINEAR)
 
-                with _MEMORY_PIXBUF_LOCK:
-                    while len(_MEMORY_PIXBUF_CACHE) >= _MAX_MEMORY_PIXBUFS:
-                        _MEMORY_PIXBUF_CACHE.pop(next(iter(_MEMORY_PIXBUF_CACHE)), None)
-                    _MEMORY_PIXBUF_CACHE[mem_key] = pixbuf
+                _cache_memory_pixbuf(mem_key, pixbuf)
 
                 if is_priority or is_image_generation_active(task_gen):
                     GLib.idle_add(_apply_pixbuf, picture_widget, pixbuf, url)

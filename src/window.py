@@ -1475,44 +1475,34 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def update_provider_dropdown_model(self):
         if not hasattr(self, 'provider_dropdown'): return
-        from . import api, database
-        all_addons = set()
-        unavailable = set()
-        try:
-            mtype = getattr(self, 'media_type', 'movie')
-            item_id = self.movie_stub.get("id") or getattr(self, "movie_details", {}).get("id")
-            for addon in database.get_addons():
-                name = addon.get("name")
-                if not name:
-                    continue
-                manifest_url = addon.get("manifest_url", "")
-                if manifest_url and (
-                    not api.is_addon_online(manifest_url)
-                    or api.is_provider_in_cooldown(manifest_url)
-                ):
-                    unavailable.add(name)
-                if api.is_stream_provider(addon, media_type=mtype, item_id=item_id):
-                    all_addons.add(name)
-        except Exception:
-            pass
-        try:
-            from . import plugins
-            if plugins.is_plugins_enabled():
-                mtype = getattr(self, 'media_type', 'movie')
-                for s in plugins.get_enabled_scrapers_for_type(mtype):
-                    pname = plugins.get_scraper_provider_name(s)
-                    if pname:
-                        all_addons.add(pname)
-        except Exception:
-            pass
-        for t in getattr(self, 'torrents', []):
-            for a in t.get("addon_names", []):
-                if a and a not in unavailable:
-                    all_addons.add(a)
-        # Don't offer a provider that cannot answer right now: selecting it
-        # only produced an empty list and forced a fallback refetch.
-        all_addons -= unavailable
-        provider_strings = ["All Providers"] + sorted(list(all_addons))
+        from . import api
+        result_providers = set()
+
+        # Offer only providers that returned a stream for this item. Installed
+        # addons and enabled plugin scrapers are not necessarily available for
+        # every title, and listing them here leads to empty provider filters.
+        streams = getattr(self, 'torrents', []) or []
+        season = getattr(self, 'selected_season', None)
+        episode = getattr(self, 'selected_episode', None)
+        if season is not None and episode is not None and not getattr(self, 'is_channel', False):
+            try:
+                streams = [
+                    stream for stream in streams
+                    if api.match_stream_to_episode(stream, season, episode)
+                    != api.MATCH_MISMATCH
+                ]
+            except Exception:
+                pass
+
+        for stream in streams:
+            names = stream.get("addon_names") or []
+            if isinstance(names, str):
+                names = [names]
+            if not names and stream.get("addon_name"):
+                names = [stream["addon_name"]]
+            result_providers.update(name for name in names if name)
+
+        provider_strings = ["All Providers"] + sorted(result_providers)
         
         curr_model = self.provider_dropdown.get_model()
         curr_strings = []
@@ -1559,7 +1549,11 @@ class MovieDetailsPage(Gtk.Overlay):
             filtered_streams = [t for t in filtered_streams if not t.get('is_http')]
 
         if sel_prov_name != "All Providers":
-            filtered_streams = [t for t in filtered_streams if sel_prov_name in t.get("addon_names", [])]
+            filtered_streams = [
+                t for t in filtered_streams
+                if sel_prov_name in (t.get("addon_names") or [])
+                or sel_prov_name == t.get("addon_name")
+            ]
 
         print(
             f"[STREAM DEBUG] render page_id={id(self)} source_filter={source_idx} "
@@ -1595,9 +1589,6 @@ class MovieDetailsPage(Gtk.Overlay):
             no_s_lbl.set_margin_top(16)
             self.streams_list_box.append(no_s_lbl)
             return
-
-        if len(filtered_streams) > 40:
-            filtered_streams = filtered_streams[:40]
 
         for idx, t in enumerate(filtered_streams):
             row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -8030,10 +8021,7 @@ class CineWindow(Adw.ApplicationWindow):
                 try:
                     if hasattr(self, "media_type_keys") and m_type in self.media_type_keys:
                         self.media_type_dropdown.set_selected(self.media_type_keys.index(m_type))
-                    self.all_catalogs = (
-                        tmdb_helper.get_default_tmdb_catalogs(m_type)
-                        + api.get_available_catalogs(m_type)
-                    )
+                    self.all_catalogs = api.get_available_catalogs(m_type)
                     target_idx = 0
                     for idx, c in enumerate(self.all_catalogs):
                         if c.get("catalog_id") == c_id and c.get("manifest_url") == m_url:
@@ -11153,10 +11141,8 @@ class CineWindow(Adw.ApplicationWindow):
                             return (key, page, items, raw_count, True)
 
                         if cat_info.get("_source") == "tmdb_catalog":
-                            # Popcorn Box Catalog is built into the app, so it
-                            # cannot be fetched through a Stremio manifest. Feed
-                            # its TMDb pages directly into Unique just like the
-                            # regular See All grid does.
+                            # TMDB catalog pages are fetched directly instead
+                            # of through a Stremio manifest.
                             from . import tmdb_helper
                             if page > tmdb_helper._MAX_DISCOVER_PAGES:
                                 return (key, page, [], 0, False)
@@ -11183,7 +11169,7 @@ class CineWindow(Adw.ApplicationWindow):
                                 return None
                             items = items or []
                             for item in items:
-                                item.setdefault("addon_name", a_name or "Popcorn Box Catalog")
+                                item.setdefault("addon_name", a_name or "TMDB")
                                 item.setdefault("catalog_name", c_name)
                                 item.setdefault("catalog_id", c_id)
                                 item.setdefault("manifest_url", m_url)
@@ -12251,7 +12237,7 @@ class CineWindow(Adw.ApplicationWindow):
                 if not hasattr(self, "_catalog_list_cache"):
                     self._catalog_list_cache = {}
                 self._catalog_list_cache[media_type] = provider_catalogs
-            self.all_catalogs = tmdb_helper.get_default_tmdb_catalogs(media_type) + provider_catalogs
+            self.all_catalogs = provider_catalogs
 
             target_cat = catalog
             target_idx = 0
@@ -12658,7 +12644,7 @@ class CineWindow(Adw.ApplicationWindow):
         # Keep TMDB first, then Anime and the remaining addon catalogs.
         def addon_sort_key(addon):
             name = addon.get('name', '').lower()
-            if 'popcorn box catalog' in name or 'tmdb' in name or 'movie database' in name: return 0
+            if 'tmdb' in name or 'movie database' in name: return 0
             if 'kitsu' in name or 'animestream' in name or 'onlyanimes' in name or 'anime' in name: return 1
             if 'cinemeta' in name: return 2
             if 'iptv' in name or 'channel' in name: return 8
@@ -12676,13 +12662,6 @@ class CineWindow(Adw.ApplicationWindow):
             if filter_addon_url and m_url != filter_addon_url:
                 continue
             if m_url.startswith('builtin:'):
-                if (
-                    m_url == "builtin://popcornbox-catalog"
-                    and filter_addon_url == m_url
-                    and addon.get("catalogs_enabled", True)
-                ):
-                    from . import tmdb_helper
-                    rows.extend(tmdb_helper.get_default_tmdb_catalogs(filter_media_type))
                 continue
             if not filter_addon_url and not addon.get("catalogs_enabled", True):
                 continue
@@ -12826,23 +12805,6 @@ class CineWindow(Adw.ApplicationWindow):
                         'supports_pagination': api.catalog_supports_pagination(cat),
                         'title': row_title
                     })
-
-        # The built-in TMDB catalogs lead unfiltered views even when no TMDB
-        # Stremio addon is installed. Filtered views use their dedicated TMDB
-        # rows below so the selected genre, country, language, or network remains
-        # authoritative.
-        popcorn_catalog = next(
-            (a for a in addons if a.get("id") == "popcornbox.catalog"), None
-        )
-        if (
-            not filter_addon_url
-            and popcorn_catalog
-            and popcorn_catalog.get("enabled", True)
-            and popcorn_catalog.get("catalogs_enabled", True)
-            and not (cur_genre or cur_year or cur_lang or cur_country or cur_network)
-        ):
-            from . import tmdb_helper
-            rows = tmdb_helper.get_default_tmdb_catalogs(filter_media_type) + rows
 
         # If no provider can filter this genre/language/country, use matching items indexed in
         # the local metadata database instead of leaving Discover empty. When a
@@ -13056,11 +13018,7 @@ class CineWindow(Adw.ApplicationWindow):
         while child := self.content_flowbox.get_first_child():
             self.content_flowbox.remove(child)
             
-        # Continue Watching is saved playback progress, not a live catalog row.
-        # Keep it visible when the catalog addon that originally supplied the
-        # title (for example Cinemeta) is disabled; the saved stream metadata is
-        # still available independently.
-        cw_items = database.get_continue_watching()
+        cw_items = _filter_items_from_available_addons(database.get_continue_watching())
         for item in cw_items:
             card = ContinueWatchingWidget(
                 item,
@@ -13193,8 +13151,7 @@ class CineWindow(Adw.ApplicationWindow):
             return
             
         debug_log("_update_continue_watching_section START")
-        # Saved playback progress must survive disabling its catalog source.
-        cw_items = database.get_continue_watching()
+        cw_items = _filter_items_from_available_addons(database.get_continue_watching())
         visible_card_count, card_width = self._discover_row_card_metrics()
         display_cw_items = cw_items[:max(DISCOVER_ROW_CARD_LIMIT, visible_card_count)]
         debug_log(f"_update_continue_watching_section DB returned {len(cw_items)} items (displaying {len(display_cw_items)})")
@@ -14620,24 +14577,14 @@ class CineWindow(Adw.ApplicationWindow):
         return name
 
     def _prepare_menu_data(self, media_type):
-        from . import api, database, tmdb_helper
-        popcorn_catalog = next(
-            (a for a in database.get_addons() if a.get("id") == tmdb_helper.TMDB_BUILTIN_ADDON_ID),
-            None,
-        )
-        catalogs = []
-        if popcorn_catalog and popcorn_catalog.get("enabled", True) and popcorn_catalog.get("catalogs_enabled", True):
-            catalogs.extend(tmdb_helper.get_default_tmdb_catalogs(media_type))
-        catalogs.extend(api.get_available_catalogs(media_type))
+        from . import api
+        catalogs = api.get_available_catalogs(media_type)
         
         addons_map = {}
         for cat in catalogs:
             addon_name = cat.get("addon_name") or "Addon"
             m_url = cat.get("manifest_url") or ""
-            if not m_url or (
-                m_url != tmdb_helper.TMDB_BUILTIN_MANIFEST_URL
-                and not api.is_addon_online(m_url)
-            ):
+            if not m_url or not api.is_addon_online(m_url):
                 continue
             key = (addon_name, m_url)
             if key not in addons_map:
@@ -14681,12 +14628,12 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _prepare_discover_catalog_data(self):
         """Prepare list of (addon_name, manifest_url) for addons with browsable catalogs. Runs in background thread."""
-        from . import database, api, tmdb_helper
+        from . import database, api
         addons = database.get_addons()
 
         def addon_sort_key(addon):
             name = addon.get('name', '').lower()
-            if 'popcorn box catalog' in name or 'tmdb' in name or 'movie database' in name: return 0
+            if 'tmdb' in name or 'movie database' in name: return 0
             if 'kitsu' in name or 'animestream' in name or 'onlyanimes' in name or 'anime' in name: return 1
             if 'cinemeta' in name: return 2
             if 'iptv' in name or 'channel' in name: return 8
@@ -14699,13 +14646,6 @@ class CineWindow(Adw.ApplicationWindow):
             addon_name = addon.get('name', 'Addon')
             m_url = addon.get('manifest_url', '')
             if not m_url or m_url in seen_urls:
-                continue
-            if m_url == tmdb_helper.TMDB_BUILTIN_MANIFEST_URL:
-                if addon.get("catalogs_enabled", True) and any(
-                    api.is_catalog_browsable(c) for c in (addon.get("catalogs") or [])
-                ):
-                    seen_urls.add(m_url)
-                    result_addons.append((addon_name, m_url))
                 continue
             if m_url.startswith('builtin:'):
                 continue
@@ -18324,13 +18264,6 @@ class CineWindow(Adw.ApplicationWindow):
 
         from . import database, api
         addons = database.get_addons()
-        addons = sorted(
-            addons,
-            key=lambda addon: (
-                0 if addon.get("id") == "popcornbox.catalog" else
-                1 if "tmdb" in str(addon.get("name", "")).lower() else 2
-            ),
-        )
         debug_log(f"_populate_installed_addons DB returned {len(addons)} addons")
         self._addon_status_widgets = {}
         target_row = None

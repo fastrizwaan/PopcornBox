@@ -1727,11 +1727,11 @@ def get_default_tmdb_catalogs(media_type="all"):
             ("new-on-streaming", "New on streaming", "date"),
             ("popular", "Popular", "popular"),
         ):
-            display_name = f"Popcorn Box Catalog — {catalog_name} — {label}"
+            display_name = f"TMDB — {catalog_name} — {label}"
             catalogs.append({
                 "_source": "tmdb_catalog",
                 "addon_id": TMDB_BUILTIN_ADDON_ID,
-                "addon_name": "Popcorn Box Catalog",
+                "addon_name": "TMDB",
                 "media_type": kind,
                 "catalog_id": catalog_id,
                 "catalog_name": catalog_name,
