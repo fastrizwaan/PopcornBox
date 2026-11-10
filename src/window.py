@@ -304,6 +304,40 @@ def _stream_link_changed(refreshed, previous):
     old = previous if isinstance(previous, dict) else {}
     return (refreshed.get("url") or refreshed.get("magnet")) != (old.get("url") or old.get("magnet"))
 
+
+def is_torrent_stream(stream):
+    """Determine if a stream dictionary represents a torrent stream."""
+    if not isinstance(stream, dict):
+        return False
+    if stream.get("is_torrent") is True or stream.get("stream_type") == "torrent":
+        return True
+    if stream.get("infoHash") or stream.get("info_hash"):
+        return True
+    url = str(stream.get("url") or stream.get("stream_url") or stream.get("magnet") or "").strip()
+    url_l = url.lower()
+    if url_l.startswith("magnet:"):
+        return True
+    if url_l.split("?", 1)[0].endswith(".torrent"):
+        return True
+    if stream.get("is_http") is False and (int(stream.get("seeders") or 0) > 0 or int(stream.get("seeds") or 0) > 0):
+        return True
+    return False
+
+
+def is_direct_stream(stream):
+    """Determine if a stream dictionary represents a direct (HTTP/HLS/DASH/live) stream."""
+    if not isinstance(stream, dict):
+        return False
+    if is_torrent_stream(stream):
+        return False
+    if stream.get("is_http") is True or stream.get("stream_type") in ("direct", "hls", "dash", "live"):
+        return True
+    url = str(stream.get("url") or stream.get("stream_url") or "").strip().lower()
+    if url.startswith(("http://", "https://")):
+        return True
+    return False
+
+
 def _normalize_stream_quality(stream):
     if not stream:
         return None
@@ -322,7 +356,9 @@ def _normalize_stream_quality(stream):
         return None
 
     raw_upper = str(raw).upper()
-    if "4K" in raw_upper or "2160" in raw_upper:
+    if raw_upper == "ALL":
+        return "All"
+    elif "4K" in raw_upper or "2160" in raw_upper:
         return "4K"
     elif "1080" in raw_upper:
         return "1080p"
@@ -445,7 +481,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self.preferred_direct_provider = getattr(self.window, "preferred_direct_provider", None)
         if not self.preferred_direct_provider:
             self.preferred_direct_provider = database.get_setting("last_direct_provider", None)
-        if self.remembered_working_stream and self.remembered_working_stream.get("is_http"):
+        if self.remembered_working_stream and is_direct_stream(self.remembered_working_stream):
             anames = self.remembered_working_stream.get("addon_names", [])
             if anames:
                 self.preferred_direct_provider = anames[0]
@@ -455,6 +491,8 @@ class MovieDetailsPage(Gtk.Overlay):
             self.user_selected_quality = getattr(self.window, "user_selected_quality", None)
         if not self.user_selected_quality:
             self.user_selected_quality = database.get_setting("preferred_quality", None)
+        if not self.user_selected_quality:
+            self.user_selected_quality = "All"
         
         self.backdrop_pic = Gtk.Picture()
         self.backdrop_pic.set_can_shrink(True)
@@ -907,7 +945,7 @@ class MovieDetailsPage(Gtk.Overlay):
             if hasattr(self, 'check_live_btn'):
                 self.check_live_btn.set_visible(self.source_idx == 1)
 
-            # Reset provider filter to 'All Providers' and quality to 'All' when clicking All tab
+            # Reset provider filter to 'All Providers' when clicking All tab
             if self.source_idx == 0:
                 if hasattr(self, 'provider_dropdown'):
                     self._ignore_provider_signals = True
@@ -915,7 +953,11 @@ class MovieDetailsPage(Gtk.Overlay):
                         self.provider_dropdown.set_selected(0)
                     finally:
                         self._ignore_provider_signals = False
-                self.user_selected_quality = "All"
+                if not getattr(self, 'user_selected_quality', None):
+                    self.user_selected_quality = "All"
+            else:
+                if not getattr(self, 'user_selected_quality', None):
+                    self.user_selected_quality = "All"
 
             self.update_quality_dropdown()
 
@@ -924,7 +966,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 if (
                     not getattr(self, "_fetching_streams", False)
                     and not any(
-                        bool(t.get("is_http")) == (scope == "direct")
+                        (is_direct_stream(t) if scope == "direct" else is_torrent_stream(t))
                         for t in (getattr(self, "torrents", []) or [])
                     )
                 ):
@@ -933,8 +975,8 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.fetch_torrents_async(force=False, source_scope_override=scope)
             elif self.source_idx == 0:
                 # All tab: ensure both direct and torrent streams are fetched
-                has_http = any(t.get("is_http") for t in (getattr(self, "torrents", []) or []))
-                has_torrent = any(not t.get("is_http") for t in (getattr(self, "torrents", []) or []))
+                has_http = any(is_direct_stream(t) for t in (getattr(self, "torrents", []) or []))
+                has_torrent = any(is_torrent_stream(t) for t in (getattr(self, "torrents", []) or []))
                 if (not has_http or not has_torrent) and not getattr(self, "_fetching_streams", False):
                     self.fetch_torrents_async(force=False, source_scope_override=None)
 
@@ -962,9 +1004,9 @@ class MovieDetailsPage(Gtk.Overlay):
                         current_source = getattr(self, 'source_idx', 0)
                         matching_current = matching
                         if current_source == 1:
-                            matching_current = [t for t in matching if t.get('is_http')]
+                            matching_current = [t for t in matching if is_direct_stream(t)]
                         elif current_source == 2:
-                            matching_current = [t for t in matching if not t.get('is_http')]
+                            matching_current = [t for t in matching if is_torrent_stream(t)]
 
                         # If current source filter excludes all streams from this provider, reset source to All
                         if not matching_current:
@@ -1560,9 +1602,9 @@ class MovieDetailsPage(Gtk.Overlay):
         filtered_streams = t_list
         source_idx = getattr(self, 'source_idx', 0)
         if source_idx == 1:
-            filtered_streams = [t for t in filtered_streams if t.get('is_http')]
+            filtered_streams = [t for t in filtered_streams if is_direct_stream(t)]
         elif source_idx == 2:
-            filtered_streams = [t for t in filtered_streams if not t.get('is_http')]
+            filtered_streams = [t for t in filtered_streams if is_torrent_stream(t)]
 
         if sel_prov_name != "All Providers":
             filtered_streams = [
@@ -1638,12 +1680,17 @@ class MovieDetailsPage(Gtk.Overlay):
             badge_vbox.append(q_lbl)
 
             addons_list = t.get("addon_names", [])
+            if not addons_list and t.get("addon_name"):
+                addons_list = [t["addon_name"]]
             if addons_list:
-                a_lbl = Gtk.Label(label=addons_list[0])
+                badge_text = f"{addons_list[0]} (+{len(addons_list) - 1})" if len(addons_list) > 1 else addons_list[0]
+                a_lbl = Gtk.Label(label=badge_text)
+                if len(addons_list) > 1:
+                    a_lbl.set_tooltip_text(", ".join(addons_list))
                 a_lbl.add_css_class("addon-badge")
                 badge_vbox.append(a_lbl)
 
-            if not t.get("is_http") and t.get("seeders", 0) > 0:
+            if is_torrent_stream(t) and t.get("seeders", 0) > 0:
                 seed_lbl = Gtk.Label(label=f"👤 {t.get('seeders')}")
                 seed_lbl.add_css_class("seeders-badge")
                 badge_vbox.append(seed_lbl)
@@ -1667,7 +1714,7 @@ class MovieDetailsPage(Gtk.Overlay):
             meta_parts = []
             if t.get("is_external"):
                 meta_parts.append("🌐 Web Stream")
-            elif t.get("is_http"):
+            elif is_direct_stream(t):
                 meta_parts.append("⚡ Direct Stream")
             else:
                 meta_parts.append("🧲 Torrent")
@@ -1706,7 +1753,7 @@ class MovieDetailsPage(Gtk.Overlay):
             dl_btn.set_icon_name("folder-download-symbolic")
             dl_btn.add_css_class("flat")
             dl_btn.add_css_class("circular")
-            dl_btn_tooltip = "Download Direct Stream" if t.get("is_http") else "Download Torrent"
+            dl_btn_tooltip = "Download Direct Stream" if is_direct_stream(t) else "Download Torrent"
             dl_btn.set_tooltip_text(dl_btn_tooltip)
 
             def make_dl_cb(st):
@@ -1841,7 +1888,7 @@ class MovieDetailsPage(Gtk.Overlay):
             return
         other_scope = "torrent" if scope == "direct" else "direct"
         if any(
-            bool(t.get("is_http")) == (other_scope == "direct")
+            (is_direct_stream(t) if other_scope == "direct" else is_torrent_stream(t))
             for t in (getattr(self, "torrents", []) or [])
         ):
             return
@@ -3229,9 +3276,9 @@ class MovieDetailsPage(Gtk.Overlay):
                         filtered_new = [t for t in filtered_new if api.match_stream_to_episode(t, sel_season, sel_episode, ep_title) != api.MATCH_MISMATCH]
                     source_idx = getattr(self, 'source_idx', 0)
                     if source_idx == 1:
-                        filtered_new = [t for t in filtered_new if t.get("is_http")]
+                        filtered_new = [t for t in filtered_new if is_direct_stream(t)]
                     elif source_idx == 2:
-                        filtered_new = [t for t in filtered_new if not t.get("is_http")]
+                        filtered_new = [t for t in filtered_new if is_torrent_stream(t)]
                     self.window._extend_stream_queue(filtered_new)
                     if is_complete and getattr(self.window, "_waiting_for_more_streams", False):
                         if self.window.stream_queue_index >= len(self.window.stream_queue):
@@ -3404,9 +3451,9 @@ class MovieDetailsPage(Gtk.Overlay):
 
         source_idx = getattr(self, 'source_idx', 0)
         if source_idx == 1:
-            filtered_torrents = [t for t in all_torrents if t.get('is_http')]
+            filtered_torrents = [t for t in all_torrents if is_direct_stream(t)]
         elif source_idx == 2:
-            filtered_torrents = [t for t in all_torrents if not t.get('is_http')]
+            filtered_torrents = [t for t in all_torrents if is_torrent_stream(t)]
         else:
             filtered_torrents = list(all_torrents)
 
@@ -3434,9 +3481,9 @@ class MovieDetailsPage(Gtk.Overlay):
                     self._ignore_provider_signals = False
                 sel_prov_name = "All Providers"
                 if source_idx == 1:
-                    filtered_torrents = [t for t in all_torrents if t.get('is_http')]
+                    filtered_torrents = [t for t in all_torrents if is_direct_stream(t)]
                 elif source_idx == 2:
-                    filtered_torrents = [t for t in all_torrents if not t.get('is_http')]
+                    filtered_torrents = [t for t in all_torrents if is_torrent_stream(t)]
                 else:
                     filtered_torrents = list(all_torrents)
 
@@ -3627,16 +3674,12 @@ class MovieDetailsPage(Gtk.Overlay):
         target_t_list = None
         
         base_order = ["All", "1080p", "720p", "4K", "More"]
-        if saved_label and saved_label in base_order:
-            preferred_order = [saved_label] + [q for q in base_order if q != saved_label]
-        else:
-            preferred_order = list(base_order)
         btn_by_label = {}
         
         self._programmatic_quality_switch = True
         try:
             first_quality_btn = None
-            for q_label in preferred_order:
+            for q_label in base_order:
                 t_list = quality_groups[q_label]
                 if t_list:
                     btn = Gtk.ToggleButton(label=q_label)
@@ -3649,16 +3692,15 @@ class MovieDetailsPage(Gtk.Overlay):
                     def make_click_cb(b, label, tl):
                         def cb(*args):
                             if b.get_active():
-                                if not getattr(self, '_programmatic_quality_switch', False):
-                                    self.user_selected_quality = label
-                                    if hasattr(self, 'window') and self.window:
-                                        self.window.user_selected_quality = label
-                                    from . import database
-                                    item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
-                                    primary_id = item_id[0] if isinstance(item_id, list) else item_id
-                                    if primary_id:
-                                        database.set_setting(f"preferred_quality_{primary_id}", label)
-                                    database.set_setting("preferred_quality", label)
+                                self.user_selected_quality = label
+                                if hasattr(self, 'window') and self.window:
+                                    self.window.user_selected_quality = label
+                                from . import database
+                                item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
+                                primary_id = item_id[0] if isinstance(item_id, list) else item_id
+                                if primary_id:
+                                    database.set_setting(f"preferred_quality_{primary_id}", label)
+                                database.set_setting("preferred_quality", label)
                                 on_quality_btn_clicked(b, tl)
                         return cb
                         
@@ -3667,52 +3709,36 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.quality_button_box.append(btn)
                     btn_by_label[q_label] = (btn, t_list)
 
-            # 1. First priority: Match remembered working stream if available
-            if getattr(self, "remembered_working_stream", None):
-                for q_label in preferred_order:
-                    if q_label in btn_by_label:
-                        t_list = quality_groups[q_label]
-                        idx = _find_stream_index_exact(self.remembered_working_stream, t_list)
-                        if idx >= 0:
-                            target_btn, target_t_list = btn_by_label[q_label]
-                            self.selected_torrent = t_list[idx]
-                            break
+            # Determine which quality button should be active:
+            user_choice = getattr(self, 'user_selected_quality', None)
+            if not user_choice and hasattr(self, 'window') and self.window:
+                user_choice = getattr(self.window, 'user_selected_quality', None)
+            if user_choice:
+                user_choice = _normalize_stream_quality(user_choice)
 
-            # 2. Second priority: If user selected/preferred quality is available, prioritize it
-            if not target_btn and saved_label and saved_label in btn_by_label:
+            if user_choice and user_choice in btn_by_label:
+                target_btn, target_t_list = btn_by_label[user_choice]
+            elif source_idx == 0:
+                # "All" tab: default to "All" quality so all streams across all providers and resolutions are shown
+                if "All" in btn_by_label:
+                    target_btn, target_t_list = btn_by_label["All"]
+            elif saved_label and saved_label in btn_by_label:
                 target_btn, target_t_list = btn_by_label[saved_label]
-
-            # 3. Third priority: If preferred direct provider is active, prefer quality containing it
-            if not target_btn and pref_prov:
-                for q_label in preferred_order:
-                    if q_label in btn_by_label:
-                        if any(t.get('is_http') and _stream_matches_provider(t, pref_prov) for t in quality_groups[q_label]):
-                            target_btn, target_t_list = btn_by_label[q_label]
-                            break
-
-            # 4. Fourth priority: Fallback preference rule:
-            # If on "All" source tab and no quality explicitly selected, show "All" quality streams
-            if not target_btn and source_idx == 0 and not saved_label and "All" in btn_by_label:
+            elif "All" in btn_by_label:
                 target_btn, target_t_list = btn_by_label["All"]
 
-            # Prefer 1080p if size < 4 GB, if not found in 1080p choose 720p, then others
+            # Fallback if still not chosen:
             if not target_btn:
-                has_1080p_under_4gb = any(
-                    (0.0 < float(t.get('size_gb') or 0.0) < 4.0) or float(t.get('size_gb') or 0.0) == 0.0
-                    for t in quality_groups.get('1080p', [])
-                )
-                if has_1080p_under_4gb and "1080p" in btn_by_label:
-                    target_btn, target_t_list = btn_by_label["1080p"]
-                elif "All" in btn_by_label:
-                    target_btn, target_t_list = btn_by_label["All"]
-                elif "720p" in btn_by_label:
-                    target_btn, target_t_list = btn_by_label["720p"]
-                elif "1080p" in btn_by_label:
-                    target_btn, target_t_list = btn_by_label["1080p"]
-                elif "4K" in btn_by_label:
-                    target_btn, target_t_list = btn_by_label["4K"]
-                elif "More" in btn_by_label:
-                    target_btn, target_t_list = btn_by_label["More"]
+                for q in ["All", "1080p", "720p", "4K", "More"]:
+                    if q in btn_by_label:
+                        target_btn, target_t_list = btn_by_label[q]
+                        break
+
+            # If remembered working stream exists, match it inside target_t_list for selection
+            if getattr(self, "remembered_working_stream", None) and target_t_list:
+                idx = _find_stream_index_exact(self.remembered_working_stream, target_t_list)
+                if idx >= 0:
+                    self.selected_torrent = target_t_list[idx]
 
             if target_btn and target_t_list:
                 if not target_btn.get_active():
@@ -3835,9 +3861,9 @@ class MovieDetailsPage(Gtk.Overlay):
         t_list = raw_t_list
         source_idx = getattr(self, 'source_idx', 0)
         if source_idx == 1:
-            t_list = [t for t in t_list if t.get('is_http')]
+            t_list = [t for t in t_list if is_direct_stream(t)]
         elif source_idx == 2:
-            t_list = [t for t in t_list if not t.get('is_http')]
+            t_list = [t for t in t_list if is_torrent_stream(t)]
 
         sel_s = getattr(self, 'selected_season', None) if self.media_type in ["series", "anime", "tv"] and not self.is_channel else None
         sel_e = getattr(self, 'selected_episode', None) if self.media_type in ["series", "anime", "tv"] and not self.is_channel else None
@@ -4003,7 +4029,7 @@ class MovieDetailsPage(Gtk.Overlay):
             except (ValueError, TypeError):
                 media_title = f"{media_title} (S{self.selected_season}E{self.selected_episode})"
             
-        is_direct = bool(self.selected_torrent.get("is_http"))
+        is_direct = is_direct_stream(self.selected_torrent)
         if self.selected_torrent.get("is_external") or (self.selected_torrent.get("url") and any(d in str(self.selected_torrent.get("url")).lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"])):
             if self.window:
                 self.window._show_toast(_("Web page streams cannot be played."))
@@ -4013,13 +4039,13 @@ class MovieDetailsPage(Gtk.Overlay):
         if sel_prov_name != "All Providers":
             all_matching = [t for t in all_matching if _stream_matches_provider(t, sel_prov_name)]
         if source_idx == 1:
-            all_matching = [t for t in all_matching if t.get("is_http")]
+            all_matching = [t for t in all_matching if is_direct_stream(t)]
         elif source_idx == 2:
-            all_matching = [t for t in all_matching if not t.get("is_http")]
+            all_matching = [t for t in all_matching if is_torrent_stream(t)]
         elif is_direct:
-            all_matching = [t for t in all_matching if t.get("is_http")]
+            all_matching = [t for t in all_matching if is_direct_stream(t)]
         else:
-            all_matching = [t for t in all_matching if not t.get("is_http")]
+            all_matching = [t for t in all_matching if is_torrent_stream(t)]
 
         pref_prov = getattr(self, 'preferred_direct_provider', None)
         pref_q = getattr(self, 'user_selected_quality', None)

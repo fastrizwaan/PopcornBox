@@ -5724,6 +5724,40 @@ def match_stream_to_episode(stream, target_season, target_episode, ep_title=None
 
     return MATCH_UNKNOWN
 
+
+def is_torrent_stream(stream):
+    """Determine if a stream dictionary represents a torrent stream."""
+    if not isinstance(stream, dict):
+        return False
+    if stream.get("is_torrent") is True or stream.get("stream_type") == "torrent":
+        return True
+    if stream.get("infoHash") or stream.get("info_hash"):
+        return True
+    url = str(stream.get("url") or stream.get("stream_url") or stream.get("magnet") or "").strip()
+    url_l = url.lower()
+    if url_l.startswith("magnet:"):
+        return True
+    if url_l.split("?", 1)[0].endswith(".torrent"):
+        return True
+    if stream.get("is_http") is False and (int(stream.get("seeders") or 0) > 0 or int(stream.get("seeds") or 0) > 0):
+        return True
+    return False
+
+
+def is_direct_stream(stream):
+    """Determine if a stream dictionary represents a direct (HTTP/HLS/DASH/live) stream."""
+    if not isinstance(stream, dict):
+        return False
+    if is_torrent_stream(stream):
+        return False
+    if stream.get("is_http") is True or stream.get("stream_type") in ("direct", "hls", "dash", "live"):
+        return True
+    url = str(stream.get("url") or stream.get("stream_url") or "").strip().lower()
+    if url.startswith(("http://", "https://")):
+        return True
+    return False
+
+
 def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
     if not all_streams:
         return []
@@ -5735,7 +5769,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
         yt_id = str(s.get("ytId") or "").strip()
         raw_stream_url = str(s.get("url") or "")
         external_url = str(s.get("externalUrl") or "")
-        info_hash = str(s.get("infoHash") or "").lower()
+        info_hash = str(s.get("infoHash") or s.get("info_hash") or "").lower()
         source_addon_names = []
         raw_addon_names = s.get("addon_names") or []
         if isinstance(raw_addon_names, str):
@@ -5747,7 +5781,10 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
         source_addon_names = list(dict.fromkeys(name for name in source_addon_names if name))
         
         if yt_id and not raw_stream_url and not external_url:
-            raw_stream_url = f"https://www.youtube.com/watch?v={yt_id}"
+            if re.fullmatch(r"^[a-zA-Z0-9_-]{11}$", yt_id):
+                raw_stream_url = f"https://www.youtube.com/watch?v={yt_id}"
+            else:
+                yt_id = ""
 
         is_external = bool(s.get("is_external") or (external_url and not raw_stream_url))
         stream_url = raw_stream_url or external_url
@@ -5757,19 +5794,31 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
         if not info_hash and not yt_id and (is_external or is_embed_or_html):
             continue
 
-        is_http = False
-        if stream_url.startswith("http://") or stream_url.startswith("https://"):
-            if not stream_url.split('?')[0].endswith(".torrent"):
-                is_http = True
-        elif stream_url.startswith("magnet:") and not info_hash:
+        if stream_url.startswith("magnet:") and not info_hash:
             match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', stream_url, re.IGNORECASE)
             if match:
                 info_hash = match.group(1).lower()
-            
-        if not info_hash and not stream_url:
+        elif s.get("magnet") and not info_hash:
+            match = re.search(r'xt=urn:btih:([a-zA-Z0-9]+)', str(s.get("magnet")), re.IGNORECASE)
+            if match:
+                info_hash = match.group(1).lower()
+
+        is_torrent = is_torrent_stream(s) or bool(
+            info_hash
+            or stream_url.startswith("magnet:")
+            or str(s.get("magnet") or "").startswith("magnet:")
+            or stream_url.split('?')[0].lower().endswith(".torrent")
+        )
+        is_http = not is_torrent and bool(
+            stream_url.startswith(("http://", "https://"))
+            or s.get("is_http")
+            or s.get("stream_type") in ("direct", "hls", "dash", "live")
+        )
+
+        if not info_hash and not stream_url and not is_torrent and not is_http:
             continue
 
-        raw_id = info_hash if not is_http else hashlib.md5(stream_url.encode()).hexdigest()
+        raw_id = info_hash if is_torrent and info_hash else hashlib.md5(stream_url.encode()).hexdigest()
         
         desc_str = s.get("title") or s.get("description") or ""
         name_str = s.get("name") or ""
@@ -5899,13 +5948,14 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             
         stream_entry = {
             "hash": raw_id,
-            "infoHash": info_hash or (raw_id if not is_http else ""),
+            "infoHash": info_hash if is_torrent else "",
             "url": stream_url,
-            "magnet": s.get("magnet") or (stream_url if stream_url.startswith("magnet:") else ""),
+            "magnet": s.get("magnet") or (stream_url if stream_url.startswith("magnet:") else (f"magnet:?xt=urn:btih:{info_hash}" if is_torrent and info_hash else "")),
             "sources": s.get("sources") or [],
             "externalUrl": external_url,
             "is_external": is_external,
             "is_http": is_http,
+            "is_torrent": is_torrent,
             "is_trailer": is_trailer,
             "ytId": yt_id or s.get("ytId", ""),
             "quality": quality,
@@ -5931,7 +5981,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             "plugin_scraper_tmdb_id": s.get("plugin_scraper_tmdb_id"),
             "is_cloudstream": bool(s.get("is_cloudstream")),
             "cloudstream_provider_id": s.get("cloudstream_provider_id"),
-            "stream_type": s.get("stream_type"),
+            "stream_type": "torrent" if is_torrent else (s.get("stream_type") or ("direct" if is_http else "")),
             "headers": s.get("headers"),
             "subtitles": s.get("subtitles") or [],
         }
@@ -6570,17 +6620,7 @@ def ping_and_filter_streams(streams):
 
 def _is_cached_torrent_stream(stream):
     """Identify a torrent result without mistaking its synthetic dedupe hash for a torrent hash."""
-    if not isinstance(stream, dict) or stream.get("is_http"):
-        return False
-    url = str(stream.get("url") or stream.get("stream_url") or "").strip().lower()
-    if url.startswith(("http://", "https://")) and not url.split("?", 1)[0].endswith(".torrent"):
-        return False
-    return bool(
-        stream.get("infoHash")
-        or url.startswith(("magnet:", "torrent://"))
-        or url.split("?", 1)[0].endswith(".torrent")
-        or (stream.get("hash") and not url.startswith(("http://", "https://")))
-    )
+    return is_torrent_stream(stream)
 
 
 def _stream_has_exact_provider(stream, provider_name):
@@ -6596,8 +6636,11 @@ def _stream_has_exact_provider(stream, provider_name):
 def _stream_matches_source_scope(stream, source_scope):
     if not source_scope:
         return True
-    is_direct = bool(stream.get("is_http")) if isinstance(stream, dict) else False
-    return is_direct if source_scope == "direct" else not is_direct
+    if source_scope == "direct":
+        return is_direct_stream(stream)
+    elif source_scope == "torrent":
+        return is_torrent_stream(stream)
+    return True
 
 
 def _merge_parsed_streams(primary, secondary):

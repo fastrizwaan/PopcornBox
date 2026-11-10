@@ -1061,7 +1061,7 @@ def _extract_dailymotion_id(data_or_url):
 class DailymotionCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/recloudstream/extensions/builds/DailymotionProvider.cs3#DailymotionProvider"
     name = "DailymotionProvider"
-    supported_types = ["other", "tv"]
+    supported_types = ["movie", "series", "tv", "other", "all"]
 
     def get_main_page(self, page=1):
         url = f"https://api.dailymotion.com/videos?fields=id,title,thumbnail_360_url,description&limit=26&page={page}"
@@ -1223,14 +1223,25 @@ class DailymotionCloudStreamProvider(CloudStreamProvider):
                 target_url = sub_urls[0] if sub_urls else master_url
 
                 subs = []
-                sub_dict = meta_data.get("subtitles", {}).get("data", {})
-                for lang_code, sub_info in sub_dict.items():
-                    urls = sub_info.get("urls", [])
-                    if urls:
-                        subs.append({
-                            "language": sub_info.get("label") or lang_code,
-                            "url": urls[0],
-                        })
+                sub_raw = meta_data.get("subtitles", {}).get("data")
+                if isinstance(sub_raw, dict):
+                    for lang_code, sub_info in sub_raw.items():
+                        if isinstance(sub_info, dict):
+                            urls = sub_info.get("urls") or ([sub_info.get("url")] if sub_info.get("url") else [])
+                            if urls:
+                                subs.append({
+                                    "language": sub_info.get("label") or lang_code,
+                                    "url": urls[0],
+                                })
+                elif isinstance(sub_raw, list):
+                    for item in sub_raw:
+                        if isinstance(item, dict):
+                            urls = item.get("urls") or ([item.get("url")] if item.get("url") else [])
+                            if urls:
+                                subs.append({
+                                    "language": item.get("label") or item.get("language") or "Subtitle",
+                                    "url": urls[0],
+                                })
                 return [{
                     "name": "Dailymotion [HLS]",
                     "title": meta_data.get("title") or f"Dailymotion {vid}",

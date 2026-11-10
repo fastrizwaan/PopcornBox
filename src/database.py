@@ -1328,7 +1328,7 @@ def _normalize_stream_for_storage(stream):
     if not stream or not isinstance(stream, dict):
         return None
     res = {}
-    for k in ["url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "seeders", "stream_title", "title", "filename", "is_http", "is_external", "ytId", "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles", "saved_at", "binge_group", "expires_at", "has_expiring_credentials", "is_nuvio_plugin", "plugin_scraper_id", "plugin_scraper_tmdb_id"]:
+    for k in ["url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "seeders", "stream_title", "title", "filename", "is_http", "is_torrent", "stream_type", "is_external", "ytId", "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles", "saved_at", "binge_group", "expires_at", "has_expiring_credentials", "is_nuvio_plugin", "plugin_scraper_id", "plugin_scraper_tmdb_id"]:
         if k in stream and stream[k] is not None:
             res[k] = stream[k]
     if "addon_name" in stream and "addon_names" not in res:
@@ -4156,6 +4156,38 @@ def save_cached_streams(cache_key, streams, updated_at=None):
     except Exception as e:
         print(f"Error saving stream cache: {e}")
 
+
+def _is_torrent_stream(stream):
+    if not isinstance(stream, dict):
+        return False
+    if stream.get("is_torrent") is True or stream.get("stream_type") == "torrent":
+        return True
+    if stream.get("infoHash") or stream.get("info_hash"):
+        return True
+    url = str(stream.get("url") or stream.get("stream_url") or stream.get("magnet") or "").strip()
+    url_l = url.lower()
+    if url_l.startswith("magnet:"):
+        return True
+    if url_l.split("?", 1)[0].endswith(".torrent"):
+        return True
+    if stream.get("is_http") is False and (int(stream.get("seeders") or 0) > 0 or int(stream.get("seeds") or 0) > 0):
+        return True
+    return False
+
+
+def _is_direct_stream(stream):
+    if not isinstance(stream, dict):
+        return False
+    if _is_torrent_stream(stream):
+        return False
+    if stream.get("is_http") is True or stream.get("stream_type") in ("direct", "hls", "dash", "live"):
+        return True
+    url = str(stream.get("url") or stream.get("stream_url") or "").strip().lower()
+    if url.startswith(("http://", "https://")):
+        return True
+    return False
+
+
 def save_cached_streams_partial(cache_key, source_cache_key, streams, source_scope, started_at=None, abort_event=None, preserved_streams=None):
     """Atomically replace one source category while preserving the other cached category."""
     if not cache_key or not source_cache_key or streams is None or source_scope not in ("direct", "torrent"):
@@ -4168,12 +4200,11 @@ def save_cached_streams_partial(cache_key, source_cache_key, streams, source_sco
             stream.setdefault("saved_at", now)
 
         def matches_scope(stream):
-            url = str(stream.get("stream_url") or stream.get("url") or "").lower()
-            is_direct = bool(
-                stream.get("is_http")
-                or (url.startswith(("http://", "https://")) and not url.split("?", 1)[0].endswith(".torrent"))
-            )
-            return is_direct if source_scope == "direct" else not is_direct
+            if source_scope == "direct":
+                return _is_direct_stream(stream)
+            elif source_scope == "torrent":
+                return _is_torrent_stream(stream)
+            return True
 
         with _cache_db_lock:
             if abort_event and abort_event.is_set():
@@ -4227,11 +4258,10 @@ def save_cached_streams_full(cache_key, direct_cache_key, torrent_cache_key, str
             stream.setdefault("saved_at", now)
 
         def is_direct(stream):
-            url = str(stream.get("stream_url") or stream.get("url") or "").lower()
-            return bool(
-                stream.get("is_http")
-                or (url.startswith(("http://", "https://")) and not url.split("?", 1)[0].endswith(".torrent"))
-            )
+            return _is_direct_stream(stream)
+
+        def is_torrent(stream):
+            return _is_torrent_stream(stream)
 
         with _cache_db_lock:
             if abort_event and abort_event.is_set():
@@ -4264,7 +4294,7 @@ def save_cached_streams_full(cache_key, direct_cache_key, torrent_cache_key, str
                     candidates = [s for s in candidates if is_direct(s)] + [s for s in previous if isinstance(s, dict) and not is_direct(s)]
 
             direct_streams = [s for s in candidates if is_direct(s)]
-            torrent_streams = [s for s in candidates if not is_direct(s)]
+            torrent_streams = [s for s in candidates if is_torrent(s)]
             if not newer_direct:
                 cursor.execute(
                     "INSERT OR REPLACE INTO stream_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
