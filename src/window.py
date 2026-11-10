@@ -330,7 +330,7 @@ def _normalize_stream_quality(stream):
         return "720p"
     elif any(k in raw_upper for k in ["480", "360", "SD", "CAM", "DVD", "MORE"]):
         return "More"
-    elif isinstance(stream, str) and stream in ["4K", "1080p", "720p", "More"]:
+    elif isinstance(stream, str) and stream in ["All", "4K", "1080p", "720p", "More"]:
         return stream
     return None
 
@@ -907,20 +907,36 @@ class MovieDetailsPage(Gtk.Overlay):
             if hasattr(self, 'check_live_btn'):
                 self.check_live_btn.set_visible(self.source_idx == 1)
 
+            # Reset provider filter to 'All Providers' and quality to 'All' when clicking All tab
+            if self.source_idx == 0:
+                if hasattr(self, 'provider_dropdown'):
+                    self._ignore_provider_signals = True
+                    try:
+                        self.provider_dropdown.set_selected(0)
+                    finally:
+                        self._ignore_provider_signals = False
+                self.user_selected_quality = "All"
+
             self.update_quality_dropdown()
 
             scope = {1: "direct", 2: "torrent"}.get(self.source_idx)
-            if (
-                scope
-                and not getattr(self, "_fetching_streams", False)
-                and not any(
-                    bool(t.get("is_http")) == (scope == "direct")
-                    for t in (getattr(self, "torrents", []) or [])
-                )
-            ):
-                # Nothing loaded for this source yet: fetch it now instead of
-                # leaving the sidebar empty until the user reloads the page.
-                self.fetch_torrents_async(force=False, source_scope_override=scope)
+            if scope:
+                if (
+                    not getattr(self, "_fetching_streams", False)
+                    and not any(
+                        bool(t.get("is_http")) == (scope == "direct")
+                        for t in (getattr(self, "torrents", []) or [])
+                    )
+                ):
+                    # Nothing loaded for this source yet: fetch it now instead of
+                    # leaving the sidebar empty until the user reloads the page.
+                    self.fetch_torrents_async(force=False, source_scope_override=scope)
+            elif self.source_idx == 0:
+                # All tab: ensure both direct and torrent streams are fetched
+                has_http = any(t.get("is_http") for t in (getattr(self, "torrents", []) or []))
+                has_torrent = any(not t.get("is_http") for t in (getattr(self, "torrents", []) or []))
+                if (not has_http or not has_torrent) and not getattr(self, "_fetching_streams", False):
+                    self.fetch_torrents_async(force=False, source_scope_override=None)
 
         self.source_all_btn.connect("toggled", on_source_toggled)
         self.source_direct_btn.connect("toggled", on_source_toggled)
@@ -941,7 +957,7 @@ class MovieDetailsPage(Gtk.Overlay):
             if model and sel_idx != Gtk.INVALID_LIST_POSITION and sel_idx < model.get_n_items():
                 sel_prov = model.get_string(sel_idx)
                 if sel_prov != "All Providers":
-                    matching = [t for t in getattr(self, 'torrents', []) if sel_prov in t.get("addon_names", [])]
+                    matching = [t for t in getattr(self, 'torrents', []) if _stream_matches_provider(t, sel_prov)]
                     if matching:
                         current_source = getattr(self, 'source_idx', 0)
                         matching_current = matching
@@ -1551,8 +1567,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if sel_prov_name != "All Providers":
             filtered_streams = [
                 t for t in filtered_streams
-                if sel_prov_name in (t.get("addon_names") or [])
-                or sel_prov_name == t.get("addon_name")
+                if _stream_matches_provider(t, sel_prov_name)
             ]
 
         print(
@@ -3119,6 +3134,12 @@ class MovieDetailsPage(Gtk.Overlay):
             self.current_t_list = []
             self.torrents = []
             self.selected_torrent = None
+            if hasattr(self, 'provider_dropdown'):
+                self._ignore_provider_signals = True
+                try:
+                    self.provider_dropdown.set_selected(0)
+                finally:
+                    self._ignore_provider_signals = False
             while child := self.quality_button_box.get_first_child():
                 self.quality_button_box.remove(child)
             self.update_quality_dropdown()
@@ -3397,8 +3418,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 sel_prov_name = model.get_string(sel_idx)
 
         if sel_prov_name != "All Providers":
-            filtered_torrents = [t for t in filtered_torrents if sel_prov_name in t.get("addon_names", [])]
-            provider_present = any(sel_prov_name in t.get("addon_names", []) for t in all_torrents)
+            filtered_torrents = [t for t in filtered_torrents if _stream_matches_provider(t, sel_prov_name)]
+            provider_present = any(_stream_matches_provider(t, sel_prov_name) for t in all_torrents)
             if not filtered_torrents and all_torrents and not provider_present and not getattr(self, '_fetching_streams', False):
                 # The selected provider produced nothing for this item at all
                 # (disabled, cooling down or not a source here). Drop the filter
@@ -3468,10 +3489,10 @@ class MovieDetailsPage(Gtk.Overlay):
             self.search_online_btn.set_visible(True)
             self.search_online_btn.remove_css_class("suggested-action")
         
-        quality_groups = {"4K": [], "1080p": [], "720p": [], "More": []}
+        quality_groups = {"All": list(filtered_torrents), "4K": [], "1080p": [], "720p": [], "More": []}
         for t in filtered_torrents:
             q_norm = _normalize_stream_quality(t)
-            if q_norm in quality_groups:
+            if q_norm in quality_groups and q_norm != "All":
                 quality_groups[q_norm].append(t)
             else:
                 quality_groups["More"].append(t)
@@ -3484,6 +3505,19 @@ class MovieDetailsPage(Gtk.Overlay):
         rem_st = getattr(self, 'remembered_working_stream', None) or getattr(self, 'selected_torrent', None)
         if not rem_st and hasattr(self, 'window') and self.window:
             rem_st = getattr(self.window, 'remembered_working_stream', None) or getattr(self.window, 'selected_torrent', None)
+
+        def _stream_sort_key_all(t):
+            from . import api
+            is_http = 1 if t.get('is_http') else 0
+            seeds = int(t.get('seeders') or 0)
+            has_seeds = 1 if (is_http or seeds > 0) else 0
+            is_remembered = 1 if (rem_st and _streams_match(t, rem_st)) else 0
+            ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
+            is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
+            q_val = int(t.get('q_val') or 0)
+            ping_ok = 1 if t.get('ping_status') is True else 0
+            size = float(t.get('size_gb') or 0.0)
+            return (has_seeds, is_remembered, ep_m, is_pref, q_val, ping_ok, is_http, seeds, size)
 
         def _stream_sort_key_1080p(t):
             from . import api
@@ -3511,9 +3545,11 @@ class MovieDetailsPage(Gtk.Overlay):
             size = float(t.get('size_gb') or 0.0)
             return (has_seeds, is_remembered, ep_m, is_pref, ping_ok, is_http, seeds, size)
 
-        for q_label in ["4K", "1080p", "720p", "More"]:
+        for q_label in ["All", "4K", "1080p", "720p", "More"]:
             if quality_groups[q_label]:
-                if q_label == "1080p":
+                if q_label == "All":
+                    quality_groups[q_label].sort(key=_stream_sort_key_all, reverse=True)
+                elif q_label == "1080p":
                     quality_groups[q_label].sort(key=_stream_sort_key_1080p, reverse=True)
                 else:
                     quality_groups[q_label].sort(key=_stream_sort_key_general, reverse=True)
@@ -3590,7 +3626,7 @@ class MovieDetailsPage(Gtk.Overlay):
         target_btn = None
         target_t_list = None
         
-        base_order = ["1080p", "720p", "4K", "More"]
+        base_order = ["All", "1080p", "720p", "4K", "More"]
         if saved_label and saved_label in base_order:
             preferred_order = [saved_label] + [q for q in base_order if q != saved_label]
         else:
@@ -3655,6 +3691,10 @@ class MovieDetailsPage(Gtk.Overlay):
                             break
 
             # 4. Fourth priority: Fallback preference rule:
+            # If on "All" source tab and no quality explicitly selected, show "All" quality streams
+            if not target_btn and source_idx == 0 and not saved_label and "All" in btn_by_label:
+                target_btn, target_t_list = btn_by_label["All"]
+
             # Prefer 1080p if size < 4 GB, if not found in 1080p choose 720p, then others
             if not target_btn:
                 has_1080p_under_4gb = any(
@@ -3663,6 +3703,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 )
                 if has_1080p_under_4gb and "1080p" in btn_by_label:
                     target_btn, target_t_list = btn_by_label["1080p"]
+                elif "All" in btn_by_label:
+                    target_btn, target_t_list = btn_by_label["All"]
                 elif "720p" in btn_by_label:
                     target_btn, target_t_list = btn_by_label["720p"]
                 elif "1080p" in btn_by_label:
@@ -3788,7 +3830,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 sel_prov_name = model.get_string(sel_idx)
 
         if sel_prov_name != "All Providers":
-            raw_t_list = [t for t in raw_t_list if sel_prov_name in t.get("addon_names", [])]
+            raw_t_list = [t for t in raw_t_list if _stream_matches_provider(t, sel_prov_name)]
 
         t_list = raw_t_list
         source_idx = getattr(self, 'source_idx', 0)
@@ -3969,7 +4011,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
         all_matching = getattr(self, 'torrents', []) or []
         if sel_prov_name != "All Providers":
-            all_matching = [t for t in all_matching if sel_prov_name in t.get("addon_names", [])]
+            all_matching = [t for t in all_matching if _stream_matches_provider(t, sel_prov_name)]
         if source_idx == 1:
             all_matching = [t for t in all_matching if t.get("is_http")]
         elif source_idx == 2:
@@ -4556,6 +4598,25 @@ class CineWindow(Adw.ApplicationWindow):
     plugin_repos_listbox: Gtk.ListBox = Gtk.Template.Child()
     plugin_provider_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
     plugin_providers_listbox: Gtk.ListBox = Gtk.Template.Child()
+
+    plugins_sub_stack: Adw.ViewStack = Gtk.Template.Child()
+    plugins_switcher_title: Adw.ViewSwitcher = Gtk.Template.Child()
+
+    cloudstream_badge_repos: Gtk.Label = Gtk.Template.Child()
+    cloudstream_badge_installed: Gtk.Label = Gtk.Template.Child()
+    cloudstream_badge_providers: Gtk.Label = Gtk.Template.Child()
+    cloudstream_badge_status: Gtk.Label = Gtk.Template.Child()
+    cloudstream_enable_globally_row: Adw.SwitchRow = Gtk.Template.Child()
+    cloudstream_security_warning_box: Gtk.Box = Gtk.Template.Child()
+    cloudstream_accept_warning_btn: Gtk.Button = Gtk.Template.Child()
+    cloudstream_repo_url_entry: Gtk.Entry = Gtk.Template.Child()
+    cloudstream_install_repo_btn: Gtk.Button = Gtk.Template.Child()
+    cloudstream_install_status_label: Gtk.Label = Gtk.Template.Child()
+    cloudstream_refresh_all_btn: Gtk.Button = Gtk.Template.Child()
+    cloudstream_repos_listbox: Gtk.ListBox = Gtk.Template.Child()
+    cloudstream_provider_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
+    cloudstream_bulk_install_btn: Gtk.Button = Gtk.Template.Child()
+    cloudstream_plugins_listbox: Gtk.ListBox = Gtk.Template.Child()
     video_overlay: Gtk.Overlay = Gtk.Template.Child()
     start_page: Adw.StatusPage = Gtk.Template.Child()
     revealer_icon_indicator: Gtk.Revealer = Gtk.Template.Child()
@@ -4918,6 +4979,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action("save-session", self._on_save_session)
         self._create_action("open-addons", self._open_addons)
         self._create_action("open-plugins", self._open_plugins)
+        self._create_action("open-cloudstream", self._open_cloudstream_plugins)
         self._create_action("install-plugin-repo", self._on_install_plugin_repo_clicked)
         self._create_action("refresh-all-plugin-repos", self._on_refresh_all_plugin_repos_clicked)
         self._create_action("back-to-library", self._back_to_library)
@@ -15398,6 +15460,13 @@ class CineWindow(Adw.ApplicationWindow):
             ))
         )
         is_youtube_raw_url = url and isinstance(url, str) and ("youtube.com" in url.lower() or "youtu.be" in url.lower()) and ("googlevideo.com" not in url.lower())
+        if is_youtube_raw_url:
+            from . import player
+            clean_yt_id = player.extract_youtube_id(url)
+            if not clean_yt_id or len(clean_yt_id) != 11 or " " in clean_yt_id or "%20" in clean_yt_id:
+                logger.warning(f"[YouTube] Rejecting malformed YouTube URL with invalid ID: {url}")
+                self._try_next_stream_in_queue()
+                return
         if url != getattr(self, "_youtube_safe_mode_url", None) and url != getattr(self, "_youtube_safe_mode_video_url", None):
             self._youtube_safe_mode_active = False
             self._youtube_safe_mode_url = None
@@ -15511,6 +15580,12 @@ class CineWindow(Adw.ApplicationWindow):
                 self._subtitles_configured_for_file = False
 
         self.main_stack.set_visible_child_name("player")
+
+        raw_stream_url = str(url or "")
+        if ("tv.imgcdn.kim" in raw_stream_url or "netmirror" in raw_stream_url) and ("?in=" not in raw_stream_url or "stop abusing" in raw_stream_url.lower()):
+            logger.warning(f"[STREAM] Blocked FreeCDN honeypot stream without valid ?in= token: {raw_stream_url}")
+            GLib.idle_add(self._try_next_stream_in_queue)
+            return
         
         if title:
             self.mpv["force-media-title"] = title
@@ -15563,8 +15638,13 @@ class CineWindow(Adw.ApplicationWindow):
                 # headers which causes Cloudflare to block with HTTP 400 Bad Request!
                 custom_header_fields.append(f"{k_clean}: {v_clean}")
 
-        if is_youtube_raw_url:
-            # Let MPV's ytdl_hook.lua handle raw youtube URLs
+        is_web_media_url = (
+            is_youtube_raw_url
+            or (url and isinstance(url, str) and any(d in url.lower() for d in ("dailymotion.com/video/", "dai.ly/", "twitch.tv/")) and not url.lower().endswith((".m3u8", ".mp4", ".mkv", ".webm")))
+        )
+
+        if is_web_media_url:
+            # Let MPV's ytdl_hook.lua handle raw web video URLs (YouTube, Dailymotion, Twitch)
             if is_trailer:
                 self.show_player_loading(_("Loading trailer..."), title=title)
             else:
@@ -16398,11 +16478,12 @@ class CineWindow(Adw.ApplicationWindow):
         if is_yt_stream:
             yt_target = magnet or torrent.get("ytId")
             from . import player
-            clean_id = player.extract_youtube_id(yt_target) or yt_target
-            if clean_id and not str(clean_id).startswith("http"):
-                clean_target = f"https://www.youtube.com/watch?v={clean_id}"
-            else:
-                clean_target = yt_target
+            clean_id = player.extract_youtube_id(yt_target)
+            if not clean_id or len(clean_id) != 11:
+                logger.warning(f"[STREAM] Skipping invalid YouTube target in stream queue: {yt_target}")
+                self._try_next_stream_in_queue()
+                return
+            clean_target = f"https://www.youtube.com/watch?v={clean_id}"
             self._play_stream(clean_target, display_title, headers=headers, preserve_queue=True)
             return
 
@@ -18875,6 +18956,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.plugin_repo_url_entry.connect("activate", lambda *a: self._on_install_plugin_repo_clicked())
 
         self.plugin_providers_listbox.set_filter_func(self._plugin_provider_filter_func)
+        self._setup_cloudstream_page()
 
     def _populate_plugins(self):
         from . import plugins
@@ -19171,6 +19253,466 @@ class CineWindow(Adw.ApplicationWindow):
         from . import plugins
         plugins.set_group_by_repository(active)
 
+    # --- CloudStream UI Support ---
+
+    def _setup_cloudstream_page(self):
+        if not hasattr(self, "cloudstream_repos_listbox") or not self.cloudstream_repos_listbox:
+            return
+
+        from . import cloudstream
+
+        self._syncing_cloudstream_switches = True
+        try:
+            self.cloudstream_enable_globally_row.set_active(cloudstream.is_cloudstream_enabled())
+        finally:
+            self._syncing_cloudstream_switches = False
+
+        self.cloudstream_enable_globally_row.connect("notify::active", self._on_cloudstream_enable_globally_toggled)
+
+        self.cloudstream_provider_search_entry.connect(
+            "search-changed", lambda *a: self.cloudstream_plugins_listbox.invalidate_filter()
+        )
+        self.cloudstream_provider_search_entry.connect(
+            "activate", lambda *a: self.cloudstream_plugins_listbox.invalidate_filter()
+        )
+
+        self.cloudstream_repo_url_entry.connect("activate", lambda *a: self._on_install_cloudstream_repo_clicked())
+        self.cloudstream_install_repo_btn.connect("clicked", lambda *a: self._on_install_cloudstream_repo_clicked())
+        self.cloudstream_refresh_all_btn.connect("clicked", self._on_refresh_all_cloudstream_repos_clicked)
+        self.cloudstream_accept_warning_btn.connect("clicked", self._on_cloudstream_accept_warning_clicked)
+        self.cloudstream_bulk_install_btn.connect("clicked", self._on_cloudstream_bulk_install_clicked)
+
+        self.cloudstream_plugins_listbox.set_filter_func(self._cloudstream_plugin_filter_func)
+
+    def _populate_cloudstream(self):
+        if not hasattr(self, "cloudstream_repos_listbox") or not self.cloudstream_repos_listbox:
+            return
+
+        from . import cloudstream
+
+        repos = cloudstream.get_installed_repositories()
+        plugins_list = cloudstream.get_all_plugins()
+
+        # One-time auto-enable for already installed plugins that were locked by the insensitive switch
+        from . import database
+        if not database.get_setting("cloudstream_plugins_auto_enabled_v1", False):
+            has_changes = False
+            for p in plugins_list:
+                if p.get("is_installed") and not p.get("enabled"):
+                    cloudstream.toggle_plugin(p["id"], True)
+                    p["enabled"] = True
+                    has_changes = True
+            database.set_setting("cloudstream_plugins_auto_enabled_v1", True)
+            if has_changes:
+                plugins_list = cloudstream.get_all_plugins()
+
+        repo_count = len(repos)
+        installed_count = len([p for p in plugins_list if p.get("is_installed")])
+        active_count = len([p for p in plugins_list if p.get("enabled") and cloudstream.is_provider_runnable(p)])
+
+        self.cloudstream_badge_repos.set_label(f"{repo_count} repo{'s' if repo_count != 1 else ''}")
+        self.cloudstream_badge_installed.set_label(f"{installed_count} installed")
+        self.cloudstream_badge_providers.set_label(f"{active_count} active")
+
+        enabled = cloudstream.is_cloudstream_enabled()
+        if enabled:
+            self.cloudstream_badge_status.set_label(_("CloudStream enabled"))
+            self.cloudstream_badge_status.remove_css_class("plugin-disabled")
+            self.cloudstream_badge_status.add_css_class("plugin-enabled")
+        else:
+            self.cloudstream_badge_status.set_label(_("CloudStream disabled"))
+            self.cloudstream_badge_status.remove_css_class("plugin-enabled")
+            self.cloudstream_badge_status.add_css_class("plugin-disabled")
+
+        self._syncing_cloudstream_switches = True
+        try:
+            self.cloudstream_enable_globally_row.set_active(enabled)
+        finally:
+            self._syncing_cloudstream_switches = False
+
+        warning_accepted = cloudstream.is_security_warning_accepted()
+        if hasattr(self, "cloudstream_security_warning_box") and self.cloudstream_security_warning_box:
+            self.cloudstream_security_warning_box.set_visible(not warning_accepted)
+
+        while self.cloudstream_repos_listbox.get_first_child() is not None:
+            self.cloudstream_repos_listbox.remove(self.cloudstream_repos_listbox.get_first_child())
+
+        if not repos:
+            empty_row = Adw.ActionRow(
+                title=_("No CloudStream repositories installed"),
+                subtitle=_("Enter a repository URL above (e.g. Kraptor or English cs-repos) to install plugins.")
+            )
+            empty_row.set_sensitive(False)
+            self.cloudstream_repos_listbox.append(empty_row)
+        else:
+            for repo in repos:
+                manifest_url = repo.get("manifest_url", "")
+                repo_name = repo.get("name", "Unknown") or "Unknown"
+                repo_desc = repo.get("description") or manifest_url
+                count = repo.get("plugin_count", 0)
+
+                row = Adw.ActionRow(
+                    title=GLib.markup_escape_text(repo_name),
+                    subtitle=GLib.markup_escape_text(repo_desc)
+                )
+
+                icon = Gtk.Image.new_from_icon_name("network-wireless-symbolic")
+                icon.set_pixel_size(18)
+                row.add_prefix(icon)
+
+                suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, valign=Gtk.Align.CENTER)
+
+                count_label = Gtk.Label(label=f"{count} plugin{'s' if count != 1 else ''}", valign=Gtk.Align.CENTER)
+                count_label.add_css_class("dim-label")
+                count_label.add_css_class("caption")
+                suffix_box.append(count_label)
+
+                ref_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text=_("Refresh repository"), valign=Gtk.Align.CENTER)
+                ref_btn.add_css_class("flat")
+                ref_btn.add_css_class("circular")
+                ref_btn.connect("clicked", lambda b, u=manifest_url: self._on_refresh_single_cloudstream_repo(u))
+                suffix_box.append(ref_btn)
+
+                del_btn = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text=_("Remove repository"), valign=Gtk.Align.CENTER)
+                del_btn.add_css_class("flat")
+                del_btn.add_css_class("circular")
+                del_btn.connect("clicked", lambda b, u=manifest_url, n=repo_name: self._on_remove_cloudstream_repo(u, n))
+                suffix_box.append(del_btn)
+
+                row.add_suffix(suffix_box)
+                self.cloudstream_repos_listbox.append(row)
+
+        self._populate_cloudstream_plugins_list(plugins_list)
+
+    def _populate_cloudstream_plugins_list(self, plugins_list=None):
+        if not hasattr(self, "cloudstream_plugins_listbox") or not self.cloudstream_plugins_listbox:
+            return
+
+        from . import cloudstream
+
+        while self.cloudstream_plugins_listbox.get_first_child() is not None:
+            self.cloudstream_plugins_listbox.remove(self.cloudstream_plugins_listbox.get_first_child())
+
+        if plugins_list is None:
+            plugins_list = cloudstream.get_all_plugins()
+
+        if not plugins_list:
+            empty_row = Adw.ActionRow(
+                title=_("No CloudStream plugins available"),
+                subtitle=_("Install a CloudStream repository above to browse extensions and providers.")
+            )
+            empty_row.set_sensitive(False)
+            self.cloudstream_plugins_listbox.append(empty_row)
+            return
+
+        for p in plugins_list:
+            p_id = p.get("id")
+            p_name = p.get("name") or p.get("internal_name") or "Plugin"
+            p_desc = p.get("description") or ""
+            version = p.get("version", 1)
+            inst_ver = p.get("installed_version")
+            lang = (p.get("language") or "").upper()
+            raw_types = p.get("raw_tv_types") or []
+            types_str = " | ".join(raw_types) if raw_types else ""
+            is_installed = bool(p.get("is_installed", False))
+            is_runnable = cloudstream.is_provider_runnable(p)
+
+            escaped_name = GLib.markup_escape_text(p_name)
+            escaped_desc = GLib.markup_escape_text(p_desc)
+
+            row = Adw.ActionRow()
+            row.set_use_markup(True)
+            row.set_title(f"<b>{escaped_name}</b>")
+            if escaped_desc:
+                row.set_subtitle(escaped_desc)
+
+            row._plugin_name = p_name.lower()
+            row._plugin_desc = p_desc.lower()
+            row._plugin_lang = lang.lower()
+            row._plugin_types = [t.lower() for t in raw_types]
+
+            pfx = Gtk.Image.new_from_icon_name("network-wireless-symbolic")
+            pfx.set_pixel_size(18)
+            pfx.add_css_class("accent")
+            row.add_prefix(pfx)
+
+            sfx = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, valign=Gtk.Align.CENTER)
+
+            if lang:
+                lang_badge = Gtk.Label(label=lang, valign=Gtk.Align.CENTER)
+                lang_badge.add_css_class("plugin-tag-label")
+                sfx.append(lang_badge)
+
+            if types_str:
+                type_badge = Gtk.Label(label=types_str, valign=Gtk.Align.CENTER)
+                type_badge.add_css_class("plugin-tag-label")
+                sfx.append(type_badge)
+
+            ver_text = f"v{version}" if inst_ver is None else f"v{inst_ver} (repo v{version})"
+            ver_badge = Gtk.Label(label=ver_text, valign=Gtk.Align.CENTER)
+            ver_badge.add_css_class("dim-label")
+            ver_badge.add_css_class("caption")
+            sfx.append(ver_badge)
+
+            # Test button (for runnable providers)
+            if is_runnable:
+                test_btn = Gtk.Button(label=_("Test"), valign=Gtk.Align.CENTER)
+                test_btn.add_css_class("flat")
+                test_btn.add_css_class("pill")
+                test_btn.connect("clicked", lambda b, pid=p_id, pn=p_name: self._on_test_cloudstream_provider_clicked(pid, pn, b))
+                sfx.append(test_btn)
+
+            # Install / Update / Remove buttons
+            if not is_installed:
+                inst_btn = Gtk.Button(label=_("Install"), valign=Gtk.Align.CENTER)
+                inst_btn.add_css_class("suggested-action")
+                inst_btn.add_css_class("pill")
+                inst_btn.connect("clicked", lambda b, pid=p_id, pn=p_name: self._on_install_cloudstream_plugin_clicked(pid, pn, b))
+                sfx.append(inst_btn)
+            else:
+                if inst_ver is not None and version > inst_ver:
+                    up_btn = Gtk.Button(label=_("Update"), valign=Gtk.Align.CENTER)
+                    up_btn.add_css_class("suggested-action")
+                    up_btn.add_css_class("pill")
+                    up_btn.connect("clicked", lambda b, pid=p_id, pn=p_name: self._on_install_cloudstream_plugin_clicked(pid, pn, b))
+                    sfx.append(up_btn)
+
+                del_btn = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text=_("Uninstall plugin"), valign=Gtk.Align.CENTER)
+                del_btn.add_css_class("flat")
+                del_btn.add_css_class("circular")
+                del_btn.connect("clicked", lambda b, pid=p_id, pn=p_name: self._on_remove_cloudstream_plugin_clicked(pid, pn))
+                sfx.append(del_btn)
+
+            if not is_runnable:
+                badge = Gtk.Label(label=_("No Scraper"), valign=Gtk.Align.CENTER)
+                badge.add_css_class("plugin-tag-label")
+                badge.add_css_class("dim-label")
+                badge.set_tooltip_text(_("This CloudStream plugin contains Android DEX bytecode without an active Python scraper."))
+                sfx.append(badge)
+
+            sw = Gtk.Switch(valign=Gtk.Align.CENTER)
+            sw.set_active(bool(p.get("enabled", False)) and is_runnable)
+            sw.set_sensitive(is_installed and is_runnable)
+            if not is_runnable:
+                sw.set_tooltip_text(_("No Python scraper available for this plugin (Android DEX bytecode)"))
+            else:
+                sw.set_tooltip_text(_("Enable or disable this provider"))
+            sw.connect("notify::active", lambda s, pspec, pid=p_id: self._on_cloudstream_switch_toggled(s, pid))
+            sfx.append(sw)
+
+            row.add_suffix(sfx)
+            self.cloudstream_plugins_listbox.append(row)
+
+    def _cloudstream_plugin_filter_func(self, row):
+        if not hasattr(self, "cloudstream_provider_search_entry") or not self.cloudstream_provider_search_entry:
+            return True
+        text = self.cloudstream_provider_search_entry.get_text().strip().lower()
+        if not text:
+            return True
+        p_name = getattr(row, "_plugin_name", "")
+        p_desc = getattr(row, "_plugin_desc", "")
+        p_lang = getattr(row, "_plugin_lang", "")
+        p_types = getattr(row, "_plugin_types", [])
+        if text in p_name or text in p_desc or text == p_lang or any(text in t for t in p_types):
+            return True
+        return False
+
+    def _on_install_cloudstream_repo_clicked(self, *args):
+        url = self.cloudstream_repo_url_entry.get_text().strip()
+        if not url:
+            self._show_toast(_("Please enter a repository URL"))
+            return
+
+        self.cloudstream_install_status_label.set_text(_("Installing CloudStream repository..."))
+        self.cloudstream_install_status_label.set_visible(True)
+        self.cloudstream_install_repo_btn.set_sensitive(False)
+
+        def worker():
+            from . import cloudstream
+            success, msg, _info = cloudstream.add_repository(url)
+
+            def apply_result():
+                self.cloudstream_install_repo_btn.set_sensitive(True)
+                if success:
+                    self.cloudstream_repo_url_entry.set_text("")
+                    self.cloudstream_install_status_label.set_visible(False)
+                    self._populate_cloudstream()
+                    self._show_toast(msg)
+                else:
+                    self.cloudstream_install_status_label.set_text(msg)
+                    self.cloudstream_install_status_label.set_visible(True)
+                    self._show_toast(msg)
+                return False
+
+            GLib.idle_add(apply_result)
+
+        threading.Thread(target=worker, daemon=True, name="CloudStreamRepoInstall").start()
+
+    def _on_refresh_single_cloudstream_repo(self, manifest_url):
+        self._show_toast(_("Refreshing repository..."))
+
+        def worker():
+            from . import cloudstream
+            success, msg, _info = cloudstream.refresh_repository(manifest_url)
+
+            def apply_result():
+                self._populate_cloudstream()
+                self._show_toast(msg)
+                return False
+
+            GLib.idle_add(apply_result)
+
+        threading.Thread(target=worker, daemon=True, name="CloudStreamRepoRefresh").start()
+
+    def _on_refresh_all_cloudstream_repos_clicked(self, *args):
+        self._show_toast(_("Refreshing all CloudStream repositories..."))
+
+        def worker():
+            from . import cloudstream
+            repos = cloudstream.get_installed_repositories()
+            count = 0
+            for r in repos:
+                u = r.get("manifest_url")
+                if u:
+                    ok, _msg, _info = cloudstream.refresh_repository(u)
+                    if ok:
+                        count += 1
+
+            def apply_result():
+                self._populate_cloudstream()
+                self._show_toast(_("Refreshed %s repository(s)") % count)
+                return False
+
+            GLib.idle_add(apply_result)
+
+        threading.Thread(target=worker, daemon=True, name="CloudStreamRepoRefreshAll").start()
+
+    def _on_remove_cloudstream_repo(self, manifest_url, repo_name):
+        from . import cloudstream
+        cloudstream.remove_repository(manifest_url)
+        self._populate_cloudstream()
+        self._show_toast(_("Removed '%s'") % repo_name)
+
+    def _on_install_cloudstream_plugin_clicked(self, plugin_id, plugin_name, btn):
+        btn.set_sensitive(False)
+        btn.set_label(_("Installing..."))
+
+        def worker():
+            from . import cloudstream
+            ok, msg = cloudstream.install_plugin(plugin_id)
+            if ok and "megaprovider" in plugin_id.lower():
+                provider = cloudstream.get_provider(plugin_id)
+                if provider and hasattr(provider, "sync_repositories"):
+                    added, total, _ = provider.sync_repositories()
+                    msg = f"MegaProvider installed: synced {added}/{total} repositories!"
+
+            def apply_result():
+                self._populate_cloudstream()
+                self._show_toast(msg)
+                return False
+
+            GLib.idle_add(apply_result)
+
+        threading.Thread(target=worker, daemon=True, name="CloudStreamPluginInstall").start()
+
+    def _on_remove_cloudstream_plugin_clicked(self, plugin_id, plugin_name):
+        from . import cloudstream
+        ok, msg = cloudstream.uninstall_plugin(plugin_id)
+        self._populate_cloudstream()
+        self._show_toast(msg)
+
+    def _on_cloudstream_switch_toggled(self, switch, plugin_id):
+        from . import cloudstream
+        cloudstream.toggle_plugin(plugin_id, switch.get_active())
+
+    def _on_cloudstream_enable_globally_toggled(self, row, _pspec):
+        if getattr(self, "_syncing_cloudstream_switches", False):
+            return
+        active = row.get_active()
+        from . import cloudstream
+        cloudstream.set_cloudstream_enabled(active)
+        if active:
+            self.cloudstream_badge_status.set_label(_("CloudStream enabled"))
+            self.cloudstream_badge_status.remove_css_class("plugin-disabled")
+            self.cloudstream_badge_status.add_css_class("plugin-enabled")
+        else:
+            self.cloudstream_badge_status.set_label(_("CloudStream disabled"))
+            self.cloudstream_badge_status.remove_css_class("plugin-enabled")
+            self.cloudstream_badge_status.add_css_class("plugin-disabled")
+
+    def _on_cloudstream_accept_warning_clicked(self, *args):
+        from . import cloudstream
+        cloudstream.accept_security_warning()
+        if hasattr(self, "cloudstream_security_warning_box") and self.cloudstream_security_warning_box:
+            self.cloudstream_security_warning_box.set_visible(False)
+        self._show_toast(_("CloudStream security notice accepted"))
+
+    def _on_cloudstream_bulk_install_clicked(self, *args):
+        self._show_toast(_("Installing compatible CloudStream plugins..."))
+
+        def worker():
+            from . import cloudstream
+            plugins_list = cloudstream.get_all_plugins()
+            p_ids = [p["id"] for p in plugins_list]
+            res = cloudstream.bulk_install_and_enable(p_ids)
+
+            def apply_result():
+                self._populate_cloudstream()
+                inst = res.get("installed", 0)
+                enb = res.get("enabled", 0)
+                self._show_toast(_(f"Installed {inst}, enabled {enb} CloudStream providers"))
+                return False
+
+            GLib.idle_add(apply_result)
+
+        threading.Thread(target=worker, daemon=True, name="CloudStreamBulkInstall").start()
+
+    def _on_test_cloudstream_provider_clicked(self, provider_id, provider_name, btn):
+        btn.set_sensitive(False)
+        btn.set_label(_("Testing..."))
+
+        def worker():
+            from . import cloudstream
+            started = time.time()
+            provider = cloudstream.get_provider(provider_id)
+            if not provider:
+                success, count, err = False, 0, "No provider adapter found"
+            else:
+                try:
+                    items = provider.search("test") or []
+                    if not items:
+                        main_page = provider.get_main_page()
+                        items = main_page[0][1] if main_page else []
+                    success, count, err = True, len(items), None
+                except Exception as e:
+                    success, count, err = False, 0, str(e)
+
+            elapsed_ms = int((time.time() - started) * 1000)
+
+            def apply_result():
+                btn.set_sensitive(True)
+                btn.set_label(_("Test"))
+                if success:
+                    if "megaprovider" in provider_name.lower():
+                        self._populate_cloudstream()
+                    self._show_toast(_(f"✓ {provider_name}: {count} item(s) found ({elapsed_ms}ms)"))
+                else:
+                    self._show_toast(_(f"✗ {provider_name} test failed: {err}"))
+                return False
+
+            GLib.idle_add(apply_result)
+
+        threading.Thread(target=worker, daemon=True, name="CloudStreamProviderTest").start()
+
+    def _open_cloudstream_plugins(self, *args):
+        self._cancel_all_background_fetching()
+        self._push_current_nav_state()
+        self._populate_plugins()
+        self._populate_cloudstream()
+        if hasattr(self, "plugins_sub_stack") and self.plugins_sub_stack:
+            self.plugins_sub_stack.set_visible_child_name("cloudstream")
+        self.main_stack.set_visible_child_name("plugins")
+
 
     def _is_same_movie(self, movie_a, movie_b):
         if not movie_a or not movie_b:
@@ -19427,10 +19969,13 @@ class CineWindow(Adw.ApplicationWindow):
         self._populate_addons()
         self.main_stack.set_visible_child_name("addons")
 
-    def _open_plugins(self, *args):
+    def _open_plugins(self, *args, initial_tab=None):
         self._cancel_all_background_fetching()
         self._push_current_nav_state()
         self._populate_plugins()
+        self._populate_cloudstream()
+        if hasattr(self, "plugins_sub_stack") and self.plugins_sub_stack:
+            self.plugins_sub_stack.set_visible_child_name(initial_tab or "nuvio")
         self.main_stack.set_visible_child_name("plugins")
 
     def _back_to_library(self, *args):
@@ -19585,8 +20130,44 @@ class CineWindow(Adw.ApplicationWindow):
                 except Exception as e:
                     logger.error(f"Search error ({media_type}): {e}")
 
+            def do_search_cloudstream():
+                if self._current_search_id != current_search_id:
+                    return
+                try:
+                    from . import cloudstream
+                    if not cloudstream.is_cloudstream_enabled():
+                        return
+                    cs_cards = cloudstream.search_all_enabled_providers(query, timeout=8.0)
+                    if not cs_cards or self._current_search_id != current_search_id:
+                        return
+
+                    live_cards = [c for c in cs_cards if c.get("type") in ("tv", "channel")]
+                    movie_cards = [c for c in cs_cards if c.get("type") == "movie"]
+                    series_cards = [c for c in cs_cards if c.get("type") == "series"]
+
+                    def update_ui():
+                        if self._current_search_id != current_search_id or _is_event_set(getattr(self, "_search_abort_event", None)):
+                            return False
+                        if live_cards and hasattr(self, "search_tv_flowbox") and hasattr(self, "search_tv_section"):
+                            self._append_flowbox(self.search_tv_flowbox, live_cards, None)
+                            self.search_tv_section.set_visible(True)
+                        elif live_cards and hasattr(self, "search_movies_flowbox") and hasattr(self, "search_movies_section"):
+                            self._append_flowbox(self.search_movies_flowbox, live_cards, None)
+                            self.search_movies_section.set_visible(True)
+                        if movie_cards and hasattr(self, "search_movies_flowbox") and hasattr(self, "search_movies_section"):
+                            self._append_flowbox(self.search_movies_flowbox, movie_cards, None)
+                            self.search_movies_section.set_visible(True)
+                        if series_cards and hasattr(self, "search_series_flowbox") and hasattr(self, "search_series_section"):
+                            self._append_flowbox(self.search_series_flowbox, series_cards, None)
+                            self.search_series_section.set_visible(True)
+                        return False
+
+                    GLib.idle_add(update_ui)
+                except Exception as e:
+                    logger.debug(f"CloudStream search error: {e}")
+
             if not getattr(self, "_search_pool", None):
-                self._search_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+                self._search_pool = concurrent.futures.ThreadPoolExecutor(max_workers=5)
                 
             try:
                 self._search_pool.submit(do_search_category, "movie", "search_movies_section", "search_movies_flowbox")
@@ -19595,6 +20176,7 @@ class CineWindow(Adw.ApplicationWindow):
                     self._search_pool.submit(do_search_category, "anime", "search_anime_section", "search_anime_flowbox")
                 if getattr(self, "tv_supported", False):
                     self._search_pool.submit(do_search_category, "tv", "search_tv_section", "search_tv_flowbox")
+                self._search_pool.submit(do_search_cloudstream)
             except RuntimeError:
                 pass
             return False

@@ -223,6 +223,18 @@ template $Preferences: Adw.Dialog {
 						valign: center;
 					}
 				}
+
+				Adw.ActionRow prefs_cloudstream_plugins_row {
+					title: _("CloudStream Plugins");
+					subtitle: _("Manage CloudStream repositories and providers");
+					activatable: true;
+
+					[suffix]
+					Image {
+						icon-name: "go-next-symbolic";
+						valign: center;
+					}
+				}
 			}
 
 			Adw.PreferencesGroup {

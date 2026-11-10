@@ -1,0 +1,860 @@
+import unittest
+import tempfile
+import os
+import sys
+import io
+import json
+import zipfile
+import hashlib
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+sys.modules.setdefault("mpv", MagicMock())
+
+schema_temp_dir = tempfile.TemporaryDirectory()
+schema_path = Path("data/io.github.fastrizwaan.PopcornBox.gschema.xml")
+if schema_path.exists():
+    import subprocess
+    dest = Path(schema_temp_dir.name) / "io.github.fastrizwaan.PopcornBox.gschema.xml"
+    dest.write_text(schema_path.read_text())
+    subprocess.run(["glib-compile-schemas", schema_temp_dir.name], check=True)
+    os.environ["GSETTINGS_SCHEMA_DIR"] = schema_temp_dir.name
+
+from src import database
+from src import cloudstream
+
+
+class TestCloudStream(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_file = Path(self.temp_dir.name) / "test_data.json"
+        self.patcher_db = patch.object(database, "DB_FILE", self.db_file)
+        self.patcher_db.start()
+        database._json_cache = None
+        database._json_cache_valid = False
+
+        # Redirect package storage to temp dir
+        self.pkg_dir = Path(self.temp_dir.name) / "cloudstream_packages"
+        self.patcher_pkg = patch.object(cloudstream, "get_packages_dir", return_value=self.pkg_dir)
+        self.patcher_pkg.start()
+
+    def tearDown(self):
+        database._json_cache = None
+        database._json_cache_valid = False
+        self.patcher_pkg.stop()
+        self.patcher_db.stop()
+        self.temp_dir.cleanup()
+
+    def test_normalize_repository_url(self):
+        expected = "https://raw.githubusercontent.com/Kraptor123/cs-kraptor/master/repo.json"
+        self.assertEqual(
+            cloudstream.normalize_cloudstream_repository_url("https://github.com/Kraptor123/cs-kraptor"),
+            expected,
+        )
+        self.assertEqual(
+            cloudstream.normalize_cloudstream_repository_url("cloudstreamrepo://github.com/Kraptor123/cs-kraptor"),
+            expected,
+        )
+        self.assertEqual(
+            cloudstream.normalize_cloudstream_repository_url("https://cs.repo/?https://github.com/Kraptor123/cs-kraptor"),
+            expected,
+        )
+        self.assertEqual(
+            cloudstream.normalize_cloudstream_repository_url("https://raw.githubusercontent.com/Kraptor123/cs-kraptor/refs/heads/master/repo.json"),
+            expected,
+        )
+        self.assertEqual(
+            cloudstream.normalize_cloudstream_repository_url("https://example.com/repo"),
+            "https://example.com/repo/repo.json",
+        )
+        self.assertEqual(
+            cloudstream.normalize_cloudstream_repository_url("https://example.com/custom/repo.json"),
+            "https://example.com/custom/repo.json",
+        )
+
+    def test_resolve_cloudstream_url(self):
+        base = "https://example.com/a/b/repo.json"
+        self.assertEqual(
+            cloudstream.resolve_cloudstream_url(base, "https://cdn.example/plugin.cs3"),
+            "https://cdn.example/plugin.cs3",
+        )
+        self.assertEqual(
+            cloudstream.resolve_cloudstream_url(base, "/plugins.json"),
+            "https://example.com/plugins.json",
+        )
+        self.assertEqual(
+            cloudstream.resolve_cloudstream_url(base, "../plugins.json"),
+            "https://example.com/a/plugins.json",
+        )
+        self.assertEqual(
+            cloudstream.resolve_cloudstream_url(base, "plugins.json"),
+            "https://example.com/a/b/plugins.json",
+        )
+
+    def test_parse_repository_manifest(self):
+        payload = json.dumps({
+            "name": "Kraptor Repo",
+            "description": "Turkish streaming plugins",
+            "manifestVersion": 1,
+            "pluginLists": ["plugins.json", "../extra/plugins.json"],
+        })
+        manifest = cloudstream.parse_repository_manifest("https://example.com/repos/repo.json", payload)
+        self.assertEqual(manifest["name"], "Kraptor Repo")
+        self.assertEqual(manifest["manifest_version"], 1)
+        self.assertEqual(
+            manifest["plugin_list_urls"],
+            [
+                "https://example.com/repos/plugins.json",
+                "https://example.com/extra/plugins.json",
+            ],
+        )
+
+    def test_parse_plugin_list_and_merge(self):
+        payload1 = json.dumps([
+            {
+                "url": "../builds/KickTR.cs3",
+                "status": 1,
+                "version": 15,
+                "name": "KickTR",
+                "internalName": "KickTR",
+                "authors": ["Kraptor"],
+                "language": "tr",
+                "tvTypes": ["Live"],
+                "apiVersion": 1,
+                "fileHash": "sha256-60c0dc079c6929347fbf7d6e273d14507712775f4631d15e430065d50d374f6a",
+            }
+        ])
+        payload2 = json.dumps([
+            {
+                "url": "../builds/KickTR.cs3",
+                "status": 1,
+                "version": 16,
+                "name": "KickTR",
+                "internalName": "KickTR",
+                "authors": ["Kraptor"],
+                "language": "tr",
+                "tvTypes": ["Live"],
+                "apiVersion": 1,
+                "fileHash": "sha256-60c0dc079c6929347fbf7d6e273d14507712775f4631d15e430065d50d374f6a",
+            }
+        ])
+
+        repo_url = "https://example.com/repo.json"
+        list_url = "https://example.com/lists/plugins.json"
+
+        p1 = cloudstream.parse_plugin_list(repo_url, list_url, payload1)
+        p2 = cloudstream.parse_plugin_list(repo_url, list_url, payload2)
+
+        self.assertEqual(len(p1), 1)
+        self.assertEqual(p1[0]["version"], 15)
+        self.assertEqual(p1[0]["package_url"], "https://example.com/builds/KickTR.cs3")
+
+        merged = cloudstream.merge_plugin_lists([p1, p2])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["version"], 16)
+
+    def test_cs3_package_inspection_and_safety(self):
+        # Create a valid test ZIP
+        bio = io.BytesIO()
+        with zipfile.ZipFile(bio, "w") as zf:
+            zf.writestr("manifest.json", json.dumps({"pluginClassName": "com.example.Plugin", "version": 1}))
+            zf.writestr("classes.dex", b"\x00" * 32)
+        valid_bytes = bio.getvalue()
+
+        manifest, entries = cloudstream.inspect_cs3_package(valid_bytes)
+        self.assertEqual(manifest.get("pluginClassName"), "com.example.Plugin")
+        self.assertIn("manifest.json", entries)
+        self.assertIn("classes.dex", entries)
+
+        # Missing manifest.json should fail
+        bio_no_manifest = io.BytesIO()
+        with zipfile.ZipFile(bio_no_manifest, "w") as zf:
+            zf.writestr("classes.dex", b"\x00" * 32)
+        with self.assertRaises(ValueError):
+            cloudstream.inspect_cs3_package(bio_no_manifest.getvalue())
+
+        # Path traversal should fail
+        bio_traverse = io.BytesIO()
+        with zipfile.ZipFile(bio_traverse, "w") as zf:
+            zf.writestr("manifest.json", "{}")
+            zf.writestr("../escape.txt", "evil")
+        with self.assertRaises(ValueError):
+            cloudstream.inspect_cs3_package(bio_traverse.getvalue())
+
+    def test_file_hash_verification(self):
+        data = b"Hello CloudStream!"
+        expected_hex = hashlib.sha256(data).hexdigest()
+        hash_obj = cloudstream.parse_cloudstream_file_hash(f"sha256-{expected_hex}")
+        self.assertIsNotNone(hash_obj)
+        self.assertTrue(cloudstream.matches_file_hash(data, hash_obj))
+
+        wrong_hash = cloudstream.parse_cloudstream_file_hash(f"sha256-{'0' * 64}")
+        self.assertFalse(cloudstream.matches_file_hash(data, wrong_hash))
+
+    def test_route_id_encoding_and_parsing(self):
+        provider_id = "https://raw.githubusercontent.com/Kraptor123/cs-kraptor/master/repo.json#KickTR"
+        data = "kick:channel:elraenn"
+        route = cloudstream.cloudstream_route_id(provider_id, data)
+        self.assertTrue(route.startswith("cloudstream:"))
+
+        parsed = cloudstream.parse_cloudstream_route_id(route)
+        self.assertIsNotNone(parsed)
+        p_id, d = parsed
+        self.assertEqual(p_id, provider_id)
+        self.assertEqual(d, data)
+
+    def test_model_conversions(self):
+        provider_id = "https://example.com/repo.json#TestProvider"
+        search_item = {
+            "provider_id": provider_id,
+            "data": "channel:test",
+            "name": "Test Stream",
+            "type": cloudstream.CloudStreamTvType.Live,
+            "poster_url": "https://example.com/poster.jpg",
+            "background_url": "https://example.com/bg.jpg",
+            "description": "Live gaming stream",
+            "year": 2026,
+        }
+        card = cloudstream.search_item_to_card_dict(search_item)
+        self.assertEqual(card["title"], "Test Stream")
+        self.assertEqual(card["type"], "tv")
+        self.assertTrue(card["id"].startswith("cloudstream:"))
+
+        load_item = {
+            "provider_id": provider_id,
+            "data": "channel:test",
+            "name": "Test Stream",
+            "type": cloudstream.CloudStreamTvType.Live,
+            "poster_url": "https://example.com/poster.jpg",
+            "background_url": "https://example.com/bg.jpg",
+            "description": "Live gaming stream",
+            "tags": ["Gaming", "Live"],
+            "episodes": [],
+        }
+        details = cloudstream.load_item_to_details_dict(load_item)
+        self.assertEqual(details["title"], "Test Stream")
+        self.assertEqual(details["runtime"], "Live")
+        self.assertEqual(len(details["videos"]), 1)
+
+        playback_source = {
+            "name": "Kick Live HLS",
+            "url": "https://video.kick.com/stream.m3u8",
+            "referer": "https://kick.com/test",
+            "headers": {"Referer": "https://kick.com/test", "Origin": "https://kick.com"},
+            "subtitles": [],
+            "is_hls": True,
+        }
+        stream = cloudstream.playback_source_to_stream_dict(playback_source, "KickTR", provider_id)
+        self.assertEqual(stream["name"], "Kick Live HLS")
+        self.assertEqual(stream["stream_type"], "hls")
+        self.assertEqual(stream["url"], "https://video.kick.com/stream.m3u8")
+        self.assertEqual(stream["headers"]["Referer"], "https://kick.com/test")
+
+    def test_database_repository_lifecycle(self):
+        manifest_url = "https://example.com/test-repo/repo.json"
+        repo_data = {
+            "manifest_url": manifest_url,
+            "name": "Test Repo",
+            "description": "Test CloudStream Repo",
+            "plugin_count": 1,
+        }
+        plugins_data = [{
+            "id": f"{manifest_url}#TestPlugin",
+            "storage_key": "abc123def456",
+            "internal_name": "TestPlugin",
+            "name": "Test Plugin",
+            "repository_manifest_url": manifest_url,
+            "package_url": "https://example.com/TestPlugin.cs3",
+            "version": 1,
+            "enabled": True,
+        }]
+
+        database.save_cloudstream_repository(repo_data)
+        database.save_cloudstream_plugins(plugins_data)
+
+        repos = cloudstream.get_installed_repositories()
+        self.assertEqual(len(repos), 1)
+        self.assertEqual(repos[0]["name"], "Test Repo")
+
+        plugins = cloudstream.get_all_plugins()
+        self.assertEqual(len(plugins), 1)
+        self.assertEqual(plugins[0]["name"], "Test Plugin")
+        self.assertTrue(plugins[0]["enabled"])
+
+        # Test toggle
+        cloudstream.toggle_plugin(f"{manifest_url}#TestPlugin", False)
+        plugins = cloudstream.get_all_plugins()
+        self.assertFalse(plugins[0]["enabled"])
+
+        # Test remove repository
+        cloudstream.remove_repository(manifest_url)
+        self.assertEqual(len(cloudstream.get_installed_repositories()), 0)
+        self.assertEqual(len(cloudstream.get_all_plugins()), 0)
+
+    def test_kick_tr_provider_adapter(self):
+        provider = cloudstream.KickTRCloudStreamProvider()
+        mock_search_resp = {
+            "channels": [
+                {
+                    "slug": "elraenn",
+                    "user": {"username": "Elraenn", "bio": "Turkish streamer"},
+                    "profile_picture": "https://example.com/elraenn.jpg",
+                }
+            ]
+        }
+        with patch.object(provider, "_fetch_api", return_value=mock_search_resp):
+            results = provider.search("elraenn")
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["name"], "Elraenn")
+            self.assertEqual(results[0]["data"], "kick:channel:elraenn")
+            self.assertEqual(results[0]["poster_url"], "https://example.com/elraenn.jpg")
+
+        mock_channel_resp = {
+            "slug": "elraenn",
+            "user": {"username": "Elraenn", "bio": "Live stream bio"},
+            "profile_picture": "https://example.com/elraenn.jpg",
+            "livestream": {
+                "session_title": "Grand Theft Auto V",
+                "categories": {"name": "GTA V"},
+            },
+            "playback_url": "https://video.kick.com/elraenn/stream.m3u8",
+        }
+        with patch.object(provider, "_fetch_api", return_value=mock_channel_resp):
+            metadata = provider.load("kick:channel:elraenn")
+            self.assertEqual(metadata["name"], "Elraenn")
+            self.assertIn("GTA V", metadata["tags"])
+
+            sources = provider.load_links("kick:channel:elraenn")
+            self.assertEqual(len(sources), 1)
+            self.assertEqual(sources[0]["url"], "https://video.kick.com/elraenn/stream.m3u8")
+            self.assertTrue(sources[0]["is_hls"])
+
+    def test_api_cloudstream_details_and_streams(self):
+        from src import api
+        provider_id = "https://raw.githubusercontent.com/Kraptor123/cs-kraptor/master/repo.json#KickTR"
+        route_id = cloudstream.cloudstream_route_id(provider_id, "kick:channel:elraenn")
+
+        mock_channel_resp = {
+            "slug": "elraenn",
+            "user": {"username": "Elraenn", "bio": "Live stream bio"},
+            "profile_picture": "https://example.com/elraenn.jpg",
+            "livestream": {
+                "session_title": "Grand Theft Auto V",
+                "categories": {"name": "GTA V"},
+            },
+            "playback_url": "https://video.kick.com/elraenn/stream.m3u8",
+        }
+        provider = cloudstream.get_provider(provider_id)
+        self.assertIsNotNone(provider)
+
+        with patch.object(provider, "_fetch_api", return_value=mock_channel_resp):
+            # Test details fetching
+            details = api.fetch_movie_details(route_id, "tv")
+            self.assertEqual(details["id"], route_id)
+            self.assertEqual(details["title"], "Elraenn")
+            self.assertEqual(details["type"], "tv")
+            self.assertEqual(len(details["videos"]), 1)
+
+            # Test streams fetching
+            streams = api.get_torrents(route_id, "tv")
+            self.assertEqual(len(streams), 1)
+            stream = streams[0]
+            self.assertEqual(stream["name"], "Kick Live HLS")
+            self.assertEqual(stream["addon_name"], "KickTR")
+            self.assertEqual(stream["stream_type"], "hls")
+            self.assertEqual(stream["url"], "https://video.kick.com/elraenn/stream.m3u8")
+            self.assertEqual(stream["headers"]["Referer"], "https://kick.com/elraenn")
+
+            # Also verify get_torrents_streamed
+            callback_results = []
+            api.get_torrents_streamed(
+                route_id,
+                "tv",
+                callback=lambda res, is_cached, is_complete: callback_results.extend(res),
+            )
+            self.assertEqual(len(callback_results), 1)
+            self.assertEqual(callback_results[0]["url"], "https://video.kick.com/elraenn/stream.m3u8")
+
+    def test_mega_provider_adapter(self):
+        provider = cloudstream.get_provider("https://raw.githubusercontent.com/self-similarity/MegaRepo/builds/repo.json#MegaProvider")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "MegaProvider")
+
+        mock_repos_db = json.dumps([
+            "https://raw.githubusercontent.com/test/repo1/repo.json",
+            {"url": "https://raw.githubusercontent.com/test/repo2/repo.json"},
+        ])
+        with patch("src.cloudstream._http_get_text", return_value=mock_repos_db), \
+             patch("src.cloudstream.add_repository", return_value=(True, "ok", {})) as mock_add:
+            added, total, errors = provider.sync_repositories()
+            self.assertEqual(added, 2)
+            self.assertEqual(total, 2)
+            self.assertEqual(mock_add.call_count, 2)
+
+    def test_additional_cloudstream_providers_and_fallback(self):
+        # Twitch
+        twitch = cloudstream.get_provider("https://raw.githubusercontent.com/recloudstream/extensions/builds/TwitchProvider.cs3#TwitchProvider")
+        self.assertIsNotNone(twitch)
+        t_items = twitch.search("shroud")
+        self.assertEqual(len(t_items), 1)
+        self.assertIn("shroud", t_items[0]["data"])
+        t_sources = twitch.load_links("twitch:channel:shroud")
+        self.assertEqual(len(t_sources), 1)
+        self.assertTrue(t_sources[0]["is_hls"])
+
+        # InternetArchive
+        ia = cloudstream.get_provider("https://raw.githubusercontent.com/recloudstream/extensions/builds/InternetArchiveProvider.cs3#InternetArchiveProvider")
+        self.assertIsNotNone(ia)
+
+        # Dailymotion
+        dm = cloudstream.get_provider("https://raw.githubusercontent.com/recloudstream/extensions/builds/DailymotionProvider.cs3#DailymotionProvider")
+        self.assertIsNotNone(dm)
+
+        # YouTube
+        yt = cloudstream.get_provider("https://raw.githubusercontent.com/recloudstream/extensions/builds/YoutubeProvider.cs3#YoutubeProvider")
+        self.assertIsNotNone(yt)
+
+        # Generic Fallback for unknown plugin is NOT runnable (Android DEX only)
+        generic = cloudstream.get_provider("https://example.com/repo.json#UnknownPlugin")
+        self.assertIsNotNone(generic)
+        self.assertEqual(generic.name, "UnknownPlugin")
+        self.assertFalse(cloudstream.is_provider_runnable({"id": "https://example.com/repo.json#UnknownPlugin"}))
+
+    def test_hdhub4u_provider(self):
+        provider = cloudstream.get_provider("https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#HDhub4u")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "HDhub4u")
+
+        # Mock pingora search response
+        mock_pingora = json.dumps({
+            "found": 1,
+            "hits": [{
+                "document": {
+                    "post_title": "Inception (2010) Dual Audio",
+                    "permalink": "https://new12.hdhub4u.cl/inception-2010/",
+                    "post_thumbnail": "https://example.com/inception.jpg"
+                }
+            }]
+        })
+
+        with patch.object(provider, "_get_base_url", return_value="https://new12.hdhub4u.cl"), \
+             patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = mock_pingora.encode("utf-8")
+            mock_urlopen.return_value.__enter__.return_value = mock_resp
+
+            items = provider.search("Inception")
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["name"], "Inception (2010) Dual Audio")
+            self.assertEqual(items[0]["year"], 2010)
+
+        # Mock post page with HubCDN and HubDrive
+        post_html = """
+        <html>
+            <h1>Inception (2010) Dual Audio</h1>
+            <a href="https://hubcdn.wiki/file/abc1234">480p Download</a>
+            <a href="https://hubdrive.blog/file/xyz5678">1080p Download</a>
+        </html>
+        """
+        hubcdn_html = 'var reurl = "https://inventoryidea.com/?r=aHR0cHM6Ly9odWJjZG4uY2x1Yi9kbC8/bGluaz1odHRwczovL3ZpZGVvLmNvbS9pbmNlcHRpb24ubWt2";'
+
+        with patch("src.cloudstream._http_get_text", return_value=post_html), \
+             patch("src.cloudstream._extract_hubcdn_direct", return_value="https://video.com/inception.mkv"):
+            sources = provider.load_links("hdhub4u:https://new12.hdhub4u.cl/inception-2010/")
+            self.assertTrue(any("inception.mkv" in s.get("url", "") for s in sources))
+
+    def test_moviesdrive_and_cinestream_providers(self):
+        md = cloudstream.get_provider("https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#MoviesDrive")
+        self.assertIsNotNone(md)
+        self.assertEqual(md.name, "MoviesDrive")
+
+        cs = cloudstream.get_provider("https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#CineStream")
+        self.assertIsNotNone(cs)
+        self.assertEqual(cs.name, "CineStream")
+
+        yts = cloudstream.get_provider("https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#YTS")
+        self.assertIsNotNone(yts)
+        self.assertEqual(yts.name, "YTS")
+        self.assertIn("torrent", yts.supported_types)
+
+    def test_url_spaces_and_control_characters(self):
+        url_with_space = "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC Verse.cs3"
+        safe = cloudstream._safe_url(url_with_space)
+        self.assertEqual(
+            safe,
+            "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC%20Verse.cs3",
+        )
+        resolved = cloudstream.resolve_cloudstream_url(
+            "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/repo.json",
+            "CNC Verse.cs3",
+        )
+        self.assertEqual(
+            resolved,
+            "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC%20Verse.cs3",
+        )
+
+    def test_yts_torrent_stream_handling(self):
+        yts = cloudstream.get_provider("YTS")
+        self.assertIsNotNone(yts)
+
+        fake_api_data = {
+            "status": "ok",
+            "data": {
+                "movie_count": 1,
+                "movies": [{
+                    "id": 1606,
+                    "imdb_code": "tt1375666",
+                    "title": "Inception",
+                    "title_long": "Inception (2010)",
+                    "year": 2010,
+                    "torrents": [
+                        {
+                            "hash": "CE9156EB497762F8B7577B71C0647A4B0C3423E1",
+                            "quality": "720p",
+                            "type": "bluray",
+                            "video_codec": "x264",
+                            "seeds": 81,
+                            "peers": 12,
+                            "size": "1.07 GB",
+                            "size_bytes": 1148903752,
+                        },
+                        {
+                            "hash": "224BF45881252643DFC2E71ABC7B2660A21C68C4",
+                            "quality": "1080p",
+                            "type": "bluray",
+                            "video_codec": "x264",
+                            "seeds": 100,
+                            "peers": 20,
+                            "size": "1.85 GB",
+                            "size_bytes": 1986422374,
+                        },
+                    ],
+                }],
+            },
+        }
+
+        with patch.object(yts, "_request_json", return_value=fake_api_data):
+            results = yts.search("Inception", imdb_id="tt1375666")
+            self.assertEqual(len(results), 1)
+            item = results[0]
+            self.assertEqual(item["name"], "Inception (2010)")
+
+            sources = yts.load_links(item["data"])
+            self.assertEqual(len(sources), 2)
+            first_src = sources[0]
+            self.assertTrue(first_src["is_torrent"])
+            self.assertFalse(first_src["is_http"])
+            self.assertEqual(first_src["info_hash"], "ce9156eb497762f8b7577b71c0647a4b0c3423e1")
+            self.assertEqual(first_src["seeds"], 81)
+
+            stream_dict = cloudstream.playback_source_to_stream_dict(first_src, "YTS", yts.id)
+            self.assertTrue(stream_dict["is_torrent"])
+            self.assertFalse(stream_dict["is_http"])
+            self.assertEqual(stream_dict["stream_type"], "torrent")
+            self.assertTrue(stream_dict["magnet"].startswith("magnet:?xt=urn:btih:ce9156eb497762f8b7577b71c0647a4b0c3423e1"))
+            self.assertEqual(stream_dict["infoHash"], "ce9156eb497762f8b7577b71c0647a4b0c3423e1")
+            self.assertEqual(stream_dict["seeders"], 81)
+
+    def test_cloudstream_stream_resolution_in_api(self):
+        from src import api
+        mock_stream = [{
+            "name": "HDhub4u 1080P",
+            "title": "HDhub4u 1080P · 1080p",
+            "url": "https://video.example.com/inception_1080p.mkv",
+            "quality": "1080p",
+            "headers": {},
+            "subtitles": [],
+            "behaviorHints": {},
+            "addon_name": "HDhub4u",
+            "addon_names": ["HDhub4u"],
+            "is_cloudstream": True,
+            "is_http": True,
+            "stream_type": "direct",
+            "cloudstream_provider_id": "hdhub4u",
+        }]
+
+        with patch("src.cloudstream.is_cloudstream_enabled", return_value=True), \
+             patch("src.cloudstream.get_all_plugins", return_value=[{"id": "hdhub4u", "enabled": True}]), \
+             patch("src.cloudstream.is_provider_runnable", return_value=True), \
+             patch("src.cloudstream.fetch_cloudstream_streams_for_media", return_value=mock_stream):
+            results = api.get_torrents_streamed("tt1375666", media_type="movie", title="Inception", expected_year="2010")
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["addon_name"], "HDhub4u")
+            self.assertEqual(results[0]["url"], "https://video.example.com/inception_1080p.mkv")
+            self.assertTrue(results[0]["is_http"])
+            self.assertTrue(results[0]["is_cloudstream"])
+
+    def test_torrentio_provider(self):
+        prov = cloudstream.get_provider("https://raw.githubusercontent.com/DieGon7771/ItaliaInStreaming/builds/repo.json#Torrentio")
+        self.assertIsNotNone(prov)
+        self.assertIsInstance(prov, cloudstream.TorrentioCloudStreamProvider)
+        self.assertEqual(cloudstream.get_provider("Torrentio"), prov)
+
+        mock_torrentio_json = json.dumps({
+            "streams": [
+                {
+                    "name": "Torrentio\n1080p",
+                    "title": "Inception 2010 1080p BluRay x264\n👤 250 💾 2.15 GB ⚙️ 1337x",
+                    "infoHash": "2849211f150e966ef7924f43aec22727a644e10d",
+                    "fileIdx": 0,
+                    "behaviorHints": {
+                        "bingeGroup": "torrentio|1080p",
+                        "filename": "Inception.2010.1080p.mkv"
+                    }
+                }
+            ]
+        })
+
+        with patch.object(cloudstream, "_http_get_text", return_value=mock_torrentio_json):
+            sources = prov.get_streams_for_media("Inception", "movie", imdb_id="tt1375666")
+            self.assertEqual(len(sources), 1)
+            s = sources[0]
+            self.assertTrue(s["is_torrent"])
+            self.assertFalse(s["is_http"])
+            self.assertEqual(s["info_hash"], "2849211f150e966ef7924f43aec22727a644e10d")
+            self.assertEqual(s["seeds"], 250)
+            self.assertEqual(s["size"], "2.15 GB")
+            self.assertEqual(s["file_idx"], 0)
+
+            stream_dict = cloudstream.playback_source_to_stream_dict(s, "Torrentio", prov.id)
+            self.assertTrue(stream_dict["is_torrent"])
+            self.assertFalse(stream_dict["is_http"])
+            self.assertEqual(stream_dict["stream_type"], "torrent")
+            self.assertEqual(stream_dict["infoHash"], "2849211f150e966ef7924f43aec22727a644e10d")
+            self.assertEqual(stream_dict["seeders"], 250)
+            self.assertEqual(stream_dict["file_idx"], 0)
+
+    def test_cncverse_provider(self):
+        prov1 = cloudstream.get_provider("https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CNC Verse")
+        self.assertIsNotNone(prov1)
+        self.assertIsInstance(prov1, cloudstream.CNCVerseCloudStreamProvider)
+
+        prov2 = cloudstream.get_provider("https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CNC Verse Mobile")
+        self.assertIsNotNone(prov2)
+        self.assertIsInstance(prov2, cloudstream.CNCVerseCloudStreamProvider)
+
+        mock_search_json = json.dumps({
+            "searchResult": [{"id": "0HBUB1JMA08CJWY8V76RCRPTSP", "t": "Inception", "y": "2010"}]
+        }).encode("utf-8")
+
+        mock_player_json = json.dumps({
+            "status": "otp",
+            "ott": "pv",
+            "video_link": "https://tv.imgcdn.kim/newtv/hls/pv/0HBUB1JMA08CJWY8V76RCRPTSP.m3u8?in=dummy_sig",
+            "referer": "https://net52.cc"
+        }).encode("utf-8")
+
+        class MockResponse:
+            def __init__(self, data):
+                self._data = data
+            def read(self):
+                return self._data
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+
+        def mock_urlopen(req, timeout=None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "search.php" in url:
+                return MockResponse(mock_search_json)
+            if "player.php" in url:
+                return MockResponse(mock_player_json)
+            return MockResponse(b"{}")
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen), \
+             patch.object(prov1, "_get_cookie", return_value="t_hash_t=dummy_cookie"):
+            sources = prov1.get_streams_for_media("Inception", "movie", year="2010")
+            self.assertEqual(len(sources), 1)
+            s = sources[0]
+            self.assertTrue(s["is_hls"])
+            self.assertTrue(s["is_http"])
+            self.assertFalse(s["is_torrent"])
+            self.assertEqual(s["url"], "https://tv.imgcdn.kim/newtv/hls/pv/0HBUB1JMA08CJWY8V76RCRPTSP.m3u8?in=dummy_sig")
+            self.assertEqual(s["headers"]["Referer"], "https://net52.cc/")
+
+            stream_dict = cloudstream.playback_source_to_stream_dict(s, "CNC Verse", prov1.id)
+            self.assertTrue(stream_dict["is_http"])
+            self.assertFalse(stream_dict["is_torrent"])
+            self.assertEqual(stream_dict["stream_type"], "hls")
+
+            # Verify that non-matching searches (e.g. The Dog Stars) or Top Searches fallback NEVER return wrong streams
+            top_searches_json = json.dumps({
+                "status": "n",
+                "head": "Top Searches",
+                "searchResult": [{"id": "80122209", "t": "Unrelated Trending Movie"}]
+            }).encode("utf-8")
+
+            def mock_urlopen_nomatch(req, timeout=None):
+                url = req.full_url if hasattr(req, "full_url") else str(req)
+                if "search.php" in url:
+                    return MockResponse(top_searches_json)
+                return MockResponse(b"{}")
+
+            with patch("urllib.request.urlopen", side_effect=mock_urlopen_nomatch):
+                no_match_sources = prov1.get_streams_for_media("The Dog Stars", "movie", year="2026")
+                self.assertEqual(no_match_sources, [])
+
+    def test_dudefilms_and_zinkmovies_providers(self):
+        dudefilms = cloudstream.get_provider("DudeFilms")
+        self.assertIsNotNone(dudefilms)
+        self.assertIsInstance(dudefilms, cloudstream.DudeFilmsCloudStreamProvider)
+
+        zinkmovies = cloudstream.get_provider("Zinkmovies")
+        self.assertIsNotNone(zinkmovies)
+        self.assertIsInstance(zinkmovies, cloudstream.ZinkmoviesCloudStreamProvider)
+
+        fake_dudefilms_html = (
+            '<article><h2><a href="https://new1.dudefilms.church/inception-2010/">'
+            'Inception (2010) Dual Audio Hindi-English 720p</a></h2></article>'
+        )
+        with patch.object(cloudstream, "_http_get_text", return_value=fake_dudefilms_html):
+            results = dudefilms.search("Inception")
+            self.assertEqual(len(results), 1)
+            self.assertIn("Inception", results[0]["name"])
+
+    def test_strict_title_match_and_search_scoring(self):
+        # Strict title matching logic
+        self.assertTrue(cloudstream._is_strict_title_match("The Dog Stars", "The Dog Stars (2026) 1080p"))
+        self.assertTrue(cloudstream._is_strict_title_match("Inception", "Inception (2010) Dual Audio"))
+        self.assertTrue(cloudstream._is_strict_title_match("Wednesday", "Wednesday (Season 1)"))
+        self.assertTrue(cloudstream._is_strict_title_match("It", "It (2017) Bluray"))
+
+        # Non-matching titles should be rejected
+        self.assertFalse(cloudstream._is_strict_title_match("The Dog Stars", "Ohh My Dog (2026)"))
+        self.assertFalse(cloudstream._is_strict_title_match("The Dog Stars", "Up Among The Stars"))
+        self.assertFalse(cloudstream._is_strict_title_match("The Dog Stars", "7 Dogs (2026)"))
+        self.assertFalse(cloudstream._is_strict_title_match("Inception", "Interstellar (2014)"))
+
+
+    def test_dailymotion_provider(self):
+        dm = cloudstream.get_provider("https://raw.githubusercontent.com/recloudstream/extensions/master/repo.json#DailymotionProvider")
+        self.assertIsNotNone(dm)
+        self.assertIsInstance(dm, cloudstream.DailymotionCloudStreamProvider)
+        self.assertEqual(dm.name, "DailymotionProvider")
+
+        # Test ID extraction
+        self.assertEqual(cloudstream._extract_dailymotion_id("dm:x9hgu82"), "x9hgu82")
+        self.assertEqual(cloudstream._extract_dailymotion_id("https://www.dailymotion.com/video/x9hgu82"), "x9hgu82")
+        self.assertEqual(cloudstream._extract_dailymotion_id("https://www.dailymotion.com/embed/video/x9hgu82?autoplay=1"), "x9hgu82")
+        self.assertEqual(cloudstream._extract_dailymotion_id("x9hgu82"), "x9hgu82")
+
+        # Mock search API response
+        mock_search = json.dumps({
+            "list": [
+                {
+                    "id": "x9hgu82",
+                    "title": "Test Video Title",
+                    "description": "A sample description",
+                    "thumbnail_360_url": "https://example.com/thumb.jpg"
+                }
+            ]
+        })
+        with patch.object(cloudstream, "_http_get_text", return_value=mock_search):
+            items = dm.search("test")
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["data"], "dm:x9hgu82")
+            self.assertEqual(items[0]["name"], "Test Video Title")
+
+            main_page = dm.get_main_page(1)
+            self.assertEqual(len(main_page), 1)
+            self.assertEqual(main_page[0][0], "Popular")
+            self.assertEqual(len(main_page[0][1]), 1)
+
+        # Mock load API response
+        mock_load = json.dumps({
+            "id": "x9hgu82",
+            "title": "Test Video Title",
+            "description": "A sample description",
+            "thumbnail_720_url": "https://example.com/poster.jpg"
+        })
+        with patch.object(cloudstream, "_http_get_text", return_value=mock_load):
+            loaded = dm.load("https://www.dailymotion.com/video/x9hgu82")
+            self.assertEqual(loaded["name"], "Test Video Title")
+            self.assertEqual(loaded["poster_url"], "https://example.com/poster.jpg")
+
+        # Test load_links with mock player metadata
+        mock_meta = json.dumps({
+            "qualities": {
+                "auto": [{"type": "application/x-mpegURL", "url": "https://cdndirector.dailymotion.com/cdn/manifest/video/x9hgu82.m3u8"}]
+            },
+            "subtitles": {
+                "data": {
+                    "en": {"label": "English", "urls": ["https://example.com/en.srt"]}
+                }
+            }
+        }).encode("utf-8")
+
+        mock_master_m3u8 = (
+            "#EXTM3U\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=800000\n"
+            "https://vod2.cf.dmcdn.net/sec2(abc)/cloud/stream.m3u8\n"
+        ).encode("utf-8")
+
+        class MockResp:
+            def __init__(self, data):
+                self._data = data
+            def read(self):
+                return self._data
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+
+        def mock_open(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "metadata" in url:
+                return MockResp(mock_meta)
+            if "manifest" in url:
+                return MockResp(mock_master_m3u8)
+            return MockResp(b"")
+
+        with patch("shutil.which", return_value=None), \
+             patch("http.cookiejar.CookieJar"), \
+             patch("urllib.request.build_opener") as mock_bo:
+            mock_opener = MagicMock()
+            mock_opener.open.side_effect = mock_open
+            mock_bo.return_value = mock_opener
+
+            links = dm.load_links("dm:x9hgu82")
+            self.assertEqual(len(links), 1)
+            self.assertTrue(links[0]["is_hls"])
+            self.assertIn(".m3u8", links[0]["url"])
+            self.assertEqual(len(links[0]["subtitles"]), 1)
+            self.assertEqual(links[0]["subtitles"][0]["language"], "English")
+
+
+    def test_youtube_provider(self):
+        yt = cloudstream.get_provider("https://raw.githubusercontent.com/recloudstream/extensions/master/repo.json#YoutubeProvider")
+        self.assertIsNotNone(yt)
+        self.assertIsInstance(yt, cloudstream.YoutubeCloudStreamProvider)
+        self.assertEqual(yt.name, "YoutubeProvider")
+
+        # YouTube must not intercept standard movie or series playback
+        self.assertNotIn("movie", yt.supported_types)
+        self.assertNotIn("series", yt.supported_types)
+
+        # Test ID extraction
+        self.assertEqual(cloudstream._extract_youtube_id("yt:6MTk5Fr5_h4"), "6MTk5Fr5_h4")
+        self.assertEqual(cloudstream._extract_youtube_id("https://www.youtube.com/watch?v=6MTk5Fr5_h4"), "6MTk5Fr5_h4")
+        self.assertEqual(cloudstream._extract_youtube_id("https://youtu.be/6MTk5Fr5_h4"), "6MTk5Fr5_h4")
+        self.assertEqual(cloudstream._extract_youtube_id("yt:search:Spider-Man: Brand New Day"), "")
+        self.assertEqual(cloudstream._extract_youtube_id("Brand New Day"), "")
+
+        # Test load_links on invalid data
+        invalid_links = yt.load_links("yt:search:Spider-Man: Brand New Day")
+        self.assertEqual(invalid_links, [])
+
+        # Test load_links on valid data
+        valid_links = yt.load_links("yt:6MTk5Fr5_h4")
+        self.assertEqual(len(valid_links), 1)
+        self.assertIn("6MTk5Fr5_h4", valid_links[0]["url"])
+
+        # Test playback_source_to_stream_dict drops invalid YouTube URLs
+        bad_source = {"name": "YouTube", "url": "https://www.youtube.com/watch?v=Brand%20New%20Day"}
+        stream_dict = cloudstream.playback_source_to_stream_dict(bad_source, "YouTube", yt.id)
+        self.assertIsNone(stream_dict)
+
+
+if __name__ == "__main__":
+    unittest.main()

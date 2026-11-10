@@ -1940,6 +1940,76 @@ def toggle_plugin_scraper(scraper_id, enabled):
         _write_db(db)
     clear_all_cached_streams_async()
 
+# --- CloudStream Plugins & Addons ---
+
+def get_cloudstream_repositories():
+    return list(_read_db().get("cloudstream_repositories", []))
+
+def save_cloudstream_repository(repo):
+    if not isinstance(repo, dict) or not repo.get("manifest_url"):
+        return
+    with _db_lock:
+        db = _read_db()
+        repos = db.setdefault("cloudstream_repositories", [])
+        manifest_url = repo.get("manifest_url")
+        repos = [r for r in repos if r.get("manifest_url") != manifest_url]
+        repos.append(dict(repo))
+        db["cloudstream_repositories"] = repos
+        _write_db(db)
+
+def remove_cloudstream_repository(manifest_url):
+    if not manifest_url:
+        return
+    with _db_lock:
+        db = _read_db()
+        repos = db.setdefault("cloudstream_repositories", [])
+        db["cloudstream_repositories"] = [r for r in repos if r.get("manifest_url") != manifest_url]
+        plugins = db.setdefault("cloudstream_plugins", [])
+        db["cloudstream_plugins"] = [p for p in plugins if p.get("repository_manifest_url") != manifest_url]
+        _write_db(db)
+    clear_all_cached_streams()
+
+def get_cloudstream_plugins():
+    return list(_read_db().get("cloudstream_plugins", []))
+
+def save_cloudstream_plugins(plugins_list, replace_for_repo=None):
+    if not isinstance(plugins_list, list):
+        return
+    with _db_lock:
+        db = _read_db()
+        existing = db.setdefault("cloudstream_plugins", [])
+        if replace_for_repo:
+            existing = [p for p in existing if p.get("repository_manifest_url") != replace_for_repo]
+        existing_ids = {p.get("id") for p in plugins_list if p.get("id")}
+        existing = [p for p in existing if p.get("id") not in existing_ids]
+        existing.extend(plugins_list)
+        db["cloudstream_plugins"] = existing
+        _write_db(db)
+    clear_all_cached_streams()
+
+def update_cloudstream_plugin(plugin_id, updates):
+    if not plugin_id or not isinstance(updates, dict):
+        return
+    with _db_lock:
+        db = _read_db()
+        for p in db.setdefault("cloudstream_plugins", []):
+            if p.get("id") == plugin_id:
+                p.update(updates)
+                break
+        _write_db(db)
+
+def toggle_cloudstream_plugin(plugin_id, enabled):
+    if not plugin_id:
+        return
+    with _db_lock:
+        db = _read_db()
+        for p in db.setdefault("cloudstream_plugins", []):
+            if p.get("id") == plugin_id:
+                p["enabled"] = bool(enabled)
+                break
+        _write_db(db)
+    clear_all_cached_streams_async()
+
 # --- SQLite Metadata & Stream Cache ---
 
 def _get_cache_db():

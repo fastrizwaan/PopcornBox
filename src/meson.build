@@ -58,6 +58,7 @@ cine_sources = [
   'player.py',
   'playlist.py',
   'plugins.py',
+  'cloudstream.py',
   'preferences.py',
   'save_session.py',
   'shortcuts.py',

@@ -4824,6 +4824,18 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             primary_id = next((i for i in imdb_id if str(i).startswith('tt')), imdb_id[0])
         return fetch_movie_details(primary_id, media_type, title, use_cache, poster, prefer_tmdb, expected_year)
 
+    if str(imdb_id).startswith("cloudstream:"):
+        from . import cloudstream
+        meta = cloudstream.get_metadata_for_route(str(imdb_id))
+        if meta:
+            if poster and not meta.get("medium_cover_image"):
+                meta["medium_cover_image"] = poster
+                meta["poster"] = poster
+            if title and not meta.get("title"):
+                meta["title"] = title
+            database.save_cached_metadata(imdb_id, media_type, meta)
+            return meta
+
     if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
         parts = str(imdb_id).split("||")
         stream_url = parts[0]
@@ -5889,6 +5901,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             "hash": raw_id,
             "infoHash": info_hash or (raw_id if not is_http else ""),
             "url": stream_url,
+            "magnet": s.get("magnet") or (stream_url if stream_url.startswith("magnet:") else ""),
             "sources": s.get("sources") or [],
             "externalUrl": external_url,
             "is_external": is_external,
@@ -5916,6 +5929,11 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             "plugin_scraper_id": s.get("plugin_scraper_id"),
             # Preserved so the cache-filter can evict results for a different item.
             "plugin_scraper_tmdb_id": s.get("plugin_scraper_tmdb_id"),
+            "is_cloudstream": bool(s.get("is_cloudstream")),
+            "cloudstream_provider_id": s.get("cloudstream_provider_id"),
+            "stream_type": s.get("stream_type"),
+            "headers": s.get("headers"),
+            "subtitles": s.get("subtitles") or [],
         }
 
         if season is not None and episode is not None:
@@ -6288,6 +6306,10 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
     if not imdb_id:
         return []
         
+    if str(imdb_id).startswith("cloudstream:"):
+        from . import cloudstream
+        return cloudstream.get_streams_for_route(str(imdb_id))
+
     if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
         parts = str(imdb_id).split("||")
         stream_url = parts[0]
@@ -6617,6 +6639,17 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         expected_year = ""
     is_movie_request = str(media_type or "movie").strip().lower() not in ("series", "show", "tvshow", "tv_show", "anime", "tv")
 
+    if not title and imdb_id:
+        try:
+            from . import tmdb_helper
+            meta = tmdb_helper.get_tmdb_metadata(imdb_id, media_type or "movie")
+            if meta and meta.get("title"):
+                title = meta.get("title")
+                if not expected_year and meta.get("year"):
+                    expected_year = str(meta.get("year"))[:4]
+        except Exception:
+            pass
+
     def _filter_wrong_movie_year(streams):
         """Drop only streams that explicitly label themselves with another year."""
         if not expected_year or not is_movie_request:
@@ -6659,6 +6692,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 imdb_id = clean_base
         elif len(parts) == 2 and parts[-1].isdigit() and parts[0].startswith("tt"):
             imdb_id = parts[0]
+
+    if str(imdb_id).startswith("cloudstream:"):
+        from . import cloudstream
+        streams = cloudstream.get_streams_for_route(str(imdb_id))
+        if callback: callback(streams, is_cached=False, is_complete=True)
+        return streams
 
     if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
         parts = str(imdb_id).split("||")
@@ -6737,6 +6776,19 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             cached = global_matches
             cache_age = global_age
 
+    if not cached and not provider_scope and not source_scope:
+        d_res = database.get_cached_streams(direct_source_cache_key, max_age_hours=24, return_age=True)
+        t_res = database.get_cached_streams(torrent_source_cache_key, max_age_hours=24, return_age=True)
+        d_cached = d_res[0] if isinstance(d_res, tuple) else d_res
+        t_cached = t_res[0] if isinstance(t_res, tuple) else t_res
+        if d_cached or t_cached:
+            cached = _merge_parsed_streams(d_cached or [], t_cached or [])
+            d_age = d_res[1] if isinstance(d_res, tuple) and d_res[1] is not None else 999999
+            t_age = t_res[1] if isinstance(t_res, tuple) and t_res[1] is not None else 999999
+            cache_age = min(d_age, t_age)
+            if cache_age == 999999:
+                cache_age = 0.0
+
     if cached:
         cached = [s for s in cached if not check_stream_rate_limit_warning(s)]
     aggregate_cached = list(cached or [])
@@ -6782,6 +6834,11 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     if not plugins.is_plugins_enabled():
         cached = [s for s in cached if not s.get("is_nuvio_plugin")]
         cache_candidates = [s for s in cache_candidates if not s.get("is_nuvio_plugin")]
+
+    from . import cloudstream
+    if not cloudstream.is_cloudstream_enabled():
+        cached = [s for s in cached if not s.get("is_cloudstream")]
+        cache_candidates = [s for s in cache_candidates if not s.get("is_cloudstream")]
 
     # Drop cached Nuvio plugin streams that were fetched for a different TMDB
     # item.  This can happen when two movies share an IMDb ID in the cache (a
@@ -6889,14 +6946,21 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         print(f"[STREAM DEBUG] delivering {len(usable_cached)} usable cached cards while provider refresh runs")
         callback(usable_cached, is_cached=True, is_complete=False)
 
+    from . import cloudstream
+    has_active_cloudstream = bool(
+        cloudstream.is_cloudstream_enabled()
+        and any(p.get("enabled") and cloudstream.is_provider_runnable(p) for p in cloudstream.get_all_plugins())
+    )
+
     print(
         f"[STREAM DEBUG] stream-capable addons={len(all_stream_addons)} "
         f"plugins={len(plugin_scrapers)} unique/{plugin_scrapers_before_dedup} enabled "
+        f"cloudstream={int(has_active_cloudstream)} "
         f"provider_scope={provider_scope!r} "
         f"names={[a.get('name', 'Unknown') for a in all_stream_addons]}"
     )
-    if not all_stream_addons and not plugin_scrapers:
-        print(f"[STREAM DEBUG] no stream-capable addons or plugins; returning cached cards={len(cached or [])}")
+    if not all_stream_addons and not plugin_scrapers and not has_active_cloudstream:
+        print(f"[STREAM DEBUG] no stream-capable addons, plugins or cloudstream providers; returning cached cards={len(cached or [])}")
         if callback: callback(usable_cached, is_cached=False, is_complete=True)
         return usable_cached
 
@@ -7024,6 +7088,28 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         print(f"[STREAM DEBUG] plugin scraper done scraper={scraper_obj.get('name')!r} raw_cards={len(streams or [])}")
         return provider_name, streams
 
+    def fetch_from_cloudstream():
+        if abort_event and abort_event.is_set():
+            return "CloudStream", []
+        from . import cloudstream
+        if not cloudstream.is_cloudstream_enabled() or not title:
+            return "CloudStream", []
+        try:
+            cs_streams = cloudstream.fetch_cloudstream_streams_for_media(
+                title=title,
+                media_type=actual_media,
+                year=expected_year,
+                season=season,
+                episode=episode,
+                timeout=provider_timeout,
+                imdb_id=imdb_id,
+            )
+            print(f"[STREAM DEBUG] cloudstream stream fetch done raw_cards={len(cs_streams or [])}")
+            return "CloudStream", cs_streams
+        except Exception as e:
+            print(f"[STREAM DEBUG] cloudstream stream fetch failed: {e}")
+            return "CloudStream", []
+
     all_raw_streams = []
     if cached and not force_refresh:
         cache_seed_streams = usable_cache_candidates if source_scope else usable_cached
@@ -7062,7 +7148,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     alias_cache_ids = []
 
     import concurrent.futures
-    total_providers = len(all_stream_addons) + len(plugin_scrapers)
+    total_providers = len(all_stream_addons) + len(plugin_scrapers) + (1 if has_active_cloudstream else 0)
     max_workers_limit = 24 if plugin_scrapers else 6
     num_workers = min(max(total_providers, 2), max_workers_limit) if total_providers > 0 else 1
     if num_workers > 0 and total_providers > 0:
@@ -7135,6 +7221,21 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     print(f"[STREAM DEBUG] direct TMDB ID accepted plugin={scraper.get('name')!r} tmdb_id={initial_tmdb_id!r}")
                     future_to_addon[executor.submit(fetch_from_plugin, scraper, initial_tmdb_id)] = (scraper, initial_tmdb_id)
                     queried_plugin_ids.add(scraper.get("id"))
+
+            from . import cloudstream
+            can_run_cs = (
+                cloudstream.is_cloudstream_enabled()
+                and bool(title)
+                and (
+                    not provider_scope
+                    or provider_scope == "All Providers"
+                    or "cloudstream" in provider_scope.lower()
+                    or any(p.get("name", "").lower() in provider_scope.lower() for p in cloudstream.get_all_plugins())
+                )
+            )
+            if can_run_cs:
+                cs_fut = executor.submit(fetch_from_cloudstream)
+                future_to_addon[cs_fut] = ({"name": "CloudStream", "is_cloudstream": True}, title)
 
             # Submit immediately for any addon that directly supports initial imdb_id
             for addon in all_stream_addons:
@@ -7242,7 +7343,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                     if check_stream_rate_limit_warning(s):
                                         continue
                                     s = dict(s) if isinstance(s, dict) else s
-                                    s["addon_name"] = addon_name
+                                    if not s.get("addon_name"):
+                                        s["addon_name"] = addon_name
                                     all_raw_streams.append(s)
                                 if callback and not (abort_event and abort_event.is_set()):
                                     current_parsed = process_raw_streams(list(all_raw_streams), season=season, episode=episode, ep_title=ep_title)

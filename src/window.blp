@@ -1040,8 +1040,9 @@ template $CineWindow: Adw.ApplicationWindow {
                 styles ["flat", "circular"]
               }
               [title]
-              Adw.WindowTitle {
-                title: _("Plugins");
+              Adw.ViewSwitcher plugins_switcher_title {
+                stack: plugins_sub_stack;
+                policy: wide;
               }
               [end]
               MenuButton {
@@ -1064,145 +1065,332 @@ template $CineWindow: Adw.ApplicationWindow {
                 Button { action-name: "win.open-player"; icon-name: "multimedia-player-symbolic"; tooltip-text: _("Player"); styles ["flat", "local-nav-btn"] }
               }
             }
-            ScrolledWindow {
+            Adw.ViewStack plugins_sub_stack {
               vexpand: true;
               hexpand: true;
-              child: Adw.Clamp {
-                maximum-size: 860;
-                tightening-threshold: 600;
-                margin-top: 18;
-                margin-bottom: 32;
-                margin-start: 16;
-                margin-end: 16;
-                child: Box {
-                  orientation: vertical;
-                  spacing: 24;
-
-                  Box {
-                    orientation: vertical;
-                    spacing: 8;
-                    Box {
-                      spacing: 8;
-                      Label {
-                        label: _("OVERVIEW");
-                        xalign: 0;
-                        hexpand: true;
-                        styles ["heading", "dim-label"]
-                      }
-                      Label plugin_badge_repos {
-                        label: "0 repos";
-                        styles ["plugin-pill-badge"]
-                      }
-                      Label plugin_badge_providers {
-                        label: "0 providers";
-                        styles ["plugin-pill-badge"]
-                      }
-                      Label plugin_badge_status {
-                        label: "Plugins enabled";
-                        styles ["plugin-pill-badge", "plugin-enabled"]
-                      }
-                    }
-                    Adw.PreferencesGroup {
-                      Adw.SwitchRow plugin_enable_globally_row {
-                        title: _("Enable plugin providers globally");
-                        subtitle: _("Use plugin providers during stream discovery.");
-                        active: true;
-                      }
-                      Adw.SwitchRow plugin_group_by_repo_row {
-                        title: _("Group plugin providers by repository");
-                        subtitle: _("In Streams, show one provider per repository instead of one per source.");
-                        active: false;
-                      }
-                    }
-                  }
-
-                  Box {
-                    orientation: vertical;
-                    spacing: 8;
-                    Label {
-                      label: _("ADD REPOSITORY");
-                      xalign: 0;
-                      styles ["heading", "dim-label"]
-                    }
-                    Box {
+              Adw.ViewStackPage page_nuvio_sub {
+                name: "nuvio";
+                title: _("Nuvio");
+                icon-name: "application-x-addon-symbolic";
+                child: ScrolledWindow {
+                  vexpand: true;
+                  hexpand: true;
+                  child: Adw.Clamp {
+                    maximum-size: 860;
+                    tightening-threshold: 600;
+                    margin-top: 18;
+                    margin-bottom: 32;
+                    margin-start: 16;
+                    margin-end: 16;
+                    child: Box {
                       orientation: vertical;
-                      styles ["card"]
-                      spacing: 12;
-                      margin-top: 2;
+                      spacing: 24;
+
                       Box {
                         orientation: vertical;
-                        margin-start: 14;
-                        margin-end: 14;
-                        margin-top: 14;
-                        margin-bottom: 14;
-                        spacing: 12;
-                        Entry plugin_repo_url_entry {
-                          placeholder-text: _("Plugin manifest URL");
-                          hexpand: true;
+                        spacing: 8;
+                        Box {
+                          spacing: 8;
+                          Label {
+                            label: _("OVERVIEW");
+                            xalign: 0;
+                            hexpand: true;
+                            styles ["heading", "dim-label"]
+                          }
+                          Label plugin_badge_repos {
+                            label: "0 repos";
+                            styles ["plugin-pill-badge"]
+                          }
+                          Label plugin_badge_providers {
+                            label: "0 providers";
+                            styles ["plugin-pill-badge"]
+                          }
+                          Label plugin_badge_status {
+                            label: "Plugins enabled";
+                            styles ["plugin-pill-badge", "plugin-enabled"]
+                          }
                         }
-                        Button plugin_install_repo_btn {
-                          label: _("Install Plugin Repository");
-                          styles ["suggested-action", "pill"]
-                          halign: fill;
-                          action-name: "win.install-plugin-repo";
+                        Adw.PreferencesGroup {
+                          Adw.SwitchRow plugin_enable_globally_row {
+                            title: _("Enable plugin providers globally");
+                            subtitle: _("Use plugin providers during stream discovery.");
+                            active: true;
+                          }
+                          Adw.SwitchRow plugin_group_by_repo_row {
+                            title: _("Group plugin providers by repository");
+                            subtitle: _("In Streams, show one provider per repository instead of one per source.");
+                            active: false;
+                          }
                         }
-                        Label plugin_install_status_label {
-                          visible: false;
+                      }
+
+                      Box {
+                        orientation: vertical;
+                        spacing: 8;
+                        Label {
+                          label: _("ADD REPOSITORY");
                           xalign: 0;
-                          styles ["caption", "dim-label"]
-                          wrap: true;
+                          styles ["heading", "dim-label"]
+                        }
+                        Box {
+                          orientation: vertical;
+                          styles ["card"]
+                          spacing: 12;
+                          margin-top: 2;
+                          Box {
+                            orientation: vertical;
+                            margin-start: 14;
+                            margin-end: 14;
+                            margin-top: 14;
+                            margin-bottom: 14;
+                            spacing: 12;
+                            Entry plugin_repo_url_entry {
+                              placeholder-text: _("Plugin manifest URL");
+                              hexpand: true;
+                            }
+                            Button plugin_install_repo_btn {
+                              label: _("Install Plugin Repository");
+                              styles ["suggested-action", "pill"]
+                              halign: fill;
+                              action-name: "win.install-plugin-repo";
+                            }
+                            Label plugin_install_status_label {
+                              visible: false;
+                              xalign: 0;
+                              styles ["caption", "dim-label"]
+                              wrap: true;
+                            }
+                          }
                         }
                       }
-                    }
-                  }
 
-                  Box {
-                    orientation: vertical;
-                    spacing: 8;
-                    Box {
-                      spacing: 8;
-                      Label {
-                        label: _("INSTALLED REPOSITORIES");
-                        xalign: 0;
-                        hexpand: true;
-                        styles ["heading", "dim-label"]
+                      Box {
+                        orientation: vertical;
+                        spacing: 8;
+                        Box {
+                          spacing: 8;
+                          Label {
+                            label: _("INSTALLED REPOSITORIES");
+                            xalign: 0;
+                            hexpand: true;
+                            styles ["heading", "dim-label"]
+                          }
+                          Button plugin_refresh_all_btn {
+                            icon-name: "view-refresh-symbolic";
+                            tooltip-text: _("Refresh all repositories");
+                            styles ["flat", "circular"]
+                            action-name: "win.refresh-all-plugin-repos";
+                          }
+                        }
+                        ListBox plugin_repos_listbox {
+                          selection-mode: none;
+                          styles ["boxed-list"]
+                        }
                       }
-                      Button plugin_refresh_all_btn {
-                        icon-name: "view-refresh-symbolic";
-                        tooltip-text: _("Refresh all repositories");
-                        styles ["flat", "circular"]
-                        action-name: "win.refresh-all-plugin-repos";
-                      }
-                    }
-                    ListBox plugin_repos_listbox {
-                      selection-mode: none;
-                      styles ["boxed-list"]
-                    }
-                  }
 
-                  Box {
-                    orientation: vertical;
-                    spacing: 8;
-                    Box {
-                      spacing: 8;
-                      Label {
-                        label: _("PROVIDERS");
-                        xalign: 0;
-                        hexpand: true;
-                        styles ["heading", "dim-label"]
+                      Box {
+                        orientation: vertical;
+                        spacing: 8;
+                        Box {
+                          spacing: 8;
+                          Label {
+                            label: _("PROVIDERS");
+                            xalign: 0;
+                            hexpand: true;
+                            styles ["heading", "dim-label"]
+                          }
+                          SearchEntry plugin_provider_search_entry {
+                            placeholder-text: _("Filter providers...");
+                            width-request: 220;
+                          }
+                        }
+                        ListBox plugin_providers_listbox {
+                          selection-mode: none;
+                          styles ["boxed-list"]
+                        }
                       }
-                      SearchEntry plugin_provider_search_entry {
-                        placeholder-text: _("Filter providers...");
-                        width-request: 220;
-                      }
-                    }
-                    ListBox plugin_providers_listbox {
-                      selection-mode: none;
-                      styles ["boxed-list"]
-                    }
-                  }
+                    };
+                  };
                 };
-              };
+              }
+              Adw.ViewStackPage page_cloudstream_sub {
+                name: "cloudstream";
+                title: _("CloudStream");
+                icon-name: "network-wireless-symbolic";
+                child: ScrolledWindow {
+                  vexpand: true;
+                  hexpand: true;
+                  child: Adw.Clamp {
+                    maximum-size: 860;
+                    tightening-threshold: 600;
+                    margin-top: 18;
+                    margin-bottom: 32;
+                    margin-start: 16;
+                    margin-end: 16;
+                    child: Box {
+                      orientation: vertical;
+                      spacing: 24;
+
+                      Box {
+                        orientation: vertical;
+                        spacing: 8;
+                        Box {
+                          spacing: 8;
+                          Label {
+                            label: _("OVERVIEW");
+                            xalign: 0;
+                            hexpand: true;
+                            styles ["heading", "dim-label"]
+                          }
+                          Label cloudstream_badge_repos {
+                            label: "0 repos";
+                            styles ["plugin-pill-badge"]
+                          }
+                          Label cloudstream_badge_installed {
+                            label: "0 installed";
+                            styles ["plugin-pill-badge"]
+                          }
+                          Label cloudstream_badge_providers {
+                            label: "0 active";
+                            styles ["plugin-pill-badge"]
+                          }
+                          Label cloudstream_badge_status {
+                            label: "CloudStream enabled";
+                            styles ["plugin-pill-badge", "plugin-enabled"]
+                          }
+                        }
+                        Adw.PreferencesGroup {
+                          Adw.SwitchRow cloudstream_enable_globally_row {
+                            title: _("Enable CloudStream plugins globally");
+                            subtitle: _("Use CloudStream providers during search and stream discovery.");
+                            active: true;
+                          }
+                        }
+                        Box cloudstream_security_warning_box {
+                          orientation: vertical;
+                          styles ["card"]
+                          spacing: 8;
+                          margin-top: 4;
+                          Box {
+                            orientation: vertical;
+                            margin-start: 14;
+                            margin-end: 14;
+                            margin-top: 14;
+                            margin-bottom: 14;
+                            spacing: 8;
+                            Label {
+                              label: _("Security Notice");
+                              xalign: 0;
+                              styles ["heading"]
+                            }
+                            Label {
+                              label: _("CloudStream plugins are maintained by third-party community developers. Only install repositories that you trust.");
+                              xalign: 0;
+                              wrap: true;
+                              styles ["dim-label", "caption"]
+                            }
+                            Button cloudstream_accept_warning_btn {
+                              label: _("I Understand and Accept");
+                              styles ["suggested-action", "pill"]
+                              halign: start;
+                            }
+                          }
+                        }
+                      }
+
+                      Box {
+                        orientation: vertical;
+                        spacing: 8;
+                        Label {
+                          label: _("ADD CLOUDSTREAM REPOSITORY");
+                          xalign: 0;
+                          styles ["heading", "dim-label"]
+                        }
+                        Box {
+                          orientation: vertical;
+                          styles ["card"]
+                          spacing: 12;
+                          margin-top: 2;
+                          Box {
+                            orientation: vertical;
+                            margin-start: 14;
+                            margin-end: 14;
+                            margin-top: 14;
+                            margin-bottom: 14;
+                            spacing: 12;
+                            Entry cloudstream_repo_url_entry {
+                              placeholder-text: _("CloudStream repository URL (GitHub repo, short link, or repo.json)");
+                              hexpand: true;
+                            }
+                            Button cloudstream_install_repo_btn {
+                              label: _("Install CloudStream Repository");
+                              styles ["suggested-action", "pill"]
+                              halign: fill;
+                            }
+                            Label cloudstream_install_status_label {
+                              visible: false;
+                              xalign: 0;
+                              styles ["caption", "dim-label"]
+                              wrap: true;
+                            }
+                          }
+                        }
+                      }
+
+                      Box {
+                        orientation: vertical;
+                        spacing: 8;
+                        Box {
+                          spacing: 8;
+                          Label {
+                            label: _("INSTALLED REPOSITORIES");
+                            xalign: 0;
+                            hexpand: true;
+                            styles ["heading", "dim-label"]
+                          }
+                          Button cloudstream_refresh_all_btn {
+                            icon-name: "view-refresh-symbolic";
+                            tooltip-text: _("Refresh all repositories");
+                            styles ["flat", "circular"]
+                          }
+                        }
+                        ListBox cloudstream_repos_listbox {
+                          selection-mode: none;
+                          styles ["boxed-list"]
+                        }
+                      }
+
+                      Box {
+                        orientation: vertical;
+                        spacing: 8;
+                        Box {
+                          spacing: 8;
+                          Label {
+                            label: _("PROVIDERS & EXTENSIONS");
+                            xalign: 0;
+                            hexpand: true;
+                            styles ["heading", "dim-label"]
+                          }
+                          SearchEntry cloudstream_provider_search_entry {
+                            placeholder-text: _("Filter providers...");
+                            width-request: 220;
+                          }
+                          Button cloudstream_bulk_install_btn {
+                            label: _("Install & Enable All");
+                            icon-name: "folder-download-symbolic";
+                            styles ["flat", "pill"]
+                            tooltip-text: _("Install and enable all compatible providers");
+                          }
+                        }
+                        ListBox cloudstream_plugins_listbox {
+                          selection-mode: none;
+                          styles ["boxed-list"]
+                        }
+                      }
+                    };
+                  };
+                };
+              }
             }
           };
         }

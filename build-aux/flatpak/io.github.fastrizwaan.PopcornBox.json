@@ -264,6 +264,7 @@
                         ".flatpak-builder",
                         "build-dir",
                         "NuvioDesktop",
+                        "NuvioMobile-Enhanced",
                         "_build",
                         ".ruff_cache",
                         "screenshots"
