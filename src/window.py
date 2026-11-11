@@ -4599,9 +4599,6 @@ class CineWindow(Adw.ApplicationWindow):
     cw_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
     fav_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
     hist_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
-    watch_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
-    down_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
-    addon_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
 
     addon_catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
     addon_type_dropdown: Gtk.DropDown = Gtk.Template.Child()
@@ -4611,7 +4608,6 @@ class CineWindow(Adw.ApplicationWindow):
     addon_url_entry: Gtk.Entry = Gtk.Template.Child()
     addons_listbox: Gtk.ListBox = Gtk.Template.Child()
 
-    plugin_active_btn: Gtk.ToggleButton = Gtk.Template.Child()
     plugin_badge_repos: Gtk.Label = Gtk.Template.Child()
     plugin_badge_providers: Gtk.Label = Gtk.Template.Child()
     plugin_badge_status: Gtk.Label = Gtk.Template.Child()
@@ -4833,9 +4829,6 @@ class CineWindow(Adw.ApplicationWindow):
         self.cw_active_btn.connect("toggled", on_active_btn_toggled)
         self.fav_active_btn.connect("toggled", on_active_btn_toggled)
         self.hist_active_btn.connect("toggled", on_active_btn_toggled)
-        self.watch_active_btn.connect("toggled", on_active_btn_toggled)
-        self.down_active_btn.connect("toggled", on_active_btn_toggled)
-        self.addon_active_btn.connect("toggled", on_active_btn_toggled)
 
         self.can_go_next: bool = False
         self.chapters: list = []
