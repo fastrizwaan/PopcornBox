@@ -412,6 +412,11 @@ class MovieDetailsPage(Gtk.Overlay):
             self.media_type = "movie"
         elif item_raw_id.startswith("ctmdb.") or self.media_type == "collections":
             self.media_type = "collections"
+        elif (
+            (item_raw_id.startswith("cloudstream:") or self.movie_stub.get("is_cloudstream"))
+            and re.search(r"\b(season\s*\d+|series|s\d{1,2}(?:e\d{1,2})?|episodes?|ep\s*\d+)\b", f"{self.catalog_title} {item_raw_id} {self.movie_stub.get('title', '')}", re.IGNORECASE)
+        ):
+            self.media_type = "series"
         elif self.media_type in ["series", "tvshow", "tv_series"]:
             self.media_type = "series"
         elif self.media_type in ["tv", "channel", "tvchannel"]:
@@ -1948,6 +1953,10 @@ class MovieDetailsPage(Gtk.Overlay):
             if self._destroyed or _is_event_set(getattr(self, 'page_abort_event', None)):
                 return
             from . import api
+            if self.media_type not in ("series", "anime", "tv"):
+                is_cs = bool(self.movie_stub.get("is_cloudstream") or str(item_id).startswith("cloudstream:"))
+                if is_cs and re.search(r"\b(season\s*\d+|series|s\d{1,2}(?:e\d{1,2})?|episodes?|ep\s*\d+)\b", f"{getattr(self, 'catalog_title', None)} {self.movie_stub.get('title')} {item_id}", re.IGNORECASE):
+                    self.media_type = "series"
             details = api.fetch_movie_details(
                 item_id,
                 self.media_type,
@@ -2607,7 +2616,12 @@ class MovieDetailsPage(Gtk.Overlay):
             if hasattr(self, 'row2_box'):
                 self.row2_box.set_visible(True)
 
-            seasons = sorted(list(set([v.get("season", 1) for v in videos])))
+            seasons = sorted(list(set([
+                v.get("season") if v.get("season") is not None else 1
+                for v in videos
+            ])))
+            if not seasons:
+                seasons = [1]
             self.seasons = seasons
 
             show_seasons = not self.is_channel and (len(self.seasons) > 1 or self.media_type in ["series", "anime"])
@@ -2714,7 +2728,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     self._user_selected_episode = True
                 self.selected_season = s
                 self.movie_stub["season"] = s
-                eps = [v for v in self.videos if v.get("season", 1) == s]
+                eps = [v for v in self.videos if (v.get("season") if v.get("season") is not None else 1) == s]
                 if self.is_channel:
                     unique_eps = []
                     seen_ids = set()
@@ -2732,24 +2746,24 @@ class MovieDetailsPage(Gtk.Overlay):
                     unique_eps = []
                     seen_eps = set()
                     for e in eps:
-                        ep_num = e.get("episode", 0)
+                        ep_num = e.get("episode") if e.get("episode") is not None else 0
                         if ep_num not in seen_eps:
                             seen_eps.add(ep_num)
                             unique_eps.append(e)
-                    unique_eps.sort(key=lambda x: x.get("episode", 0))
+                    unique_eps.sort(key=lambda x: (x.get("episode") if x.get("episode") is not None else 0))
                     self.current_episodes = unique_eps
                 
                 if self.is_channel:
                     ep_strings = [e.get('title') or e.get('name') or f"Video {idx+1}" for idx, e in enumerate(unique_eps)]
                 elif self.media_type in ["series", "anime", "tv"]:
-                    ep_strings = [f"Ep {e.get('episode')}: {e.get('title') or e.get('name', '')}" for e in unique_eps]
+                    ep_strings = [f"Ep {e.get('episode') if e.get('episode') is not None else idx+1}: {e.get('title') or e.get('name', '')}" for idx, e in enumerate(unique_eps)]
                 else:
                     ep_strings = [f"{e.get('episode', idx+1)}. {e.get('title') or e.get('name', '')}" for idx, e in enumerate(unique_eps)]
                 
                 self._ignore_dropdown_changes = True
                 try:
                     self.episode_dropdown.set_model(Gtk.StringList.new(ep_strings))
-                    ep_nums = [e.get('episode') for e in unique_eps]
+                    ep_nums = [e.get('episode') if e.get('episode') is not None else (idx + 1) for idx, e in enumerate(unique_eps)]
                     
                     if self.is_channel:
                         default_ep_idx = 0
@@ -3075,9 +3089,10 @@ class MovieDetailsPage(Gtk.Overlay):
         cloudstream_route_id = movie_details.get("cloudstream_route_id")
         if not (isinstance(cloudstream_route_id, str) and cloudstream_route_id.startswith("cloudstream:")):
             stub_route_id = self.movie_stub.get("id")
-            cloudstream_route_id = (
-                stub_route_id if isinstance(stub_route_id, str) and stub_route_id.startswith("cloudstream:") else None
-            )
+            if isinstance(stub_route_id, str) and stub_route_id.startswith("cloudstream:"):
+                cloudstream_route_id = stub_route_id
+            elif selected_video and isinstance(selected_video, dict) and str(selected_video.get("id", "")).startswith("cloudstream:"):
+                cloudstream_route_id = str(selected_video.get("id"))
         details_id = movie_details.get("id")
         if str(movie_details.get("metadata_source", "")).lower() == "tmdb" and movie_details.get("tmdb_id"):
             resolved_imdb_id = movie_details.get("imdb_id")
@@ -3100,7 +3115,13 @@ class MovieDetailsPage(Gtk.Overlay):
             item_id = next((candidate for candidate in item_id if candidate), None)
         
         req_media_type = self.media_type
-        if video_id and str(video_id).startswith("tt") and self.media_type not in ["series", "anime"]:
+        if req_media_type not in ["series", "anime", "tv"] and (
+            (item_id and str(item_id).startswith("cloudstream:")) or self.movie_stub.get("is_cloudstream")
+        ):
+            if re.search(r"\b(season\s*\d+|series|s\d{1,2}(?:e\d{1,2})?|episodes?|ep\s*\d+)\b", f"{self.catalog_title} {item_id} {self.movie_stub.get('title', '')}", re.IGNORECASE):
+                req_media_type = "series"
+                self.media_type = "series"
+        elif video_id and str(video_id).startswith("tt") and self.media_type not in ["series", "anime"]:
             req_media_type = "movie"
 
         sel_season = getattr(self, 'selected_season', None) if req_media_type in ["series", "anime", "tv"] and not self.is_channel else None
@@ -3399,7 +3420,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 f"cached={is_cached} complete={is_complete}"
             )
             latest_batch[0] = (torrents, is_cached, is_complete)
-            if is_complete or is_cached:
+            if is_complete or is_cached or (torrents and not getattr(self, "torrents", None)):
                 if batch_timer[0]:
                     GLib.source_remove(batch_timer[0])
                     batch_timer[0] = None

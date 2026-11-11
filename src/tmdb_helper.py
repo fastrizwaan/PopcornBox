@@ -2289,6 +2289,7 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
                 addon_tmdb_id = meta_id.split(":", 1)[1].split(":", 1)[0] if meta_id.startswith("tmdb:") else None
                 return {
                     "id": meta.get("id") or item_id,
+                    "type": media_type,
                     "tmdb_id": str(tmdb_id) if tmdb_id else addon_tmdb_id,
                     "imdb_id": meta.get("imdb_id"),
                     "metadata_source": "tmdb",
@@ -2480,6 +2481,7 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
 
     return {
         "id": item_reference_id,
+        "type": media_type,
         "imdb_id": imdb_id if str(imdb_id).startswith("tt") else None,
         "tmdb_id": str(tmdb_id),
         "metadata_source": "tmdb",

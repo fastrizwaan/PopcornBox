@@ -1052,7 +1052,10 @@ class MovieWidget(Gtk.Box):
             if raw_title:
                 movie_data.setdefault("catalog_title", raw_title)
                 movie_data.setdefault("raw_title", raw_title)
-                from .cloudstream import clean_cloudstream_title
+                from .cloudstream import clean_cloudstream_title, is_cloudstream_series
+                if is_cloudstream_series(raw_title, str(movie_data.get("id", "")), movie_data.get("type")):
+                    movie_data["type"] = "series"
+                    item_type = "series"
                 clean_name, extracted_year = clean_cloudstream_title(raw_title)
                 if clean_name:
                     movie_data["title"] = clean_name

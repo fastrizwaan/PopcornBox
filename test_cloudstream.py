@@ -35,6 +35,7 @@ if res_file.exists():
 
 from src import database
 from src import cloudstream
+from src import api
 
 
 class TestCloudStream(unittest.TestCase):
@@ -1039,6 +1040,80 @@ class TestCloudStream(unittest.TestCase):
         t3, y3 = cloudstream.clean_cloudstream_title("Download Other Mommy (2026) PrimeVideo : Dual Audio {Hindi-English} 480p HD 720p & 1080p x264 WEB-DL")
         self.assertEqual(t3, "Other Mommy")
         self.assertEqual(y3, "2026")
+
+    def test_is_cloudstream_series(self):
+        self.assertTrue(cloudstream.is_cloudstream_series("Love in Disguise (Season 1)"))
+        self.assertTrue(cloudstream.is_cloudstream_series("Loki S02 1080p"))
+        self.assertTrue(cloudstream.is_cloudstream_series("Game of Thrones Season 1-8"))
+        self.assertTrue(cloudstream.is_cloudstream_series("Show Name", "https://example.com/shows/season-2"))
+        self.assertTrue(cloudstream.is_cloudstream_series("My Hero Academia", catalog_type="series"))
+        self.assertFalse(cloudstream.is_cloudstream_series("Inception (2010)", "https://example.com/movies/inception", "movie"))
+
+    def test_clean_cloudstream_title_series(self):
+        t1, y1 = cloudstream.clean_cloudstream_title("Love in Disguise (Season 1) (2026)")
+        self.assertEqual(t1, "Love in Disguise")
+        self.assertEqual(y1, "2026")
+
+        t2, y2 = cloudstream.clean_cloudstream_title("House of the Dragon Season 2 [1080p]")
+        self.assertEqual(t2, "House of the Dragon")
+
+    def test_parse_archive_episodes(self):
+        sample_html = """
+        <div class="entry-content">
+            <h5>EP01 - 720p</h5>
+            <a href="https://hubcloud.club/drive/ep1">HubCloud 720p</a>
+            <a href="https://pixeldrain.dev/u/ep1pixel">PixelDrain</a>
+            <h5>EP02 - 720p</h5>
+            <a href="https://hubcloud.club/drive/ep2">HubCloud 720p</a>
+        </div>
+        """
+        eps = cloudstream.parse_archive_episodes(sample_html)
+        self.assertIn(1, eps)
+        self.assertIn(2, eps)
+        self.assertEqual(len(eps[1]), 2)
+        self.assertEqual(len(eps[2]), 1)
+        self.assertEqual(eps[1][0][0], "https://hubcloud.club/drive/ep1")
+
+    def test_load_item_to_details_dict_series_fallback(self):
+        item = {
+            "provider_id": "test_prov",
+            "data": "test_data",
+            "name": "Love in Disguise (Season 1)",
+            "type": cloudstream.CloudStreamTvType.Other,
+            "episodes": [],
+        }
+        details = cloudstream.load_item_to_details_dict(item)
+        self.assertEqual(details["type"], "series")
+        self.assertEqual(details["title"], "Love in Disguise")
+        self.assertEqual(len(details["videos"]), 1)
+        self.assertEqual(details["videos"][0]["season"], 1)
+        self.assertEqual(details["videos"][0]["episode"], 1)
+
+    def test_immediate_cloudstream_route_fetch(self):
+        route_id = "cloudstream:80:https://example.com/repo.json#MoviesDrivemoviesdrive:https://example.com/item"
+        mock_streams = [{
+            "name": "MoviesDrive S1E2 1080p",
+            "url": "https://example.com/stream.mp4",
+            "is_http": True,
+            "quality": "1080p",
+        }]
+        with patch("src.cloudstream.get_streams_for_route", return_value=mock_streams) as mock_get_streams:
+            callback_batches = []
+            res = api.get_torrents_streamed(
+                "tt9999999:1:2",
+                "series",
+                1,
+                2,
+                callback=lambda batch, is_cached, is_complete: callback_batches.append((batch, is_complete)),
+                source_scope="direct",
+                cloudstream_route_id=route_id,
+                title="Test Show",
+            )
+            mock_get_streams.assert_called_once_with(route_id, season=1, episode=2)
+            self.assertEqual(len(res), 1)
+            self.assertEqual(res[0]["url"], "https://example.com/stream.mp4")
+            self.assertTrue(len(callback_batches) >= 1)
+            self.assertTrue(callback_batches[0][1])
 
 
 if __name__ == "__main__":

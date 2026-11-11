@@ -4916,9 +4916,11 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
     if str(imdb_id).startswith("cloudstream:"):
         route_id = str(imdb_id)
         raw_catalog_title = str(title or "").strip()
+        from . import cloudstream
+        if media_type not in ("series", "anime", "tv") and cloudstream.is_cloudstream_series(raw_catalog_title or title or "", route_id, media_type):
+            media_type = "series"
         if prefer_tmdb and title and media_type in ("movie", "series", "anime"):
             title_text = raw_catalog_title
-            from . import cloudstream
             clean_name, extracted_year = cloudstream.clean_cloudstream_title(title_text)
             year_text_match = re.search(r"\b((?:18|19|20)\d{2})\b", str(expected_year or extracted_year or ""))
             year_text = year_text_match.group(1) if year_text_match else None
@@ -4972,6 +4974,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 resolved_year = str(tmdb_meta.get("year") or "")[:4]
                 if year_text and resolved_year and resolved_year != year_text:
                     continue
+                tmdb_meta["type"] = media_type
                 tmdb_meta["cloudstream_route_id"] = route_id
                 tmdb_meta["is_cloudstream"] = True
                 if raw_catalog_title:
@@ -4992,6 +4995,10 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             if raw_catalog_title:
                 meta.setdefault("catalog_title", raw_catalog_title)
                 meta.setdefault("original_title", raw_catalog_title)
+            if media_type == "series" or cloudstream.is_cloudstream_series(raw_catalog_title or meta.get("title") or "", route_id, meta.get("type")):
+                meta["type"] = "series"
+            elif media_type:
+                meta["type"] = media_type
             if prefer_tmdb and title and media_type in ("movie", "series", "anime"):
                 fallback_title = identity_title or release_title
                 if fallback_title:
@@ -6536,7 +6543,7 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
         
     if str(imdb_id).startswith("cloudstream:"):
         from . import cloudstream
-        return cloudstream.get_streams_for_route(str(imdb_id))
+        return cloudstream.get_streams_for_route(str(imdb_id), season=season, episode=episode)
 
     if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
         parts = str(imdb_id).split("||")
@@ -6914,13 +6921,36 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         elif len(parts) == 2 and parts[-1].isdigit() and parts[0].startswith("tt"):
             imdb_id = parts[0]
 
-    if str(imdb_id).startswith("cloudstream:"):
+    target_cs_route = str(imdb_id) if str(imdb_id).startswith("cloudstream:") else (
+        cloudstream_route_id if (isinstance(cloudstream_route_id, str) and cloudstream_route_id.startswith("cloudstream:")) else None
+    )
+    initial_cs_streams = []
+    if target_cs_route:
         from . import cloudstream
-        route_streams = cloudstream.get_streams_for_route(str(imdb_id))
-        if route_streams:
-            if callback: callback(route_streams, is_cached=False, is_complete=True)
-            return route_streams
+        print(f"[STREAM DEBUG] CloudStream immediate route lookup starting: {target_cs_route!r} s={season} e={episode}")
+        try:
+            route_streams = cloudstream.get_streams_for_route(target_cs_route, season=season, episode=episode)
+            if route_streams:
+                print(f"[STREAM DEBUG] CloudStream immediate route lookup returned {len(route_streams)} stream(s)")
+                initial_cs_streams = list(route_streams)
+                parsed_initial = process_raw_streams(route_streams, season=season, episode=episode, ep_title=ep_title) or route_streams
+                if parsed_initial:
+                    clean_source_scope = str(source_scope).strip().lower() if source_scope else None
+                    is_only_cs = bool(
+                        str(imdb_id).startswith("cloudstream:")
+                        or clean_source_scope == "direct"
+                    )
+                    if callback:
+                        callback(parsed_initial, is_cached=False, is_complete=is_only_cs)
+                    if is_only_cs:
+                        cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
+                        if cache_key:
+                            database.save_cached_streams(cache_key, parsed_initial)
+                        return parsed_initial
+        except Exception as e:
+            print(f"[STREAM DEBUG] CloudStream immediate route lookup failed: {e}")
 
+    if str(imdb_id).startswith("cloudstream:") and not initial_cs_streams:
         # A search-card route may have no playable links on its own. Try its
         # canonical identity when available, then continue through provider
         # discovery by title if TMDB resolution is unavailable.
@@ -7237,7 +7267,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     # CloudStream resolution spans search, load, and loadLinks. Give it its
     # own budget so slow but healthy providers are not discarded at the
     # shorter per-request timeout used by ordinary add-ons.
-    cloudstream_timeout = min(120.0, max(90.0, provider_timeout * 3.0))
+    cloudstream_timeout = min(20.0, max(8.0, provider_timeout * 1.5))
     retry_backoff_budget = sum(min(1.5 * (2 ** attempt), 4.0) for attempt in range(provider_retries))
     # Each retry reacquires a host slot (bounded to 4s) before making the HTTP
     # request. Use one total deadline for collection, including all attempts.
@@ -7365,14 +7395,9 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         from . import cloudstream
         if not cloudstream.is_cloudstream_enabled() or not title:
             return "CloudStream", []
-        route_executor = None
-        route_future = None
+        if initial_cs_streams:
+            return "CloudStream", []
         try:
-            if isinstance(cloudstream_route_id, str) and cloudstream_route_id.startswith("cloudstream:"):
-                # Resolve the clicked result while title/year searches run so
-                # one slow provider route cannot hold up the other providers.
-                route_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                route_future = route_executor.submit(cloudstream.get_streams_for_route, cloudstream_route_id)
             cs_streams = cloudstream.fetch_cloudstream_streams_for_media(
                 title=title,
                 media_type=actual_media,
@@ -7383,30 +7408,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 imdb_id=imdb_id,
                 catalog_title=catalog_title,
             )
-            route_streams = []
-            if route_future:
-                try:
-                    route_streams = route_future.result(timeout=10.0) or []
-                except concurrent.futures.TimeoutError:
-                    print("[STREAM DEBUG] CloudStream clicked-route lookup timed out")
-                except Exception as e:
-                    print(f"[STREAM DEBUG] CloudStream clicked-route lookup failed: {e}")
-            if route_streams:
-                print(f"[STREAM DEBUG] CloudStream clicked-route lookup returned {len(route_streams)} stream(s)")
-            combined_streams = list(route_streams or []) + list(cs_streams or [])
-            print(
-                f"[STREAM DEBUG] cloudstream stream fetch done route_cards={len(route_streams or [])} "
-                f"provider_cards={len(cs_streams or [])}"
-            )
-            return "CloudStream", combined_streams
+            return "CloudStream", cs_streams or []
         except Exception as e:
             print(f"[STREAM DEBUG] cloudstream stream fetch failed: {e}")
             return "CloudStream", []
-        finally:
-            if route_executor:
-                route_executor.shutdown(wait=False, cancel_futures=True)
 
-    all_raw_streams = []
+    all_raw_streams = list(initial_cs_streams)
     if cached and not force_refresh:
         cache_seed_streams = usable_cache_candidates if source_scope else usable_cached
         for c in cache_seed_streams:
@@ -7461,7 +7468,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         queried_plugin_ids = set()
         effective_collection_timeout = provider_collection_timeout
         if has_active_cloudstream:
-            effective_collection_timeout = max(effective_collection_timeout, cloudstream_timeout + 15.0)
+            effective_collection_timeout = max(effective_collection_timeout, cloudstream_timeout + 5.0)
         collection_deadline = time.monotonic() + effective_collection_timeout
         print(
             f"[STREAM DEBUG] effective provider collection budget={effective_collection_timeout:.1f}s "

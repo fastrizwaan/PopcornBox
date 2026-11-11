@@ -631,6 +631,64 @@ def parse_cloudstream_route_id(value):
     return provider_id, data
 
 
+def is_cloudstream_series(title_text="", url_or_data="", catalog_type=""):
+    """
+    Determines if a title, data link, or catalog section represents an episodic TV series.
+    """
+    c_type = str(catalog_type or "").strip().lower()
+    if c_type in ("series", "tvseries", "tvshow", "tv_series", "show", "anime"):
+        return True
+    combo = f"{title_text or ''} {url_or_data or ''}".strip()
+    if not combo:
+        return False
+    return bool(re.search(
+        r"\b(season\b|series\b|tvshow|s\d{1,2}(?:e\d{1,2})?|episodes?|ep\s*\d+)\b",
+        combo,
+        re.IGNORECASE,
+    ))
+
+
+def parse_archive_episodes(html):
+    """
+    Parses an intermediate episode archive page (e.g. mdrive, nexdrive, fxlinks, dflinks, modpro, file-dl)
+    and returns a mapping of episode_number (int) -> list of (url, label).
+    """
+    if not html:
+        return {}
+    episodes = {}
+
+    # Pattern 1: Heading above links (e.g. <h5>EP01...</h5> or -:Episodes: 01:- or <h4>Episode 1</h4>)
+    sections = re.split(r"(?i)(?:<h[3-6][^>]*>\s*(?:EP|Episode)\s*(\d{1,2})|-?:\s*Episodes?:\s*(\d{1,2})\s*:-?)", html)
+    if len(sections) > 1:
+        i = 1
+        while i < len(sections):
+            ep_str = sections[i] or sections[i+1]
+            block = sections[i+2]
+            if ep_str and ep_str.isdigit():
+                ep_num = int(ep_str)
+                links = re.findall(r"""<a\b[^>]*href=["\x27](https?://[^"\x27]+)["\x27][^>]*>(.*?)</a>""", block, re.I | re.DOTALL)
+                for h, t in links:
+                    h_clean = h.strip()
+                    if any(k in h_clean.lower() for k in ["hubcloud", "fastdl", "nexdrive", "drive", "filebee", "gdflix", "pixeldrain", "only-apis", "dl.", "vcloud"]):
+                        if not any(existing_h == h_clean for existing_h, _ in episodes.get(ep_num, [])):
+                            episodes.setdefault(ep_num, []).append((h_clean, re.sub(r"<[^>]+>", "", t).strip()))
+            i += 3
+
+    # Pattern 2: Anchors containing Episode text
+    anchor_matches = re.finditer(r"""<a\b[^>]*href=["\x27](https?://[^"\x27]+)["\x27][^>]*>(.*?)</a>""", html, re.I | re.DOTALL)
+    for m in anchor_matches:
+        h, t = m.group(1).strip(), m.group(2)
+        clean_t = re.sub(r"<[^>]+>", " ", t).strip()
+        ep_m = re.search(r"\b(?:EP|Episode)\.?\s*(\d{1,2})\b", clean_t, re.I)
+        if ep_m:
+            ep_num = int(ep_m.group(1))
+            if any(k in h.lower() for k in ["hubcloud", "fastdl", "nexdrive", "drive", "filebee", "gdflix", "pixeldrain", "dl.", "thenaukriadda", "fastdlserver", "vcloud"]):
+                if not any(existing_h == h for existing_h, _ in episodes.get(ep_num, [])):
+                    episodes.setdefault(ep_num, []).append((h, clean_t))
+
+    return episodes
+
+
 # --- Built-in CloudStream Provider Architecture ---
 
 class CloudStreamProvider:
@@ -778,7 +836,7 @@ class KickTRCloudStreamProvider(CloudStreamProvider):
             "episodes": [],
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         slug = self._to_slug(data_str)
         encoded = urllib.parse.quote(slug)
         channel_page = f"https://kick.com/{slug}"
@@ -1011,17 +1069,7 @@ class MegaProviderCloudStreamProvider(CloudStreamProvider):
         return added, len(urls), errors
 
     def search(self, query):
-        added, total, errors = self.sync_repositories()
-        return [{
-            "provider_id": self.id,
-            "data": "mega:synced",
-            "name": f"MegaRepo Synced ({added}/{total} Repositories)",
-            "type": CloudStreamTvType.Other,
-            "poster_url": None,
-            "background_url": None,
-            "description": f"Successfully synced {added} repositories from CloudStream repos-db.json.",
-            "year": 2026,
-        }]
+        return []
 
     def load(self, data_str):
         return {
@@ -1038,7 +1086,7 @@ class MegaProviderCloudStreamProvider(CloudStreamProvider):
             "episodes": [],
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         return []
 
 
@@ -1078,7 +1126,7 @@ class TwitchCloudStreamProvider(CloudStreamProvider):
             "episodes": [],
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         channel = data_str.split(":")[-1].strip().lower()
         stream_url = f"https://twitch.tv/{channel}"
         return [{
@@ -1193,7 +1241,7 @@ class DailymotionCloudStreamProvider(CloudStreamProvider):
             "episodes": [],
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         vid = _extract_dailymotion_id(data_str)
         if not vid:
             return []
@@ -1413,7 +1461,7 @@ class InternetArchiveCloudStreamProvider(CloudStreamProvider):
             "episodes": [],
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         ident = data_str.split(":")[-1].strip()
         url = f"https://archive.org/metadata/{ident}"
         try:
@@ -1565,7 +1613,7 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
             "episodes": [],
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         vid = _extract_youtube_id(data_str)
         if not vid:
             return []
@@ -1779,6 +1827,8 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
 
     def load(self, data_str):
         href = data_str.split("bollyflix:")[-1].strip()
+        if "#" in href:
+            href = href.split("#")[0].strip()
         try:
             html = _http_get_text(href, timeout=8.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
@@ -1790,38 +1840,123 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
         except Exception:
             title = "Bollyflix Movie"
             poster = None
+            html = ""
+
+        is_series = is_cloudstream_series(title, href)
+        episodes = []
+        if is_series and html:
+            s_match = re.search(r"\bseason\s*(\d{1,2})\b|\bS(\d{1,2})\b", f"{title} {href}", re.I)
+            season_num = int(s_match.group(1) or s_match.group(2)) if s_match else 1
+            archive_links = re.findall(r'<a[^>]+href=["\'](https?://[^"\']*(?:fxlinks|linksmod|elinks)[^"\']*)["\']', html)
+            archive_eps = {}
+            if archive_links:
+                try:
+                    m_req = urllib.request.Request(archive_links[0], headers={
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Referer": href
+                    })
+                    with urllib.request.urlopen(m_req, timeout=5.0) as mr:
+                        m_html = mr.read().decode("utf-8", errors="ignore")
+                    archive_eps = parse_archive_episodes(m_html)
+                except Exception as e:
+                    logger.debug(f"Bollyflix archive episode parse error: {e}")
+
+            if archive_eps:
+                ep_numbers = sorted(list(archive_eps.keys()))
+            else:
+                ep_match = re.search(r"(?:Ep|Episode)\.?\s*(\d+)", title, re.I)
+                max_ep = int(ep_match.group(1)) if ep_match else 1
+                ep_numbers = list(range(1, max(1, max_ep) + 1))
+
+            for ep_num in ep_numbers:
+                episodes.append({
+                    "name": f"Episode {ep_num}",
+                    "season": season_num,
+                    "episode": ep_num,
+                    "data": f"bollyflix:{href}#s={season_num}&e={ep_num}",
+                    "poster_url": poster,
+                    "description": f"Season {season_num} Episode {ep_num}",
+                })
 
         return {
             "provider_id": self.id,
             "data": data_str,
             "name": title,
-            "type": CloudStreamTvType.Movie,
+            "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
             "poster_url": poster,
             "background_url": poster,
             "description": title,
             "year": None,
             "rating_percent": None,
             "tags": ["Bollyflix"],
-            "episodes": [],
+            "episodes": episodes,
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         href = data_str.split("bollyflix:")[-1].strip()
+        target_season = int(season) if season is not None else None
+        target_episode = int(episode) if episode is not None else None
+        if "#" in href:
+            base_href, fragment = href.split("#", 1)
+            href = base_href.strip()
+            s_m = re.search(r"\bs=(\d+)", fragment)
+            e_m = re.search(r"\be=(\d+)", fragment)
+            if s_m and target_season is None: target_season = int(s_m.group(1))
+            if e_m and target_episode is None: target_episode = int(e_m.group(1))
+
         try:
             html = _http_get_text(href, timeout=8.0)
             links = re.findall(r"<a\s+[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>", html, re.I | re.DOTALL)
             sources = []
             for target_url, text in links:
                 clean_text = re.sub(r"<[^>]+>", "", text).strip()
-                if any(k in target_url for k in ["fastdlserver", "gdflix", "gdlink", "sidexfee", "drive", "hubcloud", "download", "link", "linksmod"]):
+                if any(k in target_url for k in ["fastdlserver", "gdflix", "gdlink", "sidexfee", "drive", "hubcloud", "download", "link", "linksmod", "fxlinks"]):
                     quality_str = ""
                     for q in ["2160p", "1080p", "720p", "480p"]:
                         if q in clean_text.lower() or q in target_url.lower():
                             quality_str = q
                             break
 
+                    # If fxlinks / archive page, extract specific episode links
+                    if ("fxlinks." in target_url or "/elinks/" in target_url) and target_episode is not None:
+                        try:
+                            l_req = urllib.request.Request(target_url, headers={
+                                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                "Referer": href
+                            })
+                            with urllib.request.urlopen(l_req, timeout=6.0) as lr:
+                                l_html = lr.read().decode("utf-8", errors="ignore")
+                            arc_eps = parse_archive_episodes(l_html)
+                            for ep_target_url, _ in arc_eps.get(target_episode, []):
+                                if "hubcloud." in ep_target_url:
+                                    hc_sources = _extract_hubcloud_sources(ep_target_url, referer=target_url)
+                                    for hs in hc_sources:
+                                        ep_pfx = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
+                                        sources.append({
+                                            "name": f"Bollyflix{ep_pfx} {quality_str} ({hs.get('name')})".strip(),
+                                            "url": hs.get("url"),
+                                            "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720,
+                                            "headers": hs.get("headers") or {"User-Agent": "Mozilla/5.0"},
+                                            "is_hls": ".m3u8" in hs.get("url", ""),
+                                            "is_dash": False,
+                                        })
+                                elif "fastdlserver" in ep_target_url or "dl." in ep_target_url:
+                                    resolved = _resolve_short_link(ep_target_url, timeout=5.0)
+                                    if resolved and resolved != ep_target_url:
+                                        ep_pfx = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
+                                        sources.append({
+                                            "name": f"Bollyflix{ep_pfx} {quality_str} (FastDL)".strip(),
+                                            "url": resolved,
+                                            "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720,
+                                            "headers": {"User-Agent": "Mozilla/5.0"},
+                                            "is_hls": ".m3u8" in resolved,
+                                            "is_dash": False,
+                                        })
+                        except Exception as e:
+                            logger.debug(f"Bollyflix fxlinks episode extraction error: {e}")
+
                     # If linksmod page, extract direct locker links (gofile, megaup, mixdrop, etc.)
-                    if "linksmod." in target_url and "/view/" in target_url:
+                    elif "linksmod." in target_url and "/view/" in target_url:
                         try:
                             l_req = urllib.request.Request(target_url, headers={
                                 "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -1844,7 +1979,7 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
                             logger.debug(f"Bollyflix linksmod resolution failed: {e}")
 
                     # HubCloud extract
-                    if "hubcloud." in target_url:
+                    elif "hubcloud." in target_url:
                         hc_sources = _extract_hubcloud_sources(target_url, referer=href)
                         for hs in hc_sources:
                             sources.append({
@@ -2426,7 +2561,7 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
             "episodes": episodes,
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         href = data_str.split("hdhub4u:")[-1].strip()
         base = self._get_base_url()
         sources = []
@@ -2702,6 +2837,8 @@ class MoviesDriveCloudStreamProvider(CloudStreamProvider):
 
     def load(self, data_str):
         href = data_str.split("moviesdrive:")[-1].strip()
+        if "#" in href:
+            href = href.split("#")[0].strip()
         try:
             html = _http_get_text(href, timeout=8.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
@@ -2713,23 +2850,70 @@ class MoviesDriveCloudStreamProvider(CloudStreamProvider):
         except Exception:
             title = "MoviesDrive Movie"
             poster = None
+            html = ""
+
+        is_series = is_cloudstream_series(title, href)
+        episodes = []
+        if is_series and html:
+            s_match = re.search(r"\bseason\s*(\d{1,2})\b|\bS(\d{1,2})\b", f"{title} {href}", re.I)
+            season_num = int(s_match.group(1) or s_match.group(2)) if s_match else 1
+            archive_links = re.findall(r'<a[^>]+href=["\'](https?://[^"\']*mdrive\.[^"\']*/archive/\d+/[^"\']*)["\']', html)
+            archive_eps = {}
+            if archive_links:
+                try:
+                    m_req = urllib.request.Request(archive_links[0], headers={
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Referer": href
+                    })
+                    with urllib.request.urlopen(m_req, timeout=5.0) as mr:
+                        m_html = mr.read().decode("utf-8", errors="ignore")
+                    archive_eps = parse_archive_episodes(m_html)
+                except Exception as e:
+                    logger.debug(f"MoviesDrive archive episode parse error: {e}")
+
+            if archive_eps:
+                ep_numbers = sorted(list(archive_eps.keys()))
+            else:
+                ep_match = re.search(r"(?:Ep|Episode)\.?\s*(\d+)", title, re.I)
+                max_ep = int(ep_match.group(1)) if ep_match else 1
+                ep_numbers = list(range(1, max(1, max_ep) + 1))
+
+            for ep_num in ep_numbers:
+                episodes.append({
+                    "name": f"Episode {ep_num}",
+                    "season": season_num,
+                    "episode": ep_num,
+                    "data": f"moviesdrive:{href}#s={season_num}&e={ep_num}",
+                    "poster_url": poster,
+                    "description": f"Season {season_num} Episode {ep_num}",
+                })
 
         return {
             "provider_id": self.id,
             "data": data_str,
             "name": title,
-            "type": CloudStreamTvType.Movie,
+            "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
             "poster_url": poster,
             "background_url": poster,
             "description": title,
             "year": None,
             "rating_percent": None,
             "tags": ["MoviesDrive"],
-            "episodes": [],
+            "episodes": episodes,
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         href = data_str.split("moviesdrive:")[-1].strip()
+        target_season = int(season) if season is not None else None
+        target_episode = int(episode) if episode is not None else None
+        if "#" in href:
+            base_href, fragment = href.split("#", 1)
+            href = base_href.strip()
+            s_m = re.search(r"\bs=(\d+)", fragment)
+            e_m = re.search(r"\be=(\d+)", fragment)
+            if s_m and target_season is None: target_season = int(s_m.group(1))
+            if e_m and target_episode is None: target_episode = int(e_m.group(1))
+
         sources = []
         try:
             html = _http_get_text(href, timeout=8.0)
@@ -2751,12 +2935,20 @@ class MoviesDriveCloudStreamProvider(CloudStreamProvider):
                         })
                         with urllib.request.urlopen(m_req, timeout=7.0) as mr:
                             m_html = mr.read().decode("utf-8", errors="ignore")
-                        hc_links = re.findall(r'<a[^>]+href=[\"\'](https?://hubcloud\.[^\"\']+)[\"\']', m_html)
+
+                        if target_episode is not None:
+                            archive_eps = parse_archive_episodes(m_html)
+                            ep_entries = archive_eps.get(target_episode, [])
+                            hc_links = [h for h, _ in ep_entries if any(k in h for k in ["hubcloud.", "hubdrive.", "nexdrive.", "fastdl.", "vcloud."])]
+                        else:
+                            hc_links = re.findall(r'<a[^>]+href=[\"\'](https?://hubcloud\.[^\"\']+)[\"\']', m_html)
+
                         for hc_link in hc_links:
                             hc_res = _extract_hubcloud_sources(hc_link, referer=target_url)
                             for hs in hc_res:
+                                ep_prefix = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
                                 sources.append({
-                                    "name": f"MoviesDrive {quality_str} ({hs.get('name')})".strip(),
+                                    "name": f"MoviesDrive{ep_prefix} {quality_str} ({hs.get('name')})".strip(),
                                     "url": hs.get("url"),
                                     "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720,
                                     "headers": hs.get("headers") or {"User-Agent": "Mozilla/5.0"},
@@ -2930,6 +3122,8 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
 
     def load(self, data_str):
         href = data_str.split("moviesmod:")[-1].strip()
+        if "#" in href:
+            href = href.split("#")[0].strip()
         try:
             html = _http_get_text(href, timeout=8.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
@@ -2941,30 +3135,100 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
         except Exception:
             title = "Moviesmod Movie"
             poster = None
+            html = ""
+
+        is_series = is_cloudstream_series(title, href)
+        episodes = []
+        if is_series and html:
+            s_match = re.search(r"\bseason\s*(\d{1,2})\b|\bS(\d{1,2})\b", f"{title} {href}", re.I)
+            season_num = int(s_match.group(1) or s_match.group(2)) if s_match else 1
+            archive_links = re.findall(r'<a[^>]+href=["\'](https?://[^"\']*(?:episodes\.modpro|archives/\d+)[^"\']*)["\']', html)
+            archive_eps = {}
+            if archive_links:
+                try:
+                    m_req = urllib.request.Request(archive_links[0], headers={
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Referer": href
+                    })
+                    with urllib.request.urlopen(m_req, timeout=5.0) as mr:
+                        m_html = mr.read().decode("utf-8", errors="ignore")
+                    archive_eps = parse_archive_episodes(m_html)
+                except Exception as e:
+                    logger.debug(f"Moviesmod archive episode parse error: {e}")
+
+            if archive_eps:
+                ep_numbers = sorted(list(archive_eps.keys()))
+            else:
+                ep_match = re.search(r"(?:Ep|Episode)\.?\s*(\d+)", title, re.I)
+                max_ep = int(ep_match.group(1)) if ep_match else 1
+                ep_numbers = list(range(1, max(1, max_ep) + 1))
+
+            for ep_num in ep_numbers:
+                episodes.append({
+                    "name": f"Episode {ep_num}",
+                    "season": season_num,
+                    "episode": ep_num,
+                    "data": f"moviesmod:{href}#s={season_num}&e={ep_num}",
+                    "poster_url": poster,
+                    "description": f"Season {season_num} Episode {ep_num}",
+                })
 
         return {
             "provider_id": self.id,
             "data": data_str,
             "name": title,
-            "type": CloudStreamTvType.Movie,
+            "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
             "poster_url": poster,
             "background_url": poster,
             "description": title,
             "year": None,
             "rating_percent": None,
             "tags": ["Moviesmod"],
-            "episodes": [],
+            "episodes": episodes,
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         href = data_str.split("moviesmod:")[-1].strip()
+        target_season = int(season) if season is not None else None
+        target_episode = int(episode) if episode is not None else None
+        if "#" in href:
+            base_href, fragment = href.split("#", 1)
+            href = base_href.strip()
+            s_m = re.search(r"\bs=(\d+)", fragment)
+            e_m = re.search(r"\be=(\d+)", fragment)
+            if s_m and target_season is None: target_season = int(s_m.group(1))
+            if e_m and target_episode is None: target_episode = int(e_m.group(1))
+
         sources = []
         try:
             html = _http_get_text(href, timeout=8.0)
             links = re.findall(r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', html, re.DOTALL)
             for target_url, text in links:
                 clean_text = re.sub(r"<[^>]+>", "", text).strip()
-                if "hubcloud." in target_url:
+                if "episodes.modpro" in target_url or "/archives/" in target_url:
+                    if target_episode is not None:
+                        try:
+                            m_req = urllib.request.Request(target_url, headers={
+                                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                "Referer": href
+                            })
+                            with urllib.request.urlopen(m_req, timeout=6.0) as mr:
+                                m_html = mr.read().decode("utf-8", errors="ignore")
+                            arc_eps = parse_archive_episodes(m_html)
+                            for ep_target, _ in arc_eps.get(target_episode, []):
+                                if "hubcloud." in ep_target:
+                                    hc_res = _extract_hubcloud_sources(ep_target, referer=target_url)
+                                    for hs in hc_res:
+                                        ep_pfx = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
+                                        sources.append({
+                                            "name": f"Moviesmod{ep_pfx} ({hs.get('name')})",
+                                            "url": hs.get("url"),
+                                            "headers": hs.get("headers") or {"User-Agent": "Mozilla/5.0"},
+                                            "is_hls": ".m3u8" in hs.get("url", ""),
+                                        })
+                        except Exception as e:
+                            logger.debug(f"Moviesmod archive ep extraction error: {e}")
+                elif "hubcloud." in target_url:
                     hc_res = _extract_hubcloud_sources(target_url, referer=href)
                     for hs in hc_res:
                         sources.append({
@@ -3120,6 +3384,8 @@ class VegaMoviesCloudStreamProvider(CloudStreamProvider):
 
     def load(self, data_str):
         href = data_str.split("vegamovies:")[-1].strip()
+        if "#" in href:
+            href = href.split("#")[0].strip()
         try:
             html = _http_get_text(href, timeout=8.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
@@ -3131,32 +3397,97 @@ class VegaMoviesCloudStreamProvider(CloudStreamProvider):
         except Exception:
             title = "VegaMovies Movie"
             poster = None
+            html = ""
+
+        is_series = is_cloudstream_series(title, href)
+        episodes = []
+        if is_series and html:
+            s_match = re.search(r"\bseason\s*(\d{1,2})\b|\bS(\d{1,2})\b", f"{title} {href}", re.I)
+            season_num = int(s_match.group(1) or s_match.group(2)) if s_match else 1
+            archive_links = re.findall(r'<a[^>]+href=["\'](https?://[^"\']*(?:nexdrive|fastdl|vcloud)[^"\']*)["\']', html)
+            archive_eps = {}
+            if archive_links:
+                try:
+                    m_req = urllib.request.Request(archive_links[0], headers={
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Referer": href
+                    })
+                    with urllib.request.urlopen(m_req, timeout=5.0) as mr:
+                        m_html = mr.read().decode("utf-8", errors="ignore")
+                    archive_eps = parse_archive_episodes(m_html)
+                except Exception as e:
+                    logger.debug(f"VegaMovies archive episode parse error: {e}")
+
+            if archive_eps:
+                ep_numbers = sorted(list(archive_eps.keys()))
+            else:
+                ep_match = re.search(r"(?:Ep|Episode)\.?\s*(\d+)", title, re.I)
+                max_ep = int(ep_match.group(1)) if ep_match else 1
+                ep_numbers = list(range(1, max(1, max_ep) + 1))
+
+            for ep_num in ep_numbers:
+                episodes.append({
+                    "name": f"Episode {ep_num}",
+                    "season": season_num,
+                    "episode": ep_num,
+                    "data": f"vegamovies:{href}#s={season_num}&e={ep_num}",
+                    "poster_url": poster,
+                    "description": f"Season {season_num} Episode {ep_num}",
+                })
 
         return {
             "provider_id": self.id,
             "data": data_str,
             "name": title,
-            "type": CloudStreamTvType.Movie,
+            "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
             "poster_url": poster,
             "background_url": poster,
             "description": title,
             "year": None,
             "rating_percent": None,
             "tags": ["VegaMovies"],
-            "episodes": [],
+            "episodes": episodes,
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         href = data_str.split("vegamovies:")[-1].strip()
+        target_season = int(season) if season is not None else None
+        target_episode = int(episode) if episode is not None else None
+        if "#" in href:
+            base_href, fragment = href.split("#", 1)
+            href = base_href.strip()
+            s_m = re.search(r"\bs=(\d+)", fragment)
+            e_m = re.search(r"\be=(\d+)", fragment)
+            if s_m and target_season is None: target_season = int(s_m.group(1))
+            if e_m and target_episode is None: target_episode = int(e_m.group(1))
+
         sources = []
         try:
             html = _http_get_text(href, timeout=8.0)
             links = re.findall(r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', html, re.DOTALL)
             for target_url, text in links:
                 if any(k in target_url for k in ["nexdrive.", "fastdl.", "vcloud.", "hubcloud.", "hubdrive."]):
-                    hc_res = _extract_hubcloud_sources(target_url, referer=href)
-                    if hc_res:
-                        sources.extend(hc_res)
+                    if target_episode is not None and "nexdrive." in target_url:
+                        try:
+                            m_req = urllib.request.Request(target_url, headers={
+                                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                "Referer": href
+                            })
+                            with urllib.request.urlopen(m_req, timeout=6.0) as mr:
+                                m_html = mr.read().decode("utf-8", errors="ignore")
+                            arc_eps = parse_archive_episodes(m_html)
+                            for ep_target, _ in arc_eps.get(target_episode, []):
+                                hc_res = _extract_hubcloud_sources(ep_target, referer=target_url)
+                                for hs in (hc_res or []):
+                                    ep_pfx = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
+                                    hs["name"] = f"VegaMovies{ep_pfx} ({hs.get('name', 'Direct')})"
+                                    sources.append(hs)
+                        except Exception as e:
+                            logger.debug(f"VegaMovies nexdrive ep extraction error: {e}")
+                    else:
+                        hc_res = _extract_hubcloud_sources(target_url, referer=href)
+                        if hc_res:
+                            sources.extend(hc_res)
             if sources:
                 return sources
         except Exception as e:
@@ -3336,7 +3667,7 @@ class YTSCloudStreamProvider(CloudStreamProvider):
             "episodes": [],
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         payload = None
         try:
             if isinstance(data_str, str) and data_str.strip().startswith("{"):
@@ -3597,7 +3928,7 @@ class TorrentioCloudStreamProvider(CloudStreamProvider):
             "episodes": episodes,
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         try:
             data = json.loads(data_str) if isinstance(data_str, str) and data_str.startswith("{") else {"imdb_id": data_str}
         except Exception:
@@ -3987,7 +4318,7 @@ class CNCVerseCloudStreamProvider(CloudStreamProvider):
             "episodes": episodes,
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         try:
             data = json.loads(data_str) if isinstance(data_str, str) and data_str.startswith("{") else {"id": data_str}
         except Exception:
@@ -4144,33 +4475,135 @@ class DudeFilmsCloudStreamProvider(CloudStreamProvider):
 
     def load(self, data_str):
         href = data_str.split("dudefilms:")[-1].strip()
+        if "#" in href:
+            href = href.split("#")[0].strip()
         try:
-            html = _http_get_text(href, timeout=6.0)
+            html = _http_get_text(href, timeout=8.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
-            title = re.sub(r"<[^>]+>", "", t_match.group(1)).strip() if t_match else "DudeFilms Movie"
+            title = re.sub(r"<[^>]+>", "", t_match.group(1)).strip() if t_match else "DudeFilms Media"
+            img_m = re.search(r'<img\b[^>]*class=["\'][^"\']*wp-post-image[^"\']*["\'][^>]*>', html, re.I)
+            if not img_m:
+                img_m = re.search(r'<img\b[^>]*>', html, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            poster = None
+            for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
         except Exception:
-            title = "DudeFilms Movie"
+            title = "DudeFilms Media"
+            poster = None
+            html = ""
+
+        is_series = is_cloudstream_series(title, href)
+        episodes = []
+        if is_series and html:
+            s_match = re.search(r"\bseason\s*(\d{1,2})\b|\bS(\d{1,2})\b", f"{title} {href}", re.I)
+            season_num = int(s_match.group(1) or s_match.group(2)) if s_match else 1
+            archive_links = re.findall(r'<a[^>]+href=["\'](https?://[^"\']*(?:dflinks|archives/\d+)[^"\']*)["\']', html)
+            archive_eps = {}
+            if archive_links:
+                try:
+                    m_req = urllib.request.Request(archive_links[0], headers={
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Referer": href,
+                    })
+                    with urllib.request.urlopen(m_req, timeout=6.0) as resp:
+                        m_html = resp.read().decode("utf-8", errors="ignore")
+                        archive_eps = parse_archive_episodes(m_html)
+                except Exception as e:
+                    logger.debug(f"DudeFilms archive fetch failed: {e}")
+
+            if archive_eps:
+                for ep_num in sorted(archive_eps.keys()):
+                    episodes.append({
+                        "name": f"Episode {ep_num}",
+                        "season": season_num,
+                        "episode": ep_num,
+                        "data": f"dudefilms:{href}#s={season_num}&e={ep_num}",
+                        "poster_url": poster,
+                    })
+            else:
+                ep_matches = re.finditer(r'<a[^>]+href=["\']([^\"\']+)["\'][^>]*>(.*?)</a>', html, re.DOTALL)
+                seen_ep = set()
+                for em in ep_matches:
+                    e_text = re.sub(r'<[^>]+>', ' ', em.group(2)).strip()
+                    m = re.search(r'\b(?:Episode|EP|E)\s*(\d{1,3})\b', e_text, re.I)
+                    if m:
+                        ep_no = int(m.group(1))
+                        if ep_no not in seen_ep:
+                            seen_ep.add(ep_no)
+                            episodes.append({
+                                "name": f"Episode {ep_no}",
+                                "season": season_num,
+                                "episode": ep_no,
+                                "data": f"dudefilms:{href}#s={season_num}&e={ep_no}",
+                                "poster_url": poster,
+                            })
+
         return {
             "provider_id": self.id,
             "data": data_str,
             "name": title,
-            "type": CloudStreamTvType.Movie,
-            "poster_url": None,
-            "background_url": None,
+            "type": CloudStreamTvType.TvSeries if (is_series or episodes) else CloudStreamTvType.Movie,
+            "poster_url": poster,
+            "background_url": poster,
             "description": title,
             "year": None,
             "rating_percent": None,
             "tags": ["DudeFilms"],
-            "episodes": [],
+            "episodes": episodes,
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         href = data_str.split("dudefilms:")[-1].strip()
+        target_episode = episode
+        if "#" in href:
+            frag = href.split("#", 1)[1]
+            href = href.split("#", 1)[0]
+            if not target_episode:
+                em = re.search(r"\be=(\d+)\b", frag)
+                if em:
+                    target_episode = int(em.group(1))
+
         sources = []
         try:
-            html = _http_get_text(href, timeout=6.0)
-            links = re.findall(r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', html, re.DOTALL)
-            for target_url, text in links:
+            html = _http_get_text(href, timeout=8.0)
+            target_links = []
+            archive_links = re.findall(r'<a[^>]+href=["\'](https?://[^"\']*(?:dflinks|archives/\d+)[^"\']*)["\']', html)
+            if archive_links:
+                for arch_url in archive_links[:2]:
+                    try:
+                        m_req = urllib.request.Request(arch_url, headers={
+                            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Referer": href,
+                        })
+                        with urllib.request.urlopen(m_req, timeout=6.0) as resp:
+                            m_html = resp.read().decode("utf-8", errors="ignore")
+                            arch_eps = parse_archive_episodes(m_html)
+                            if target_episode and target_episode in arch_eps:
+                                target_links.extend(arch_eps[target_episode])
+                            elif not target_episode and arch_eps:
+                                for ep_items in arch_eps.values():
+                                    target_links.extend(ep_items)
+                    except Exception:
+                        pass
+
+            if not target_links:
+                links = re.findall(r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', html, re.DOTALL)
+                for t_url, t_text in links:
+                    if target_episode:
+                        em = re.search(r'\b(?:Episode|EP|E)\s*(\d{1,3})\b', t_text, re.I)
+                        if em and int(em.group(1)) != target_episode:
+                            continue
+                    target_links.append((t_url, t_text))
+
+            seen_urls = set()
+            for target_url, text in target_links:
+                if target_url in seen_urls:
+                    continue
+                seen_urls.add(target_url)
                 if any(k in target_url.lower() for k in ["dflinks.", "hubcloud.", "hubdrive.", "gdflix."]):
                     try:
                         if "dflinks." in target_url:
@@ -4301,39 +4734,130 @@ class ZinkmoviesCloudStreamProvider(CloudStreamProvider):
 
     def load(self, data_str):
         href = data_str.split("zinkmovies:")[-1].strip()
+        if "#" in href:
+            href = href.split("#")[0].strip()
         try:
-            html = _http_get_text(href, timeout=6.0)
+            html = _http_get_text(href, timeout=8.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
-            title = re.sub(r"<[^>]+>", "", t_match.group(1)).strip() if t_match else "Zinkmovies Movie"
+            title = re.sub(r"<[^>]+>", "", t_match.group(1)).strip() if t_match else "Zinkmovies Media"
             img_match = re.search(r"<img[^>]+(?:src|data-src)=[\"\']([^\"\']+)[\"\'][^>]*class=[\"\'][^\"\']*wp-post-image", html, re.I)
             if not img_match:
                 img_match = re.search(r"<meta\s+property=[\"']og:image[\"']\s+content=[\"']([^\"']+)[\"']", html, re.I)
             poster = html_lib.unescape(img_match.group(1)).strip() if img_match else None
         except Exception:
-            title = "Zinkmovies Movie"
+            title = "Zinkmovies Media"
             poster = None
+            html = ""
+
+        is_series = is_cloudstream_series(title, href)
+        episodes = []
+        if is_series and html:
+            s_match = re.search(r"\bseason\s*(\d{1,2})\b|\bS(\d{1,2})\b", f"{title} {href}", re.I)
+            season_num = int(s_match.group(1) or s_match.group(2)) if s_match else 1
+            archive_links = re.findall(r'<a[^>]+href=["\'](https?://[^"\']*(?:file-dl|archives/\d+)[^"\']*)["\']', html)
+            archive_eps = {}
+            if archive_links:
+                try:
+                    m_req = urllib.request.Request(archive_links[0], headers={
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Referer": href,
+                    })
+                    with urllib.request.urlopen(m_req, timeout=6.0) as resp:
+                        m_html = resp.read().decode("utf-8", errors="ignore")
+                        archive_eps = parse_archive_episodes(m_html)
+                except Exception as e:
+                    logger.debug(f"Zinkmovies archive fetch failed: {e}")
+
+            if archive_eps:
+                for ep_num in sorted(archive_eps.keys()):
+                    episodes.append({
+                        "name": f"Episode {ep_num}",
+                        "season": season_num,
+                        "episode": ep_num,
+                        "data": f"zinkmovies:{href}#s={season_num}&e={ep_num}",
+                        "poster_url": poster,
+                    })
+            else:
+                ep_matches = re.finditer(r'<a[^>]+href=["\']([^\"\']+)["\'][^>]*>(.*?)</a>', html, re.DOTALL)
+                seen_ep = set()
+                for em in ep_matches:
+                    e_text = re.sub(r'<[^>]+>', ' ', em.group(2)).strip()
+                    m = re.search(r'\b(?:Episode|EP|E)\s*(\d{1,3})\b', e_text, re.I)
+                    if m:
+                        ep_no = int(m.group(1))
+                        if ep_no not in seen_ep:
+                            seen_ep.add(ep_no)
+                            episodes.append({
+                                "name": f"Episode {ep_no}",
+                                "season": season_num,
+                                "episode": ep_no,
+                                "data": f"zinkmovies:{href}#s={season_num}&e={ep_no}",
+                                "poster_url": poster,
+                            })
+
         return {
             "provider_id": self.id,
             "data": data_str,
             "name": title,
-            "type": CloudStreamTvType.Movie,
+            "type": CloudStreamTvType.TvSeries if (is_series or episodes) else CloudStreamTvType.Movie,
             "poster_url": poster,
             "background_url": poster,
             "description": title,
             "year": None,
             "rating_percent": None,
             "tags": ["Zinkmovies"],
-            "episodes": [],
+            "episodes": episodes,
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         href = data_str.split("zinkmovies:")[-1].strip()
+        target_episode = episode
+        if "#" in href:
+            frag = href.split("#", 1)[1]
+            href = href.split("#", 1)[0]
+            if not target_episode:
+                em = re.search(r"\be=(\d+)\b", frag)
+                if em:
+                    target_episode = int(em.group(1))
+
         sources = []
         try:
-            html = _http_get_text(href, timeout=6.0)
-            links = re.findall(r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', html, re.DOTALL)
-            for target_url, text in links:
-                if any(k in target_url.lower() for k in ["hubcloud.", "hubdrive.", "gdflix.", "vcloud."]):
+            html = _http_get_text(href, timeout=8.0)
+            target_links = []
+            archive_links = re.findall(r'<a[^>]+href=["\'](https?://[^"\']*(?:file-dl|archives/\d+)[^"\']*)["\']', html)
+            if archive_links:
+                for arch_url in archive_links[:2]:
+                    try:
+                        m_req = urllib.request.Request(arch_url, headers={
+                            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Referer": href,
+                        })
+                        with urllib.request.urlopen(m_req, timeout=6.0) as resp:
+                            m_html = resp.read().decode("utf-8", errors="ignore")
+                            arch_eps = parse_archive_episodes(m_html)
+                            if target_episode and target_episode in arch_eps:
+                                target_links.extend(arch_eps[target_episode])
+                            elif not target_episode and arch_eps:
+                                for ep_items in arch_eps.values():
+                                    target_links.extend(ep_items)
+                    except Exception:
+                        pass
+
+            if not target_links:
+                links = re.findall(r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', html, re.DOTALL)
+                for t_url, t_text in links:
+                    if target_episode:
+                        em = re.search(r'\b(?:Episode|EP|E)\s*(\d{1,3})\b', t_text, re.I)
+                        if em and int(em.group(1)) != target_episode:
+                            continue
+                    target_links.append((t_url, t_text))
+
+            seen_urls = set()
+            for target_url, text in target_links:
+                if target_url in seen_urls:
+                    continue
+                seen_urls.add(target_url)
+                if any(k in target_url.lower() for k in ["file-dl", "hubcloud.", "hubdrive.", "gdflix.", "vcloud."]):
                     hc_res = _extract_hubcloud_sources(target_url, referer=href)
                     if hc_res:
                         sources.extend(hc_res)
@@ -4409,6 +4933,8 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
             return MoviesDriveCloudStreamProvider().load(data_str)
         if "vegamovies:" in data_str:
             return VegaMoviesCloudStreamProvider().load(data_str)
+        if "moviesmod:" in data_str:
+            return MoviesmodCloudStreamProvider().load(data_str)
         if "dudefilms:" in data_str:
             return DudeFilmsCloudStreamProvider().load(data_str)
         if "zinkmovies:" in data_str:
@@ -4421,25 +4947,27 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
             return CNCVerseCloudStreamProvider().load(data_str)
         return GenericCloudStreamProvider(self.id, self.name).load(data_str)
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         if "hdhub4u:" in data_str:
-            return HDhub4uCloudStreamProvider().load_links(data_str)
+            return HDhub4uCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if "bollyflix:" in data_str:
-            return BollyflixCloudStreamProvider().load_links(data_str)
+            return BollyflixCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if "moviesdrive:" in data_str:
-            return MoviesDriveCloudStreamProvider().load_links(data_str)
+            return MoviesDriveCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if "vegamovies:" in data_str:
-            return VegaMoviesCloudStreamProvider().load_links(data_str)
+            return VegaMoviesCloudStreamProvider().load_links(data_str, season=season, episode=episode)
+        if "moviesmod:" in data_str:
+            return MoviesmodCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if "dudefilms:" in data_str:
-            return DudeFilmsCloudStreamProvider().load_links(data_str)
+            return DudeFilmsCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if "zinkmovies:" in data_str:
-            return ZinkmoviesCloudStreamProvider().load_links(data_str)
+            return ZinkmoviesCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if "yts:" in data_str or (isinstance(data_str, str) and ("imdb_code" in data_str or "torrents" in data_str)):
-            return YTSCloudStreamProvider().load_links(data_str)
+            return YTSCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if isinstance(data_str, str) and "imdb_id" in data_str:
-            return TorrentioCloudStreamProvider().load_links(data_str)
+            return TorrentioCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if isinstance(data_str, str) and ("ott" in data_str or "net52" in data_str):
-            return CNCVerseCloudStreamProvider().load_links(data_str)
+            return CNCVerseCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         return []
 
 
@@ -4467,7 +4995,7 @@ class GenericCloudStreamProvider(CloudStreamProvider):
             "episodes": [],
         }
 
-    def load_links(self, data_str):
+    def load_links(self, data_str, season=None, episode=None):
         if str(data_str).startswith("http://") or str(data_str).startswith("https://"):
             return [{
                 "name": self.name,
@@ -4768,15 +5296,21 @@ def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=
         data = item.get("data") or item.get("url") or item.get("id")
         if not data:
             continue
-        raw_type = CloudStreamTvType.from_wire(str(item.get("type") or section.get("type") or "movie"))
+        sec_type = str(section.get("type") or "movie")
+        raw_type = CloudStreamTvType.from_wire(str(item.get("type") or sec_type))
+        item_title = item.get("name") or item.get("title") or "Stream"
+        if sec_type in ("series", "anime") or is_cloudstream_series(item_title, str(data), CloudStreamTvType.to_popcorn_type(raw_type)):
+            raw_type = CloudStreamTvType.TvSeries
         normalized = dict(item)
         normalized["provider_id"] = item.get("provider_id") or provider_id
         normalized["data"] = str(data)
-        normalized["name"] = item.get("name") or item.get("title") or "Stream"
+        normalized["name"] = item_title
         normalized["type"] = raw_type
         card = search_item_to_card_dict(normalized)
-        if raw_type == CloudStreamTvType.Other:
-            card["type"] = str(section.get("type") or "movie")
+        if raw_type == CloudStreamTvType.TvSeries:
+            card["type"] = "series"
+        elif raw_type == CloudStreamTvType.Other:
+            card["type"] = sec_type
         card["catalog_name"] = section.get("name") or catalog_id
         card["catalog_id"] = catalog_id
         card["addon_name"] = plugin.get("name") or provider.name
@@ -5011,7 +5545,17 @@ def clean_cloudstream_title(title_text):
         flags=re.IGNORECASE,
     )
     base = split_match[0].strip(" .-_:|")
-    clean = re.sub(r"[\s(\[]*(?:(?:19|20)\d{2}|Season\s*\d+)[)\]]*\s*$", "", base, flags=re.IGNORECASE).strip(" .-_:|")
+    clean = base
+    while True:
+        prev = clean
+        clean = re.sub(
+            r"[\s(\[]*(?:(?:19|20)\d{2}|Season\s*\d+(?:\s*[-–&,]\s*\d+)?|S\d{1,2}(?:\s*[-–&,]\s*S?\d{1,2})?|Complete\s*Series|All\s*Episodes?)[)\]]*\s*$",
+            "",
+            clean,
+            flags=re.IGNORECASE,
+        ).strip(" .-_:|")
+        if clean == prev:
+            break
     clean = re.sub(r"\s+", " ", clean).strip()
     return clean or base or text, year
 
@@ -5025,6 +5569,9 @@ def search_item_to_card_dict(item):
     raw_name = item.get("name") or "Stream"
     clean_name, extracted_year = clean_cloudstream_title(raw_name)
     year_val = str(item.get("year") or extracted_year or "")
+
+    if media_type != "series" and is_cloudstream_series(raw_name, item.get("data", ""), media_type):
+        media_type = "series"
 
     card = {
         "id": route_id,
@@ -5052,20 +5599,21 @@ def load_item_to_details_dict(loaded):
     """Converts a CloudStreamLoadItem into a PopcornBox details dictionary for MovieDetailsPage."""
     route_id = cloudstream_route_id(loaded["provider_id"], loaded["data"])
     raw_type = loaded.get("type", CloudStreamTvType.Other)
-    media_type = CloudStreamTvType.to_popcorn_type(raw_type)
-
+    episodes = loaded.get("episodes") or []
     raw_name = loaded.get("name") or "Stream"
     clean_name, extracted_year = clean_cloudstream_title(raw_name)
     year_val = str(loaded.get("year") or extracted_year or "")
 
-    episodes = loaded.get("episodes") or []
+    is_series = bool(episodes) or raw_type == CloudStreamTvType.TvSeries or is_cloudstream_series(raw_name, loaded.get("data", ""), CloudStreamTvType.to_popcorn_type(raw_type))
+    media_type = "series" if is_series else CloudStreamTvType.to_popcorn_type(raw_type)
+
     videos = []
     if not episodes:
         videos.append({
             "id": route_id,
             "title": "Canlı Yayın" if raw_type == CloudStreamTvType.Live else (clean_name or raw_name),
-            "season": None,
-            "episode": None,
+            "season": 1 if is_series else None,
+            "episode": 1 if is_series else None,
             "thumbnail": loaded.get("background_url") or loaded.get("poster_url"),
             "overview": loaded.get("description"),
             "available": True,
@@ -5073,11 +5621,17 @@ def load_item_to_details_dict(loaded):
     else:
         for ep in episodes:
             ep_route = cloudstream_route_id(loaded["provider_id"], ep.get("data", ""))
+            s_val = ep.get("season")
+            if s_val is None and is_series:
+                s_val = 1
+            e_val = ep.get("episode")
+            if e_val is None and is_series:
+                e_val = 1
             videos.append({
                 "id": ep_route,
-                "title": ep.get("name") or f"Episode {ep.get('episode', 1)}",
-                "season": ep.get("season"),
-                "episode": ep.get("episode"),
+                "title": ep.get("name") or f"Episode {e_val or 1}",
+                "season": s_val,
+                "episode": e_val,
                 "thumbnail": ep.get("poster_url") or loaded.get("poster_url"),
                 "overview": ep.get("description"),
                 "available": True,
@@ -5246,10 +5800,10 @@ def get_metadata_for_route(route_id):
         return None
 
 
-def get_streams_for_route(route_id):
+def get_streams_for_route(route_id, season=None, episode=None):
     """
     Resolves streams for a cloudstream: route.
-    Calls the provider's load_links(data) and returns list of stream dicts.
+    Calls the provider's load_links(data, season=season, episode=episode) and returns list of stream dicts.
     """
     parsed = parse_cloudstream_route_id(route_id)
     if not parsed:
@@ -5263,7 +5817,12 @@ def get_streams_for_route(route_id):
     p_name = plugin.get("name") if plugin else provider.name
 
     try:
-        sources = provider.load_links(data)
+        import inspect
+        sig = inspect.signature(provider.load_links)
+        if "season" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            sources = provider.load_links(data, season=season, episode=episode)
+        else:
+            sources = provider.load_links(data)
         return [playback_source_to_stream_dict(s, p_name, provider_id) for s in sources]
     except Exception as e:
         logger.error(f"CloudStream load_links failed for {route_id}: {e}")
@@ -5331,7 +5890,7 @@ def search_all_enabled_providers(query, timeout=10.0):
 
 
 def fetch_cloudstream_streams_for_media(
-    title, media_type, year=None, season=None, episode=None, timeout=90.0, imdb_id=None, catalog_title=None
+    title, media_type, year=None, season=None, episode=None, timeout=12.0, imdb_id=None, catalog_title=None
 ):
     """
     Searches enabled CloudStream providers for a standard movie or episode,
@@ -5404,13 +5963,14 @@ def fetch_cloudstream_streams_for_media(
         if not provider:
             return []
         # Check if provider supports this media type
+        if getattr(provider, "id", "") == MegaProviderCloudStreamProvider.id or isinstance(provider, MegaProviderCloudStreamProvider):
+            return []
         supported_types = {str(value).lower() for value in (provider.supported_types or [])}
         if (
             norm_type in ("movie", "series")
             and requested_type not in supported_types
             and norm_type not in supported_types
             and "all" not in supported_types
-            and "other" not in supported_types
         ):
             return []
 
@@ -5582,7 +6142,12 @@ def fetch_cloudstream_streams_for_media(
                     if not link_data:
                         continue
                     try:
-                        sources = provider.load_links(link_data) or []
+                        import inspect
+                        sig = inspect.signature(provider.load_links)
+                        if "season" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                            sources = provider.load_links(link_data, season=season, episode=episode) or []
+                        else:
+                            sources = provider.load_links(link_data) or []
                     except Exception as e:
                         logger.debug(f"CloudStream loadLinks failed provider={p_name!r}: {e}")
                         continue
