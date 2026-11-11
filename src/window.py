@@ -4896,6 +4896,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._hls_total_duration = None
         self._hls_prep_url = None
         self._pending_subtitle_request = None
+        self._pending_local_subtitle = None
         self._subtitles_configured_for_file = False
         self._youtube_safe_mode_active: bool = False
         self._youtube_safe_mode_url: str | None = None
@@ -7277,6 +7278,9 @@ class CineWindow(Adw.ApplicationWindow):
                             logger.debug(f"Seek on file-loaded failed: {e}")
                         self._seek_after_loaded = None
                     
+                    if hasattr(self, "_apply_pending_local_subtitle"):
+                        self._apply_pending_local_subtitle()
+
                     if hasattr(self, "_check_and_configure_subtitles"):
                         self._check_and_configure_subtitles()
 
@@ -15402,13 +15406,14 @@ class CineWindow(Adw.ApplicationWindow):
         self.stream_queue_key = None
         self.stream_queue_details_page = None
 
-    def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None, audio_url=None, item_id=None, media_type=None, season=None, episode=None, is_download=False):
+    def _play_stream(self, url, title=None, headers=None, preserve_queue=False, start_time=None, audio_url=None, item_id=None, media_type=None, season=None, episode=None, is_download=False, sub_file=None):
         playback_trace_step(
             "_play_stream",
             f"{str(title or '')[:60]} url={str(url or '')[:100]}",
             begin_source="_play_stream",
         )
         self._playback_trace_first_frame = False
+        self._pending_local_subtitle = None
         # Don't carry stale status/error toasts over to the next video. The
         # template child can be an unbound descriptor on partially constructed
         # windows, so verify the widget actually exposes dismiss_all().
@@ -15866,6 +15871,8 @@ class CineWindow(Adw.ApplicationWindow):
                 self._prefetch_next_episode_streams()
             return
 
+        if sub_file:
+            self._pending_local_subtitle = (str(url), str(sub_file))
         playback_trace("loadfile issue", str(url)[:100])
         if seek_target and float(seek_target) > 5.0 and not is_trailer:
             try:
@@ -15991,6 +15998,37 @@ class CineWindow(Adw.ApplicationWindow):
                 self.mpv["sub-visibility"] = "yes"
             except Exception as e:
                 logger.error(f"[SUBS] Failed to set MPV sid to {track_id}: {e}")
+
+    def _apply_pending_local_subtitle(self):
+        pending = getattr(self, "_pending_local_subtitle", None)
+        if not pending:
+            return False
+
+        self._pending_local_subtitle = None
+        expected_media, subtitle_path = pending
+        current_media = str(getattr(self.mpv, "path", "") or "")
+        if current_media != expected_media:
+            logger.info(f"[SUBS] Skipping torrent sidecar for a different loaded file: {current_media}")
+            return False
+        if not os.path.isfile(subtitle_path):
+            logger.info(f"[SUBS] Torrent sidecar is missing: {subtitle_path}")
+            return False
+
+        language = "eng" if subtitle_path.casefold().endswith(".eng.srt") else "und"
+        try:
+            self._apply_external_subtitle(
+                subtitle_path,
+                lang=language,
+                title=os.path.basename(subtitle_path),
+                remember=False,
+            )
+            self._pending_subtitle_request = None
+            self._subtitles_configured_for_file = True
+            logger.info(f"[SUBS] Loaded torrent sidecar: {subtitle_path}")
+            return True
+        except Exception as e:
+            logger.warning(f"[SUBS] Could not load torrent sidecar {subtitle_path}: {e}")
+            return False
 
     def _check_and_configure_subtitles(self):
         """Called on file-loaded event. Checks embedded subtitles; selects preferred (SDH > regular); only downloads if no embedded subtitles exist."""
@@ -16534,7 +16572,7 @@ class CineWindow(Adw.ApplicationWindow):
                     if stats.get("filePath"):
                         import os
                         t = os.path.basename(stats.get("filePath"))
-                    self._play_stream(url, t, preserve_queue=True)
+                    self._play_stream(url, t, preserve_queue=True, sub_file=stats.get("sub_file"))
                     return
 
                 status_text = str(stats.get("status") or "")

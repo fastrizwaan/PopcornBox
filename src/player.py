@@ -546,9 +546,12 @@ def play_magnet(magnet_link, player="mpv", progress_callback=None, file_index=No
         
         if stats and stats.get("filePath"):
             target_path = os.path.join(hash_dir, stats.get("filePath"))
-            expected_sub = os.path.splitext(target_path)[0] + ".srt"
-            if os.path.exists(expected_sub):
-                sub_file = expected_sub
+            subtitle_stem = os.path.splitext(target_path)[0]
+            for suffix in (".srt", ".eng.srt"):
+                expected_sub = subtitle_stem + suffix
+                if os.path.exists(expected_sub):
+                    sub_file = expected_sub
+                    break
                 
             total_size = stats.get("totalLength", 0)
             if total_size > 0 and engine._target_downloaded() == total_size:

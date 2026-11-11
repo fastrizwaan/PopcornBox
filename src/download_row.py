@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import threading
 import gi
 gi.require_version('Gtk', '4.0')
@@ -7,7 +8,7 @@ gi.require_version('Pango', '1.0')
 from gi.repository import Gtk, GLib, Pango, Gdk
 from . import player
 from . import database
-from .utils import open_uri, idle_add_once
+from .utils import idle_add_once
 
 class DownloadItemRow(Gtk.Box):
     def __init__(self, download):
@@ -243,6 +244,7 @@ class DownloadItemRow(Gtk.Box):
                     window._play_stream,
                     url,
                     title,
+                    sub_file=stats.get("sub_file"),
                     item_id=self.download.get("item_id"),
                     media_type=self.download.get("media_type", "movie"),
                     season=self.download.get("season"),
@@ -277,7 +279,15 @@ class DownloadItemRow(Gtk.Box):
         # update_status() report "Paused" for a download that never started.
         if not os.path.isdir(path):
             path = player.DOWNLOAD_BASE
-        open_uri(GLib.filename_to_uri(path, None), self.get_root())
+        try:
+            subprocess.Popen(
+                ["xdg-open", path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as e:
+            print(f"Could not open download folder {path}: {e}")
             
     def on_copy_clicked(self, btn):
         if hasattr(self, 'popover'): self.popover.popdown()
