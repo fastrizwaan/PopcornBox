@@ -347,6 +347,15 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                       </object>
                                     </child>
                                     <child type="end">
+                                      <object class="GtkMenuButton" id="library_primary_menu_btn">
+                                        <property name="valign">3</property>
+                                        <property name="primary">true</property>
+                                        <property name="icon-name">open-menu-symbolic</property>
+                                        <property name="tooltip-text" translatable="yes">Main Menu</property>
+                                        <property name="menu-model">primary_menu</property>
+                                      </object>
+                                    </child>
+                                    <child type="end">
                                       <object class="GtkButton" id="search_btn">
                                         <property name="icon-name">system-search-symbolic</property>
                                         <property name="tooltip-text" translatable="yes">Search</property>
@@ -384,17 +393,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                         </child>
                                         <child>
                                           <object class="GtkButton">
-                                            <property name="action-name">win.open-watched</property>
-                                            <property name="icon-name">view-visible-symbolic</property>
-                                            <property name="tooltip-text" translatable="yes">Watched</property>
-                                            <style>
-                                              <class name="flat"/>
-                                              <class name="local-nav-btn"/>
-                                            </style>
-                                          </object>
-                                        </child>
-                                        <child>
-                                          <object class="GtkButton">
                                             <property name="action-name">win.open-history</property>
                                             <property name="icon-name">document-open-recent-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">History</property>
@@ -404,59 +402,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                             </style>
                                           </object>
                                         </child>
-                                        <child>
-                                          <object class="GtkButton">
-                                            <property name="action-name">win.open-downloads</property>
-                                            <property name="icon-name">folder-download-symbolic</property>
-                                            <property name="tooltip-text" translatable="yes">Downloads</property>
-                                            <style>
-                                              <class name="flat"/>
-                                              <class name="local-nav-btn"/>
-                                            </style>
-                                          </object>
-                                        </child>
-                                        <child>
-                                          <object class="GtkButton">
-                                            <property name="action-name">win.open-addons</property>
-                                            <property name="icon-name">application-x-addon-symbolic</property>
-                                            <property name="tooltip-text" translatable="yes">Addons</property>
-                                            <style>
-                                              <class name="flat"/>
-                                              <class name="local-nav-btn"/>
-                                            </style>
-                                          </object>
-                                        </child>
-                                        <child>
-                                          <object class="GtkButton">
-                                            <property name="action-name">win.open-plugins</property>
-                                            <property name="icon-name">system-software-install-symbolic</property>
-                                            <property name="tooltip-text" translatable="yes">Plugins</property>
-                                            <style>
-                                              <class name="flat"/>
-                                              <class name="local-nav-btn"/>
-                                            </style>
-                                          </object>
-                                        </child>
-                                        <child>
-                                          <object class="GtkButton">
-                                            <property name="action-name">win.open-player</property>
-                                            <property name="icon-name">multimedia-player-symbolic</property>
-                                            <property name="tooltip-text" translatable="yes">Player</property>
-                                            <style>
-                                              <class name="flat"/>
-                                              <class name="local-nav-btn"/>
-                                            </style>
-                                          </object>
-                                        </child>
-                                      </object>
-                                    </child>
-                                    <child type="end">
-                                      <object class="GtkMenuButton" id="library_primary_menu_btn">
-                                        <property name="valign">3</property>
-                                        <property name="primary">true</property>
-                                        <property name="icon-name">open-menu-symbolic</property>
-                                        <property name="tooltip-text" translatable="yes">Main Menu</property>
-                                        <property name="menu-model">primary_menu</property>
                                       </object>
                                     </child>
                                   </object>
@@ -993,6 +938,16 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                               </object>
                             </child>
                             <child type="end">
+                              <object class="GtkToggleButton" id="fav_search_btn">
+                                <property name="icon-name">system-search-symbolic</property>
+                                <property name="tooltip-text" translatable="yes">Search</property>
+                                <style>
+                                  <class name="flat"/>
+                                  <class name="circular"/>
+                                </style>
+                              </object>
+                            </child>
+                            <child type="end">
                               <object class="GtkBox">
                                 <property name="spacing">2</property>
                                 <child>
@@ -1023,17 +978,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 </child>
                                 <child>
                                   <object class="GtkButton">
-                                    <property name="action-name">win.open-watched</property>
-                                    <property name="icon-name">view-visible-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Watched</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
                                     <property name="action-name">win.open-history</property>
                                     <property name="icon-name">document-open-recent-symbolic</property>
                                     <property name="tooltip-text" translatable="yes">History</property>
@@ -1043,60 +987,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                     </style>
                                   </object>
                                 </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-downloads</property>
-                                    <property name="icon-name">folder-download-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Downloads</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-addons</property>
-                                    <property name="icon-name">application-x-addon-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Addons</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-plugins</property>
-                                    <property name="icon-name">system-software-install-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Plugins</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-player</property>
-                                    <property name="icon-name">multimedia-player-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Player</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                              </object>
-                            </child>
-                            <child type="end">
-                              <object class="GtkToggleButton" id="fav_search_btn">
-                                <property name="icon-name">system-search-symbolic</property>
-                                <property name="tooltip-text" translatable="yes">Search</property>
-                                <style>
-                                  <class name="flat"/>
-                                  <class name="circular"/>
-                                </style>
                               </object>
                             </child>
                           </object>
@@ -1225,6 +1115,16 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                               </object>
                             </child>
                             <child type="end">
+                              <object class="GtkToggleButton" id="hist_search_btn">
+                                <property name="icon-name">system-search-symbolic</property>
+                                <property name="tooltip-text" translatable="yes">Search</property>
+                                <style>
+                                  <class name="flat"/>
+                                  <class name="circular"/>
+                                </style>
+                              </object>
+                            </child>
+                            <child type="end">
                               <object class="GtkBox">
                                 <property name="spacing">2</property>
                                 <child>
@@ -1250,17 +1150,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-watched</property>
-                                    <property name="icon-name">view-visible-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Watched</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
                                   <object class="GtkToggleButton" id="hist_active_btn">
                                     <property name="active">true</property>
                                     <property name="child">
@@ -1275,60 +1164,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                     </style>
                                   </object>
                                 </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-downloads</property>
-                                    <property name="icon-name">folder-download-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Downloads</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-addons</property>
-                                    <property name="icon-name">application-x-addon-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Addons</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-plugins</property>
-                                    <property name="icon-name">system-software-install-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Plugins</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-player</property>
-                                    <property name="icon-name">multimedia-player-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Player</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                              </object>
-                            </child>
-                            <child type="end">
-                              <object class="GtkToggleButton" id="hist_search_btn">
-                                <property name="icon-name">system-search-symbolic</property>
-                                <property name="tooltip-text" translatable="yes">Search</property>
-                                <style>
-                                  <class name="flat"/>
-                                  <class name="circular"/>
-                                </style>
                               </object>
                             </child>
                           </object>
@@ -1457,6 +1292,16 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                               </object>
                             </child>
                             <child type="end">
+                              <object class="GtkToggleButton" id="watch_search_btn">
+                                <property name="icon-name">system-search-symbolic</property>
+                                <property name="tooltip-text" translatable="yes">Search</property>
+                                <style>
+                                  <class name="flat"/>
+                                  <class name="circular"/>
+                                </style>
+                              </object>
+                            </child>
+                            <child type="end">
                               <object class="GtkBox">
                                 <property name="spacing">2</property>
                                 <child>
@@ -1482,21 +1327,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                   </object>
                                 </child>
                                 <child>
-                                  <object class="GtkToggleButton" id="watch_active_btn">
-                                    <property name="active">true</property>
-                                    <property name="child">
-                                      <object class="AdwButtonContent">
-                                        <property name="icon-name">view-visible-symbolic</property>
-                                        <property name="label" translatable="yes">Watched</property>
-                                      </object>
-                                    </property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
                                   <object class="GtkButton">
                                     <property name="action-name">win.open-history</property>
                                     <property name="icon-name">document-open-recent-symbolic</property>
@@ -1507,60 +1337,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                     </style>
                                   </object>
                                 </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-downloads</property>
-                                    <property name="icon-name">folder-download-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Downloads</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-addons</property>
-                                    <property name="icon-name">application-x-addon-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Addons</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-plugins</property>
-                                    <property name="icon-name">system-software-install-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Plugins</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-player</property>
-                                    <property name="icon-name">multimedia-player-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Player</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                              </object>
-                            </child>
-                            <child type="end">
-                              <object class="GtkToggleButton" id="watch_search_btn">
-                                <property name="icon-name">system-search-symbolic</property>
-                                <property name="tooltip-text" translatable="yes">Search</property>
-                                <style>
-                                  <class name="flat"/>
-                                  <class name="circular"/>
-                                </style>
                               </object>
                             </child>
                           </object>
@@ -1689,6 +1465,16 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                               </object>
                             </child>
                             <child type="end">
+                              <object class="GtkToggleButton" id="cw_search_btn">
+                                <property name="icon-name">system-search-symbolic</property>
+                                <property name="tooltip-text" translatable="yes">Search</property>
+                                <style>
+                                  <class name="flat"/>
+                                  <class name="circular"/>
+                                </style>
+                              </object>
+                            </child>
+                            <child type="end">
                               <object class="GtkBox">
                                 <property name="spacing">2</property>
                                 <child>
@@ -1719,17 +1505,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 </child>
                                 <child>
                                   <object class="GtkButton">
-                                    <property name="action-name">win.open-watched</property>
-                                    <property name="icon-name">view-visible-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Watched</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
                                     <property name="action-name">win.open-history</property>
                                     <property name="icon-name">document-open-recent-symbolic</property>
                                     <property name="tooltip-text" translatable="yes">History</property>
@@ -1739,60 +1514,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                     </style>
                                   </object>
                                 </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-downloads</property>
-                                    <property name="icon-name">folder-download-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Downloads</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-addons</property>
-                                    <property name="icon-name">application-x-addon-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Addons</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-plugins</property>
-                                    <property name="icon-name">system-software-install-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Plugins</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-player</property>
-                                    <property name="icon-name">multimedia-player-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Player</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                              </object>
-                            </child>
-                            <child type="end">
-                              <object class="GtkToggleButton" id="cw_search_btn">
-                                <property name="icon-name">system-search-symbolic</property>
-                                <property name="tooltip-text" translatable="yes">Search</property>
-                                <style>
-                                  <class name="flat"/>
-                                  <class name="circular"/>
-                                </style>
                               </object>
                             </child>
                           </object>
@@ -1895,68 +1616,9 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 </child>
                                 <child>
                                   <object class="GtkButton">
-                                    <property name="action-name">win.open-watched</property>
-                                    <property name="icon-name">view-visible-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Watched</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
                                     <property name="action-name">win.open-history</property>
                                     <property name="icon-name">document-open-recent-symbolic</property>
                                     <property name="tooltip-text" translatable="yes">History</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkToggleButton" id="down_active_btn">
-                                    <property name="active">true</property>
-                                    <property name="child">
-                                      <object class="AdwButtonContent">
-                                        <property name="icon-name">folder-download-symbolic</property>
-                                        <property name="label" translatable="yes">Downloads</property>
-                                      </object>
-                                    </property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-addons</property>
-                                    <property name="icon-name">application-x-addon-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Addons</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-plugins</property>
-                                    <property name="icon-name">system-software-install-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Plugins</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-player</property>
-                                    <property name="icon-name">multimedia-player-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Player</property>
                                     <style>
                                       <class name="flat"/>
                                       <class name="local-nav-btn"/>
@@ -2046,68 +1708,9 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 </child>
                                 <child>
                                   <object class="GtkButton">
-                                    <property name="action-name">win.open-watched</property>
-                                    <property name="icon-name">view-visible-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Watched</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
                                     <property name="action-name">win.open-history</property>
                                     <property name="icon-name">document-open-recent-symbolic</property>
                                     <property name="tooltip-text" translatable="yes">History</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-downloads</property>
-                                    <property name="icon-name">folder-download-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Downloads</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkToggleButton" id="addon_active_btn">
-                                    <property name="active">true</property>
-                                    <property name="child">
-                                      <object class="AdwButtonContent">
-                                        <property name="icon-name">application-x-addon-symbolic</property>
-                                        <property name="label" translatable="yes">Addons</property>
-                                      </object>
-                                    </property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-plugins</property>
-                                    <property name="icon-name">system-software-install-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Plugins</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-player</property>
-                                    <property name="icon-name">multimedia-player-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Player</property>
                                     <style>
                                       <class name="flat"/>
                                       <class name="local-nav-btn"/>
@@ -2297,68 +1900,9 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 </child>
                                 <child>
                                   <object class="GtkButton">
-                                    <property name="action-name">win.open-watched</property>
-                                    <property name="icon-name">view-visible-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Watched</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
                                     <property name="action-name">win.open-history</property>
                                     <property name="icon-name">document-open-recent-symbolic</property>
                                     <property name="tooltip-text" translatable="yes">History</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-downloads</property>
-                                    <property name="icon-name">folder-download-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Downloads</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-addons</property>
-                                    <property name="icon-name">application-x-addon-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Addons</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkToggleButton" id="plugin_active_btn">
-                                    <property name="active">true</property>
-                                    <property name="child">
-                                      <object class="AdwButtonContent">
-                                        <property name="icon-name">system-software-install-symbolic</property>
-                                        <property name="label" translatable="yes">Plugins</property>
-                                      </object>
-                                    </property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-player</property>
-                                    <property name="icon-name">multimedia-player-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Player</property>
                                     <style>
                                       <class name="flat"/>
                                       <class name="local-nav-btn"/>

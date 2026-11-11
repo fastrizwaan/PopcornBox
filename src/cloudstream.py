@@ -19,7 +19,10 @@ import hashlib
 import zipfile
 import logging
 import uuid
+import codecs
 import base64
+import threading
+import html as html_lib
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -30,6 +33,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from . import database
 
 logger = logging.getLogger("PopcornBox.CloudStream")
+
+_MAIN_PAGE_CACHE = {}
+_MAIN_PAGE_CACHE_LOCK = threading.Lock()
+_MAIN_PAGE_CACHE_TTL_SECONDS = 300
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -71,8 +78,20 @@ def _http_get_text(url, headers=None, timeout=12.0):
     if headers:
         req_headers.update(headers)
     req = urllib.request.Request(url, headers=req_headers)
-    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        err_str = str(e).upper()
+        if "UNEXPECTED_EOF" in err_str or "EOF OCCURRED" in err_str or "SSL" in err_str or isinstance(e, urllib.error.URLError):
+            try:
+                from .api import _doh_fetch
+                doh_data = _doh_fetch(url, headers=headers, timeout=timeout)
+                if doh_data is not None:
+                    return doh_data.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+        raise
 
 
 def _http_get_bytes(url, headers=None, timeout=25.0):
@@ -83,8 +102,20 @@ def _http_get_bytes(url, headers=None, timeout=25.0):
     if headers:
         req_headers.update(headers)
     req = urllib.request.Request(url, headers=req_headers)
-    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
-        return resp.read()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
+            return resp.read()
+    except Exception as e:
+        err_str = str(e).upper()
+        if "UNEXPECTED_EOF" in err_str or "EOF OCCURRED" in err_str or "SSL" in err_str or isinstance(e, urllib.error.URLError):
+            try:
+                from .api import _doh_fetch
+                doh_data = _doh_fetch(url, headers=headers, timeout=timeout)
+                if doh_data is not None:
+                    return doh_data
+            except Exception:
+                pass
+        raise
 
 
 def _resolve_short_link(url, timeout=10.0):
@@ -606,6 +637,9 @@ class CloudStreamProvider:
     id = ""
     name = ""
     supported_types = ["live"]
+    # Discover sections exposed by this adapter's get_main_page(). Each entry
+    # names a stable catalog ID, the returned section title, and its media type.
+    catalog_sections = ()
 
     def get_main_page(self, page=1):
         """Returns list of (section_title: str, items: list[dict])."""
@@ -632,6 +666,12 @@ class KickTRCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/Kraptor123/cs-kraptor/master/repo.json#KickTR"
     name = "KickTR"
     supported_types = ["live", "tv"]
+    catalog_sections = (
+        {"id": "featured-tr", "name": "Öne çıkan Türkçe yayınlar", "section": "Öne çıkan Türkçe yayınlar", "type": "tv"},
+        {"id": "top-tr", "name": "En çok izlenen Türkçe yayınlar", "section": "En çok izlenen Türkçe yayınlar", "type": "tv"},
+        {"id": "chat-tr", "name": "Türkçe sohbet yayınları", "section": "Türkçe sohbet yayınları", "type": "tv"},
+        {"id": "gaming-tr", "name": "Türkçe FPS yayınları", "section": "Türkçe FPS yayınları", "type": "tv"},
+    )
 
     API_ORIGINS = ["https://kick.com", "https://web.kick.com"]
     REQUEST_HEADERS = {
@@ -884,6 +924,12 @@ class KickGlobalCloudStreamProvider(KickTRCloudStreamProvider):
     id = "cloudstream:built-in:KickGlobal"
     name = "Kick (Global)"
     supported_types = ["live", "tv"]
+    catalog_sections = (
+        {"id": "top", "name": "Top Livestreams", "section": "Top Livestreams", "type": "tv"},
+        {"id": "featured", "name": "Featured Streams", "section": "Featured Streams", "type": "tv"},
+        {"id": "chat", "name": "Just Chatting", "section": "Just Chatting", "type": "tv"},
+        {"id": "gaming", "name": "Gaming Streams", "section": "Gaming Streams", "type": "tv"},
+    )
     REQUEST_HEADERS = {
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
@@ -1062,6 +1108,9 @@ class DailymotionCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/recloudstream/extensions/builds/DailymotionProvider.cs3#DailymotionProvider"
     name = "DailymotionProvider"
     supported_types = ["movie", "series", "tv", "other", "all"]
+    catalog_sections = (
+        {"id": "popular", "name": "Popular", "section": "Popular", "type": "movie", "supports_pagination": True},
+    )
 
     def get_main_page(self, page=1):
         url = f"https://api.dailymotion.com/videos?fields=id,title,thumbnail_360_url,description&limit=26&page={page}"
@@ -1838,15 +1887,174 @@ def _extract_hubcloud_sources(url, referer=None):
     return sources
 
 
+def _resolve_hdhub4u_short_link(target_url, timeout=8.0):
+    """
+    Resolves greenmotors.club / greenmountmotors / intermediate shorteners
+    used by HDhub4u to bypass mediator pages and extract destination hblinks URLs.
+    """
+    try:
+        html = _http_get_text(target_url, timeout=timeout)
+        m = re.search(r"s\('o','([A-Za-z0-9+/=]+)'", html)
+        if not m:
+            m = re.search(r"ck\('_wp_http_\d+','([^']+)'", html)
+        if m:
+            raw = m.group(1)
+            d1 = base64.b64decode(raw).decode('utf-8', errors='ignore')
+            d2 = base64.b64decode(d1).decode('utf-8', errors='ignore')
+            d3 = codecs.decode(d2, 'rot_13')
+            d4 = base64.b64decode(d3).decode('utf-8', errors='ignore')
+            obj = json.loads(d4)
+            o = obj.get("o") or obj.get("data")
+            if o:
+                dest = base64.b64decode(o).decode('utf-8', errors='ignore')
+                return dest
+    except Exception as e:
+        logger.debug(f"HDhub4u short link resolve error for {target_url}: {e}")
+    return None
+
+
+def _extract_hblinks_sources(target_url, referer=None):
+    """
+    Extracts HubCloud, HubDrive, and direct streaming links from an hblinks page.
+    """
+    sources = []
+    try:
+        html = _http_get_text(target_url, headers={"Referer": referer or target_url}, timeout=8.0)
+        hc_links = re.findall(
+            r'href\s*=\s*[\"\'](https?://[^\"\']*(?:hubcloud|hubdrive|hubcdn|gdflix|vcloud|nexdrive|fastdl)[^\"\']*)[\"\']',
+            html,
+            re.IGNORECASE,
+        )
+        for h in hc_links:
+            if "hubcdn." in h:
+                d = _extract_hubcdn_direct(h, referer=target_url)
+                if d:
+                    sources.append({"name": "HubCDN Direct", "url": d, "headers": {"Referer": h}})
+            else:
+                sources.extend(_extract_hubcloud_sources(h, referer=target_url))
+    except Exception as e:
+        logger.debug(f"Hblinks extraction error for {target_url}: {e}")
+    return sources
+
+
 class HDhub4uCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#HDhub4u"
     name = "HDhub4u"
     supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+    )
 
     DEFAULT_BASE = "https://new12.hdhub4u.cl"
 
     def _get_base_url(self):
         return get_dynamic_domain("hdhub4u", self.DEFAULT_BASE)
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"HDhub4u catalog page {page} failed: {e}")
+            return []
+
+        movies, series = [], []
+        seen_hrefs = set()
+        # Themes can mix figure/article cards, release list items, and bare
+        # title links on the same page. Collect each shape, then deduplicate by
+        # destination instead of letting one unrelated figure hide the lists.
+        blocks = []
+        for pattern in (
+            r"<figure\b[^>]*>.*?</figure>",
+            r"<article\b[^>]*>.*?</article>",
+            r"<li\b[^>]*>.*?</li>",
+            r"<a\b[^>]*>.*?</a\s*>",
+        ):
+            blocks.extend(re.findall(pattern, page_html, re.IGNORECASE | re.DOTALL))
+
+        for block in blocks:
+            link_match = re.search(r"<a\b[^>]*href\s*=\s*[\"']([^\"']+)[\"'][^>]*>", block, re.IGNORECASE)
+            if not link_match:
+                continue
+            href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_match.group(1)).strip())
+            parsed_href = urllib.parse.urlsplit(href)
+            if parsed_href.scheme not in ("http", "https") or not parsed_href.netloc:
+                continue
+            if href in seen_hrefs:
+                continue
+
+            img_match = re.search(r"<(?:img|source)\b[^>]*>", block, re.IGNORECASE | re.DOTALL)
+            img_tag = img_match.group(0) if img_match else ""
+            poster_match = None
+            for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                poster_match = re.search(
+                    rf"\b{attr}\s*=\s*[\"']([^\"']+)[\"']",
+                    img_tag,
+                    re.IGNORECASE,
+                )
+                if poster_match:
+                    break
+            poster = html_lib.unescape(poster_match.group(1)).strip() if poster_match else None
+
+            title_candidates = []
+            heading_match = re.search(r"<h[1-6]\b[^>]*>(.*?)</h[1-6]>", block, re.IGNORECASE | re.DOTALL)
+            if heading_match:
+                title_candidates.append(heading_match.group(1))
+            title_match = re.search(r"<a\b[^>]*title\s*=\s*[\"']([^\"']+)[\"']", block, re.IGNORECASE)
+            if title_match:
+                title_candidates.append(title_match.group(1))
+            alt_match = re.search(r"\balt\s*=\s*[\"']([^\"']+)[\"']", img_tag, re.IGNORECASE)
+            if alt_match:
+                title_candidates.append(alt_match.group(1))
+            text_match = re.search(r"<a\b[^>]*>(.*?)</a\s*>", block, re.IGNORECASE | re.DOTALL)
+            if text_match:
+                title_candidates.append(text_match.group(1))
+
+            title = ""
+            for candidate in title_candidates:
+                candidate = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", candidate, flags=re.IGNORECASE | re.DOTALL)
+                candidate = html_lib.unescape(re.sub(r"<[^>]+>", " ", candidate))
+                candidate = re.sub(r"\s+", " ", candidate).strip(" .-|\t\r\n")
+                if candidate and candidate.lower() not in {"home", "latest releases", "latest movies", "latest series", "search"}:
+                    title = candidate
+                    break
+            if not title:
+                continue
+
+            year_match = re.search(r"\b((?:18|19|20)\d{2})\b", title)
+            is_series = bool(
+                re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.IGNORECASE)
+            )
+            # Ignore navigation links while retaining poster cards with no
+            # year in their label.
+            if not poster and not year_match and not is_series:
+                continue
+            seen_hrefs.add(href)
+            year = int(year_match.group(1)) if year_match else None
+            poster_url = urllib.parse.urljoin(f"{base}/", poster) if poster else None
+            item = {
+                "provider_id": self.id,
+                "data": f"hdhub4u:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster_url,
+                "background_url": poster_url,
+                "description": title,
+                "year": year,
+            }
+            (series if is_series else movies).append(item)
+
+        sections = []
+        if movies:
+            sections.append(("Latest Movies", movies))
+        if series:
+            sections.append(("Latest Series", series))
+        logger.debug(
+            f"HDhub4u catalog page {page} parsed {len(movies)} movie(s) and {len(series)} series"
+        )
+        return sections
 
     def search(self, query):
         if not query or not query.strip():
@@ -1886,15 +2094,19 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
                         path = urllib.parse.urlparse(permalink).path
                         permalink = f"{base}{path}"
 
-                    y_match = re.search(r"\((\d{4})\)", p_title)
+                    y_match = re.search(r"\b((?:18|19|20)\d{2})\b", p_title)
                     year = int(y_match.group(1)) if y_match else None
                     thumb = doc.get("post_thumbnail")
+                    is_series = bool(
+                        re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", p_title, re.IGNORECASE)
+                    )
 
                     items.append({
                         "provider_id": self.id,
                         "data": f"hdhub4u:{permalink}",
                         "name": p_title,
-                        "type": CloudStreamTvType.Movie if "season" not in p_title.lower() else CloudStreamTvType.TvSeries,
+                        "imdb_code": doc.get("imdb_id"),
+                        "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
                         "poster_url": thumb,
                         "background_url": thumb,
                         "description": p_title,
@@ -1909,25 +2121,67 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
                 encoded = urllib.parse.quote(clean_q)
                 html_url = f"{base}/?s={encoded}"
                 html = _http_get_text(html_url, timeout=8.0)
-                matches = re.findall(
-                    r"<figure[^>]*>.*?<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>.*?<img[^>]+alt=[\"\']([^\"\']+)[\"\'].*?</figure>",
-                    html,
-                    re.DOTALL
-                )
-                for href, raw_title in matches:
-                    clean_title = re.sub(r"<[^>]+>", "", raw_title).strip()
-                    clean_title = clean_title.replace("&#8211;", "-").replace("&#038;", "&")
-                    y_match = re.search(r"\((\d{4})\)", clean_title)
+                blocks = []
+                for pattern in (
+                    r"<figure\b[^>]*>.*?</figure>",
+                    r"<article\b[^>]*>.*?</article>",
+                    r"<li\b[^>]*>.*?</li>",
+                    r"<a\b[^>]*>.*?</a\s*>",
+                ):
+                    blocks.extend(re.findall(pattern, html, re.IGNORECASE | re.DOTALL))
+                seen_results = set()
+                for block in blocks:
+                    link_match = re.search(
+                        r"<a\b[^>]*href\s*=\s*[\"']([^\"']+)[\"'][^>]*>",
+                        block,
+                        re.IGNORECASE,
+                    )
+                    if not link_match:
+                        continue
+                    full_href = urllib.parse.urljoin(base + "/", html_lib.unescape(link_match.group(1)).strip())
+                    if full_href in seen_results:
+                        continue
+                    img_match = re.search(r"<(?:img|source)\b[^>]*>", block, re.IGNORECASE | re.DOTALL)
+                    img_tag = img_match.group(0) if img_match else ""
+                    title_candidates = []
+                    for candidate_pattern in (
+                        r"<a\b[^>]*title\s*=\s*[\"']([^\"']+)[\"']",
+                        r"\balt\s*=\s*[\"']([^\"']+)[\"']",
+                        r"<h[1-6]\b[^>]*>(.*?)</h[1-6]>",
+                        r"<a\b[^>]*>(.*?)</a\s*>",
+                    ):
+                        candidate_match = re.search(candidate_pattern, block, re.IGNORECASE | re.DOTALL)
+                        if candidate_match:
+                            title_candidates.append(candidate_match.group(1))
+                    clean_title = ""
+                    for candidate in title_candidates:
+                        candidate = html_lib.unescape(re.sub(r"<[^>]+>", " ", candidate))
+                        candidate = re.sub(r"\s+", " ", candidate).strip(" .-|\t\r\n")
+                        if candidate and candidate.lower() not in {"home", "search", "latest releases"}:
+                            clean_title = candidate
+                            break
+                    if not clean_title:
+                        continue
+                    y_match = re.search(r"\b((?:18|19|20)\d{2})\b", clean_title)
                     year = int(y_match.group(1)) if y_match else None
-                    full_href = href if href.startswith("http") else f"{base}/{href.lstrip('/')}"
+                    is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", clean_title, re.IGNORECASE))
+                    poster_match = None
+                    for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                        poster_match = re.search(rf"\b{attr}\s*=\s*[\"']([^\"']+)[\"']", img_tag, re.IGNORECASE)
+                        if poster_match:
+                            break
+                    if not poster_match and not year and not is_series:
+                        continue
+                    poster = urllib.parse.urljoin(base + "/", html_lib.unescape(poster_match.group(1))) if poster_match else None
+                    seen_results.add(full_href)
 
                     items.append({
                         "provider_id": self.id,
                         "data": f"hdhub4u:{full_href}",
                         "name": clean_title,
-                        "type": CloudStreamTvType.Movie if "season" not in clean_title.lower() else CloudStreamTvType.TvSeries,
-                        "poster_url": None,
-                        "background_url": None,
+                        "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                        "poster_url": poster,
+                        "background_url": poster,
                         "description": clean_title,
                         "year": year,
                     })
@@ -1942,25 +2196,104 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
         try:
             html = _http_get_text(href, timeout=8.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
-            title = re.sub(r"<[^>]+>", "", t_match.group(1)).strip() if t_match else "HDhub4u Video"
+            title = html_lib.unescape(re.sub(r"<[^>]+>", " ", t_match.group(1))).strip() if t_match else "HDhub4u Video"
             img_match = re.search(r"<img[^>]+src=[\"\']([^\"\']+)[\"\'][^>]*class=[\"\'][^\"\']*wp-post-image", html)
-            poster = img_match.group(1) if img_match else None
+            poster = urllib.parse.urljoin(base + "/", html_lib.unescape(img_match.group(1))) if img_match else None
+            episodes = []
+            seen_episodes = set()
+            page_season_match = re.search(r"\bseason\s*(\d{1,2})\b|\bS(\d{1,2})\b", title, re.IGNORECASE)
+            page_season = int(page_season_match.group(1) or page_season_match.group(2)) if page_season_match else None
+
+            for anchor in re.finditer(
+                r"<a\b([^>]*)href\s*=\s*[\"']([^\"']+)[\"']([^>]*)>(.*?)</a\s*>",
+                html,
+                re.IGNORECASE | re.DOTALL,
+            ):
+                attrs = anchor.group(1) + " " + anchor.group(3)
+                episode_name = html_lib.unescape(re.sub(r"<[^>]+>", " ", anchor.group(4)))
+                episode_name = re.sub(r"\s+", " ", episode_name).strip()
+                title_attr = re.search(r"\btitle\s*=\s*[\"']([^\"']+)[\"']", attrs, re.IGNORECASE)
+                if title_attr:
+                    episode_name = html_lib.unescape(title_attr.group(1)).strip() or episode_name
+
+                episode_match = re.search(
+                    r"\bS(\d{1,2})\s*[-_. ]*E(\d{1,2})\b|\b(\d{1,2})x(\d{1,2})\b",
+                    episode_name,
+                    re.IGNORECASE,
+                )
+                if episode_match and episode_match.group(1) is not None:
+                    season_num, episode_num = int(episode_match.group(1)), int(episode_match.group(2))
+                elif episode_match and episode_match.group(3) is not None:
+                    season_num, episode_num = int(episode_match.group(3)), int(episode_match.group(4))
+                else:
+                    long_episode = re.search(
+                        r"\bSeason\s*(\d{1,2}).*?Episode\s*(\d{1,2})\b",
+                        episode_name,
+                        re.IGNORECASE,
+                    )
+                    short_episode = re.search(r"\bEpisode\s*(\d{1,2})\b", episode_name, re.IGNORECASE)
+                    if long_episode:
+                        season_num, episode_num = int(long_episode.group(1)), int(long_episode.group(2))
+                    elif short_episode and page_season is not None:
+                        season_num, episode_num = page_season, int(short_episode.group(1))
+                    else:
+                        continue
+
+                episode_href = urllib.parse.urljoin(href, html_lib.unescape(anchor.group(2)).strip())
+                if urllib.parse.urlsplit(episode_href).netloc.casefold() != urllib.parse.urlsplit(base).netloc.casefold():
+                    continue
+                episode_key = (season_num, episode_num, episode_href)
+                if episode_key in seen_episodes:
+                    continue
+                seen_episodes.add(episode_key)
+                episodes.append({
+                    "name": episode_name or f"S{season_num:02d}E{episode_num:02d}",
+                    "season": season_num,
+                    "episode": episode_num,
+                    "data": f"hdhub4u:{episode_href}",
+                    "poster_url": poster,
+                })
+
+            # Some search results point directly at an episode page, with no
+            # separate episode anchor on that page.
+            direct_episode = re.search(
+                r"\bS(\d{1,2})\s*[-_. ]*E(\d{1,2})\b|\b(\d{1,2})x(\d{1,2})\b",
+                title,
+                re.IGNORECASE,
+            )
+            if not episodes and direct_episode:
+                if direct_episode.group(1) is not None:
+                    season_num, episode_num = int(direct_episode.group(1)), int(direct_episode.group(2))
+                else:
+                    season_num, episode_num = int(direct_episode.group(3)), int(direct_episode.group(4))
+                episodes.append({
+                    "name": title,
+                    "season": season_num,
+                    "episode": episode_num,
+                    "data": data_str,
+                    "poster_url": poster,
+                })
         except Exception:
             title = "HDhub4u Video"
             poster = None
+            episodes = []
+
+        is_series = bool(
+            episodes or re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.IGNORECASE)
+        )
 
         return {
             "provider_id": self.id,
             "data": data_str,
             "name": title,
-            "type": CloudStreamTvType.Movie if "season" not in title.lower() else CloudStreamTvType.TvSeries,
+            "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
             "poster_url": poster,
             "background_url": poster,
             "description": title,
             "year": None,
             "rating_percent": None,
             "tags": ["HDhub4u"],
-            "episodes": [],
+            "episodes": episodes,
         }
 
     def load_links(self, data_str):
@@ -1968,46 +2301,124 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
         base = self._get_base_url()
         sources = []
         try:
-            html = _http_get_text(href, timeout=8.0)
+            html = _http_get_text(href, headers={
+                "Referer": f"{base.rstrip('/')}/",
+                "Accept-Language": "en-US,en;q=0.9",
+            }, timeout=12.0)
 
-            links = re.findall(r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', html, re.DOTALL)
-            for target_url, text in links:
-                clean_text = re.sub(r"<[^>]+>", "", text).strip()
-                if not any(k in target_url.lower() for k in ["hubcdn", "hubdrive", "hubcloud", "playdrive"]):
+            links = re.findall(
+                r'<a\b[^>]*href\s*=\s*[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a\s*>',
+                html,
+                re.IGNORECASE | re.DOTALL,
+            )
+            # The page theme sometimes embeds server URLs in onclick/data
+            # values rather than a visible anchor href.
+            known_url_re = re.compile(
+                r"https?://[^\s\"'<>]+(?:hubcdn|hubdrive|hubcloud|playdrive|nexdrive|fastdl|vcloud|gdflix|greenmotors|hblinks|greenmountmotors)[^\s\"'<>]*",
+                re.IGNORECASE,
+            )
+            links.extend((match.group(0), "") for match in known_url_re.finditer(html))
+
+            seen_links = set()
+            seen_sources = set()
+            tasks = []
+            for raw_url, raw_text in links:
+                target_url = urllib.parse.urljoin(href, html_lib.unescape(str(raw_url or "")).strip())
+                if not target_url.startswith(("http://", "https://")) or target_url in seen_links:
                     continue
+                seen_links.add(target_url)
+                lower_url = target_url.lower()
+                clean_text = html_lib.unescape(re.sub(r"<[^>]+>", " ", str(raw_text or ""))).strip()
 
                 quality_str = ""
                 for q in ["2160p", "4k", "1080p", "720p", "480p"]:
-                    if q in clean_text.lower() or q in target_url.lower():
+                    if q in clean_text.lower() or q in lower_url:
                         quality_str = q.upper()
                         break
+                quality_num = int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720
 
-                # 1. HubCDN -> Direct Google Video link
-                if "hubcdn." in target_url:
-                    direct_video = _extract_hubcdn_direct(target_url, referer=href)
-                    if direct_video:
+                # Some pages now expose a direct media URL alongside server
+                # buttons. Keep those playable links without another extractor.
+                if any(lower_url.endswith(ext) or f"{ext}?" in lower_url for ext in (".m3u8", ".mp4", ".mpd", ".mkv")):
+                    if target_url not in seen_sources:
                         sources.append({
-                            "name": f"HDhub4u {quality_str} (Direct)".strip(),
-                            "url": direct_video,
-                            "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720,
-                            "headers": {"User-Agent": "Mozilla/5.0"},
-                            "is_hls": ".m3u8" in direct_video,
+                            "name": f"HDhub4u {quality_str or clean_text or 'Direct'}",
+                            "url": target_url,
+                            "quality": quality_num,
+                            "headers": {"User-Agent": "Mozilla/5.0", "Referer": href},
+                            "is_hls": ".m3u8" in lower_url,
                         })
+                        seen_sources.add(target_url)
+                    continue
 
-                # 2. HubDrive / HubCloud
-                elif "hubdrive." in target_url or "hubcloud." in target_url:
-                    hc_sources = _extract_hubcloud_sources(target_url, referer=href)
-                    for hs in hc_sources:
+                if (
+                    any(h in lower_url for h in ("greenmotors.", "greenmountmotors.", "hblinks.", "hubdrive.", "hubcloud.", "hubcdn.", "nexdrive.", "fastdl.", "vcloud.", "playdrive.", "gdflix."))
+                    or ("?id=" in lower_url and "hdhub" not in lower_url)
+                ):
+                    tasks.append((target_url, raw_text, clean_text, quality_str, quality_num))
+
+            def _extract_worker(task):
+                t_url, r_text, c_text, q_str, q_num = task
+                l_url = t_url.lower()
+                extracted = []
+                try:
+                    if any(h in l_url for h in ("greenmotors.", "greenmountmotors.")) or ("?id=" in l_url and "hdhub" not in l_url):
+                        dest = _resolve_hdhub4u_short_link(t_url)
+                        if dest and "hblinks." in dest.lower():
+                            extracted = _extract_hblinks_sources(dest, referer=t_url)
+                        elif dest and any(h in dest.lower() for h in ("hubcloud.", "hubdrive.", "nexdrive.")):
+                            extracted = _extract_hubcloud_sources(dest, referer=t_url)
+                        elif dest and any(dest.lower().endswith(ext) or f"{ext}?" in dest.lower() for ext in (".m3u8", ".mp4", ".mpd", ".mkv")):
+                            extracted = [{"name": "Direct Stream", "url": dest, "headers": {"Referer": t_url}}]
+                    elif "hblinks." in l_url:
+                        extracted = _extract_hblinks_sources(t_url, referer=href)
+                    elif "hubcdn." in l_url:
+                        direct_video = _extract_hubcdn_direct(t_url, referer=href)
+                        if direct_video:
+                            extracted.append({"name": "HubCDN Direct", "url": direct_video, "headers": {"Referer": t_url}})
+                    elif any(host in l_url for host in ("hubdrive.", "hubcloud.", "nexdrive.", "fastdl.", "vcloud.")):
+                        extracted = _extract_hubcloud_sources(t_url, referer=href)
+                    elif any(host in l_url for host in ("playdrive.", "gdflix.")):
+                        try:
+                            resolved_url = _resolve_short_link(t_url, timeout=8.0)
+                        except Exception:
+                            resolved_url = t_url
+                        if resolved_url and resolved_url != t_url:
+                            resolved_lower = resolved_url.lower()
+                            if "hubcdn." in resolved_lower:
+                                direct_video = _extract_hubcdn_direct(resolved_url, referer=t_url)
+                                if direct_video:
+                                    extracted = [{"name": "HubCDN Direct", "url": direct_video, "headers": {"Referer": resolved_url}}]
+                            elif any(host in resolved_lower for host in ("hubdrive.", "hubcloud.", "nexdrive.", "fastdl.", "vcloud.")):
+                                extracted = _extract_hubcloud_sources(resolved_url, referer=t_url)
+                            elif any(resolved_lower.endswith(ext) or f"{ext}?" in resolved_lower for ext in (".m3u8", ".mp4", ".mpd", ".mkv")):
+                                extracted = [{"name": "PlayDrive Direct", "url": resolved_url, "headers": {"Referer": t_url}}]
+                except Exception as e:
+                    logger.debug(f"HDhub4u link extraction error for {t_url}: {e}")
+                return q_str, q_num, extracted
+
+            if tasks:
+                with ThreadPoolExecutor(max_workers=min(len(tasks), 8)) as ex:
+                    results = list(ex.map(_extract_worker, tasks))
+
+                for q_str, q_num, extracted in results:
+                    for entry in extracted or []:
+                        source_url = str(entry.get("url") or "").strip()
+                        if not source_url or source_url in seen_sources:
+                            continue
                         sources.append({
-                            "name": f"HDhub4u {quality_str} ({hs.get('name')})".strip(),
-                            "url": hs.get("url"),
-                            "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720,
-                            "headers": hs.get("headers") or {"User-Agent": "Mozilla/5.0"},
-                            "is_hls": ".m3u8" in hs.get("url", ""),
+                            "name": f"HDhub4u {q_str} ({entry.get('name') or 'Direct'})".strip(),
+                            "url": source_url,
+                            "quality": q_num,
+                            "headers": entry.get("headers") or {"User-Agent": "Mozilla/5.0", "Referer": href},
+                            "is_hls": ".m3u8" in source_url.lower(),
                         })
+                        seen_sources.add(source_url)
 
             if sources:
+                logger.debug(f"HDhub4u load_links resolved {len(sources)} playable source(s) from {len(seen_links)} page links")
                 return sources
+            logger.debug(f"HDhub4u load_links found no supported servers on {href}")
         except Exception as e:
             logger.debug(f"HDhub4u load_links failed: {e}")
 
@@ -2406,6 +2817,11 @@ class YTSCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#YTS"
     name = "YTS"
     supported_types = ["movie", "torrent", "all"]
+    catalog_sections = (
+        {"id": "popular-movies", "name": "Popular Movies", "section": "Popular Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "top-rated", "name": "Top Rated", "section": "Top Rated", "type": "movie", "supports_pagination": True},
+    )
 
     _BASE_URLS = [
         "https://movies-api.accel.li/api/v2",
@@ -2484,6 +2900,8 @@ class YTSCloudStreamProvider(CloudStreamProvider):
             rating = m.get("rating")
             rating_pct = int(float(rating) * 10) if rating else None
             cover = m.get("large_cover_image") or m.get("medium_cover_image")
+            if cover and "://yts.gg/assets/images/" in cover:
+                cover = cover.replace("://yts.gg/assets/images/", "://img.yts.gg/assets/images/")
             movie_id = m.get("id")
 
             payload = {
@@ -2499,6 +2917,7 @@ class YTSCloudStreamProvider(CloudStreamProvider):
                 "name": title,
                 "url": m.get("url") or f"https://yts.mx/movies/{m.get('slug', movie_id)}",
                 "data": json.dumps(payload),
+                "imdb_code": m.get("imdb_code"),
                 "poster_url": cover,
                 "year": year,
                 "rating_percent": rating_pct,
@@ -2524,12 +2943,15 @@ class YTSCloudStreamProvider(CloudStreamProvider):
                 resp = self._request_json("movie_details.json", {"movie_id": movie_id, "with_images": "true"})
                 if resp and isinstance(resp.get("data"), dict):
                     m = resp["data"].get("movie") or {}
+                    cover_img = m.get("large_cover_image") or m.get("medium_cover_image")
+                    if cover_img and "://yts.gg/assets/images/" in cover_img:
+                        cover_img = cover_img.replace("://yts.gg/assets/images/", "://img.yts.gg/assets/images/")
                     payload = {
                         "id": m.get("id"),
                         "imdb_code": m.get("imdb_code"),
                         "title": m.get("title_long") or m.get("title") or "Unknown",
                         "year": m.get("year"),
-                        "cover": m.get("large_cover_image") or m.get("medium_cover_image"),
+                        "cover": cover_img,
                         "summary": m.get("description_full") or m.get("summary"),
                         "torrents": m.get("torrents") or [],
                     }
@@ -2632,17 +3054,19 @@ class YTSCloudStreamProvider(CloudStreamProvider):
             })
         return sources
 
-    def get_main_page(self):
+    def get_main_page(self, page=1):
         sections = []
         for title, sort in [("Popular Movies", "download_count"), ("Latest Movies", "date_added"), ("Top Rated", "rating")]:
             try:
-                resp = self._request_json("list_movies.json", {"sort_by": sort, "limit": 20})
+                resp = self._request_json("list_movies.json", {"sort_by": sort, "limit": 20, "page": page})
                 if resp and isinstance(resp.get("data"), dict):
                     movies = resp["data"].get("movies") or []
                     items = []
                     for m in movies:
                         t = m.get("title_long") or m.get("title")
                         cover = m.get("large_cover_image") or m.get("medium_cover_image")
+                        if cover and "://yts.gg/assets/images/" in cover:
+                            cover = cover.replace("://yts.gg/assets/images/", "://img.yts.gg/assets/images/")
                         payload = {
                             "id": m.get("id"),
                             "imdb_code": m.get("imdb_code"),
@@ -2656,6 +3080,7 @@ class YTSCloudStreamProvider(CloudStreamProvider):
                             "name": t,
                             "url": m.get("url"),
                             "data": json.dumps(payload),
+                            "imdb_code": m.get("imdb_code"),
                             "poster_url": cover,
                             "year": m.get("year"),
                             "rating_percent": int(float(m.get("rating") or 0) * 10),
@@ -3680,6 +4105,172 @@ def is_provider_runnable(plugin):
     return True
 
 
+def _catalog_type_matches(catalog_type, media_type):
+    catalog_type = str(catalog_type or "").strip().lower()
+    media_type = str(media_type or "all").strip().lower()
+    if media_type == "movie_series":
+        return catalog_type in ("movie", "movies", "series", "anime")
+    if media_type in ("", "all", "discover"):
+        return True
+    if catalog_type == media_type:
+        return True
+    return media_type == "series" and catalog_type == "anime"
+
+
+def catalog_url(provider_id):
+    """Build an opaque URL for a CloudStream catalog in the shared Discover flow."""
+    return "cloudstream://catalog/" + urllib.parse.quote(str(provider_id or ""), safe="")
+
+
+def provider_id_from_catalog_url(value):
+    prefix = "cloudstream://catalog/"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        return None
+    try:
+        return urllib.parse.unquote(value[len(prefix):]) or None
+    except Exception:
+        return None
+
+
+def get_catalogs(media_type="all"):
+    """Return browsable sections declared by enabled, runnable CloudStream adapters."""
+    if not is_cloudstream_enabled():
+        return []
+
+    catalogs = []
+    seen = set()
+    for plugin in get_all_plugins():
+        if not plugin.get("enabled") or not is_provider_runnable(plugin):
+            continue
+        plugin_id = str(plugin.get("id") or "").strip()
+        provider = get_provider(plugin_id)
+        if not plugin_id or not provider:
+            continue
+        for section in getattr(provider, "catalog_sections", ()) or ():
+            if not isinstance(section, dict):
+                continue
+            catalog_id = str(section.get("id") or "").strip()
+            catalog_name = str(section.get("name") or section.get("section") or catalog_id).strip()
+            section_name = str(section.get("section") or catalog_name).strip()
+            catalog_type = str(section.get("type") or "movie").strip().lower()
+            key = (provider.id, catalog_id)
+            if not catalog_id or not catalog_name or key in seen:
+                continue
+            if not _catalog_type_matches(catalog_type, media_type):
+                continue
+            seen.add(key)
+            provider_name = str(plugin.get("name") or provider.name or "CloudStream")
+            catalogs.append({
+                "addon_name": provider_name,
+                "manifest_url": catalog_url(plugin_id),
+                "base_url": catalog_url(plugin_id),
+                "catalog_id": catalog_id,
+                "catalog_name": catalog_name,
+                "display_name": f"{provider_name} - {catalog_name}",
+                "genres": list(section.get("genres") or []),
+                "extra": [],
+                "extraSupported": [],
+                "type": catalog_type,
+                "supports_pagination": bool(section.get("supports_pagination", False)),
+                "_source": "cloudstream",
+                "cloudstream_provider_id": plugin_id,
+                "cloudstream_section": section_name,
+            })
+    return catalogs
+
+
+def _get_provider_main_page(provider, page):
+    cache_key = (str(provider.id), int(page or 1))
+    now = time.time()
+    with _MAIN_PAGE_CACHE_LOCK:
+        cached = _MAIN_PAGE_CACHE.get(cache_key)
+        if cached and now - cached[0] < _MAIN_PAGE_CACHE_TTL_SECONDS:
+            return cached[1]
+        try:
+            try:
+                sections = provider.get_main_page(page=page)
+            except TypeError:
+                sections = provider.get_main_page()
+            sections = list(sections or [])
+        except Exception as e:
+            logger.debug(f"CloudStream catalog fetch failed provider={provider.name!r}: {e}")
+            sections = []
+        _MAIN_PAGE_CACHE[cache_key] = (now, sections)
+        return sections
+
+
+def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=None):
+    """Load one declared CloudStream section and normalize it to Discover cards."""
+    if is_cancelled and is_cancelled():
+        return []
+    plugin = get_plugin(provider_id)
+    if not is_cloudstream_enabled() or not plugin or not plugin.get("enabled") or not is_provider_runnable(plugin):
+        return []
+    provider = get_provider(provider_id)
+    section = next((
+        item for item in (getattr(provider, "catalog_sections", ()) or [])
+        if isinstance(item, dict) and str(item.get("id") or "") == str(catalog_id)
+    ), None)
+    if not section:
+        return []
+
+    wanted_section = str(section.get("section") or section.get("name") or "").strip().casefold()
+    raw_items = []
+    for entry in _get_provider_main_page(provider, page):
+        if is_cancelled and is_cancelled():
+            return []
+        if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+            section_name, items = str(entry[0] or "").strip().casefold(), entry[1]
+        elif isinstance(entry, dict):
+            section_name = str(entry.get("title") or entry.get("name") or "").strip().casefold()
+            items = entry.get("items") or entry.get("results") or []
+        else:
+            continue
+        if section_name == wanted_section:
+            raw_items = items if isinstance(items, list) else []
+            break
+
+    cards = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        data = item.get("data") or item.get("url") or item.get("id")
+        if not data:
+            continue
+        raw_type = CloudStreamTvType.from_wire(str(item.get("type") or section.get("type") or "movie"))
+        normalized = dict(item)
+        normalized["provider_id"] = item.get("provider_id") or provider_id
+        normalized["data"] = str(data)
+        normalized["name"] = item.get("name") or item.get("title") or "Stream"
+        normalized["type"] = raw_type
+        card = search_item_to_card_dict(normalized)
+        if raw_type == CloudStreamTvType.Other:
+            card["type"] = str(section.get("type") or "movie")
+        card["catalog_name"] = section.get("name") or catalog_id
+        card["catalog_id"] = catalog_id
+        card["addon_name"] = plugin.get("name") or provider.name
+        card["manifest_url"] = catalog_url(provider_id)
+        imdb_code = str(item.get("imdb_code") or item.get("imdb_id") or "").strip()
+        if imdb_code and re.fullmatch(r"tt\d{7,8}", imdb_code):
+            card["alias_ids"] = [imdb_code, card["id"]]
+        else:
+            card["alias_ids"] = [card["id"]]
+        for key in ("genres", "description", "overview", "imdbRating", "runtime", "background", "videos", "trailer"):
+            if item.get(key) is not None:
+                card[key] = item[key]
+        cards.append(card)
+
+    page_limit = int(limit) if isinstance(limit, int) and limit > 0 else 50
+    cards = cards[:page_limit]
+    logger.debug(
+        f"CloudStream catalog provider={provider.name!r} catalog={catalog_id!r} "
+        f"matched {len(raw_items)} source item(s), returned {len(cards)} card(s)"
+    )
+    if cards and is_cancelled and is_cancelled():
+        return []
+    return cards
+
+
 # --- Repository Installation & Refresh ---
 
 def fetch_repository_data(raw_url):
@@ -3869,26 +4460,60 @@ def bulk_install_and_enable(plugin_ids):
 
 # --- PopcornBox Media Models Conversion ---
 
+def clean_cloudstream_title(title_text):
+    """
+    Cleans release tags, audio formats, codec info, and full movie suffixes
+    from CloudStream catalog titles for clean UI display.
+    Returns (clean_title, year).
+    """
+    if not title_text:
+        return "", None
+    text = html_lib.unescape(str(title_text)).strip()
+    year_match = re.search(r"\b((?:19|20)\d{2})\b", text)
+    year = year_match.group(1) if year_match else None
+
+    split_match = re.split(
+        r"\s*(?:\[[^\]]*\]|\|.*$|\b(?:unrated|uncut|extended(?:\s+edition)?|director'?s\s+cut|theatrical(?:\s+cut)?|limited|proper|repack|remaster(?:ed)?|anniversary\s+edition|special\s+edition|blu[ .-]?ray|brrip|web[ .-]?dl|webrip|hdrip|dvdrip|hdtv|hdtc|hq-hdtc|ds4k|imax|x26[45]|(?:2160|1080|720|480)p|4k|dual audio|multi audio|full movie|full series)\b)",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )
+    base = split_match[0].strip(" .-_:|")
+    clean = re.sub(r"[\s(\[]*(?:(?:19|20)\d{2}|Season\s*\d+)[)\]]*\s*$", "", base, flags=re.IGNORECASE).strip(" .-_:|")
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean or base or text, year
+
+
 def search_item_to_card_dict(item):
     """Converts a CloudStream search item into a standard PopcornBox movie card dict."""
     route_id = cloudstream_route_id(item["provider_id"], item["data"])
     raw_type = item.get("type", CloudStreamTvType.Other)
     media_type = CloudStreamTvType.to_popcorn_type(raw_type)
 
-    return {
+    raw_name = item.get("name") or "Stream"
+    clean_name, extracted_year = clean_cloudstream_title(raw_name)
+    year_val = str(item.get("year") or extracted_year or "")
+
+    card = {
         "id": route_id,
         "imdb_id": route_id,
-        "title": item.get("name") or "Stream",
-        "name": item.get("name") or "Stream",
+        "title": clean_name or raw_name,
+        "name": clean_name or raw_name,
+        "catalog_title": raw_name,
+        "raw_title": raw_name,
+        "original_title": raw_name,
         "type": media_type,
         "medium_cover_image": item.get("poster_url"),
         "poster": item.get("poster_url"),
         "background": item.get("background_url"),
-        "year": str(item.get("year") or ""),
+        "year": year_val,
         "description": item.get("description") or "",
         "is_cloudstream": True,
         "cloudstream_provider_id": item["provider_id"],
     }
+    imdb_code = str(item.get("imdb_code") or item.get("imdb_id") or "").strip()
+    card["alias_ids"] = [imdb_code, route_id] if re.fullmatch(r"tt\d{7,8}", imdb_code) else [route_id]
+    return card
 
 
 def load_item_to_details_dict(loaded):
@@ -3897,12 +4522,16 @@ def load_item_to_details_dict(loaded):
     raw_type = loaded.get("type", CloudStreamTvType.Other)
     media_type = CloudStreamTvType.to_popcorn_type(raw_type)
 
+    raw_name = loaded.get("name") or "Stream"
+    clean_name, extracted_year = clean_cloudstream_title(raw_name)
+    year_val = str(loaded.get("year") or extracted_year or "")
+
     episodes = loaded.get("episodes") or []
     videos = []
     if not episodes:
         videos.append({
             "id": route_id,
-            "title": "Canlı Yayın" if raw_type == CloudStreamTvType.Live else (loaded.get("name") or "Stream"),
+            "title": "Canlı Yayın" if raw_type == CloudStreamTvType.Live else (clean_name or raw_name),
             "season": None,
             "episode": None,
             "thumbnail": loaded.get("background_url") or loaded.get("poster_url"),
@@ -3928,14 +4557,17 @@ def load_item_to_details_dict(loaded):
     return {
         "id": route_id,
         "imdb_id": route_id,
-        "title": loaded.get("name") or "Stream",
-        "name": loaded.get("name") or "Stream",
+        "title": clean_name or raw_name,
+        "name": clean_name or raw_name,
+        "catalog_title": raw_name,
+        "raw_title": raw_name,
+        "original_title": raw_name,
         "type": media_type,
         "medium_cover_image": loaded.get("poster_url"),
         "poster": loaded.get("poster_url"),
         "background": loaded.get("background_url"),
         "description": loaded.get("description") or "",
-        "year": str(loaded.get("year") or ""),
+        "year": year_val,
         "runtime": "Live" if raw_type == CloudStreamTvType.Live else "",
         "genre": ", ".join(loaded.get("tags") or []),
         "imdbRating": rating_str,
@@ -4167,7 +4799,7 @@ def search_all_enabled_providers(query, timeout=10.0):
 
 
 def fetch_cloudstream_streams_for_media(
-    title, media_type, year=None, season=None, episode=None, timeout=12.0, imdb_id=None
+    title, media_type, year=None, season=None, episode=None, timeout=90.0, imdb_id=None, catalog_title=None
 ):
     """
     Searches enabled CloudStream providers for a standard movie or episode,
@@ -4195,15 +4827,59 @@ def fetch_cloudstream_streams_for_media(
             deduped_plugins.append(p)
     enabled_plugins = deduped_plugins
 
-    norm_type = media_type.lower() if media_type else "movie"
     all_streams = []
+
+    def _normalized_type(value):
+        value = str(value or "").strip()
+        if not value:
+            return None
+        types = {
+            CloudStreamTvType.Movie.lower(): "movie",
+            CloudStreamTvType.AnimeMovie.lower(): "movie",
+            CloudStreamTvType.Documentary.lower(): "movie",
+            CloudStreamTvType.TvSeries.lower(): "series",
+            CloudStreamTvType.Anime.lower(): "series",
+            CloudStreamTvType.Ova.lower(): "series",
+            CloudStreamTvType.Cartoon.lower(): "series",
+            CloudStreamTvType.AsianDrama.lower(): "series",
+            CloudStreamTvType.Live.lower(): "tv",
+            CloudStreamTvType.Music.lower(): "tv",
+            "anime": "series",
+            "ova": "series",
+            "cartoon": "series",
+            "asiandrama": "series",
+            "animemovie": "movie",
+            "documentary": "movie",
+            "other": "other",
+            "show": "series",
+            "tvseries": "series",
+        }
+        return types.get(value.lower(), value.lower())
+
+    requested_type = str(media_type or "movie").strip().lower()
+    norm_type = _normalized_type(requested_type) or "movie"
+
+    def _year(value, fallback_text=""):
+        match = re.search(r"\b((?:18|19|20)\d{2})\b", str(value or ""))
+        if not match:
+            match = re.search(r"\b((?:18|19|20)\d{2})\b", str(fallback_text or ""))
+        return match.group(1) if match else None
+
+    requested_year = _year(year, title)
 
     def _worker(plugin):
         provider = get_provider(plugin["id"])
         if not provider:
             return []
         # Check if provider supports this media type
-        if norm_type in ("movie", "series") and norm_type not in provider.supported_types and "all" not in provider.supported_types:
+        supported_types = {str(value).lower() for value in (provider.supported_types or [])}
+        if (
+            norm_type in ("movie", "series")
+            and requested_type not in supported_types
+            and norm_type not in supported_types
+            and "all" not in supported_types
+            and "other" not in supported_types
+        ):
             return []
 
         try:
@@ -4212,7 +4888,7 @@ def fetch_cloudstream_streams_for_media(
                 try:
                     direct_sources = provider.get_streams_for_media(
                         title=title.strip(),
-                        media_type=norm_type,
+                        media_type=requested_type,
                         year=year,
                         season=season,
                         episode=episode,
@@ -4224,101 +4900,169 @@ def fetch_cloudstream_streams_for_media(
                             sd = playback_source_to_stream_dict(s, p_name, plugin["id"])
                             if sd:
                                 out.append(sd)
-                        return out
+                        if out:
+                            logger.debug(f"CloudStream direct lookup returned {len(out)} stream(s) provider={p_name}")
+                            return out
                 except Exception as e:
                     logger.debug(f"Direct stream fetch on {provider.name} failed: {e}")
+            if not hasattr(provider, "search"):
                 return []
 
-            if hasattr(provider, "search"):
-                import inspect
-                sig = inspect.signature(provider.search)
-                if "imdb_id" in sig.parameters:
-                    search_items = provider.search(title.strip(), imdb_id=imdb_id)
-                else:
-                    search_items = provider.search(title.strip())
-            else:
-                search_items = []
+            import inspect
+            try:
+                search_parameters = inspect.signature(provider.search).parameters
+                accepts_imdb_id = "imdb_id" in search_parameters
+            except (TypeError, ValueError):
+                accepts_imdb_id = False
 
-            if not search_items:
-                return []
+            queries = [title.strip()]
+            if catalog_title and str(catalog_title).strip() and str(catalog_title).strip() != title.strip():
+                clean_cat, clean_yr = clean_cloudstream_title(str(catalog_title).strip())
+                if clean_cat and clean_cat not in queries:
+                    queries.append(clean_cat)
+                if str(catalog_title).strip() not in queries:
+                    queries.append(str(catalog_title).strip())
+            if requested_year:
+                queries.append(f"{title.strip()} {requested_year}")
+            if norm_type == "series" and season is not None and episode is not None:
+                try:
+                    queries.append(f"{title.strip()} S{int(season):02d}E{int(episode):02d}")
+                except (TypeError, ValueError):
+                    pass
+            attempted_data = set()
 
-            # Score matching for title and year
-            clean_search_title = re.sub(r"[^\w\s]", "", title.strip().lower())
-            search_words = set(clean_search_title.split())
-
-            best_match = None
-            best_score = -1
-
-            for item in search_items:
-                cand_name = (item.get("name") or "").strip().lower()
-                clean_cand = re.sub(r"[^\w\s]", "", cand_name)
-                cand_words = set(clean_cand.split())
-
-                score = 0
-                # Direct IMDb match check
-                has_imdb_match = False
-                if imdb_id and str(imdb_id).startswith("tt"):
-                    raw_data = str(item.get("data") or "")
-                    if str(imdb_id) in raw_data:
-                        has_imdb_match = True
-                        score += 100
-
-                # Strict title verification: candidate must match title or have direct IMDb match
-                if not has_imdb_match and not _is_strict_title_match(title, cand_name):
+            for query in dict.fromkeys(queries):
+                try:
+                    search_items = (
+                        provider.search(query, imdb_id=imdb_id)
+                        if accepts_imdb_id
+                        else provider.search(query)
+                    ) or []
+                except Exception as e:
+                    logger.debug(f"CloudStream search failed provider={p_name!r} query={query!r}: {e}")
+                    continue
+                if not search_items:
                     continue
 
-                if clean_search_title in clean_cand:
-                    score += 50
-                # Word overlap score
-                if search_words:
-                    overlap = len(search_words.intersection(cand_words))
-                    score += int((overlap / len(search_words)) * 30)
+                typed_items = [
+                    item for item in search_items
+                    if isinstance(item, dict)
+                    and (
+                        not _normalized_type(item.get("type"))
+                        or _normalized_type(item.get("type")) in (norm_type, "other")
+                    )
+                ]
+                candidate_items = typed_items or list(search_items)
+                scored = []
+                ranked_fallbacks = []
+                for order, item in enumerate(candidate_items):
+                    if not isinstance(item, dict) or not item.get("data"):
+                        continue
+                    data_key = str(item["data"])
+                    if data_key in attempted_data:
+                        continue
+                    candidate_name = str(item.get("name") or "").strip()
+                    candidate_year = _year(item.get("year"), candidate_name)
+                    if requested_year and candidate_year and candidate_year != requested_year:
+                        continue
+                    has_imdb_match = bool(
+                        imdb_id
+                        and str(imdb_id).startswith("tt")
+                        and str(imdb_id) in data_key
+                    )
+                    title_matches = _is_strict_title_match(title, candidate_name) or (
+                        catalog_title and _is_strict_title_match(str(catalog_title), candidate_name)
+                    )
+                    if not title_matches and not has_imdb_match:
+                        # CloudStream search results are already ranked by the
+                        # provider. Keep year-verified localized titles as a
+                        # fallback, as the reference client does.
+                        if requested_year and candidate_year == requested_year:
+                            ranked_fallbacks.append((order, item))
+                        continue
 
-                # Year match
-                if year and item.get("year"):
-                    if str(year) == str(item["year"]):
-                        score += 30
-                    elif abs(int(item["year"]) - int(year)) <= 1:
-                        score += 10
-                    else:
-                        score -= 50
-                        if not has_imdb_match:
+                    score = 100 if has_imdb_match else (60 if candidate_name.casefold() == title.casefold() else 40)
+                    if candidate_year == requested_year and requested_year:
+                        score += 25
+                    scored.append((score, order, item))
+
+                scored.sort(key=lambda candidate: (-candidate[0], candidate[1]))
+                matches = [item for _score, _order, item in scored[:3]]
+                if not matches:
+                    matches = [item for _order, item in ranked_fallbacks[:3]]
+
+                for match in matches:
+                    match_data = str(match.get("data") or "")
+                    if not match_data:
+                        continue
+                    attempted_data.add(match_data)
+                    try:
+                        loaded = provider.load(match_data)
+                    except Exception as e:
+                        logger.debug(f"CloudStream load failed provider={p_name!r}: {e}")
+                        continue
+                    if not isinstance(loaded, dict):
+                        continue
+
+                    loaded_type = _normalized_type(loaded.get("type"))
+                    if loaded_type and loaded_type not in (norm_type, "other"):
+                        continue
+                    loaded_name = str(loaded.get("name") or "").strip()
+                    loaded_year = _year(loaded.get("year"), loaded_name)
+                    match_year = _year(match.get("year"), match.get("name"))
+                    if requested_year and any(
+                        resolved_year and resolved_year != requested_year
+                        for resolved_year in (match_year, loaded_year)
+                    ):
+                        continue
+                    if (
+                        loaded_name
+                        and not _is_strict_title_match(title, loaded_name)
+                        and not (catalog_title and _is_strict_title_match(str(catalog_title), loaded_name))
+                        and not (requested_year and requested_year in (match_year, loaded_year))
+                        and not (imdb_id and str(imdb_id).startswith("tt") and str(imdb_id) in match_data)
+                    ):
+                        continue
+
+                    if norm_type == "series":
+                        def _episode_number(value):
+                            try:
+                                return int(value)
+                            except (TypeError, ValueError):
+                                return None
+
+                        link_data = None
+                        for ep in loaded.get("episodes") or []:
+                            if (
+                                _episode_number(ep.get("season")) == _episode_number(season)
+                                and _episode_number(ep.get("episode")) == _episode_number(episode)
+                            ):
+                                link_data = ep.get("data")
+                                break
+                        if not link_data:
+                            logger.debug(
+                                f"CloudStream: no matching episode S{season}E{episode} in {provider.name}"
+                            )
                             continue
-                elif year and str(year) in cand_name:
-                    score += 20
+                    else:
+                        link_data = loaded.get("data") or match_data
 
-                if score > best_score and score >= 30:
-                    best_score = score
-                    best_match = item
+                    if not link_data:
+                        continue
+                    try:
+                        sources = provider.load_links(link_data) or []
+                    except Exception as e:
+                        logger.debug(f"CloudStream loadLinks failed provider={p_name!r}: {e}")
+                        continue
+                    out = [
+                        stream for source in sources
+                        if (stream := playback_source_to_stream_dict(source, p_name, plugin["id"]))
+                    ]
+                    if out:
+                        logger.debug(f"CloudStream resolved {len(out)} stream(s) provider={p_name}")
+                        return out
 
-            if not best_match:
-                return []
-
-            loaded = provider.load(best_match["data"])
-            link_data = None
-            if norm_type == "series":
-                episodes = loaded.get("episodes") or []
-                for ep in episodes:
-                    if ep.get("season") == season and ep.get("episode") == episode:
-                        link_data = ep.get("data")
-                        break
-                if not link_data:
-                    logger.debug(f"CloudStream: no matching episode S{season}E{episode} found in {provider.name}")
-                    return []
-            else:
-                link_data = loaded.get("data") or best_match.get("data")
-
-            if not link_data:
-                return []
-
-            sources = provider.load_links(link_data)
-            p_name = plugin.get("name") or provider.name
-            out = []
-            for s in sources:
-                sd = playback_source_to_stream_dict(s, p_name, plugin["id"])
-                if sd:
-                    out.append(sd)
-            return out
+            return []
         except Exception as e:
             logger.debug(f"CloudStream matching on {provider.name} failed: {e}")
             return []

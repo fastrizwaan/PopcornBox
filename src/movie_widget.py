@@ -442,25 +442,44 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                             data = None
                 else:
                     try:
-                        req = urllib.request.Request(
-                            url,
-                            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-                        )
-
-                        def _polite_image_get():
+                        def _polite_image_get(target_url=url):
                             """One paced image GET through the host's window.
                             None means the window was closed, not that the image
                             is missing: the tile stays empty and no failure is
                             recorded, so a later scroll can still fetch it."""
                             from .api import _SSL_CONTEXT, _acquire_image_window, _get_provider_host
+                            req = urllib.request.Request(
+                                target_url,
+                                headers={
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                                    'Referer': f"{urllib.parse.urlsplit(target_url).scheme}://{urllib.parse.urlsplit(target_url).netloc}/",
+                                },
+                            )
                             with _acquire_image_window(
-                                _get_provider_host(url),
+                                _get_provider_host(target_url),
                                 is_cancelled=lambda: not is_priority and not is_image_generation_active(task_gen),
                             ) as window_open:
                                 if not window_open:
                                     return None  # callers below queue a retry
                                 with urllib.request.urlopen(req, timeout=3.5, context=_SSL_CONTEXT) as response:
                                     return response.read()
+
+                        def _cache_image_bytes(image_data):
+                            if not image_data:
+                                return False
+                            temp_file = f"{cache_file}.{os.getpid()}.{threading.get_ident()}.tmp"
+                            try:
+                                with open(temp_file, 'wb') as f:
+                                    f.write(image_data)
+                                os.replace(temp_file, cache_file)
+                            except Exception:
+                                try:
+                                    if os.path.exists(temp_file):
+                                        os.remove(temp_file)
+                                except Exception:
+                                    pass
+                            _mark_image_success(url)
+                            return True
 
                         for attempt in range(2):
                             if not is_priority and not is_image_generation_active(task_gen):
@@ -472,18 +491,7 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                                     return
                                 data = fetched
                                 if data:
-                                    temp_file = f"{cache_file}.{os.getpid()}.{threading.get_ident()}.tmp"
-                                    try:
-                                        with open(temp_file, 'wb') as f:
-                                            f.write(data)
-                                        os.replace(temp_file, cache_file)
-                                    except Exception:
-                                        try:
-                                            if os.path.exists(temp_file):
-                                                os.remove(temp_file)
-                                        except Exception:
-                                            pass
-                                    _mark_image_success(url)
+                                    _cache_image_bytes(data)
                                 break
                             except urllib.error.HTTPError as e:
                                 try:
@@ -512,32 +520,43 @@ def load_image_into_picture(url, picture_widget, width=None, height=None, on_err
                                 # connection failure and retry once instead of
                                 # failing the whole thumbnail immediately.
                                 if attempt == 1:
-                                    # Final attempt failed -- try DoH bypass
-                                    # in case the ISP is poisoning DNS for
-                                    # this host (returns an IP that tears down
-                                    # the TLS handshake immediately).
+                                    # Final attempt failed. A TLS EOF can happen
+                                    # even when ordinary DNS appears healthy, so
+                                    # try the verified DoH route for that case
+                                    # as well as for known poisoned DNS.
                                     try:
                                         from .api import _is_dns_poisoned, _doh_fetch
                                         parsed_host = urllib.parse.urlparse(url).hostname
-                                        if parsed_host and _is_dns_poisoned(parsed_host):
+                                        tls_eof = "UNEXPECTED_EOF" in str(url_err).upper() or "EOF OCCURRED" in str(url_err).upper()
+                                        if parsed_host and (tls_eof or _is_dns_poisoned(parsed_host)):
                                             doh_data = _doh_fetch(url, timeout=5.0)
-                                            if doh_data:
+                                            if _cache_image_bytes(doh_data):
                                                 data = doh_data
-                                                temp_file = f"{cache_file}.{os.getpid()}.{threading.get_ident()}.tmp"
-                                                try:
-                                                    with open(temp_file, 'wb') as f:
-                                                        f.write(data)
-                                                    os.replace(temp_file, cache_file)
-                                                except Exception:
-                                                    try:
-                                                        if os.path.exists(temp_file):
-                                                            os.remove(temp_file)
-                                                    except Exception:
-                                                        pass
-                                                _mark_image_success(url)
-                                                break
                                     except Exception:
                                         pass
+                                    if not data:
+                                        parsed_url = urllib.parse.urlsplit(url)
+                                        host = (parsed_url.hostname or "").lower()
+                                        yts_hosts = ("img.yts.gg", "yts.gg", "yts.mx", "yts.bz")
+                                        if host in yts_hosts or any(host.endswith("." + h) for h in yts_hosts):
+                                            for alternate_host in yts_hosts:
+                                                if alternate_host == host:
+                                                    continue
+                                                if not is_priority and not is_image_generation_active(task_gen):
+                                                    return
+                                                alternate_url = urllib.parse.urlunsplit(parsed_url._replace(netloc=alternate_host))
+                                                try:
+                                                    alternate_data = _polite_image_get(alternate_url)
+                                                except (urllib.error.URLError, TimeoutError, OSError):
+                                                    try:
+                                                        alternate_data = _doh_fetch(alternate_url, timeout=5.0)
+                                                    except Exception:
+                                                        alternate_data = None
+                                                if _cache_image_bytes(alternate_data):
+                                                    data = alternate_data
+                                                    break
+                                    if data:
+                                        break
                                     if not data:
                                         _mark_image_failed(url)
                                         raise url_err
@@ -734,7 +753,11 @@ def _dispatch_meta_resolved(callback, title, year, poster, is_adult=False, ratin
                 callback(title, year, poster)
 
 
-def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=130, height=195, on_meta_resolved=None, task_gen=None, is_priority=False):
+def fetch_fallback_poster(
+    item_id, item_type, poster_widget, title=None, width=130, height=195,
+    on_meta_resolved=None, task_gen=None, is_priority=False,
+    expected_year=None, failed_poster_url=None,
+):
     if not item_id:
         return
     if task_gen is not None and not is_image_generation_active(task_gen):
@@ -745,6 +768,23 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
     found_poster = None
     found_rating = None
     is_adult = False
+
+    failed_host = (urllib.parse.urlsplit(str(failed_poster_url or "")).hostname or "").lower()
+    yts_image_domains = ("yts.gg", "yts.mx", "yts.bz")
+
+    def _is_usable_fallback_poster(candidate):
+        if not isinstance(candidate, str) or not candidate.startswith(("http://", "https://")):
+            return False
+        if not failed_poster_url:
+            return True
+        if candidate == failed_poster_url:
+            return False
+        candidate_host = (urllib.parse.urlsplit(candidate).hostname or "").lower()
+        failed_is_yts = any(failed_host == domain or failed_host.endswith("." + domain) for domain in yts_image_domains)
+        candidate_is_yts = any(candidate_host == domain or candidate_host.endswith("." + domain) for domain in yts_image_domains)
+        # The YTS mirrors share the same failing image origin for this card, so
+        # resolve a TMDB/IMDb poster instead of retrying another YTS hostname.
+        return not (failed_is_yts and candidate_is_yts)
 
     # 0. Check local database cache first (instant SQLite read)
     try:
@@ -758,7 +798,7 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
             cached_rating = existing.get("rating") or existing.get("imdbRating") or existing.get("vote_average")
             if cached_title and cached_title != "Unknown":
                 found_title = cached_title
-            if cached_poster:
+            if _is_usable_fallback_poster(cached_poster):
                 found_poster = cached_poster
             if cached_year:
                 found_year = cached_year
@@ -797,7 +837,7 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                     t_info = tmdb_helper.fetch_title_language_and_genres(item_id, item_type)
                     if t_info and t_info.get("adult"):
                         is_adult = True
-                if not found_poster and cm.get("poster"):
+                if not found_poster and _is_usable_fallback_poster(cm.get("poster")):
                     found_poster = cm.get("poster")
                 if not found_title and cm.get("name"):
                     found_title = cm.get("name")
@@ -815,12 +855,20 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
     if not found_poster or not found_title:
         try:
             from . import api
-            details = api.fetch_movie_details(item_id, item_type, title=title)
+            details = api.fetch_movie_details(
+                item_id,
+                item_type,
+                title=title,
+                use_cache=not bool(failed_poster_url),
+                prefer_tmdb=bool(failed_poster_url),
+                expected_year=expected_year or found_year,
+            )
             if details:
                 if api.is_adult_item(details):
                     is_adult = True
-                if not found_poster:
-                    found_poster = details.get("medium_cover_image") or details.get("poster")
+                detail_poster = details.get("medium_cover_image") or details.get("poster")
+                if not found_poster and _is_usable_fallback_poster(detail_poster):
+                    found_poster = detail_poster
                 if not found_title:
                     found_title = details.get("title") or details.get("name")
                 if not found_year:
@@ -854,7 +902,9 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
                                     m_name = item.get("l", "")
                                     if is_similar_title(v, m_name):
                                         p_url = item["i"]["imageUrl"]
-                                        found_poster = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX400_.jpg', p_url)
+                                        candidate_poster = re.sub(r'\._V1_.*?\.(jpg|png)', r'._V1_UX400_.jpg', p_url)
+                                        if _is_usable_fallback_poster(candidate_poster):
+                                            found_poster = candidate_poster
                                         if not found_title and item.get("l"):
                                             found_title = item["l"]
                                         if not found_year and item.get("y"):
@@ -892,6 +942,15 @@ def fetch_fallback_poster(item_id, item_type, poster_widget, title=None, width=1
 
     if found_poster and poster_widget and not is_adult:
         GLib.idle_add(load_image_into_picture, found_poster, poster_widget, width, height, None, is_priority)
+    elif (
+        failed_poster_url
+        and failed_host in yts_image_domains
+        and poster_widget
+        and not is_adult
+    ):
+        # Keep the provider image as a last resort if metadata services are
+        # unavailable; this attempt has no error callback, so it cannot loop.
+        GLib.idle_add(load_image_into_picture, failed_poster_url, poster_widget, width, height, None, is_priority)
 
     if on_meta_resolved and (found_title or found_year or found_poster or found_rating or is_adult):
         GLib.idle_add(_dispatch_meta_resolved, on_meta_resolved, found_title, found_year, found_poster, is_adult, found_rating)
@@ -963,14 +1022,43 @@ class MovieWidget(Gtk.Box):
             self.append(icon_container)
         
         item_id = movie_data.get("imdb_id") or movie_data.get("id")
+        if not (isinstance(item_id, str) and re.fullmatch(r"tt\d{7,8}", item_id)):
+            # CloudStream catalog cards keep their provider route as the click
+            # ID, but some (notably YTS) also provide an IMDb alias. Use that
+            # alias for poster recovery so Cinemeta/TMDB can replace an
+            # unreachable provider image without changing the card's route.
+            aliases = movie_data.get("alias_ids") or []
+            imdb_alias = next(
+                (str(alias) for alias in aliases if re.fullmatch(r"tt\d{7,8}", str(alias))),
+                None,
+            )
+            if imdb_alias:
+                item_id = imdb_alias
         item_type = movie_data.get("type", "movie")
         poster_url = extract_image_url(movie_data)
+        if poster_url and "://yts.gg/assets/images/" in poster_url:
+            poster_url = poster_url.replace("://yts.gg/assets/images/", "://img.yts.gg/assets/images/")
+            movie_data["medium_cover_image"] = poster_url
+        provider_poster_url = poster_url
         has_valid_title = bool(
             (movie_data.get("title") and movie_data.get("title") != "Unknown")
             or (movie_data.get("name") and movie_data.get("name") != "Unknown")
         )
         if not movie_data.get("title") and movie_data.get("name"):
             movie_data["title"] = movie_data["name"]
+
+        if movie_data.get("is_cloudstream") or str(movie_data.get("id", "")).startswith("cloudstream:"):
+            raw_title = movie_data.get("catalog_title") or movie_data.get("raw_title") or movie_data.get("title") or movie_data.get("name")
+            if raw_title:
+                movie_data.setdefault("catalog_title", raw_title)
+                movie_data.setdefault("raw_title", raw_title)
+                from .cloudstream import clean_cloudstream_title
+                clean_name, extracted_year = clean_cloudstream_title(raw_title)
+                if clean_name:
+                    movie_data["title"] = clean_name
+                    movie_data["name"] = clean_name
+                if extracted_year and not movie_data.get("year"):
+                    movie_data["year"] = extracted_year
 
         # Only check metadata cache if essential info (poster or title) is missing, avoiding main thread SQLite lock contention
         if database.METADATA_HYDRATION_ENABLED and item_id and (not poster_url or not has_valid_title):
@@ -982,6 +1070,8 @@ class MovieWidget(Gtk.Box):
                         movie_data["title"] = c_title
                         has_valid_title = True
                     c_poster = cached.get("medium_cover_image") or cached.get("poster")
+                    if c_poster and "://yts.gg/assets/images/" in c_poster:
+                        c_poster = c_poster.replace("://yts.gg/assets/images/", "://img.yts.gg/assets/images/")
                     if c_poster and not poster_url:
                         poster_url = c_poster
                         movie_data["medium_cover_image"] = c_poster
@@ -1025,6 +1115,9 @@ class MovieWidget(Gtk.Box):
                     195,
                     self._apply_resolved_meta,
                     task_gen,
+                    False,
+                    movie_data.get("year"),
+                    provider_poster_url,
                 )
             except RuntimeError:
                 pass
@@ -1079,6 +1172,9 @@ class MovieWidget(Gtk.Box):
         cat_name = movie_data.get("catalog_name")
         addon_name = movie_data.get("addon_name")
         tooltip_lines = [title_text]
+        raw_catalog_name = movie_data.get("catalog_title") or movie_data.get("raw_title")
+        if raw_catalog_name and raw_catalog_name != title_text:
+            tooltip_lines.append(f"Release: {raw_catalog_name}")
         sub_meta = []
         if year_str:
             sub_meta.append(f"({year_str})")

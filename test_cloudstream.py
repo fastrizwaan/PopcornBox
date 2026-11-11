@@ -20,6 +20,19 @@ if schema_path.exists():
     subprocess.run(["glib-compile-schemas", schema_temp_dir.name], check=True)
     os.environ["GSETTINGS_SCHEMA_DIR"] = schema_temp_dir.name
 
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Gio, GLib
+
+res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+if res_file.exists():
+    try:
+        res = Gio.Resource.load(str(res_file))
+        Gio.resources_register(res)
+    except Exception:
+        pass
+
 from src import database
 from src import cloudstream
 
@@ -854,6 +867,128 @@ class TestCloudStream(unittest.TestCase):
         bad_source = {"name": "YouTube", "url": "https://www.youtube.com/watch?v=Brand%20New%20Day"}
         stream_dict = cloudstream.playback_source_to_stream_dict(bad_source, "YouTube", yt.id)
         self.assertIsNone(stream_dict)
+
+    def test_cloudstream_catalogs_list_on_selection_only(self):
+        from src.window import CineWindow
+        win = MagicMock(spec=CineWindow)
+        win.current_sort = 'Recent'
+        win.current_genre = None
+        win.current_year = None
+        win.current_language = None
+        win.current_country = None
+        win.current_network = None
+        win._discover_catalog_list_cache = {}
+        win._discover_catalog_list_cache_timestamps = {}
+
+        # 1. Do not list CloudStream catalogs with "all"
+        rows_all = CineWindow._get_discover_catalog_list(win, filter_media_type='all', filter_addon_url=None)
+        cs_rows_all = [r for r in rows_all if r.get('_source') == 'cloudstream' or str(r.get('manifest_url', '')).startswith('cloudstream://')]
+        self.assertEqual(len(cs_rows_all), 0, "CloudStream catalogs must not be listed with all")
+
+        # 2. List CloudStream catalogs on selection
+        cats = cloudstream.get_catalogs('all')
+        if cats:
+            target_url = cats[0]['manifest_url']
+            rows_sel = CineWindow._get_discover_catalog_list(win, filter_media_type='all', filter_addon_url=target_url)
+            cs_rows_sel = [r for r in rows_sel if r.get('_source') == 'cloudstream' or str(r.get('manifest_url', '')).startswith('cloudstream://')]
+            self.assertGreater(len(cs_rows_sel), 0, "CloudStream catalogs must be listed when provider is selected")
+            for r in cs_rows_sel:
+                self.assertEqual(r.get('manifest_url'), target_url)
+
+    def test_doh_redirect_image_fetch(self):
+        from src import api
+        # YTS image redirects with 301 from yts.gg to img.yts.gg
+        url = 'https://yts.gg/assets/images/movies/the_future_2023/large-cover.jpg'
+        data = api._doh_fetch(url, timeout=6.0)
+        self.assertIsNotNone(data)
+        self.assertGreater(len(data), 1000)
+        self.assertEqual(data[:2], b'\xff\xd8')
+
+    def test_hdhub4u_and_yts_catalog_sections(self):
+        hdhub = cloudstream.HDhub4uCloudStreamProvider()
+        main_page = hdhub.get_main_page(1)
+        self.assertIsInstance(main_page, list)
+        self.assertGreater(len(main_page), 0)
+
+        yts = cloudstream.YTSCloudStreamProvider()
+        yts_page = yts.get_main_page(1)
+        self.assertIsInstance(yts_page, list)
+        self.assertGreater(len(yts_page), 0)
+        for _, items in yts_page:
+            for item in items:
+                p_url = item.get("poster_url") or ""
+                self.assertNotIn("://yts.gg/assets/images/", p_url)
+
+    def test_clean_cloudstream_title(self):
+        clean, year = cloudstream.clean_cloudstream_title(
+            "Duplicity (2009) BluRay [Hindi (DD5.1) & English] 1080p 720p & 480p Dual Audio [x264] | Full Movie"
+        )
+        self.assertEqual(clean, "Duplicity")
+        self.assertEqual(year, "2009")
+
+        clean2, year2 = cloudstream.clean_cloudstream_title(
+            "The Dark Heaven (2026) WEB-DL [Hindi (DD2.0) &#038; Tamil] 1080p 720p &#038; 480p Dual Audio [x264/HEVC] | Full Movie"
+        )
+        self.assertEqual(clean2, "The Dark Heaven")
+        self.assertEqual(year2, "2026")
+
+        clean3, year3 = cloudstream.clean_cloudstream_title(
+            "Bigg Boss (Season 20) WEB-DL [Hindi 2.0] 1080p 720p &#038; 480p [x264] HD | [JioHotStar Series] [EP-63 Added] [7th Nov]"
+        )
+        self.assertEqual(clean3, "Bigg Boss")
+        self.assertIsNone(year3)
+
+    def test_search_item_to_card_dict_preserves_catalog_title(self):
+        raw_name = "Duplicity (2009) BluRay [Hindi (DD5.1) & English] 1080p 720p & 480p Dual Audio [x264] | Full Movie"
+        item = {
+            "provider_id": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#HDhub4u",
+            "data": "https://new12.hdhub4u.cl/duplicity-2009-hindi-bluray-full-movie/",
+            "name": raw_name,
+            "type": cloudstream.CloudStreamTvType.Movie,
+            "poster_url": "https://example.com/poster.jpg",
+            "background_url": "https://example.com/bg.jpg",
+            "description": "Duplicity synopsis",
+            "year": 2009,
+        }
+        card = cloudstream.search_item_to_card_dict(item)
+        self.assertEqual(card["title"], "Duplicity")
+        self.assertEqual(card["catalog_title"], raw_name)
+        self.assertEqual(card["raw_title"], raw_name)
+        self.assertEqual(card["year"], "2009")
+        self.assertTrue(card["is_cloudstream"])
+
+    def test_hdhub4u_greenmotors_short_link_resolution(self):
+        # Mock greenmotors HTML with base64/rot13 s('o', ...) payload
+        import base64, codecs, json
+        target_hblinks = "https://hblinks.lol/archives/119061"
+        payload_dict = {"w": 10, "l": "https://greenmotors.cc/homelander/", "o": base64.b64encode(target_hblinks.encode()).decode()}
+        d3 = base64.b64encode(json.dumps(payload_dict).encode()).decode()
+        d2 = codecs.encode(d3, 'rot_13')
+        d1 = base64.b64encode(d2.encode()).decode()
+        raw_b64 = base64.b64encode(d1.encode()).decode()
+
+        mock_html = f"<html><body><script>s('o','{raw_b64}',180000);</script></body></html>"
+        with patch.object(cloudstream, "_http_get_text", return_value=mock_html):
+            dest = cloudstream._resolve_hdhub4u_short_link("https://greenmotors.club/?id=test12345")
+            self.assertEqual(dest, target_hblinks)
+
+    def test_hdhub4u_load_links_with_greenmotors(self):
+        hdhub = cloudstream.HDhub4uCloudStreamProvider()
+        page_html = """
+        <html><body>
+        <div class="page-body">
+            <h3><a href="https://greenmotors.club/?id=test12345">1080p x264 [2.2GB]</a></h3>
+        </div>
+        </body></html>
+        """
+        with patch.object(cloudstream, "_http_get_text", return_value=page_html), \
+             patch.object(cloudstream, "_resolve_hdhub4u_short_link", return_value="https://hblinks.lol/archives/119061"), \
+             patch.object(cloudstream, "_extract_hblinks_sources", return_value=[{"name": "Server : 10Gbps", "url": "https://stream.example.com/video.mkv"}]):
+            sources = hdhub.load_links("hdhub4u:https://new12.hdhub4u.cl/duplicity-2009-hindi-bluray-full-movie/")
+            self.assertEqual(len(sources), 1)
+            self.assertEqual(sources[0]["quality"], 1080)
+            self.assertIn("1080P", sources[0]["name"])
+            self.assertEqual(sources[0]["url"], "https://stream.example.com/video.mkv")
 
 
 if __name__ == "__main__":

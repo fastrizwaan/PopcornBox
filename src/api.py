@@ -145,83 +145,109 @@ def _is_dns_poisoned(hostname):
     return system_ip not in doh_ips
 
 
-def _doh_fetch(url, timeout=5.0):
+def _doh_fetch(url, headers=None, timeout=5.0, max_redirects=5):
     """Fetch *url* by connecting directly to a DoH-resolved IP.
 
     Returns the response body bytes, or *None* on failure.  Only useful when
     ``_is_dns_poisoned()`` has confirmed the system DNS is lying.
+    Follows HTTP redirects (e.g. 301/302).
     """
-    parsed = urllib.parse.urlparse(url)
-    hostname = parsed.hostname
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    path = parsed.path
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
-    if not path:
-        path = "/"
+    current_url = url
+    for _ in range(max_redirects):
+        parsed = urllib.parse.urlparse(current_url)
+        hostname = parsed.hostname
+        if not hostname:
+            return None
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
 
-    doh_ips = _doh_resolve(hostname)
-    if not doh_ips:
-        return None
-
-    for ip in doh_ips[:2]:
-        try:
-            raw = socket.create_connection((ip, port), timeout=timeout)
+        doh_ips = _doh_resolve(hostname)
+        if not doh_ips:
             try:
-                ctx = _SSL_CONTEXT or ssl.create_default_context()
-                ssock = ctx.wrap_socket(raw, server_hostname=hostname)
+                system_ip = socket.gethostbyname(hostname)
+                doh_ips = [system_ip]
             except Exception:
-                raw.close()
-                continue
+                return None
+
+        redirect_url = None
+        for ip in doh_ips[:2]:
             try:
-                request_line = (
-                    f"GET {path} HTTP/1.1\r\n"
-                    f"Host: {hostname}\r\n"
-                    f"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    f"AppleWebKit/537.36 (KHTML, like Gecko) "
-                    f"Chrome/120.0.0.0 Safari/537.36\r\n"
-                    f"Accept: */*\r\n"
-                    f"Connection: close\r\n"
-                    f"\r\n"
-                )
-                ssock.sendall(request_line.encode())
+                raw = socket.create_connection((ip, port), timeout=timeout)
+                try:
+                    ctx = _SSL_CONTEXT or ssl.create_default_context()
+                    ssock = ctx.wrap_socket(raw, server_hostname=hostname) if parsed.scheme == "https" else raw
+                except Exception:
+                    raw.close()
+                    continue
+                try:
+                    req_headers = {
+                        "Host": hostname,
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "*/*",
+                        "Connection": "close",
+                    }
+                    if headers:
+                        req_headers.update(headers)
+                    req_lines = [f"GET {path} HTTP/1.1"]
+                    for k, v in req_headers.items():
+                        req_lines.append(f"{k}: {v}")
+                    req_lines.append("\r\n")
+                    ssock.sendall("\r\n".join(req_lines).encode("utf-8"))
 
-                chunks = []
-                while True:
-                    chunk = ssock.recv(16384)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                data = b"".join(chunks)
-            finally:
-                ssock.close()
+                    chunks = []
+                    while True:
+                        chunk = ssock.recv(16384)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                    data = b"".join(chunks)
+                finally:
+                    ssock.close()
 
-            # Separate headers from body.
-            sep = data.find(b"\r\n\r\n")
-            if sep < 0:
-                continue
-            header_block = data[:sep].decode("utf-8", errors="replace")
-            body = data[sep + 4:]
+                # Separate headers from body.
+                sep = data.find(b"\r\n\r\n")
+                if sep < 0:
+                    continue
+                header_block = data[:sep].decode("utf-8", errors="replace")
+                body = data[sep + 4:]
 
-            status_line = header_block.split("\r\n", 1)[0]
-            # e.g. "HTTP/1.1 200 OK"
-            parts = status_line.split(None, 2)
-            if len(parts) < 2:
-                continue
-            status_code = int(parts[1])
-            if status_code != 200:
-                continue
-
-            # Handle chunked transfer encoding.
-            if "transfer-encoding: chunked" in header_block.lower():
-                body = _decode_chunked(body)
-                if body is None:
+                status_line = header_block.split("\r\n", 1)[0]
+                parts = status_line.split(None, 2)
+                if len(parts) < 2:
+                    continue
+                try:
+                    status_code = int(parts[1])
+                except ValueError:
                     continue
 
-            if body:
+                if status_code in (301, 302, 303, 307, 308):
+                    for line in header_block.split("\r\n"):
+                        if line.lower().startswith("location:"):
+                            loc = line.split(":", 1)[1].strip()
+                            redirect_url = urllib.parse.urljoin(current_url, loc)
+                            break
+                    if redirect_url:
+                        break
+
+                if status_code != 200:
+                    continue
+
+                # Handle chunked transfer encoding.
+                if "transfer-encoding: chunked" in header_block.lower():
+                    body = _decode_chunked(body)
+                    if body is None:
+                        continue
+
                 return body
-        except Exception:
-            continue
+            except Exception:
+                continue
+
+        if redirect_url:
+            current_url = redirect_url
+        else:
+            break
     return None
 
 
@@ -2711,6 +2737,8 @@ def catalog_supports_pagination(cat):
     """Return whether a catalog declares support for Stremio's skip extra."""
     if not isinstance(cat, dict):
         return False
+    if "supports_pagination" in cat:
+        return bool(cat.get("supports_pagination"))
     for key in ("extra", "extraSupported", "extraRequired"):
         extras = cat.get(key) or []
         if not isinstance(extras, (list, tuple, set)):
@@ -3280,10 +3308,21 @@ def invalidate_catalogs_cache():
     with _AVAILABLE_CATALOGS_LOCK:
         _AVAILABLE_CATALOGS_CACHE.clear()
 
-def get_available_catalogs(c_type="movie", cache_only=True):
+
+def _get_cloudstream_catalogs(c_type):
+    try:
+        from . import cloudstream
+        return cloudstream.get_catalogs(c_type)
+    except Exception as e:
+        logger.debug(f"Could not list CloudStream catalogs: {e}")
+        return []
+
+
+def get_available_catalogs(c_type="movie", cache_only=True, include_cloudstream=False):
     with _AVAILABLE_CATALOGS_LOCK:
         if c_type in _AVAILABLE_CATALOGS_CACHE:
-            return list(_AVAILABLE_CATALOGS_CACHE[c_type])
+            catalogs = list(_AVAILABLE_CATALOGS_CACHE[c_type])
+            return catalogs + _get_cloudstream_catalogs(c_type) if include_cloudstream else catalogs
 
     from . import database
     catalogs = []
@@ -3350,9 +3389,9 @@ def get_available_catalogs(c_type="movie", cache_only=True):
         catalogs.sort(key=get_anime_priority)
 
     with _AVAILABLE_CATALOGS_LOCK:
-        _AVAILABLE_CATALOGS_CACHE[c_type] = catalogs
+        _AVAILABLE_CATALOGS_CACHE[c_type] = list(catalogs)
 
-    return catalogs
+    return catalogs + _get_cloudstream_catalogs(c_type) if include_cloudstream else catalogs
 
 
 def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
@@ -3444,6 +3483,24 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         target_manifest_url = catalog_url
     if not target_catalog_id and catalog_id and catalog_id != "top":
         target_catalog_id = catalog_id
+
+    if isinstance(catalog_url, str) and catalog_url.startswith("cloudstream://catalog/"):
+        if cache_only:
+            return []
+        from . import cloudstream
+        provider_id = cloudstream.provider_id_from_catalog_url(catalog_url)
+        if not provider_id:
+            return []
+        items = cloudstream.fetch_catalog_items(
+            provider_id,
+            target_catalog_id or catalog_id,
+            page=page,
+            limit=page_limit,
+            is_cancelled=is_cancelled,
+        )
+        if items and on_item_found and not (is_cancelled and is_cancelled()):
+            on_item_found(items)
+        return items
 
     if query:
         import concurrent.futures
@@ -4568,6 +4625,38 @@ def is_valid_meta(res):
 
     return True
 
+
+def is_cloudstream_description_usable(description, title=""):
+    """Reject provider placeholders and release filenames used as fake synopses."""
+    desc = str(description or "").strip()
+    if not desc:
+        return False
+    desc_lower = desc.casefold()
+    if desc_lower in {
+        "hdhub4u video",
+        "no synopsis available.",
+        "synopsis temporarily unavailable.",
+        "no description available.",
+        "description not available",
+    }:
+        return False
+
+    def _normalized(value):
+        value = re.sub(r"\b(?:18|19|20)\d{2}\b", "", str(value or "").casefold())
+        return re.sub(r"[^a-z0-9]+", "", value)
+
+    desc_norm = _normalized(desc)
+    title_norm = _normalized(title)
+    if desc_norm and title_norm and desc_norm == title_norm:
+        return False
+
+    release_tags = re.compile(
+        r"\b(?:unrated|uncut|web[ .-]?dl|webrip|blu[ .-]?ray|brrip|hdrip|hdtv|dvdrip|"
+        r"x26[45]|(?:2160|1080|720|480)p|4k|dual audio|full movie|10bit|hevc|ddp\d*(?:\.\d)?)\b",
+        re.IGNORECASE,
+    )
+    return not bool(release_tags.search(desc))
+
 def merge_metadata(base, extra):
     """Merge metadata from multiple providers (e.g. Cinemeta episodes + Addon synopsis/poster/genres)."""
     if not base:
@@ -4825,10 +4914,99 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         return fetch_movie_details(primary_id, media_type, title, use_cache, poster, prefer_tmdb, expected_year)
 
     if str(imdb_id).startswith("cloudstream:"):
+        route_id = str(imdb_id)
+        raw_catalog_title = str(title or "").strip()
+        if prefer_tmdb and title and media_type in ("movie", "series", "anime"):
+            title_text = raw_catalog_title
+            from . import cloudstream
+            clean_name, extracted_year = cloudstream.clean_cloudstream_title(title_text)
+            year_text_match = re.search(r"\b((?:18|19|20)\d{2})\b", str(expected_year or extracted_year or ""))
+            year_text = year_text_match.group(1) if year_text_match else None
+            release_title = clean_name or title_text
+            identity_title = clean_name or title_text
+
+            cached_route_meta = database.get_cached_metadata(route_id, media_type) if use_cache else None
+            cached_year = str((cached_route_meta or {}).get("year") or "")[:4]
+            cached_title = str((cached_route_meta or {}).get("title") or "")
+            cached_identity_title = re.sub(r"\b((?:18|19|20)\d{2})\b", "", cached_title).strip(" .-_")
+            cached_title_matches = bool(identity_title and tmdb_helper.is_similar_title(identity_title, cached_identity_title))
+            if (
+                cached_route_meta
+                and is_valid_meta(cached_route_meta)
+                and str(cached_route_meta.get("metadata_source", "")).lower() == "tmdb"
+                and (not year_text or not cached_year or cached_year == year_text)
+                and cached_title_matches
+            ):
+                if poster:
+                    cached_route_meta["medium_cover_image"] = poster
+                    cached_route_meta["poster"] = poster
+                if raw_catalog_title:
+                    cached_route_meta.setdefault("catalog_title", raw_catalog_title)
+                    cached_route_meta.setdefault("original_title", raw_catalog_title)
+                return cached_route_meta
+
+            # CloudStream search IDs identify a provider page, not the movie or
+            # series. Resolve the search card's title and year for details so
+            # clicks show canonical metadata while the route remains available
+            # for stream fallback.
+            title_candidates = [release_title]
+            if year_text and release_title:
+                without_year = re.sub(rf"[\s(\[]*{year_text}[)\]]*\s*$", "", release_title).strip(" .-_")
+                if without_year and without_year not in title_candidates:
+                    title_candidates.append(without_year)
+
+            for search_title in title_candidates:
+                try:
+                    tmdb_meta = fetch_tmdb_standalone_metadata(
+                        None,
+                        media_type=media_type,
+                        title=search_title,
+                        poster=poster,
+                        year=year_text,
+                    )
+                except Exception as e:
+                    print(f"[TMDB] CloudStream search resolution failed for {search_title!r}: {e}")
+                    tmdb_meta = None
+                if not tmdb_meta or not is_valid_meta(tmdb_meta):
+                    continue
+                resolved_year = str(tmdb_meta.get("year") or "")[:4]
+                if year_text and resolved_year and resolved_year != year_text:
+                    continue
+                tmdb_meta["cloudstream_route_id"] = route_id
+                tmdb_meta["is_cloudstream"] = True
+                if raw_catalog_title:
+                    tmdb_meta["catalog_title"] = raw_catalog_title
+                    tmdb_meta["original_title"] = raw_catalog_title
+                return _save_and_return_meta(
+                    tmdb_meta,
+                    route_id,
+                    media_type,
+                    title=search_title,
+                    poster=poster,
+                    expected_year=year_text,
+                )
+
         from . import cloudstream
-        meta = cloudstream.get_metadata_for_route(str(imdb_id))
+        meta = cloudstream.get_metadata_for_route(route_id)
         if meta:
-            if poster and not meta.get("medium_cover_image"):
+            if raw_catalog_title:
+                meta.setdefault("catalog_title", raw_catalog_title)
+                meta.setdefault("original_title", raw_catalog_title)
+            if prefer_tmdb and title and media_type in ("movie", "series", "anime"):
+                fallback_title = identity_title or release_title
+                if fallback_title:
+                    meta["title"] = fallback_title
+                    meta["name"] = fallback_title
+                if year_text:
+                    meta["year"] = year_text
+                if poster:
+                    meta["medium_cover_image"] = poster
+                    meta["poster"] = poster
+                description = str(meta.get("description") or meta.get("overview") or "").strip()
+                if description and not is_cloudstream_description_usable(description, fallback_title):
+                    meta["description"] = ""
+                    meta["overview"] = ""
+            elif poster and not meta.get("medium_cover_image"):
                 meta["medium_cover_image"] = poster
                 meta["poster"] = poster
             if title and not meta.get("title"):
@@ -6661,7 +6839,7 @@ def _merge_parsed_streams(primary, secondary):
     return merged
 
 
-def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None, known_tmdb_id=None, expected_year=None):
+def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None, known_tmdb_id=None, expected_year=None, cloudstream_route_id=None, catalog_title=None):
     original_id = imdb_id
     # Callers may pass the full alias list used by metadata lookup. Addon
     # stream URLs and prefix checks require a single concrete provider ID.
@@ -6684,7 +6862,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     if not title and imdb_id:
         try:
-            from . import tmdb_helper
             meta = tmdb_helper.get_tmdb_metadata(imdb_id, media_type or "movie")
             if meta and meta.get("title"):
                 title = meta.get("title")
@@ -6716,7 +6893,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     print(
         f"[STREAM DEBUG] API start original_id={original_id!r} normalized_id={imdb_id!r} "
-        f"media={media_type!r} season={season!r} episode={episode!r} force={force_refresh}"
+        f"media={media_type!r} season={season!r} episode={episode!r} force={force_refresh} "
+        f"title={title!r} known_tmdb_id={known_tmdb_id!r} expected_year={expected_year!r}"
     )
 
     if not imdb_id:
@@ -6738,9 +6916,39 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     if str(imdb_id).startswith("cloudstream:"):
         from . import cloudstream
-        streams = cloudstream.get_streams_for_route(str(imdb_id))
-        if callback: callback(streams, is_cached=False, is_complete=True)
-        return streams
+        route_streams = cloudstream.get_streams_for_route(str(imdb_id))
+        if route_streams:
+            if callback: callback(route_streams, is_cached=False, is_complete=True)
+            return route_streams
+
+        # A search-card route may have no playable links on its own. Try its
+        # canonical identity when available, then continue through provider
+        # discovery by title if TMDB resolution is unavailable.
+        canonical_id = f"tmdb:{known_tmdb_id}" if known_tmdb_id else None
+        if not canonical_id and title:
+            try:
+                resolved_tmdb_id = tmdb_helper.resolve_to_tmdb_id(
+                    None, media_type, title, year=expected_year
+                )
+                if resolved_tmdb_id:
+                    canonical_id = f"tmdb:{resolved_tmdb_id}"
+            except Exception as e:
+                print(f"[STREAM DEBUG] CloudStream route title resolution failed: {e}")
+        if canonical_id:
+            print(f"[STREAM DEBUG] CloudStream route had no direct links; retrying discovery with {canonical_id!r}")
+            imdb_id = canonical_id
+        elif title:
+            # A TMDB lookup can fail even when the selected CloudStream page
+            # is valid. Keep the route ID and continue: CloudStream providers
+            # can still search by the resolved display title, and the normal
+            # provider pipeline may resolve aliases independently.
+            print(
+                f"[STREAM DEBUG] CloudStream route had no direct links or TMDB ID; "
+                f"continuing title-based discovery title={title!r}"
+            )
+        else:
+            if callback: callback([], is_cached=False, is_complete=True)
+            return []
 
     if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
         parts = str(imdb_id).split("||")
@@ -6958,8 +7166,21 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     plugin_scrapers_before_dedup = len(plugin_scrapers)
     plugin_scrapers = plugins.deduplicate_scrapers(plugin_scrapers)
 
+    from . import cloudstream
+    enabled_cloudstream_plugins = [
+        p for p in cloudstream.get_all_plugins() if p.get("enabled")
+    ] if cloudstream.is_cloudstream_enabled() else []
+    runnable_cloudstream_plugins = [
+        p for p in enabled_cloudstream_plugins if cloudstream.is_provider_runnable(p)
+    ]
+    has_active_cloudstream = bool(runnable_cloudstream_plugins)
+
     has_cached_plugins = any(s.get("is_nuvio_plugin") for s in (cache_candidates or []))
-    has_cached_addons = any(not s.get("is_nuvio_plugin") for s in (cache_candidates or []))
+    has_cached_addons = any(
+        not s.get("is_nuvio_plugin") and not s.get("is_cloudstream")
+        for s in (cache_candidates or [])
+    )
+    has_cached_cloudstream = any(s.get("is_cloudstream") for s in (cache_candidates or []))
     missing_plugin_streams = bool(
         plugins.is_plugins_enabled()
         and plugin_scrapers
@@ -6971,11 +7192,18 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         and not has_cached_addons
         and not provider_scope
     )
+    missing_cloudstream_streams = bool(
+        has_active_cloudstream
+        and not has_cached_cloudstream
+        and not provider_scope
+        and not source_scope
+    )
     is_fresh = bool(
         cache_candidates and len(usable_cache_candidates) == len(cache_candidates)
         and not force_refresh
         and not missing_plugin_streams
         and not missing_addon_streams
+        and not missing_cloudstream_streams
         and cache_age is not None
         and cache_age < max_fresh_age
     )
@@ -6989,16 +7217,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         print(f"[STREAM DEBUG] delivering {len(usable_cached)} usable cached cards while provider refresh runs")
         callback(usable_cached, is_cached=True, is_complete=False)
 
-    from . import cloudstream
-    has_active_cloudstream = bool(
-        cloudstream.is_cloudstream_enabled()
-        and any(p.get("enabled") and cloudstream.is_provider_runnable(p) for p in cloudstream.get_all_plugins())
-    )
-
     print(
         f"[STREAM DEBUG] stream-capable addons={len(all_stream_addons)} "
         f"plugins={len(plugin_scrapers)} unique/{plugin_scrapers_before_dedup} enabled "
         f"cloudstream={int(has_active_cloudstream)} "
+        f"cloudstream_providers={[p.get('name') or p.get('id') for p in runnable_cloudstream_plugins]!r} "
+        f"cloudstream_unrunnable={[p.get('name') or p.get('id') for p in enabled_cloudstream_plugins if p not in runnable_cloudstream_plugins]!r} "
         f"provider_scope={provider_scope!r} "
         f"names={[a.get('name', 'Unknown') for a in all_stream_addons]}"
     )
@@ -7010,6 +7234,10 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     refresh_started_at = time.time()
 
     provider_timeout, provider_retries = _get_stream_provider_options()
+    # CloudStream resolution spans search, load, and loadLinks. Give it its
+    # own budget so slow but healthy providers are not discarded at the
+    # shorter per-request timeout used by ordinary add-ons.
+    cloudstream_timeout = min(120.0, max(90.0, provider_timeout * 3.0))
     retry_backoff_budget = sum(min(1.5 * (2 ** attempt), 4.0) for attempt in range(provider_retries))
     # Each retry reacquires a host slot (bounded to 4s) before making the HTTP
     # request. Use one total deadline for collection, including all attempts.
@@ -7137,21 +7365,46 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         from . import cloudstream
         if not cloudstream.is_cloudstream_enabled() or not title:
             return "CloudStream", []
+        route_executor = None
+        route_future = None
         try:
+            if isinstance(cloudstream_route_id, str) and cloudstream_route_id.startswith("cloudstream:"):
+                # Resolve the clicked result while title/year searches run so
+                # one slow provider route cannot hold up the other providers.
+                route_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                route_future = route_executor.submit(cloudstream.get_streams_for_route, cloudstream_route_id)
             cs_streams = cloudstream.fetch_cloudstream_streams_for_media(
                 title=title,
                 media_type=actual_media,
                 year=expected_year,
                 season=season,
                 episode=episode,
-                timeout=provider_timeout,
+                timeout=cloudstream_timeout,
                 imdb_id=imdb_id,
+                catalog_title=catalog_title,
             )
-            print(f"[STREAM DEBUG] cloudstream stream fetch done raw_cards={len(cs_streams or [])}")
-            return "CloudStream", cs_streams
+            route_streams = []
+            if route_future:
+                try:
+                    route_streams = route_future.result(timeout=10.0) or []
+                except concurrent.futures.TimeoutError:
+                    print("[STREAM DEBUG] CloudStream clicked-route lookup timed out")
+                except Exception as e:
+                    print(f"[STREAM DEBUG] CloudStream clicked-route lookup failed: {e}")
+            if route_streams:
+                print(f"[STREAM DEBUG] CloudStream clicked-route lookup returned {len(route_streams)} stream(s)")
+            combined_streams = list(route_streams or []) + list(cs_streams or [])
+            print(
+                f"[STREAM DEBUG] cloudstream stream fetch done route_cards={len(route_streams or [])} "
+                f"provider_cards={len(cs_streams or [])}"
+            )
+            return "CloudStream", combined_streams
         except Exception as e:
             print(f"[STREAM DEBUG] cloudstream stream fetch failed: {e}")
             return "CloudStream", []
+        finally:
+            if route_executor:
+                route_executor.shutdown(wait=False, cancel_futures=True)
 
     all_raw_streams = []
     if cached and not force_refresh:
@@ -7206,7 +7459,14 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         future_to_addon = {}
         queried_addon_urls = set()
         queried_plugin_ids = set()
-        collection_deadline = time.monotonic() + provider_collection_timeout
+        effective_collection_timeout = provider_collection_timeout
+        if has_active_cloudstream:
+            effective_collection_timeout = max(effective_collection_timeout, cloudstream_timeout + 15.0)
+        collection_deadline = time.monotonic() + effective_collection_timeout
+        print(
+            f"[STREAM DEBUG] effective provider collection budget={effective_collection_timeout:.1f}s "
+            f"cloudstream_timeout={cloudstream_timeout:.1f}s"
+        )
 
         try:
             # Fire off ID resolution in the background immediately so it is not

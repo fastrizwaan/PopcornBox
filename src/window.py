@@ -391,6 +391,12 @@ class MovieDetailsPage(Gtk.Overlay):
         self.movie_stub = movie
         self.window = window
         self.media_type = movie.get("type", "movie")
+        self.catalog_title = (
+            movie.get("catalog_title")
+            or movie.get("raw_title")
+            or movie.get("original_title")
+            or movie.get("title")
+        )
         # Keep channel identity stable as metadata refreshes may add a `videos`
         # list to a live-TV item that was initially recognized from its card.
         self._live_channel_identity = False
@@ -1125,6 +1131,14 @@ class MovieDetailsPage(Gtk.Overlay):
                 if v and (k != "description" or v not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD")):
                     initial_meta[k] = v
         desc = initial_meta.get("description") or initial_meta.get("overview")
+        is_cloudstream_stub = bool(
+            self.movie_stub.get("is_cloudstream")
+            or str(self.movie_stub.get("id") or "").startswith("cloudstream:")
+        )
+        if is_cloudstream_stub and not api.is_cloudstream_description_usable(desc, self.movie_stub.get("title")):
+            desc = ""
+            initial_meta["description"] = ""
+            initial_meta["overview"] = ""
         if desc:
             initial_meta["description"] = desc
             initial_meta["overview"] = desc
@@ -1937,7 +1951,7 @@ class MovieDetailsPage(Gtk.Overlay):
             details = api.fetch_movie_details(
                 item_id,
                 self.media_type,
-                title=self.movie_stub.get("title"),
+                title=getattr(self, "catalog_title", None) or self.movie_stub.get("title"),
                 use_cache=not force_refresh,
                 poster=existing_poster,
                 prefer_tmdb=self.media_type in ("movie", "series", "anime"),
@@ -1946,9 +1960,22 @@ class MovieDetailsPage(Gtk.Overlay):
             if self._destroyed or _is_event_set(getattr(self, 'page_abort_event', None)):
                 return
             if details:
+                if getattr(self, "catalog_title", None):
+                    details.setdefault("catalog_title", self.catalog_title)
+                is_cloudstream_item = bool(
+                    self.movie_stub.get("is_cloudstream")
+                    or str(self.movie_stub.get("id") or "").startswith("cloudstream:")
+                )
+                if is_cloudstream_item:
+                    fetched_desc = details.get("description") or details.get("overview")
+                    if fetched_desc and not api.is_cloudstream_description_usable(fetched_desc, details.get("title") or self.movie_stub.get("title")):
+                        details["description"] = ""
+                        details["overview"] = ""
                 # Retain any rich overview/rating from movie_stub if missing from fetched details
                 if not details.get("description") or details.get("description") in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD"):
                     stub_desc = self.movie_stub.get("description") or self.movie_stub.get("overview")
+                    if is_cloudstream_item and not api.is_cloudstream_description_usable(stub_desc, details.get("title") or self.movie_stub.get("title")):
+                        stub_desc = None
                     if stub_desc and stub_desc not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD"):
                         details["description"] = stub_desc
                 if not details.get("imdbRating") and (self.movie_stub.get("imdbRating") or self.movie_stub.get("rating")):
@@ -3045,13 +3072,27 @@ class MovieDetailsPage(Gtk.Overlay):
         movie_details = getattr(self, "movie_details", {}) or {}
         known_tmdb_id = movie_details.get("tmdb_id")
         expected_year = movie_details.get("year")
+        cloudstream_route_id = movie_details.get("cloudstream_route_id")
+        if not (isinstance(cloudstream_route_id, str) and cloudstream_route_id.startswith("cloudstream:")):
+            stub_route_id = self.movie_stub.get("id")
+            cloudstream_route_id = (
+                stub_route_id if isinstance(stub_route_id, str) and stub_route_id.startswith("cloudstream:") else None
+            )
         details_id = movie_details.get("id")
         if str(movie_details.get("metadata_source", "")).lower() == "tmdb" and movie_details.get("tmdb_id"):
             resolved_imdb_id = movie_details.get("imdb_id")
             details_id = resolved_imdb_id if str(resolved_imdb_id or "").startswith("tt") else f"tmdb:{movie_details['tmdb_id']}"
-        item_id = video_id or (
+        canonical_details_id = (
             details_id if details_id and str(details_id).startswith(("tt", "tmdb:")) else None
-        ) or self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
+        )
+        # A movie's selected_video can be a trailer or provider route inherited
+        # from its search card. Once details resolve a canonical ID, use that
+        # ID for stream discovery so generic add-ons and title searches run.
+        # For series, preserve the selected episode ID (which may include S/E).
+        if self.media_type == "movie" and canonical_details_id:
+            item_id = canonical_details_id
+        else:
+            item_id = video_id or canonical_details_id or self.movie_stub.get("alias_ids") or self.movie_stub.get("id")
         # Alias IDs are useful for metadata resolution, but the stream endpoint
         # expects one provider ID. `get_torrents_streamed` normalizes too, while
         # doing this here keeps request keys and UI diagnostics unambiguous.
@@ -3197,9 +3238,14 @@ class MovieDetailsPage(Gtk.Overlay):
         self._fetch_gen = getattr(self, '_fetch_gen', 0) + 1
         current_gen = self._fetch_gen
         print(f"[STREAM DEBUG] UI fetch started generation={current_gen} key={fetch_key!r}")
-        series_title = self.movie_stub.get("title") or self.movie_stub.get("name")
+        series_title = movie_details.get("title") or self.movie_stub.get("title") or self.movie_stub.get("name")
         ep_title = (selected_video.get("title") if selected_video else None) or (selected_video.get("name") if selected_video else None)
         target_title = series_title or ep_title
+        catalog_title = (
+            movie_details.get("catalog_title")
+            or self.movie_stub.get("catalog_title")
+            or getattr(self, "catalog_title", None)
+        )
         
         if hasattr(self, 'stream_abort_event') and self.stream_abort_event:
             self.stream_abort_event.set()
@@ -3395,6 +3441,8 @@ class MovieDetailsPage(Gtk.Overlay):
                     source_scope=source_scope,
                     known_tmdb_id=known_tmdb_id,
                     expected_year=expected_year,
+                    cloudstream_route_id=cloudstream_route_id,
+                    catalog_title=catalog_title,
                 )
                 print(f"[STREAM DEBUG] worker API returned generation={current_gen}")
             except RuntimeError as e:
@@ -9686,12 +9734,30 @@ class CineWindow(Adw.ApplicationWindow):
                     "addon_name": name
                 })
 
+        # CloudStream providers do not have Stremio addon records. Add their
+        # runnable adapter-backed catalogs as provider choices using the same
+        # virtual URL that the Discover row loader understands.
+        from . import cloudstream
+        for cat in cloudstream.get_catalogs(chosen_type):
+            m_url = cat.get("manifest_url") or ""
+            if not m_url or m_url in seen_urls:
+                continue
+            seen_urls.add(m_url)
+            name = cat.get("addon_name") or "CloudStream"
+            items.append({
+                "display_name": f"{name} (CloudStream)",
+                "addon": None,
+                "manifest_url": m_url,
+                "addon_name": name,
+                "_source": "cloudstream",
+            })
+
         self._discover_catalog_items = items
         if hasattr(self, "catalog_dropdown") and self.catalog_dropdown:
             self.catalog_dropdown.set_model(Gtk.StringList.new([it["display_name"] for it in items]))
             self.catalog_dropdown.set_selected(0)
 
-    def _populate_discover_section_dropdown(self, addon, chosen_type):
+    def _populate_discover_section_dropdown(self, addon, chosen_type, catalog_item=None):
         from . import api
         items = [{
             "display_name": "All Sections",
@@ -9713,6 +9779,25 @@ class CineWindow(Adw.ApplicationWindow):
                     continue
                 seen_ids.add(cid)
                 name = c.get("name") or cid.title()
+                items.append({
+                    "display_name": name,
+                    "cat": c,
+                    "catalog_id": cid
+                })
+        elif catalog_item and (catalog_item.get("_source") == "cloudstream" or str(catalog_item.get("manifest_url") or "").startswith("cloudstream://")):
+            from . import cloudstream
+            m_url = catalog_item.get("manifest_url")
+            matching_cats = [
+                c for c in cloudstream.get_catalogs(chosen_type)
+                if str(c.get("manifest_url") or "") == str(m_url)
+            ]
+            seen_ids = set()
+            for c in matching_cats:
+                cid = c.get("catalog_id") or ""
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                name = c.get("catalog_name") or cid.title()
                 items.append({
                     "display_name": name,
                     "cat": c,
@@ -10053,7 +10138,7 @@ class CineWindow(Adw.ApplicationWindow):
             cur_l = self.language_dropdown.get_selected_item().get_string() if hasattr(self, "language_dropdown") and self.language_dropdown and self.language_dropdown.get_selected_item() else None
             cur_c = self.country_dropdown.get_selected_item().get_string() if hasattr(self, "country_dropdown") and self.country_dropdown and self.country_dropdown.get_selected_item() else None
 
-            self._populate_discover_section_dropdown(addon, chosen_type)
+            self._populate_discover_section_dropdown(addon, chosen_type, cat_info)
             active_cat = self._discover_section_items[0].get("cat") if getattr(self, "_discover_section_items", None) else None
             self._populate_discover_genre_dropdown(addon, chosen_type, active_cat)
             self._restore_dropdown_selection(self.genre_dropdown, getattr(self, "_discover_genre_items", []), cur_g)
@@ -12685,10 +12770,22 @@ class CineWindow(Adw.ApplicationWindow):
         cur_network = getattr(self, "current_network", None)
         if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
             cur_network = None
+        from . import cloudstream
+        if filter_addon_url:
+            cloudstream_catalogs = [
+                cat for cat in cloudstream.get_catalogs(filter_media_type or "all")
+                if str(cat.get("manifest_url") or "") == str(filter_addon_url)
+            ]
+        else:
+            cloudstream_catalogs = []
+        cloudstream_signature = tuple(sorted(
+            (str(c.get("manifest_url") or ""), str(c.get("catalog_id") or ""), str(c.get("type") or ""))
+            for c in cloudstream_catalogs
+        ))
         cache_key = (
-            ("home", filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "")
+            ("home", filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "", cloudstream_signature)
             if is_home else
-            (filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "")
+            (filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "", cloudstream_signature)
         )
         cached_res = None
         if not force_refresh and hasattr(self, "_discover_catalog_list_cache") and cache_key in self._discover_catalog_list_cache:
@@ -12707,7 +12804,13 @@ class CineWindow(Adw.ApplicationWindow):
                 # are always kept.
                 online_rows = [
                     row for row in cached_res
-                    if not row.get("manifest_url") or api.is_addon_online(row.get("manifest_url"))
+                    if (
+                        row.get("_source") == "cloudstream"
+                        and (str(row.get("manifest_url") or ""), str(row.get("catalog_id") or ""), str(row.get("media_type") or "")) in cloudstream_signature
+                    ) or (
+                        row.get("_source") != "cloudstream"
+                        and (not row.get("manifest_url") or api.is_addon_online(row.get("manifest_url")))
+                    )
                 ]
                 if len(online_rows) == len(cached_res):
                     # A temporary provider health failure must not invalidate a
@@ -12890,6 +12993,36 @@ class CineWindow(Adw.ApplicationWindow):
                         'supports_pagination': api.catalog_supports_pagination(cat),
                         'title': row_title
                     })
+
+        # CloudStream adapters expose their own main-page sections instead of
+        # Stremio catalog manifests. List them on selection only (do not list them with all).
+        if filter_addon_url and cloudstream_catalogs and not (cur_genre or cur_lang or cur_country or cur_network):
+            for cat in cloudstream_catalogs:
+                c_type = str(cat.get("type") or "movie").strip().lower()
+                if (
+                    is_home
+                    and str(filter_media_type or "all").strip().lower() in ("all", "movie_series")
+                    and (c_type in HOME_EXCLUDED_MEDIA_TYPES or c_type not in HOME_ALLOWED_MEDIA_TYPES)
+                ):
+                    continue
+                row_key = (cat.get("manifest_url"), cat.get("catalog_id"), c_type)
+                if row_key in seen_row_keys:
+                    continue
+                seen_row_keys.add(row_key)
+                rows.append({
+                    "_source": "cloudstream",
+                    "addon_name": cat.get("addon_name") or "CloudStream",
+                    "media_type": c_type,
+                    "raw_type": c_type,
+                    "catalog_id": cat.get("catalog_id"),
+                    "catalog_name": cat.get("catalog_name") or cat.get("catalog_id"),
+                    "manifest_url": cat.get("manifest_url"),
+                    "genres": list(cat.get("genres") or []),
+                    "extra": list(cat.get("extra") or []),
+                    "extraSupported": list(cat.get("extraSupported") or []),
+                    "supports_pagination": bool(cat.get("supports_pagination")),
+                    "title": cat.get("display_name") or cat.get("catalog_name") or "CloudStream",
+                })
 
         # If no provider can filter this genre/language/country, use matching items indexed in
         # the local metadata database instead of leaving Discover empty. When a
@@ -17907,7 +18040,7 @@ class CineWindow(Adw.ApplicationWindow):
         return url
 
     def _update_supported_media_types(self):
-        from . import api
+        from . import api, cloudstream
         all_addons = api.database.get_addons()
 
         def _get_supported_types(addons):
@@ -17928,6 +18061,14 @@ class CineWindow(Adw.ApplicationWindow):
             return types_found
 
         supported_types = _get_supported_types(all_addons)
+        try:
+            supported_types.update(
+                str(c.get("type") or "").strip().lower()
+                for c in cloudstream.get_catalogs("all")
+                if c.get("type")
+            )
+        except Exception:
+            pass
         self.anime_supported = ("anime" in supported_types)
         self.tv_supported = any(t in supported_types for t in ["tv", "channel", "tvchannel"])
         if hasattr(self, "update_category_buttons_visibility"):
@@ -19614,6 +19755,8 @@ class CineWindow(Adw.ApplicationWindow):
 
             def apply_result():
                 self._populate_cloudstream()
+                if ok:
+                    self._refresh_cloudstream_catalog_views()
                 self._show_toast(msg)
                 return False
 
@@ -19676,11 +19819,48 @@ class CineWindow(Adw.ApplicationWindow):
         from . import cloudstream
         ok, msg = cloudstream.uninstall_plugin(plugin_id)
         self._populate_cloudstream()
+        if ok:
+            self._refresh_cloudstream_catalog_views()
         self._show_toast(msg)
+
+    def _refresh_cloudstream_catalog_views(self):
+        """Invalidate Discover's cached catalog lists after CloudStream changes."""
+        from . import api
+        api.invalidate_catalogs_cache()
+        for attr in ("_catalog_list_cache", "_discover_catalog_list_cache", "_discover_catalog_list_cache_timestamps", "_discover_views"):
+            cache = getattr(self, attr, None)
+            if isinstance(cache, dict):
+                cache.clear()
+        self._active_discover_view_key = None
+        self._update_supported_media_types()
+
+        if hasattr(self, "_populate_discover_catalog_dropdown"):
+            chosen_type = self._get_current_discover_type()
+            self._syncing_discover_toolbar = True
+            try:
+                self._populate_discover_catalog_dropdown(chosen_type)
+                self._current_discover_addon = None
+                self._populate_discover_section_dropdown(None, chosen_type)
+            finally:
+                self._syncing_discover_toolbar = False
+
+        library_visible = (
+            getattr(self, "main_stack", None)
+            and self.main_stack.get_visible_child_name() == "library"
+            and getattr(self, "library_stack", None)
+            and self.library_stack.get_visible_child_name() == "discover"
+        )
+        if library_visible:
+            self._refresh_discover_page(
+                filter_media_type=self._get_current_discover_type(),
+                filter_addon_url=getattr(self, "_current_discover_addon", None),
+                force_refresh=True,
+            )
 
     def _on_cloudstream_switch_toggled(self, switch, plugin_id):
         from . import cloudstream
         cloudstream.toggle_plugin(plugin_id, switch.get_active())
+        self._refresh_cloudstream_catalog_views()
 
     def _on_cloudstream_enable_globally_toggled(self, row, _pspec):
         if getattr(self, "_syncing_cloudstream_switches", False):
@@ -19688,6 +19868,7 @@ class CineWindow(Adw.ApplicationWindow):
         active = row.get_active()
         from . import cloudstream
         cloudstream.set_cloudstream_enabled(active)
+        self._refresh_cloudstream_catalog_views()
         if active:
             self.cloudstream_badge_status.set_label(_("CloudStream enabled"))
             self.cloudstream_badge_status.remove_css_class("plugin-disabled")
@@ -19715,6 +19896,7 @@ class CineWindow(Adw.ApplicationWindow):
 
             def apply_result():
                 self._populate_cloudstream()
+                self._refresh_cloudstream_catalog_views()
                 inst = res.get("installed", 0)
                 enb = res.get("enabled", 0)
                 self._show_toast(_(f"Installed {inst}, enabled {enb} CloudStream providers"))
