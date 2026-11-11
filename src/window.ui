@@ -2653,6 +2653,16 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                             </section>
                                             <section>
                                               <item>
+                                                <attribute name="label" translatable="yes">Backup Configuration</attribute>
+                                                <attribute name="action">win.backup-config</attribute>
+                                              </item>
+                                              <item>
+                                                <attribute name="label" translatable="yes">Restore Configuration</attribute>
+                                                <attribute name="action">win.restore-config</attribute>
+                                              </item>
+                                            </section>
+                                            <section>
+                                              <item>
                                                 <attribute name="label" translatable="yes">Watch History</attribute>
                                                 <attribute name="action">win.open-watch-history</attribute>
                                               </item>

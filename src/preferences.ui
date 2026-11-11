@@ -505,6 +505,40 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
             </child>
             <child>
               <object class="AdwPreferencesGroup">
+                <property name="title" translatable="yes">Backup &amp; Restore</property>
+                <property name="description" translatable="yes">Backup or restore all addons, plugins, and CloudStream repositories</property>
+                <child>
+                  <object class="AdwActionRow" id="backup_config_row">
+                    <property name="title" translatable="yes">Backup Configuration</property>
+                    <property name="subtitle" translatable="yes">Save all addons, plugins, and CloudStream repositories to a backup file</property>
+                    <property name="activatable-widget">backup_config_btn</property>
+                    <child type="suffix">
+                      <object class="GtkButton" id="backup_config_btn">
+                        <property name="label" translatable="yes">Backup…</property>
+                        <property name="valign">3</property>
+                        <signal name="clicked" handler="_on_backup_config_clicked"/>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+                <child>
+                  <object class="AdwActionRow" id="restore_config_row">
+                    <property name="title" translatable="yes">Restore Configuration</property>
+                    <property name="subtitle" translatable="yes">Restore addons, plugins, and CloudStream repositories from a backup file</property>
+                    <property name="activatable-widget">restore_config_btn</property>
+                    <child type="suffix">
+                      <object class="GtkButton" id="restore_config_btn">
+                        <property name="label" translatable="yes">Restore…</property>
+                        <property name="valign">3</property>
+                        <signal name="clicked" handler="_on_restore_config_clicked"/>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
+              <object class="AdwPreferencesGroup">
                 <child>
                   <object class="AdwButtonRow" id="open_config_row">
                     <property name="title" translatable="yes">Open Config Folder</property>

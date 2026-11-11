@@ -243,6 +243,10 @@ class Preferences(Adw.Dialog):
     stremio_logout_btn: Gtk.Button = Gtk.Template.Child()
     stremio_sync_switch_row: Adw.SwitchRow = Gtk.Template.Child()
     stremio_sync_addons_switch_row: Adw.SwitchRow = Gtk.Template.Child()
+    backup_config_row: Adw.ActionRow = Gtk.Template.Child()
+    backup_config_btn: Gtk.Button = Gtk.Template.Child()
+    restore_config_row: Adw.ActionRow = Gtk.Template.Child()
+    restore_config_btn: Gtk.Button = Gtk.Template.Child()
     stremio_sync_now_row: Adw.ActionRow = Gtk.Template.Child()
     stremio_sync_now_btn: Gtk.Button = Gtk.Template.Child()
 
@@ -538,6 +542,88 @@ class Preferences(Adw.Dialog):
         default_font = "Adwaita Sans SemiBold"
         settings.set_string("subtitle-font", default_font)
         self.font_label.set_label(default_font)
+
+    @Gtk.Template.Callback()
+    def _on_backup_config_clicked(self, *args):
+        from . import backup
+        dialog = Gtk.FileDialog(
+            title=_("Backup Configuration"),
+            initial_name=backup.get_default_backup_filename()
+        )
+
+        def on_save_response(dialog, result):
+            try:
+                file = dialog.save_finish(result)
+                if not file:
+                    return
+                path = file.get_path()
+
+                def _worker():
+                    success, msg, summary = backup.create_backup(path)
+                    def _done():
+                        toast_msg = msg if success else _("Backup failed")
+                        if hasattr(self.win, "_show_toast"):
+                            self.win._show_toast(toast_msg)
+                        return False
+                    GLib.idle_add(_done)
+
+                threading.Thread(target=_worker, daemon=True, name="BackupWorker").start()
+            except Exception as e:
+                logger.error(f"Failed to start backup: {e}")
+                if hasattr(self.win, "_show_toast"):
+                    self.win._show_toast(_("Backup failed"))
+
+        dialog.save(self.win or self, None, on_save_response)
+
+    @Gtk.Template.Callback()
+    def _on_restore_config_clicked(self, *args):
+        from . import backup
+        dialog = Gtk.FileDialog(title=_("Restore Configuration"))
+
+        filter_all = Gtk.FileFilter()
+        filter_all.set_name(_("PopcornBox Backups (*.zip, *.json)"))
+        filter_all.add_pattern("*.zip")
+        filter_all.add_pattern("*.json")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(filter_all)
+        dialog.set_filters(filters)
+
+        def on_open_response(dialog, result):
+            try:
+                file = dialog.open_finish(result)
+                if not file:
+                    return
+                path = file.get_path()
+
+                def _worker():
+                    success, msg, summary = backup.restore_backup(path)
+                    def _done():
+                        toast_msg = msg if success else _("Restore failed")
+                        if hasattr(self.win, "_show_toast"):
+                            self.win._show_toast(toast_msg)
+                        if success:
+                            if hasattr(self.win, "_populate_addons"):
+                                self.win._populate_addons()
+                            if hasattr(self.win, "_populate_plugins"):
+                                self.win._populate_plugins()
+                            if hasattr(self.win, "_populate_cloudstream"):
+                                self.win._populate_cloudstream()
+                            if hasattr(self.win, "_on_addons_changed"):
+                                self.win._on_addons_changed()
+                            if hasattr(self.win, "_refresh_cloudstream_catalog_views"):
+                                self.win._refresh_cloudstream_catalog_views()
+                            if hasattr(self.win, "_ensure_all_menus_built"):
+                                self.win._ensure_all_menus_built()
+                        return False
+                    GLib.idle_add(_done)
+
+                threading.Thread(target=_worker, daemon=True, name="RestoreWorker").start()
+            except Exception as e:
+                logger.error(f"Failed to start restore: {e}")
+                if hasattr(self.win, "_show_toast"):
+                    self.win._show_toast(_("Restore failed"))
+
+        dialog.open(self.win or self, None, on_open_response)
 
     @Gtk.Template.Callback()
     def _on_open_config_dir(self, _button):

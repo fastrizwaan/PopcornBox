@@ -43,6 +43,7 @@ configure_file(
 cine_sources = [
   '__init__.py',
   'api.py',
+  'backup.py',
   'company_dialog.py',
   'database.py',
   'download_row.py',

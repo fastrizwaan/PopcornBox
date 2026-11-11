@@ -27,6 +27,14 @@ def update_gresource():
         with open(os.path.join(tmpdir, 'io/github/fastrizwaan/PopcornBox/window.ui'), 'wb') as f:
             f.write(win_ui)
 
+        # Overwrite with updated preferences.ui
+        pref_ui_path = os.path.join(repo_root, 'src/preferences.ui')
+        if os.path.exists(pref_ui_path):
+            with open(pref_ui_path, 'rb') as f:
+                pref_ui = f.read()
+            with open(os.path.join(tmpdir, 'io/github/fastrizwaan/PopcornBox/preferences.ui'), 'wb') as f:
+                f.write(pref_ui)
+
         # Overwrite with updated app icons
         svg_icon_path = os.path.join(repo_root, 'data/icons/scalable/apps/io.github.fastrizwaan.PopcornBox.svg')
         if os.path.exists(svg_icon_path):

@@ -453,6 +453,37 @@ template $Preferences: Adw.Dialog {
 			}
 
 			Adw.PreferencesGroup {
+				title: _("Backup & Restore");
+				description: _("Backup or restore all addons, plugins, and CloudStream repositories");
+
+				Adw.ActionRow backup_config_row {
+					title: _("Backup Configuration");
+					subtitle: _("Save all addons, plugins, and CloudStream repositories to a backup file");
+					activatable-widget: backup_config_btn;
+
+					[suffix]
+					Button backup_config_btn {
+						label: _("Backup…");
+						valign: center;
+						clicked => $_on_backup_config_clicked();
+					}
+				}
+
+				Adw.ActionRow restore_config_row {
+					title: _("Restore Configuration");
+					subtitle: _("Restore addons, plugins, and CloudStream repositories from a backup file");
+					activatable-widget: restore_config_btn;
+
+					[suffix]
+					Button restore_config_btn {
+						label: _("Restore…");
+						valign: center;
+						clicked => $_on_restore_config_clicked();
+					}
+				}
+			}
+
+			Adw.PreferencesGroup {
 				Adw.ButtonRow open_config_row {
 					title: _("Open Config Folder");
 					end-icon-name: "pan-end-symbolic";

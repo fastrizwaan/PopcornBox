@@ -5075,6 +5075,8 @@ class CineWindow(Adw.ApplicationWindow):
         self._create_action("go-back", self._go_back)
         self._create_action("import-addons", self._import_addons)
         self._create_action("export-addons", self._export_addons)
+        self._create_action("backup-config", self._on_backup_config)
+        self._create_action("restore-config", self._on_restore_config)
         self._create_action(
             "save-session-close", lambda *a: self._on_save_session(close=True)
         )
@@ -20317,6 +20319,74 @@ class CineWindow(Adw.ApplicationWindow):
                 logger.error(f"Failed to export addons: {e}")
                 self._show_toast(_("Failed to export addons"))
         dialog.save(self, None, on_save_response)
+
+    def _on_backup_config(self, *args):
+        from . import backup
+        dialog = Gtk.FileDialog(
+            title=_("Backup Configuration"),
+            initial_name=backup.get_default_backup_filename()
+        )
+        def on_save_response(dialog, result):
+            try:
+                file = dialog.save_finish(result)
+                if not file: return
+                path = file.get_path()
+
+                def _worker():
+                    success, msg, summary = backup.create_backup(path)
+                    toast_msg = msg if success else _("Backup failed")
+                    idle_add_once(self._show_toast, toast_msg)
+
+                threading.Thread(target=_worker, daemon=True, name="BackupWorker").start()
+            except Exception as e:
+                logger.error(f"Failed to start backup: {e}")
+                self._show_toast(_("Backup failed"))
+        dialog.save(self, None, on_save_response)
+
+    def _on_restore_config(self, *args):
+        from . import backup
+        dialog = Gtk.FileDialog(title=_("Restore Configuration"))
+
+        filter_all = Gtk.FileFilter()
+        filter_all.set_name(_("PopcornBox Backups (*.zip, *.json)"))
+        filter_all.add_pattern("*.zip")
+        filter_all.add_pattern("*.json")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(filter_all)
+        dialog.set_filters(filters)
+
+        def on_open_response(dialog, result):
+            try:
+                file = dialog.open_finish(result)
+                if not file: return
+                path = file.get_path()
+
+                def _worker():
+                    success, msg, summary = backup.restore_backup(path)
+                    def _apply():
+                        toast_msg = msg if success else _("Restore failed")
+                        self._show_toast(toast_msg)
+                        if success:
+                            if hasattr(self, "_populate_addons"):
+                                self._populate_addons()
+                            if hasattr(self, "_populate_plugins"):
+                                self._populate_plugins()
+                            if hasattr(self, "_populate_cloudstream"):
+                                self._populate_cloudstream()
+                            if hasattr(self, "_on_addons_changed"):
+                                self._on_addons_changed()
+                            if hasattr(self, "_refresh_cloudstream_catalog_views"):
+                                self._refresh_cloudstream_catalog_views()
+                            if hasattr(self, "_ensure_all_menus_built"):
+                                self._ensure_all_menus_built()
+                        return False
+                    GLib.idle_add(_apply)
+
+                threading.Thread(target=_worker, daemon=True, name="RestoreWorker").start()
+            except Exception as e:
+                logger.error(f"Failed to start restore: {e}")
+                self._show_toast(_("Restore failed"))
+        dialog.open(self, None, on_open_response)
 
     def _open_search(self, *args):
         self.header_stack.set_visible_child_name("search_header")
