@@ -63,4 +63,10 @@
     <file alias="star-outline-rounded-symbolic.svg">../data/icons/scalable/actions/star-outline-rounded-symbolic.svg</file>
     <file alias="filter-symbolic.svg">../data/icons/scalable/actions/filter-symbolic.svg</file>
   </gresource>
+  <gresource prefix="/io/github/fastrizwaan/PopcornBox/icons/scalable/apps">
+    <file alias="io.github.fastrizwaan.PopcornBox.svg">../data/icons/scalable/apps/io.github.fastrizwaan.PopcornBox.svg</file>
+  </gresource>
+  <gresource prefix="/io/github/fastrizwaan/PopcornBox/icons/128x128/apps">
+    <file alias="io.github.fastrizwaan.PopcornBox.png">../data/icons/128x128/apps/io.github.fastrizwaan.PopcornBox.png</file>
+  </gresource>
 </gresources>

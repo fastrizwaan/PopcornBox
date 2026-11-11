@@ -27,6 +27,25 @@ def update_gresource():
         with open(os.path.join(tmpdir, 'io/github/fastrizwaan/PopcornBox/window.ui'), 'wb') as f:
             f.write(win_ui)
 
+        # Overwrite with updated app icons
+        svg_icon_path = os.path.join(repo_root, 'data/icons/scalable/apps/io.github.fastrizwaan.PopcornBox.svg')
+        if os.path.exists(svg_icon_path):
+            with open(svg_icon_path, 'rb') as f:
+                svg_data = f.read()
+            out_icon = os.path.join(tmpdir, 'io/github/fastrizwaan/PopcornBox/icons/scalable/apps/io.github.fastrizwaan.PopcornBox.svg')
+            os.makedirs(os.path.dirname(out_icon), exist_ok=True)
+            with open(out_icon, 'wb') as f:
+                f.write(svg_data)
+
+        png_128_path = os.path.join(repo_root, 'data/icons/128x128/apps/io.github.fastrizwaan.PopcornBox.png')
+        if os.path.exists(png_128_path):
+            with open(png_128_path, 'rb') as f:
+                png_data = f.read()
+            out_png = os.path.join(tmpdir, 'io/github/fastrizwaan/PopcornBox/icons/128x128/apps/io.github.fastrizwaan.PopcornBox.png')
+            os.makedirs(os.path.dirname(out_png), exist_ok=True)
+            with open(out_png, 'wb') as f:
+                f.write(png_data)
+
         # Generate xml
         xml_lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<gresources>', '  <gresource prefix="/">']
         for root, dirs, files in os.walk(tmpdir):
