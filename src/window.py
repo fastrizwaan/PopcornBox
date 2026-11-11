@@ -9744,11 +9744,13 @@ class CineWindow(Adw.ApplicationWindow):
                 continue
             seen_urls.add(m_url)
             name = cat.get("addon_name") or "CloudStream"
+            base_name = re.sub(r"\s*\((?:cloudstream|cs)\)$", "", name, flags=re.I).strip()
+            display_name = f"{base_name} (CloudStream)"
             items.append({
-                "display_name": f"{name} (CloudStream)",
+                "display_name": display_name,
                 "addon": None,
                 "manifest_url": m_url,
-                "addon_name": name,
+                "addon_name": display_name,
                 "_source": "cloudstream",
             })
 
@@ -12411,11 +12413,16 @@ class CineWindow(Adw.ApplicationWindow):
 
             target_cat = catalog
             target_idx = 0
+            found = False
             for idx, c in enumerate(self.all_catalogs):
                 if c.get("catalog_id") == catalog.get("catalog_id") and c.get("manifest_url") == catalog.get("manifest_url"):
                     target_cat = c
                     target_idx = idx
+                    found = True
                     break
+            if not found and target_cat and str(target_cat.get("manifest_url") or "").startswith("cloudstream://"):
+                self.all_catalogs.append(target_cat)
+                target_idx = len(self.all_catalogs) - 1
             self.current_catalog = target_cat
 
             # Sync dropdowns without triggering signal cascades
@@ -13009,9 +13016,12 @@ class CineWindow(Adw.ApplicationWindow):
                 if row_key in seen_row_keys:
                     continue
                 seen_row_keys.add(row_key)
+                raw_name = cat.get("addon_name") or "CloudStream"
+                base_name = re.sub(r"\s*\((?:cloudstream|cs)\)$", "", raw_name, flags=re.I).strip()
+                addon_name = f"{base_name} (CloudStream)"
                 rows.append({
                     "_source": "cloudstream",
-                    "addon_name": cat.get("addon_name") or "CloudStream",
+                    "addon_name": addon_name,
                     "media_type": c_type,
                     "raw_type": c_type,
                     "catalog_id": cat.get("catalog_id"),
@@ -13021,7 +13031,7 @@ class CineWindow(Adw.ApplicationWindow):
                     "extra": list(cat.get("extra") or []),
                     "extraSupported": list(cat.get("extraSupported") or []),
                     "supports_pagination": bool(cat.get("supports_pagination")),
-                    "title": cat.get("display_name") or cat.get("catalog_name") or "CloudStream",
+                    "title": f"{addon_name} - {cat.get('catalog_name') or cat.get('catalog_id')}",
                 })
 
         # If no provider can filter this genre/language/country, use matching items indexed in

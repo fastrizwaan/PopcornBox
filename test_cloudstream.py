@@ -990,6 +990,56 @@ class TestCloudStream(unittest.TestCase):
             self.assertIn("1080P", sources[0]["name"])
             self.assertEqual(sources[0]["url"], "https://stream.example.com/video.mkv")
 
+    def test_provider_catalog_sections_defined(self):
+        providers = [
+            cloudstream.BollyflixCloudStreamProvider(),
+            cloudstream.MoviesDriveCloudStreamProvider(),
+            cloudstream.VegaMoviesCloudStreamProvider(),
+            cloudstream.MoviesmodCloudStreamProvider(),
+            cloudstream.DudeFilmsCloudStreamProvider(),
+            cloudstream.ZinkmoviesCloudStreamProvider(),
+            cloudstream.CineStreamCloudStreamProvider(),
+            cloudstream.HDhub4uCloudStreamProvider(),
+            cloudstream.YTSCloudStreamProvider(),
+        ]
+        for p in providers:
+            secs = getattr(p, "catalog_sections", ())
+            self.assertTrue(len(secs) >= 1, f"Provider {p.name} should define catalog_sections")
+            sec_ids = [s.get("id") for s in secs]
+            if p.name != "YTS":
+                self.assertIn("latest-movies", sec_ids, f"{p.name} missing latest-movies")
+                self.assertIn("latest-series", sec_ids, f"{p.name} missing latest-series")
+
+    def test_cloudstream_catalogs_suffix(self):
+        mock_plugins = [
+            {"id": "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#Bollyflix", "name": "Bollyflix", "enabled": True},
+            {"id": "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#MoviesDrive", "name": "MoviesDrive", "enabled": True},
+            {"id": "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#VegaMovies", "name": "VegaMovies", "enabled": True},
+            {"id": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#HDhub4u", "name": "HDhub4u", "enabled": True},
+            {"id": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#YTS", "name": "YTS", "enabled": True},
+        ]
+        with patch("src.cloudstream.is_cloudstream_enabled", return_value=True), \
+             patch("src.cloudstream.get_all_plugins", return_value=mock_plugins):
+            cats = cloudstream.get_catalogs("all")
+            self.assertTrue(len(cats) > 0)
+            for c in cats:
+                addon_name = c.get("addon_name") or ""
+                self.assertTrue(addon_name.endswith(" (CloudStream)"), f"{addon_name} missing (CloudStream) suffix")
+                self.assertFalse(addon_name.endswith(" (CloudStream) (CloudStream)"), f"Duplicate suffix in {addon_name}")
+
+    def test_clean_cloudstream_title_boilerplate_stripping(self):
+        t1, y1 = cloudstream.clean_cloudstream_title("Download Jailer 2 (2026) Dual Audio {Hindi-Tamil} Movie 480p | 720p | 1080p HDTC")
+        self.assertEqual(t1, "Jailer 2")
+        self.assertEqual(y1, "2026")
+
+        t2, y2 = cloudstream.clean_cloudstream_title("Permanent Link to The Dark Heaven (2026) Dual audio {Hindi-Tamil} 480p 720p 1080p")
+        self.assertEqual(t2, "The Dark Heaven")
+        self.assertEqual(y2, "2026")
+
+        t3, y3 = cloudstream.clean_cloudstream_title("Download Other Mommy (2026) PrimeVideo : Dual Audio {Hindi-English} 480p HD 720p & 1080p x264 WEB-DL")
+        self.assertEqual(t3, "Other Mommy")
+        self.assertEqual(y3, "2026")
+
 
 if __name__ == "__main__":
     unittest.main()

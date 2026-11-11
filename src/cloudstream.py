@@ -1325,6 +1325,36 @@ class InternetArchiveCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/recloudstream/extensions/builds/InternetArchiveProvider.cs3#InternetArchiveProvider"
     name = "InternetArchiveProvider"
     supported_types = ["movie", "series", "tv", "other"]
+    catalog_sections = (
+        {"id": "featured-movies", "name": "Featured Movies", "section": "Featured Movies", "type": "movie", "supports_pagination": True},
+    )
+
+    def get_main_page(self, page=1):
+        p = int(page or 1)
+        url = f"https://archive.org/advancedsearch.php?q=mediatype:(movies)&fl[]=identifier,title,description,year&sort[]=downloads+desc&rows=25&page={p}&output=json"
+        try:
+            txt = _http_get_text(url, timeout=10.0)
+            data = json.loads(txt)
+            docs = data.get("response", {}).get("docs", [])
+            items = []
+            for d in docs:
+                ident = d.get("identifier")
+                if not ident:
+                    continue
+                items.append({
+                    "provider_id": self.id,
+                    "data": f"ia:{ident}",
+                    "name": d.get("title") or ident,
+                    "type": CloudStreamTvType.Movie,
+                    "poster_url": f"https://archive.org/services/img/{ident}",
+                    "background_url": f"https://archive.org/services/img/{ident}",
+                    "description": d.get("description"),
+                    "year": int(d["year"]) if str(d.get("year", "")).isdigit() else None,
+                })
+            return [("Featured Movies", items)] if items else []
+        except Exception as e:
+            logger.debug(f"InternetArchive get_main_page failed: {e}")
+            return []
 
     def search(self, query):
         if not query or not query.strip():
@@ -1608,11 +1638,89 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#Bollyflix"
     name = "Bollyflix"
     supported_types = ["movie", "series", "tv", "other"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+    )
 
     DEFAULT_BASE = "https://bollyflix.church"
 
     def _get_base_url(self):
         return get_dynamic_domain("bollyflix", self.DEFAULT_BASE)
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"Bollyflix catalog page {page} failed: {e}")
+            return []
+
+        movies, series = [], []
+        seen = set()
+        articles = re.findall(r"<article[^>]*>.*?</article>", page_html, re.DOTALL | re.IGNORECASE)
+        for art in articles:
+            link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
+            if not link_m:
+                continue
+            href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_m.group(1)).strip())
+            if href in seen:
+                continue
+
+            img_m = re.search(r'<img\b[^>]*>', art, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            poster = None
+            for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            t_candidates = []
+            h_m = re.search(r'<h[1-6]\b[^>]*>(.*?)</h[1-6]>', art, re.I | re.DOTALL)
+            if h_m:
+                t_candidates.append(h_m.group(1))
+            t_m = re.search(r'<a\b[^>]*title=["\']([^"\']+)["\']', art, re.I)
+            if t_m:
+                t_candidates.append(t_m.group(1))
+            if img_m:
+                alt_m = re.search(r'\balt=["\']([^"\']+)["\']', img_tag, re.I)
+                if alt_m:
+                    t_candidates.append(alt_m.group(1))
+
+            title = ""
+            for cand in t_candidates:
+                c = html_lib.unescape(re.sub(r'<[^>]+>', ' ', cand))
+                c = re.sub(r'^Download\s+', '', c, flags=re.I).strip(' .-|\t\r\n')
+                c = re.sub(r'\s+', ' ', c)
+                if c:
+                    title = c
+                    break
+            if not title:
+                continue
+            seen.add(href)
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
+            item = {
+                "provider_id": self.id,
+                "data": f"bollyflix:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            }
+            (series if is_series else movies).append(item)
+
+        sections = []
+        if movies:
+            sections.append(("Latest Movies", movies))
+        if series:
+            sections.append(("Latest Series", series))
+        return sections
 
     def search(self, query):
         if not query or not query.strip():
@@ -1622,25 +1730,45 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
         url = f"{base}/?s={encoded}"
         try:
             html = _http_get_text(url, timeout=8.0)
-            matches = re.findall(
-                r"<article[^>]*>.*?<header[^>]*>.*?<a\s+href=\"([^\"]+)\"[^>]*title=\"([^\"]+)\"[^>]*>.*?</article>",
-                html,
-                re.DOTALL
-            )
+            articles = re.findall(r"<article[^>]*>.*?</article>", html, re.DOTALL | re.IGNORECASE)
             items = []
-            for href, raw_title in matches:
-                clean_title = re.sub(r"<[^>]+>", "", raw_title).strip()
+            seen = set()
+            for art in articles:
+                link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
+                if not link_m:
+                    continue
+                href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_m.group(1)).strip())
+                if href in seen:
+                    continue
+                seen.add(href)
+
+                img_m = re.search(r'<img\b[^>]*>', art, re.I)
+                img_tag = img_m.group(0) if img_m else ""
+                poster = None
+                for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                    pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                    if pm and not pm.group(1).startswith("data:"):
+                        poster = html_lib.unescape(pm.group(1)).strip()
+                        break
+
+                t_m = re.search(r'<a\b[^>]*title=["\']([^"\']+)["\']', art, re.I)
+                h_m = re.search(r'<h[1-6]\b[^>]*>(.*?)</h[1-6]>', art, re.I | re.DOTALL)
+                raw_title = t_m.group(1) if t_m else (h_m.group(1) if h_m else "")
+                clean_title = html_lib.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
                 clean_title = re.sub(r"^Download\s+", "", clean_title, flags=re.I).strip()
+                if not clean_title:
+                    continue
                 y_match = re.search(r"\((\d{4})\)", clean_title)
                 year = int(y_match.group(1)) if y_match else None
+                is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", clean_title, re.I))
 
                 items.append({
                     "provider_id": self.id,
                     "data": f"bollyflix:{href}",
                     "name": clean_title,
-                    "type": CloudStreamTvType.Movie,
-                    "poster_url": None,
-                    "background_url": None,
+                    "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                    "poster_url": poster,
+                    "background_url": poster,
                     "description": clean_title,
                     "year": year,
                 })
@@ -1655,8 +1783,10 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
             html = _http_get_text(href, timeout=8.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
             title = re.sub(r"<[^>]+>", "", t_match.group(1)).strip() if t_match else "Bollyflix Movie"
-            img_match = re.search(r"<img[^>]+src=\"([^\"]+)\"[^>]*class=\"[^\"]*wp-post-image", html)
-            poster = img_match.group(1) if img_match else None
+            img_match = re.search(r"<img[^>]+(?:src|data-src)=[\"\']([^\"\']+)[\"\'][^>]*class=[\"\'][^\"\']*wp-post-image", html, re.I)
+            if not img_match:
+                img_match = re.search(r"<meta\s+property=[\"']og:image[\"']\s+content=[\"']([^\"']+)[\"']", html, re.I)
+            poster = html_lib.unescape(img_match.group(1)).strip() if img_match else None
         except Exception:
             title = "Bollyflix Movie"
             poster = None
@@ -2429,11 +2559,73 @@ class MoviesDriveCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#MoviesDrive"
     name = "MoviesDrive"
     supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+    )
 
     DEFAULT_BASE = "https://new1.moviesdrive.cyou"
 
     def _get_base_url(self):
         return get_dynamic_domain("moviesdrive", self.DEFAULT_BASE)
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"MoviesDrive catalog page {page} failed: {e}")
+            return []
+
+        movies, series = [], []
+        seen = set()
+        card_pattern = r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>\s*(?:<meta[^>]*>\s*)*<div class="poster-card"[^>]*>(.*?)</div>\s*</div>\s*</a>'
+        matches = re.findall(card_pattern, page_html, re.DOTALL | re.IGNORECASE)
+        for href, card_html in matches:
+            if href in seen:
+                continue
+            seen.add(href)
+            poster = None
+            img_m = re.search(r'<img\b[^>]*>', card_html, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            title = ""
+            p_title_m = re.search(r'<p\b[^>]*class=["\']poster-title["\'][^>]*>(.*?)</p>', card_html, re.I | re.DOTALL)
+            alt_m = re.search(r'\balt=["\']([^"\']+)["\']', img_tag, re.I)
+            if p_title_m:
+                title = html_lib.unescape(re.sub(r'<[^>]+>', ' ', p_title_m.group(1))).strip()
+            elif alt_m:
+                title = html_lib.unescape(alt_m.group(1)).strip()
+            title = re.sub(r'\s+', ' ', title).strip()
+            if not title:
+                continue
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
+            item = {
+                "provider_id": self.id,
+                "data": f"moviesdrive:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            }
+            (series if is_series else movies).append(item)
+
+        sections = []
+        if movies:
+            sections.append(("Latest Movies", movies))
+        if series:
+            sections.append(("Latest Series", series))
+        return sections
 
     def search(self, query):
         if not query or not query.strip():
@@ -2514,8 +2706,10 @@ class MoviesDriveCloudStreamProvider(CloudStreamProvider):
             html = _http_get_text(href, timeout=8.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
             title = re.sub(r"<[^>]+>", "", t_match.group(1)).strip() if t_match else "MoviesDrive Movie"
-            img_match = re.search(r"<img[^>]+src=[\"\']([^\"\']+)[\"\'][^>]*class=[\"\'][^\"\']*wp-post-image", html)
-            poster = img_match.group(1) if img_match else None
+            img_match = re.search(r"<img[^>]+(?:src|data-src)=[\"\']([^\"\']+)[\"\'][^>]*class=[\"\'][^\"\']*wp-post-image", html, re.I)
+            if not img_match:
+                img_match = re.search(r"<meta\s+property=[\"']og:image[\"']\s+content=[\"']([^\"']+)[\"']", html, re.I)
+            poster = html_lib.unescape(img_match.group(1)).strip() if img_match else None
         except Exception:
             title = "MoviesDrive Movie"
             poster = None
@@ -2594,11 +2788,89 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#Moviesmod"
     name = "Moviesmod"
     supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+    )
 
     DEFAULT_BASE = "https://moviesmod.tw"
 
     def _get_base_url(self):
         return get_dynamic_domain("moviesmod", self.DEFAULT_BASE)
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"Moviesmod catalog page {page} failed: {e}")
+            return []
+
+        movies, series = [], []
+        seen = set()
+        articles = re.findall(r"<article[^>]*>.*?</article>", page_html, re.DOTALL | re.IGNORECASE)
+        for art in articles:
+            link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
+            if not link_m:
+                continue
+            href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_m.group(1)).strip())
+            if href in seen:
+                continue
+
+            img_m = re.search(r'<img\b[^>]*>', art, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            poster = None
+            for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            t_candidates = []
+            h_m = re.search(r'<h[1-6]\b[^>]*>(.*?)</h[1-6]>', art, re.I | re.DOTALL)
+            if h_m:
+                t_candidates.append(h_m.group(1))
+            t_m = re.search(r'<a\b[^>]*title=["\']([^"\']+)["\']', art, re.I)
+            if t_m:
+                t_candidates.append(t_m.group(1))
+            if img_m:
+                alt_m = re.search(r'\balt=["\']([^"\']+)["\']', img_tag, re.I)
+                if alt_m:
+                    t_candidates.append(alt_m.group(1))
+
+            title = ""
+            for cand in t_candidates:
+                c = html_lib.unescape(re.sub(r'<[^>]+>', ' ', cand))
+                c = re.sub(r'^Download\s+', '', c, flags=re.I).strip(' .-|\t\r\n')
+                c = re.sub(r'\s+', ' ', c)
+                if c:
+                    title = c
+                    break
+            if not title:
+                continue
+            seen.add(href)
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
+            item = {
+                "provider_id": self.id,
+                "data": f"moviesmod:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            }
+            (series if is_series else movies).append(item)
+
+        sections = []
+        if movies:
+            sections.append(("Latest Movies", movies))
+        if series:
+            sections.append(("Latest Series", series))
+        return sections
 
     def search(self, query):
         if not query or not query.strip():
@@ -2609,23 +2881,45 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
         url = f"{base}/?s={encoded}"
         try:
             html = _http_get_text(url, timeout=8.0)
-            matches = re.findall(
-                r"<article[^>]*>.*?<header[^>]*>.*?<a\s+href=\"([^\"]+)\"[^>]*title=\"([^\"]+)\"[^>]*>.*?</article>",
-                html,
-                re.DOTALL
-            )
+            articles = re.findall(r"<article[^>]*>.*?</article>", html, re.DOTALL | re.IGNORECASE)
             items = []
-            for href, raw_title in matches:
-                clean_title = re.sub(r"<[^>]+>", "", raw_title).strip()
+            seen = set()
+            for art in articles:
+                link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
+                if not link_m:
+                    continue
+                href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_m.group(1)).strip())
+                if href in seen:
+                    continue
+                seen.add(href)
+
+                img_m = re.search(r'<img\b[^>]*>', art, re.I)
+                img_tag = img_m.group(0) if img_m else ""
+                poster = None
+                for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                    pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                    if pm and not pm.group(1).startswith("data:"):
+                        poster = html_lib.unescape(pm.group(1)).strip()
+                        break
+
+                t_m = re.search(r'<a\b[^>]*title=["\']([^"\']+)["\']', art, re.I)
+                h_m = re.search(r'<h[1-6]\b[^>]*>(.*?)</h[1-6]>', art, re.I | re.DOTALL)
+                raw_title = t_m.group(1) if t_m else (h_m.group(1) if h_m else "")
+                clean_title = html_lib.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
+                clean_title = re.sub(r"^Download\s+", "", clean_title, flags=re.I).strip()
+                if not clean_title:
+                    continue
                 y_match = re.search(r"\((\d{4})\)", clean_title)
                 year = int(y_match.group(1)) if y_match else None
+                is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", clean_title, re.I))
+
                 items.append({
                     "provider_id": self.id,
                     "data": f"moviesmod:{href}",
                     "name": clean_title,
-                    "type": CloudStreamTvType.Movie,
-                    "poster_url": None,
-                    "background_url": None,
+                    "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                    "poster_url": poster,
+                    "background_url": poster,
                     "description": clean_title,
                     "year": year,
                 })
@@ -2640,8 +2934,10 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
             html = _http_get_text(href, timeout=8.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
             title = re.sub(r"<[^>]+>", "", t_match.group(1)).strip() if t_match else "Moviesmod Movie"
-            img_match = re.search(r"<img[^>]+src=\"([^\"]+)\"[^>]*class=\"[^\"]*wp-post-image", html)
-            poster = img_match.group(1) if img_match else None
+            img_match = re.search(r"<img[^>]+(?:src|data-src)=[\"\']([^\"\']+)[\"\'][^>]*class=[\"\'][^\"\']*wp-post-image", html, re.I)
+            if not img_match:
+                img_match = re.search(r"<meta\s+property=[\"']og:image[\"']\s+content=[\"']([^\"']+)[\"']", html, re.I)
+            poster = html_lib.unescape(img_match.group(1)).strip() if img_match else None
         except Exception:
             title = "Moviesmod Movie"
             poster = None
@@ -2688,11 +2984,73 @@ class VegaMoviesCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#VegaMovies"
     name = "VegaMovies"
     supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+    )
 
     DEFAULT_BASE = "https://vegamovies.lease"
 
     def _get_base_url(self):
         return get_dynamic_domain("vegamovies", self.DEFAULT_BASE)
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"VegaMovies catalog page {page} failed: {e}")
+            return []
+
+        movies, series = [], []
+        seen = set()
+        card_pattern = r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>\s*(?:<meta[^>]*>\s*)*<div class="poster-card"[^>]*>(.*?)</div>\s*</div>\s*</a>'
+        matches = re.findall(card_pattern, page_html, re.DOTALL | re.IGNORECASE)
+        for href, card_html in matches:
+            if href in seen:
+                continue
+            seen.add(href)
+            poster = None
+            img_m = re.search(r'<img\b[^>]*>', card_html, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            title = ""
+            p_title_m = re.search(r'<p\b[^>]*class=["\']poster-title["\'][^>]*>(.*?)</p>', card_html, re.I | re.DOTALL)
+            alt_m = re.search(r'\balt=["\']([^"\']+)["\']', img_tag, re.I)
+            if p_title_m:
+                title = html_lib.unescape(re.sub(r'<[^>]+>', ' ', p_title_m.group(1))).strip()
+            elif alt_m:
+                title = html_lib.unescape(alt_m.group(1)).strip()
+            title = re.sub(r'\s+', ' ', title).strip()
+            if not title:
+                continue
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
+            item = {
+                "provider_id": self.id,
+                "data": f"vegamovies:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            }
+            (series if is_series else movies).append(item)
+
+        sections = []
+        if movies:
+            sections.append(("Latest Movies", movies))
+        if series:
+            sections.append(("Latest Series", series))
+        return sections
 
     def search(self, query):
         if not query or not query.strip():
@@ -2766,16 +3124,21 @@ class VegaMoviesCloudStreamProvider(CloudStreamProvider):
             html = _http_get_text(href, timeout=8.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
             title = re.sub(r"<[^>]+>", "", t_match.group(1)).strip() if t_match else "VegaMovies Movie"
+            img_match = re.search(r"<img[^>]+(?:src|data-src)=[\"\']([^\"\']+)[\"\'][^>]*class=[\"\'][^\"\']*wp-post-image", html, re.I)
+            if not img_match:
+                img_match = re.search(r"<meta\s+property=[\"']og:image[\"']\s+content=[\"']([^\"']+)[\"']", html, re.I)
+            poster = html_lib.unescape(img_match.group(1)).strip() if img_match else None
         except Exception:
             title = "VegaMovies Movie"
+            poster = None
 
         return {
             "provider_id": self.id,
             "data": data_str,
             "name": title,
             "type": CloudStreamTvType.Movie,
-            "poster_url": None,
-            "background_url": None,
+            "poster_url": poster,
+            "background_url": poster,
             "description": title,
             "year": None,
             "rating_percent": None,
@@ -3670,11 +4033,82 @@ class DudeFilmsCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#DudeFilms"
     name = "DudeFilms"
     supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+    )
 
     DEFAULT_BASE = "https://new1.dudefilms.church"
 
     def _get_base_url(self):
         return get_dynamic_domain("dudefilms", self.DEFAULT_BASE)
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"DudeFilms catalog page {page} failed: {e}")
+            return []
+
+        movies, series = [], []
+        seen = set()
+        posts = re.findall(r'<div\b[^>]*class=["\'][^"\']*simple-grid-grid-post[^"\']*["\'][^>]*>(.*?)</div>\s*</div>\s*</div>', page_html, re.DOTALL | re.I)
+        for post in posts:
+            link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', post, re.I)
+            if not link_m:
+                continue
+            href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_m.group(1)).strip())
+            if href in seen:
+                continue
+            img_m = re.search(r'<img\b[^>]*>', post, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            poster = None
+            for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            title = ""
+            alt_m = re.search(r'\balt=["\']([^"\']+)["\']', img_tag, re.I)
+            t_m = re.search(r'<a\b[^>]*title=["\']([^"\']+)["\']', post, re.I)
+            h_m = re.search(r'<h[1-6]\b[^>]*>(.*?)</h[1-6]>', post, re.I | re.DOTALL)
+            if t_m:
+                title = t_m.group(1)
+            elif h_m:
+                title = re.sub(r'<[^>]+>', ' ', h_m.group(1))
+            elif alt_m:
+                title = alt_m.group(1)
+
+            title = html_lib.unescape(title).strip()
+            title = re.sub(r'^(?:permanent link to|download)\s+', '', title, flags=re.I).strip()
+            title = re.sub(r'\s+', ' ', title)
+            if not title:
+                continue
+            seen.add(href)
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
+            item = {
+                "provider_id": self.id,
+                "data": f"dudefilms:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            }
+            (series if is_series else movies).append(item)
+
+        sections = []
+        if movies:
+            sections.append(("Latest Movies", movies))
+        if series:
+            sections.append(("Latest Series", series))
+        return sections
 
     def search(self, query):
         if not query or not query.strip():
@@ -3762,11 +4196,73 @@ class ZinkmoviesCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#Zinkmovies"
     name = "Zinkmovies"
     supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+    )
 
     DEFAULT_BASE = "https://new2.zinkmovies.tattoo"
 
     def _get_base_url(self):
         return get_dynamic_domain("zinkmovies", self.DEFAULT_BASE)
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"Zinkmovies catalog page {page} failed: {e}")
+            return []
+
+        movies, series = [], []
+        seen = set()
+        card_pattern = r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>\s*<div class="poster-card"[^>]*>(.*?)</div>\s*</div>\s*</a>'
+        matches = re.findall(card_pattern, page_html, re.DOTALL | re.IGNORECASE)
+        for href, card_html in matches:
+            if href in seen:
+                continue
+            seen.add(href)
+            poster = None
+            img_m = re.search(r'<img\b[^>]*>', card_html, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            title = ""
+            p_title_m = re.search(r'<p\b[^>]*class=["\']poster-title["\'][^>]*>(.*?)</p>', card_html, re.I | re.DOTALL)
+            alt_m = re.search(r'\balt=["\']([^"\']+)["\']', img_tag, re.I)
+            if p_title_m:
+                title = html_lib.unescape(re.sub(r'<[^>]+>', ' ', p_title_m.group(1))).strip()
+            elif alt_m:
+                title = html_lib.unescape(alt_m.group(1)).strip()
+            title = re.sub(r'\s+', ' ', title).strip()
+            if not title:
+                continue
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
+            item = {
+                "provider_id": self.id,
+                "data": f"zinkmovies:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            }
+            (series if is_series else movies).append(item)
+
+        sections = []
+        if movies:
+            sections.append(("Latest Movies", movies))
+        if series:
+            sections.append(("Latest Series", series))
+        return sections
 
     def search(self, query):
         if not query or not query.strip():
@@ -3809,15 +4305,20 @@ class ZinkmoviesCloudStreamProvider(CloudStreamProvider):
             html = _http_get_text(href, timeout=6.0)
             t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
             title = re.sub(r"<[^>]+>", "", t_match.group(1)).strip() if t_match else "Zinkmovies Movie"
+            img_match = re.search(r"<img[^>]+(?:src|data-src)=[\"\']([^\"\']+)[\"\'][^>]*class=[\"\'][^\"\']*wp-post-image", html, re.I)
+            if not img_match:
+                img_match = re.search(r"<meta\s+property=[\"']og:image[\"']\s+content=[\"']([^\"']+)[\"']", html, re.I)
+            poster = html_lib.unescape(img_match.group(1)).strip() if img_match else None
         except Exception:
             title = "Zinkmovies Movie"
+            poster = None
         return {
             "provider_id": self.id,
             "data": data_str,
             "name": title,
             "type": CloudStreamTvType.Movie,
-            "poster_url": None,
-            "background_url": None,
+            "poster_url": poster,
+            "background_url": poster,
             "description": title,
             "year": None,
             "rating_percent": None,
@@ -3845,6 +4346,34 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#CineStream"
     name = "CineStream"
     supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+    )
+
+    def get_main_page(self, page=1):
+        sections_map = {"Latest Movies": [], "Latest Series": []}
+        seen_titles = set()
+        for prov in (HDhub4uCloudStreamProvider(), BollyflixCloudStreamProvider(), MoviesDriveCloudStreamProvider(), VegaMoviesCloudStreamProvider()):
+            try:
+                for sec_title, items in prov.get_main_page(page=page):
+                    target_list = sections_map.get(sec_title)
+                    if target_list is None:
+                        continue
+                    for it in items:
+                        t_clean = (it.get("name") or "").strip().lower()
+                        if t_clean in seen_titles:
+                            continue
+                        seen_titles.add(t_clean)
+                        target_list.append(it)
+            except Exception:
+                pass
+        res = []
+        if sections_map["Latest Movies"]:
+            res.append(("Latest Movies", sections_map["Latest Movies"]))
+        if sections_map["Latest Series"]:
+            res.append(("Latest Series", sections_map["Latest Series"]))
+        return res
 
     def get_streams_for_media(self, title, media_type="movie", year=None, season=None, episode=None, imdb_id=None):
         streams = []
@@ -4159,14 +4688,16 @@ def get_catalogs(media_type="all"):
             if not _catalog_type_matches(catalog_type, media_type):
                 continue
             seen.add(key)
-            provider_name = str(plugin.get("name") or provider.name or "CloudStream")
+            provider_name = str(plugin.get("name") or provider.name or "CloudStream").strip()
+            base_p_name = re.sub(r"\s*\((?:cloudstream|cs)\)$", "", provider_name, flags=re.IGNORECASE).strip()
+            provider_display_name = f"{base_p_name} (CloudStream)"
             catalogs.append({
-                "addon_name": provider_name,
+                "addon_name": provider_display_name,
                 "manifest_url": catalog_url(plugin_id),
                 "base_url": catalog_url(plugin_id),
                 "catalog_id": catalog_id,
                 "catalog_name": catalog_name,
-                "display_name": f"{provider_name} - {catalog_name}",
+                "display_name": f"{provider_display_name} - {catalog_name}",
                 "genres": list(section.get("genres") or []),
                 "extra": [],
                 "extraSupported": [],
@@ -4469,11 +5000,12 @@ def clean_cloudstream_title(title_text):
     if not title_text:
         return "", None
     text = html_lib.unescape(str(title_text)).strip()
+    text = re.sub(r"^(?:download|permanent link to|watch|stream)\s+", "", text, flags=re.IGNORECASE).strip()
     year_match = re.search(r"\b((?:19|20)\d{2})\b", text)
     year = year_match.group(1) if year_match else None
 
     split_match = re.split(
-        r"\s*(?:\[[^\]]*\]|\|.*$|\b(?:unrated|uncut|extended(?:\s+edition)?|director'?s\s+cut|theatrical(?:\s+cut)?|limited|proper|repack|remaster(?:ed)?|anniversary\s+edition|special\s+edition|blu[ .-]?ray|brrip|web[ .-]?dl|webrip|hdrip|dvdrip|hdtv|hdtc|hq-hdtc|ds4k|imax|x26[45]|(?:2160|1080|720|480)p|4k|dual audio|multi audio|full movie|full series)\b)",
+        r"\s*(?:\[[^\]]*\]|\{[^\}]*\}|\|.*$|\b(?:unrated|uncut|extended(?:\s+edition)?|director'?s\s+cut|theatrical(?:\s+cut)?|limited|proper|repack|remaster(?:ed)?|anniversary\s+edition|special\s+edition|blu[ .-]?ray|brrip|web[ .-]?dl|webrip|hdrip|hq-hdrip|dvdrip|hdtv|hdtc|hq-hdtc|ds4k|imax|x26[45]|(?:2160|1080|720|480)p|4k|dual audio|multi audio|full movie|full series|primevideo|netflix|amzn|disney\+?|hulu)\b)",
         text,
         maxsplit=1,
         flags=re.IGNORECASE,
