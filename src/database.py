@@ -972,31 +972,39 @@ def get_continue_watching_item(item_id):
     cw_items = list(db.get("continue_watching", []))
     user_dismissed = _user_dismissed_continue_watching_ids(db)
     ids_to_match = [str(x) for x in item_id if x] if isinstance(item_id, (list, set, tuple)) else [str(item_id)]
-    if set(ids_to_match).intersection(user_dismissed):
+    ids_set = set(ids_to_match)
+    if ids_set.intersection(user_dismissed):
         return None
             
     for item in cw_items:
-        if _continue_watching_item_ids(item).intersection(user_dismissed):
+        item_ids = _continue_watching_item_ids(item)
+        if item_ids.intersection(user_dismissed):
             continue
-        i_id = item.get("id") or item.get("imdb_id")
-        i_aliases = [str(i_id)] if i_id else []
-        if isinstance(item.get("alias_ids"), list):
-            i_aliases.extend([str(x) for x in item["alias_ids"] if x])
-        if any(a in ids_to_match for a in i_aliases):
+        if item_ids.intersection(ids_set):
             return item
             
     # Check history auto-heal on demand
     for h in db.get("history", []):
-        if _continue_watching_item_ids(h).intersection(user_dismissed):
+        h_ids = _continue_watching_item_ids(h)
+        if h_ids.intersection(user_dismissed):
             continue
-        h_id = h.get("id") or h.get("imdb_id")
-        if h_id and any(str(h_id) == str(m) for m in ids_to_match) and h.get("type") in ["series", "anime", "tv"]:
-            s_val = db.get("settings", {}).get(f"last_s_{h_id}", 1) or 1
-            e_val = db.get("settings", {}).get(f"last_ep_{h_id}_{s_val}", None)
+        if h_ids.intersection(ids_set) and h.get("type") in ["series", "anime", "tv"]:
+            s_val = None
             settings = db.get("settings", {})
-            has_playback_evidence = bool(
+            for mid in ids_to_match:
+                s_val = settings.get(f"last_s_{mid}")
+                if s_val:
+                    break
+            s_val = s_val or 1
+            e_val = None
+            for mid in ids_to_match:
+                e_val = settings.get(f"last_ep_{mid}_{s_val}")
+                if e_val is not None:
+                    break
+            has_playback_evidence = any(
                 e_val is not None
-                and settings.get(f"working_stream_{h_id}_{s_val}_{e_val}")
+                and settings.get(f"working_stream_{mid}_{s_val}_{e_val}")
+                for mid in ids_to_match
             )
             if has_playback_evidence:
                 item_copy = dict(h)
@@ -1084,12 +1092,29 @@ def save_continue_watching(item, sync_to_remote=True):
         new_pos = float(item.get("position") or 0.0)
         new_prog = float(item.get("progress") or 0.0)
         if same_ep:
-            if new_pos <= 0.0 and existing_pos > 0.0:
+            # Prevent an unseeked player startup timestamp (< 5.0s) from wiping out
+            # a previously established progress position (> 10.0s) unless explicit force_reset is requested
+            if new_pos < 5.0 and existing_pos > 10.0 and not item.get("force_reset", False):
                 updated_item["position"] = existing_pos
-            if new_prog <= 0.01 and existing_prog > 0.01:
                 updated_item["progress"] = existing_prog
-            if not updated_item.get("duration") and existing_dur > 0:
-                updated_item["duration"] = existing_dur
+                if existing_dur > 0:
+                    updated_item["duration"] = existing_dur
+            else:
+                if new_pos <= 0.0 and existing_pos > 0.0:
+                    updated_item["position"] = existing_pos
+                if new_prog <= 0.01 and existing_prog > 0.01:
+                    updated_item["progress"] = existing_prog
+                if not updated_item.get("duration") and existing_dur > 0:
+                    updated_item["duration"] = existing_dur
+
+            # Preserve track preferences from existing record if not explicitly in item
+            if existing:
+                for track_field in (
+                    "audio_track_id", "audio_track_lang", "audio_track_title", "audio_disabled",
+                    "sub_track_id", "sub_track_lang", "sub_track_title", "sub_visibility", "sub_disabled", "sub_is_external"
+                ):
+                    if track_field not in updated_item and track_field in existing:
+                        updated_item[track_field] = existing[track_field]
         else:
             # Different episode: start fresh at the new episode's position and progress
             updated_item["position"] = new_pos
@@ -1141,36 +1166,14 @@ def save_continue_watching(item, sync_to_remote=True):
             pass
 
 def save_continue_watching_async(item, sync_to_remote=True):
-    """Queue a continue-watching save on a single ordered background worker.
+    """Save continue watching state immediately to memory cache and queue background disk write.
 
-    Called from the playback progress tick every few seconds; the underlying
-    save rewrites data.json with fsync, which must stay off the GTK thread.
+    Updating in-memory state is synchronous so UI navigation reads are immediately consistent,
+    while json serialization and fsync are processed off-thread by _db_writer_queue.
     """
-    global _cw_write_gen, _cw_save_executor
     if not item or not isinstance(item, dict):
         return
-    snapshot = dict(item)
-    with _cw_write_gen_lock:
-        _cw_write_gen += 1
-        gen = _cw_write_gen
-        if _cw_save_executor is None:
-            import concurrent.futures
-            _cw_save_executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="CWSave"
-            )
-        executor = _cw_save_executor
-
-    def _write():
-        with _cw_write_gen_lock:
-            if gen != _cw_write_gen:
-                # Superseded by a newer save or a removal; drop the stale write.
-                return
-        save_continue_watching(snapshot, sync_to_remote=sync_to_remote)
-
-    try:
-        executor.submit(_write)
-    except RuntimeError:
-        _write()
+    save_continue_watching(item, sync_to_remote=sync_to_remote)
 
 def remove_continue_watching(item_id, blacklist=True, user_action=False, sync_to_remote=True):
     """Remove an item from continue_watching."""
@@ -1380,7 +1383,9 @@ def _normalize_stream_for_storage(stream):
         "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles",
         "saved_at", "binge_group", "expires_at", "has_expiring_credentials",
         "is_nuvio_plugin", "plugin_scraper_id", "plugin_scraper_tmdb_id",
-        "headers", "is_cloudstream", "cloudstream_provider_id"
+        "headers", "is_cloudstream", "cloudstream_provider_id",
+        "audio_track_id", "audio_track_lang", "audio_track_title", "audio_disabled",
+        "sub_track_id", "sub_track_lang", "sub_track_title", "sub_visibility", "sub_disabled", "sub_is_external"
     ]
     for k in allowed_fields:
         if k in stream and stream[k] is not None:

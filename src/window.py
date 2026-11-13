@@ -116,7 +116,7 @@ TORRENT_LOADING_TIMEOUT_SECONDS = 180
 # Resuming only a few seconds in skips the intro, and since the position is
 # saved every few seconds an aborted start makes the next attempt resume even
 # later. Only a substantive position is worth resuming from.
-RESUME_MIN_POSITION_SECONDS = 30
+RESUME_MIN_POSITION_SECONDS = 10
 
 HOME_ALLOWED_MEDIA_TYPES = {
     "movie", "movies", "film", "films",
@@ -6373,10 +6373,17 @@ class CineWindow(Adw.ApplicationWindow):
                     self._mark_current_stream_as_working()
 
             if getattr(self, "_current_playing_item", None) and not is_trailer and not media_loading:
-                prog = min(1.0, max(0.0, curr_time / duration)) if duration > 0 else 0.0
-                self._current_playing_item["position"] = curr_time
-                self._current_playing_item["duration"] = duration
-                self._current_playing_item["progress"] = prog
+                req_seek = getattr(self, "_request_seek_position", None)
+                # If playback was requested to resume at e.g. 1800s, do not let an initial unseeked frame (< 5.0s) overwrite the position
+                if req_seek and float(req_seek) > 10.0 and curr_time < 5.0:
+                    pass
+                else:
+                    if req_seek and curr_time >= float(req_seek) - 5.0:
+                        self._request_seek_position = None
+                    prog = min(1.0, max(0.0, curr_time / duration)) if duration > 0 else 0.0
+                    self._current_playing_item["position"] = curr_time
+                    self._current_playing_item["duration"] = duration
+                    self._current_playing_item["progress"] = prog
                 
                 last_cw_save = getattr(self, "_last_cw_save_time", 0)
                 now = time.time()
@@ -6439,7 +6446,7 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_next_clicked(self, *args):
         self._navigate_playlist(+1)
 
-    def _external_subtitle_setting_keys(self, item=None):
+    def _playback_preference_keys(self, item=None, prefix=""):
         item = item if isinstance(item, dict) else getattr(self, "_current_playing_item", None)
         if not isinstance(item, dict):
             return []
@@ -6457,11 +6464,11 @@ class CineWindow(Adw.ApplicationWindow):
             raw_id = str(item_id).strip()
             for candidate_id in (raw_id, raw_id.split(":", 1)[-1] if raw_id.startswith("cinemeta:") else None):
                 if candidate_id:
-                    key = f"saved_external_subtitle_{candidate_id}{suffix}"
+                    key = f"{prefix}{candidate_id}{suffix}"
                     if key not in keys:
                         keys.append(key)
             if raw_id.startswith("tt") and ":" in raw_id:
-                key = f"saved_external_subtitle_{raw_id.split(':', 1)[0]}{suffix}"
+                key = f"{prefix}{raw_id.split(':', 1)[0]}{suffix}"
                 if key not in keys:
                     keys.append(key)
 
@@ -6474,10 +6481,13 @@ class CineWindow(Adw.ApplicationWindow):
             title_key = re.sub(r"[^\w]+", "_", str(title).strip().casefold()).strip("_")
             year = str(item.get("year") or "")
             if title_key:
-                key = f"saved_external_subtitle_title_{media_type}_{year}_{title_key}{suffix}"
+                key = f"{prefix}title_{media_type}_{year}_{title_key}{suffix}"
                 if key not in keys:
                     keys.append(key)
         return keys
+
+    def _external_subtitle_setting_keys(self, item=None):
+        return self._playback_preference_keys(item=item, prefix="saved_external_subtitle_")
 
     def _get_saved_external_subtitle(self, item=None):
         from . import database
@@ -6492,6 +6502,222 @@ class CineWindow(Adw.ApplicationWindow):
         from . import database
         for key in self._external_subtitle_setting_keys(item):
             database.set_setting(key, None)
+
+    def _remember_audio_preference(self, pref, item_context=None):
+        if not isinstance(pref, dict):
+            return
+        from . import database
+        keys = []
+        for key in self._playback_preference_keys(item_context, prefix="preferred_audio_") + self._playback_preference_keys(prefix="preferred_audio_"):
+            if key not in keys:
+                keys.append(key)
+        for key in keys:
+            database.set_setting(key, pref)
+        if pref.get("lang"):
+            database.set_setting("last_audio_lang", pref["lang"])
+        item = item_context if isinstance(item_context, dict) else getattr(self, "_current_playing_item", None)
+        if item and isinstance(item, dict):
+            item["audio_track_id"] = pref.get("track_id")
+            item["audio_track_lang"] = pref.get("lang")
+            item["audio_track_title"] = pref.get("title")
+            item["audio_disabled"] = pref.get("disabled", False)
+
+    def _get_saved_audio_preference(self, item=None):
+        item = item if isinstance(item, dict) else getattr(self, "_current_playing_item", None)
+        if isinstance(item, dict) and (item.get("audio_track_lang") or item.get("audio_track_title") or item.get("audio_track_id") is not None or item.get("audio_disabled")):
+            return {
+                "track_id": item.get("audio_track_id"),
+                "lang": item.get("audio_track_lang"),
+                "title": item.get("audio_track_title"),
+                "disabled": bool(item.get("audio_disabled")),
+            }
+        from . import database
+        for key in self._playback_preference_keys(item, prefix="preferred_audio_"):
+            saved = database.get_setting(key, None)
+            if isinstance(saved, dict) and (saved.get("lang") or saved.get("title") or saved.get("track_id") is not None or saved.get("disabled")):
+                return saved
+        last_lang = database.get_setting("last_audio_lang", None)
+        if last_lang:
+            return {"lang": str(last_lang), "track_id": None, "title": None, "disabled": False}
+        return None
+
+    def _remember_subtitle_preference(self, pref, item_context=None):
+        if not isinstance(pref, dict):
+            return
+        from . import database
+        keys = []
+        for key in self._playback_preference_keys(item_context, prefix="preferred_sub_") + self._playback_preference_keys(prefix="preferred_sub_"):
+            if key not in keys:
+                keys.append(key)
+        for key in keys:
+            database.set_setting(key, pref)
+        item = item_context if isinstance(item_context, dict) else getattr(self, "_current_playing_item", None)
+        if item and isinstance(item, dict):
+            item["sub_track_id"] = pref.get("track_id")
+            item["sub_track_lang"] = pref.get("lang")
+            item["sub_track_title"] = pref.get("title")
+            item["sub_visibility"] = pref.get("sub_visibility", "yes")
+            item["sub_disabled"] = pref.get("disabled", False)
+            item["sub_is_external"] = pref.get("is_external", False)
+
+    def _get_saved_subtitle_preference(self, item=None):
+        item = item if isinstance(item, dict) else getattr(self, "_current_playing_item", None)
+        if isinstance(item, dict) and (item.get("sub_track_lang") or item.get("sub_track_title") or item.get("sub_track_id") is not None or item.get("sub_disabled") or item.get("sub_visibility")):
+            return {
+                "track_id": item.get("sub_track_id"),
+                "lang": item.get("sub_track_lang"),
+                "title": item.get("sub_track_title"),
+                "sub_visibility": item.get("sub_visibility", "yes" if not item.get("sub_disabled") else "no"),
+                "disabled": bool(item.get("sub_disabled") or item.get("sub_visibility") == "no"),
+                "is_external": bool(item.get("sub_is_external")),
+            }
+        from . import database
+        for key in self._playback_preference_keys(item, prefix="preferred_sub_"):
+            saved = database.get_setting(key, None)
+            if isinstance(saved, dict) and (saved.get("lang") or saved.get("title") or saved.get("track_id") is not None or saved.get("disabled") or saved.get("sub_visibility")):
+                return saved
+        return None
+
+    def _capture_current_track_preferences(self, item):
+        if not item or not isinstance(item, dict) or not hasattr(self, "mpv"):
+            return
+        try:
+            tracks = getattr(self.mpv, "track_list", []) or []
+            cur_aid = getattr(self.mpv, "aid", None)
+            if cur_aid == "no" or cur_aid == 0:
+                item["audio_track_id"] = 0
+                item["audio_disabled"] = True
+                self._remember_audio_preference({"track_id": 0, "disabled": True}, item_context=item)
+            elif cur_aid:
+                t_id = int(cur_aid)
+                sel_audio = next((t for t in tracks if t.get("type") == "audio" and int(t.get("id", 0)) == t_id), None)
+                pref = {
+                    "track_id": t_id,
+                    "lang": sel_audio.get("lang") if sel_audio else None,
+                    "title": sel_audio.get("title") if sel_audio else None,
+                    "disabled": False,
+                }
+                item["audio_track_id"] = t_id
+                item["audio_track_lang"] = pref["lang"]
+                item["audio_track_title"] = pref["title"]
+                item["audio_disabled"] = False
+                self._remember_audio_preference(pref, item_context=item)
+
+            cur_sid = getattr(self.mpv, "sid", None)
+            sub_vis = getattr(self.mpv, "sub_visibility", None)
+            if cur_sid == "no" or cur_sid == 0 or sub_vis == "no":
+                item["sub_track_id"] = 0
+                item["sub_visibility"] = "no"
+                item["sub_disabled"] = True
+                self._remember_subtitle_preference({"track_id": 0, "sub_visibility": "no", "disabled": True}, item_context=item)
+            elif cur_sid:
+                t_id = int(cur_sid)
+                sel_sub = next((t for t in tracks if t.get("type") == "sub" and int(t.get("id", 0)) == t_id), None)
+                ext_path = (sel_sub.get("external-filename") or sel_sub.get("external_filename")) if sel_sub else None
+                is_ext = bool(sel_sub and (sel_sub.get("external") or ext_path))
+                pref = {
+                    "track_id": t_id,
+                    "lang": sel_sub.get("lang") if sel_sub else None,
+                    "title": sel_sub.get("title") if sel_sub else None,
+                    "sub_visibility": "yes",
+                    "disabled": False,
+                    "is_external": is_ext,
+                }
+                item["sub_track_id"] = t_id
+                item["sub_track_lang"] = pref["lang"]
+                item["sub_track_title"] = pref["title"]
+                item["sub_visibility"] = "yes"
+                item["sub_disabled"] = False
+                item["sub_is_external"] = is_ext
+                self._remember_subtitle_preference(pref, item_context=item)
+                if is_ext and ext_path:
+                    self._remember_external_subtitle(ext_path, lang=pref["lang"], title=pref["title"], copy_to_managed=True, item_context=item)
+        except Exception as e:
+            logger.debug(f"Error capturing track preferences: {e}")
+
+    def _restore_audio_and_subtitle_preferences(self, track_list=None):
+        if self._is_playing_trailer() or getattr(self.mpv, "idle_active", False):
+            return
+        tracks = track_list if track_list is not None else (getattr(self.mpv, "track_list", []) or [])
+        if not tracks:
+            return
+            
+        item = getattr(self, "_current_playing_item", None)
+        
+        # 1. Restore Audio Track
+        audio_pref = self._get_saved_audio_preference(item)
+        if audio_pref:
+            if audio_pref.get("disabled"):
+                try:
+                    self.mpv.aid = "no"
+                except Exception:
+                    pass
+            else:
+                p_lang = (audio_pref.get("lang") or "").lower()
+                p_title = (audio_pref.get("title") or "").lower()
+                p_id = audio_pref.get("track_id")
+                
+                audio_tracks = [t for t in tracks if t.get("type") == "audio"]
+                matched_track = None
+                if p_lang and p_title:
+                    matched_track = next((t for t in audio_tracks if (t.get("lang") or "").lower() == p_lang and p_title in (t.get("title") or "").lower()), None)
+                if not matched_track and p_lang:
+                    matched_track = next((t for t in audio_tracks if (t.get("lang") or "").lower() == p_lang), None)
+                if not matched_track and p_title:
+                    matched_track = next((t for t in audio_tracks if p_title in (t.get("title") or "").lower()), None)
+                if not matched_track and p_id and any(int(t.get("id", -1)) == int(p_id) for t in audio_tracks):
+                    matched_track = next((t for t in audio_tracks if int(t.get("id", -1)) == int(p_id)), None)
+                    
+                if matched_track:
+                    t_id = int(matched_track.get("id", 0))
+                    try:
+                        cur_aid = getattr(self.mpv, "aid", None)
+                        if cur_aid != t_id:
+                            self.mpv.aid = t_id
+                            logger.info(f"[AUDIO] Restored preferred audio track: id={t_id}, lang={matched_track.get('lang')}, title={matched_track.get('title')}")
+                    except Exception as e:
+                        logger.debug(f"[AUDIO] Error setting aid {t_id}: {e}")
+
+        # 2. Restore Subtitle Track & Visibility
+        sub_pref = self._get_saved_subtitle_preference(item)
+        if sub_pref:
+            if sub_pref.get("disabled") or sub_pref.get("sub_visibility") == "no":
+                try:
+                    self.mpv.sid = "no"
+                    self.mpv["sub-visibility"] = "no"
+                    self._subtitles_configured_for_file = True
+                    self._pending_subtitle_request = None
+                    logger.info("[SUBS] Restored user preference: subtitles disabled")
+                    return
+                except Exception:
+                    pass
+            elif not sub_pref.get("is_external"):
+                p_lang = (sub_pref.get("lang") or "").lower()
+                p_title = (sub_pref.get("title") or "").lower()
+                p_id = sub_pref.get("track_id")
+                
+                sub_tracks = [t for t in tracks if t.get("type") == "sub"]
+                matched_track = None
+                if p_lang and p_title:
+                    matched_track = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang and p_title in (t.get("title") or "").lower()), None)
+                if not matched_track and p_lang:
+                    matched_track = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang), None)
+                if not matched_track and p_title:
+                    matched_track = next((t for t in sub_tracks if p_title in (t.get("title") or "").lower()), None)
+                if not matched_track and p_id and any(int(t.get("id", -1)) == int(p_id) for t in sub_tracks):
+                    matched_track = next((t for t in sub_tracks if int(t.get("id", -1)) == int(p_id)), None)
+                    
+                if matched_track:
+                    t_id = int(matched_track.get("id", 0))
+                    try:
+                        self.mpv.sid = t_id
+                        self.mpv["sub-visibility"] = "yes"
+                        self._subtitles_configured_for_file = True
+                        self._pending_subtitle_request = None
+                        logger.info(f"[SUBS] Restored preferred embedded subtitle track: id={t_id}, lang={matched_track.get('lang')}, title={matched_track.get('title')}")
+                        return
+                    except Exception as e:
+                        logger.debug(f"[SUBS] Error setting sid {t_id}: {e}")
 
     def _copy_external_subtitle_to_managed_dir(self, path):
         if not path:
@@ -6560,6 +6786,7 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _on_subtitle_selected(self, action, parameter):
         track_id = parameter.get_int32()
+        item = getattr(self, "_current_playing_item", None)
         if track_id > 0:
             try:
                 self.mpv["sub-visibility"] = "yes"
@@ -6568,26 +6795,95 @@ class CineWindow(Adw.ApplicationWindow):
             self.mpv.sid = track_id
             tracks = getattr(self.mpv, "track_list", []) or []
             selected_track = next((track for track in tracks if track.get("type") == "sub" and int(track.get("id", 0)) == track_id), None)
-            if selected_track:
-                external_path = selected_track.get("external-filename") or selected_track.get("external_filename")
-                is_external = bool(selected_track.get("external") or external_path)
-                if is_external and external_path:
-                    self._remember_external_subtitle(
-                        external_path,
-                        lang=selected_track.get("lang"),
-                        title=selected_track.get("title"),
-                        copy_to_managed=True,
-                    )
-                elif not is_external:
-                    self._clear_saved_external_subtitle()
+            lang = selected_track.get("lang") if selected_track else None
+            title = selected_track.get("title") if selected_track else None
+            external_path = (selected_track.get("external-filename") or selected_track.get("external_filename")) if selected_track else None
+            is_external = bool(selected_track and (selected_track.get("external") or external_path))
+            if is_external and external_path:
+                self._remember_external_subtitle(
+                    external_path,
+                    lang=lang,
+                    title=title,
+                    copy_to_managed=True,
+                    item_context=item,
+                )
+            else:
+                self._clear_saved_external_subtitle(item_context=item)
+            pref = {
+                "track_id": track_id,
+                "lang": lang,
+                "title": title,
+                "sub_visibility": "yes",
+                "disabled": False,
+                "is_external": is_external,
+            }
+            if item and isinstance(item, dict):
+                item["sub_track_id"] = track_id
+                item["sub_track_lang"] = lang
+                item["sub_track_title"] = title
+                item["sub_visibility"] = "yes"
+                item["sub_disabled"] = False
+                item["sub_is_external"] = is_external
+            self._remember_subtitle_preference(pref, item_context=item)
         else:
             self.mpv.sid = "no"
-            self._clear_saved_external_subtitle()
+            try:
+                self.mpv["sub-visibility"] = "no"
+            except Exception:
+                pass
+            self._clear_saved_external_subtitle(item_context=item)
+            pref = {
+                "track_id": 0,
+                "lang": None,
+                "title": None,
+                "sub_visibility": "no",
+                "disabled": True,
+                "is_external": False,
+            }
+            if item and isinstance(item, dict):
+                item["sub_track_id"] = 0
+                item["sub_visibility"] = "no"
+                item["sub_disabled"] = True
+            self._remember_subtitle_preference(pref, item_context=item)
         action.set_state(parameter)
 
     def _on_audio_selected(self, action, parameter):
         track_id = parameter.get_int32()
-        self.mpv.aid = track_id
+        if track_id > 0:
+            self.mpv.aid = track_id
+            tracks = getattr(self.mpv, "track_list", []) or []
+            selected_track = next((track for track in tracks if track.get("type") == "audio" and int(track.get("id", 0)) == track_id), None)
+            lang = selected_track.get("lang") if selected_track else None
+            title = selected_track.get("title") if selected_track else None
+            pref = {
+                "track_id": track_id,
+                "lang": lang,
+                "title": title,
+                "disabled": False,
+            }
+            item = getattr(self, "_current_playing_item", None)
+            if item and isinstance(item, dict):
+                item["audio_track_id"] = track_id
+                item["audio_track_lang"] = lang
+                item["audio_track_title"] = title
+                item["audio_disabled"] = False
+            self._remember_audio_preference(pref, item_context=item)
+        else:
+            try:
+                self.mpv.aid = "no"
+            except Exception:
+                pass
+            pref = {
+                "track_id": 0,
+                "lang": None,
+                "title": None,
+                "disabled": True,
+            }
+            item = getattr(self, "_current_playing_item", None)
+            if item and isinstance(item, dict):
+                item["audio_track_id"] = 0
+                item["audio_disabled"] = True
+            self._remember_audio_preference(pref, item_context=item)
         action.set_state(parameter)
 
     def _on_video_selected(self, action, parameter):
@@ -7288,9 +7584,10 @@ class CineWindow(Adw.ApplicationWindow):
                     self._current_playing_item["progress"] = prog
                     import time
                     self._current_playing_item["last_watched"] = int(time.time())
-                    from . import database
-                    if prog < 0.92:
-                        database.save_continue_watching(self._current_playing_item)
+                self._capture_current_track_preferences(self._current_playing_item)
+                from . import database
+                if curr_pos > 0 and prog < 0.92:
+                    database.save_continue_watching(self._current_playing_item)
         except Exception as e:
             logger.debug(f"Error persisting playing item on close: {e}")
 
@@ -7437,6 +7734,9 @@ class CineWindow(Adw.ApplicationWindow):
 
                     if hasattr(self, "_check_and_configure_subtitles"):
                         self._check_and_configure_subtitles()
+
+                    if hasattr(self, "_restore_audio_and_subtitle_preferences"):
+                        self._restore_audio_and_subtitle_preferences()
 
                     if hasattr(self, "_try_add_pending_subtitles"):
                         self._try_add_pending_subtitles()
@@ -7706,6 +8006,7 @@ class CineWindow(Adw.ApplicationWindow):
         def on_track_list_change(_name, track_list):
             idle_add_once(self._update_track_menus, track_list)
             idle_add_once(self._on_track_list_for_subtitles, track_list)
+            idle_add_once(self._restore_audio_and_subtitle_preferences, track_list)
 
         @self.mpv.property_observer("playlist-pos")
         def on_pl_pos_change(_name, _value):
@@ -16190,15 +16491,13 @@ class CineWindow(Adw.ApplicationWindow):
             self._pending_local_subtitle = (str(url), str(sub_file))
         playback_trace("loadfile issue", str(url)[:100])
         if seek_target and float(seek_target) > 5.0 and not is_trailer:
+            self._seek_after_loaded = float(seek_target)
             try:
                 self.mpv.command("loadfile", url, "replace", -1, f"start={float(seek_target):.2f}")
-                self._seek_after_loaded = None
             except Exception:
                 try:
                     self.mpv.loadfile(url, "replace", start=f"{float(seek_target):.2f}")
-                    self._seek_after_loaded = None
                 except Exception:
-                    self._seek_after_loaded = float(seek_target)
                     self.mpv.loadfile(url, "replace")
         else:
             self._seek_after_loaded = None
@@ -16293,6 +16592,43 @@ class CineWindow(Adw.ApplicationWindow):
         if self._is_playing_trailer() or getattr(self.mpv, "idle_active", False):
             return
 
+        sub_pref = self._get_saved_subtitle_preference()
+        if sub_pref:
+            if sub_pref.get("disabled") or sub_pref.get("sub_visibility") == "no":
+                try:
+                    self.mpv.sid = "no"
+                    self.mpv["sub-visibility"] = "no"
+                except Exception:
+                    pass
+                self._subtitles_configured_for_file = True
+                self._pending_subtitle_request = None
+                return
+            elif not sub_pref.get("is_external"):
+                p_lang = (sub_pref.get("lang") or "").lower()
+                p_title = (sub_pref.get("title") or "").lower()
+                p_id = sub_pref.get("track_id")
+                sub_tracks = [t for t in (track_list or []) if t.get("type") == "sub"]
+                matched = None
+                if p_lang and p_title:
+                    matched = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang and p_title in (t.get("title") or "").lower()), None)
+                if not matched and p_lang:
+                    matched = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang), None)
+                if not matched and p_title:
+                    matched = next((t for t in sub_tracks if p_title in (t.get("title") or "").lower()), None)
+                if not matched and p_id and any(int(t.get("id", -1)) == int(p_id) for t in sub_tracks):
+                    matched = next((t for t in sub_tracks if int(t.get("id", -1)) == int(p_id)), None)
+                if matched:
+                    t_id = int(matched.get("id", 0))
+                    try:
+                        self.mpv.sid = t_id
+                        self.mpv["sub-visibility"] = "yes"
+                        self._subtitles_configured_for_file = True
+                        self._pending_subtitle_request = None
+                        logger.info(f"[SUBS] Preferred inbuilt subtitle track found via track-list: id={t_id}, title={matched.get('title')}, lang={matched.get('lang')}. Skipping external download.")
+                        return
+                    except Exception as e:
+                        logger.debug(f"[SUBS] Failed to set MPV sid to {t_id}: {e}")
+
         saved_subtitle = self._get_saved_external_subtitle()
         if saved_subtitle:
             saved_path = str(saved_subtitle.get("path") or "")
@@ -16352,6 +16688,19 @@ class CineWindow(Adw.ApplicationWindow):
         if self._is_playing_trailer() or getattr(self.mpv, "idle_active", False):
             return
 
+        sub_pref = self._get_saved_subtitle_preference()
+        if sub_pref:
+            if sub_pref.get("disabled") or sub_pref.get("sub_visibility") == "no":
+                try:
+                    self.mpv.sid = "no"
+                    self.mpv["sub-visibility"] = "no"
+                except Exception:
+                    pass
+                self._subtitles_configured_for_file = True
+                self._pending_subtitle_request = None
+                logger.info("[SUBS] User disabled subtitles for this media; skipping subtitle download and display.")
+                return
+
         saved_subtitle = self._get_saved_external_subtitle()
         if saved_subtitle:
             saved_path = str(saved_subtitle.get("path") or "")
@@ -16373,8 +16722,34 @@ class CineWindow(Adw.ApplicationWindow):
                 logger.info(f"[SUBS] Saved subtitle file is missing: {saved_path}")
                 self._clear_saved_external_subtitle()
 
-        from . import api
         tracks = getattr(self.mpv, "track_list", []) or []
+        if sub_pref and not sub_pref.get("is_external"):
+            p_lang = (sub_pref.get("lang") or "").lower()
+            p_title = (sub_pref.get("title") or "").lower()
+            p_id = sub_pref.get("track_id")
+            sub_tracks = [t for t in tracks if t.get("type") == "sub"]
+            matched = None
+            if p_lang and p_title:
+                matched = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang and p_title in (t.get("title") or "").lower()), None)
+            if not matched and p_lang:
+                matched = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang), None)
+            if not matched and p_title:
+                matched = next((t for t in sub_tracks if p_title in (t.get("title") or "").lower()), None)
+            if not matched and p_id and any(int(t.get("id", -1)) == int(p_id) for t in sub_tracks):
+                matched = next((t for t in sub_tracks if int(t.get("id", -1)) == int(p_id)), None)
+            if matched:
+                t_id = int(matched.get("id", 0))
+                try:
+                    self.mpv.sid = t_id
+                    self.mpv["sub-visibility"] = "yes"
+                    self._subtitles_configured_for_file = True
+                    self._pending_subtitle_request = None
+                    logger.info(f"[SUBS] Restored preferred embedded subtitle track on file-loaded: id={t_id}, lang={matched.get('lang')}, title={matched.get('title')}")
+                    return
+                except Exception as e:
+                    logger.debug(f"[SUBS] Failed to set MPV sid to {t_id}: {e}")
+
+        from . import api
         best_embedded = api.find_best_subtitle_track(tracks, only_embedded=True)
 
         if best_embedded:
@@ -16616,7 +16991,14 @@ class CineWindow(Adw.ApplicationWindow):
         cover = details.get("medium_cover_image") or stub.get("medium_cover_image") or details.get("poster") or stub.get("poster")
         item_title = details.get("title") or stub.get("title") or details.get("name") or stub.get("name") or title
         target_id = imdb_id or details.get("id") or stub.get("id")
-        existing_cw = database.get_continue_watching_item(target_id) if target_id else None
+        ids_to_check = []
+        for src in (imdb_id, details.get("imdb_id"), details.get("id"), stub.get("imdb_id"), stub.get("id")):
+            if src and str(src) not in ids_to_check:
+                ids_to_check.append(str(src))
+        for a in (details.get("alias_ids") or []) + (stub.get("alias_ids") or []):
+            if a and str(a) not in ids_to_check:
+                ids_to_check.append(str(a))
+        existing_cw = database.get_continue_watching_item(ids_to_check) if ids_to_check else None
         playback_trace("database lookups done")
         # Continue Watching keeps one row per series, so the stored position can
         # belong to a different episode than the one being started. Only resume
@@ -16722,6 +17104,16 @@ class CineWindow(Adw.ApplicationWindow):
             "duration": saved_dur,
             "is_trailer": is_stream_trailer,
         }
+
+        if ids_to_check:
+            self._current_playing_item["alias_ids"] = list(ids_to_check)
+        if existing_cw:
+            for tf in (
+                "audio_track_id", "audio_track_lang", "audio_track_title", "audio_disabled",
+                "sub_track_id", "sub_track_lang", "sub_track_title", "sub_visibility", "sub_disabled", "sub_is_external"
+            ):
+                if tf in existing_cw and tf not in self._current_playing_item:
+                    self._current_playing_item[tf] = existing_cw[tf]
 
         if not is_stream_trailer:
             if self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id") or self._current_playing_item.get("title"):
@@ -18119,9 +18511,6 @@ class CineWindow(Adw.ApplicationWindow):
                     if curr_dur <= 0:
                         curr_dur = float(self._current_playing_item.get("duration") or 0.0)
 
-                    if curr_pos > 0 and getattr(self, "stream_queue", None):
-                        self._mark_current_stream_as_working()
-
                     if curr_pos > 0:
                         prog = min(1.0, max(0.0, curr_pos / curr_dur)) if curr_dur > 0 else float(self._current_playing_item.get("progress") or 0.01)
                         self._current_playing_item["position"] = curr_pos
@@ -18129,6 +18518,14 @@ class CineWindow(Adw.ApplicationWindow):
                         self._current_playing_item["progress"] = prog
                         import time
                         self._current_playing_item["last_watched"] = int(time.time())
+
+                    # Capture active audio and subtitle track preferences before closing
+                    self._capture_current_track_preferences(self._current_playing_item)
+
+                    if curr_pos > 0 and getattr(self, "stream_queue", None):
+                        self._mark_current_stream_as_working()
+
+                    if curr_pos > 0:
                         from . import database
                         if prog >= 0.92:
                             if is_series:
