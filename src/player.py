@@ -277,6 +277,119 @@ def wait_for_pending_launch(info_hash, timeout=15.0):
         time.sleep(0.05)
     return False
 
+_cleanup_performed = False
+_cleanup_lock = threading.Lock()
+
+def cleanup_torrents_and_cache_on_exit():
+    """Delete all torrent chunks/files and application disk cache on exiting the app."""
+    global _cleanup_performed
+    with _cleanup_lock:
+        if _cleanup_performed:
+            return
+        _cleanup_performed = True
+
+    try:
+        from . import database
+        if database._is_testing():
+            import tempfile
+            temp_root = tempfile.gettempdir()
+            if DOWNLOAD_BASE and DOWNLOAD_BASE.startswith(temp_root) and os.path.exists(DOWNLOAD_BASE):
+                for item in os.listdir(DOWNLOAD_BASE):
+                    p = os.path.join(DOWNLOAD_BASE, item)
+                    try:
+                        if os.path.isdir(p):
+                            shutil.rmtree(p, ignore_errors=True)
+                        elif os.path.isfile(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
+            return
+    except Exception:
+        pass
+
+    # 1. Stop all active torrent engines cleanly
+    threads = []
+    with _engines_lock:
+        for info_hash, engine in list(_engines.items()):
+            try:
+                t = threading.Thread(target=engine.stop, kwargs={"save_timeout": 0.5}, daemon=True)
+                t.start()
+                threads.append(t)
+            except Exception:
+                pass
+        _engines.clear()
+
+    deadline = time.time() + 1.0
+    for t in threads:
+        remaining = max(0.0, deadline - time.time())
+        t.join(timeout=remaining)
+
+    # 2. Delete torrents folder contents (DOWNLOAD_BASE and known data torrents dirs)
+    torrent_dirs = [DOWNLOAD_BASE]
+    flatpak_torrent = os.path.expanduser("~/.var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box/torrents")
+    local_torrent = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "popcorn-box", "torrents")
+    for d in (flatpak_torrent, local_torrent):
+        if d not in torrent_dirs:
+            torrent_dirs.append(d)
+
+    for t_dir in torrent_dirs:
+        if t_dir and os.path.exists(t_dir):
+            try:
+                for item in os.listdir(t_dir):
+                    item_path = os.path.join(t_dir, item)
+                    try:
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path, ignore_errors=True)
+                        elif os.path.isfile(item_path) or os.path.islink(item_path):
+                            os.remove(item_path)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+    # 3. Delete cache folder contents (api, images)
+    try:
+        from . import api
+        api.clear_stream_url_cache()
+        cache_base = getattr(api, 'BASE_DIR', None)
+    except Exception:
+        cache_base = None
+
+    cache_dirs = []
+    if cache_base:
+        cache_dirs.append(cache_base)
+    flatpak_cache = os.path.expanduser("~/.var/app/io.github.fastrizwaan.PopcornBox/cache/popcorn-box")
+    host_cache = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "popcorn-box")
+    for c in (flatpak_cache, host_cache):
+        if c not in cache_dirs:
+            cache_dirs.append(c)
+
+    for c_dir in cache_dirs:
+        if c_dir and os.path.exists(c_dir):
+            try:
+                for item in os.listdir(c_dir):
+                    item_path = os.path.join(c_dir, item)
+                    try:
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path, ignore_errors=True)
+                        elif os.path.isfile(item_path) or os.path.islink(item_path):
+                            os.remove(item_path)
+                    except Exception:
+                        pass
+                os.makedirs(os.path.join(c_dir, "api"), exist_ok=True)
+                os.makedirs(os.path.join(c_dir, "images"), exist_ok=True)
+            except Exception:
+                pass
+
+    # 4. Clear temporary downloads recorded in database
+    try:
+        from . import database
+        database.clear_downloads()
+        database.clear_all_cached_streams_async()
+    except Exception:
+        pass
+
+
 def exit_player():
     from . import database
     database.flush_progress()
@@ -293,23 +406,8 @@ def exit_player():
             except Exception:
                 pass
 
-    threads = []
-    with _engines_lock:
-        for info_hash, engine in _engines.items():
-            try:
-                # Use a fast save_timeout so each stop() completes in ~0.1s
-                t = threading.Thread(target=engine.stop, kwargs={"save_timeout": 0.5}, daemon=True)
-                t.start()
-                threads.append(t)
-            except Exception:
-                pass
-        _engines.clear()
+    cleanup_torrents_and_cache_on_exit()
 
-    # Wait at most 0.8 s total for all stop threads to finish
-    deadline = time.time() + 0.8
-    for t in threads:
-        remaining = max(0.0, deadline - time.time())
-        t.join(timeout=remaining)
 
 atexit.register(exit_player)
 

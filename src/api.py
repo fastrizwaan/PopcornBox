@@ -6185,27 +6185,58 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
         valid_streams.append(stream_entry)
     
     def _rank_key(x):
-        is_http = 1 if x.get("is_http") else 0
-        seeds = int(x.get("seeders") or 0)
+        is_torrent = is_torrent_stream(x)
+        is_http = not is_torrent and (is_direct_stream(x) or bool(x.get("is_http")))
+        seeds = int(x.get("seeders") or x.get("seeds") or 0)
         has_seeds = 1 if (is_http or seeds > 0) else 0
         ep_m = x.get("ep_match", 0)
         q_val = x.get("q_val", 0)
+        quality = str(x.get("quality") or "").upper()
+        # q_val: 4=4K, 3=1080p, 2=720p, 1=480p, 0=360p/Unknown
+        is_1080p = (q_val == 3) or ("1080" in quality)
+        is_720p = (q_val == 2) or ("720" in quality)
+        is_4k = (q_val == 4) or ("4K" in quality) or ("2160" in quality)
+
+        if is_1080p:
+            if is_http:
+                tier = 120
+            elif seeds > 50:
+                tier = 110
+            elif seeds > 0:
+                tier = 40
+            else:
+                tier = 10
+        elif is_720p:
+            if is_http:
+                tier = 100
+            elif seeds > 50:
+                tier = 90
+            elif seeds > 0:
+                tier = 30
+            else:
+                tier = 9
+        elif not is_4k:
+            if is_http:
+                tier = 80
+            elif seeds > 50:
+                tier = 70
+            elif seeds > 0:
+                tier = 20
+            else:
+                tier = 8
+        else: # 4K
+            if is_http:
+                tier = 60
+            elif seeds > 50:
+                tier = 50
+            elif seeds > 0:
+                tier = 15
+            else:
+                tier = 5
+
         size_gb = float(x.get("size_gb") or 0.0)
         seeders = seeds if not is_http else 100
-        # q_val: 4=4K, 3=1080p, 2=720p, 1=480p, 0=360p/Unknown
-        is_1080p_optimal = (q_val == 3 and ((0 < size_gb <= 4.5) or size_gb == 0.0))
-        is_720p_optimal = (q_val == 2 and ((0 < size_gb <= 2.5) or size_gb == 0.0))
-        if is_1080p_optimal:
-            p_tier = 4
-        elif is_720p_optimal:
-            p_tier = 3
-        elif q_val == 3:
-            p_tier = 2
-        elif q_val == 4 or q_val == 2:
-            p_tier = 1
-        else:
-            p_tier = 0
-        return (has_seeds, ep_m, p_tier, seeders, q_val, size_gb)
+        return (has_seeds, ep_m, tier, seeders, size_gb)
 
     valid_streams.sort(key=_rank_key, reverse=True)
     return valid_streams

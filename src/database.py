@@ -1254,6 +1254,12 @@ def remove_download(info_hash):
         db["downloads"] = [d for d in downloads if d.get("info_hash") != info_hash]
         _write_db(db)
 
+def clear_downloads():
+    with _db_lock:
+        db = _read_db()
+        db["downloads"] = []
+        _write_db(db)
+
 # --- Settings ---
 
 def get_setting(key, default=None):

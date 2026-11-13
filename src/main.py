@@ -295,6 +295,11 @@ class CineApplication(Adw.Application):
                 except TypeError:
                     win._search_pool.shutdown(wait=False)
             win.close()
+        try:
+            from . import player
+            player.cleanup_torrents_and_cache_on_exit()
+        except Exception:
+            pass
 
 
 def main(version):

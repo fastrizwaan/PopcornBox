@@ -370,6 +370,91 @@ def _normalize_stream_quality(stream):
         return stream
     return None
 
+
+def get_stream_priority_tier(stream):
+    """Calculate stream priority tier for 'All Providers' / 'All Resolution'.
+
+    Priority rules:
+    1080p -> direct (tier 120)
+    1080p -> torrents with > 50 seeds (tier 110)
+    720p -> direct (tier 100)
+    720p -> torrents with > 50 seeds (tier 90)
+    More -> direct (tier 80)
+    More -> torrents with > 50 seeds (tier 70)
+    4K -> direct (tier 60)
+    4K -> torrents with > 50 seeds (tier 50)
+
+    Fallbacks for torrents with <= 50 seeds:
+    1080p -> torrents <= 50 seeds (tier 40)
+    720p -> torrents <= 50 seeds (tier 30)
+    More -> torrents <= 50 seeds (tier 20)
+    4K -> torrents <= 50 seeds (tier 15)
+
+    Dead / zero-seed torrents:
+    1080p (tier 10), 720p (tier 9), More (tier 8), 4K (tier 5)
+    """
+    if not isinstance(stream, dict):
+        return 0
+
+    is_direct = is_direct_stream(stream)
+    seeds = int(stream.get("seeders") or stream.get("seeds") or 0)
+    q = _normalize_stream_quality(stream)
+
+    if q == "1080p":
+        if is_direct:
+            return 120
+        elif seeds > 50:
+            return 110
+        elif seeds > 0:
+            return 40
+        else:
+            return 10
+    elif q == "720p":
+        if is_direct:
+            return 100
+        elif seeds > 50:
+            return 90
+        elif seeds > 0:
+            return 30
+        else:
+            return 9
+    elif q != "4K":
+        # "More" / other resolutions (480p, 360p, SD, etc.)
+        if is_direct:
+            return 80
+        elif seeds > 50:
+            return 70
+        elif seeds > 0:
+            return 20
+        else:
+            return 8
+    else:
+        # "4K" / 2160p
+        if is_direct:
+            return 60
+        elif seeds > 50:
+            return 50
+        elif seeds > 0:
+            return 15
+        else:
+            return 5
+
+
+def stream_sort_key_all(t, sel_s=None, sel_e=None, ep_t=None, pref_prov=None, rem_st=None):
+    from . import api
+    is_http = 1 if is_direct_stream(t) or t.get('is_http') else 0
+    seeds = int(t.get('seeders') or t.get('seeds') or 0)
+    has_seeds = 1 if (is_http or seeds > 0) else 0
+    ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
+    tier = get_stream_priority_tier(t)
+    ping_ok = 1 if t.get('ping_status') is True else 0
+    is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
+    is_remembered = 1 if (rem_st and _streams_match(t, rem_st)) else 0
+    size = float(t.get('size_gb') or 0.0)
+    return (has_seeds, ep_m, tier, ping_ok, is_pref, is_remembered, seeds, size)
+
+
+
 libegl = ctypes.CDLL("libEGL.so.1")
 egl_get_proc_address = libegl.eglGetProcAddress
 egl_get_proc_address.restype = ctypes.c_void_p
@@ -456,6 +541,7 @@ class MovieDetailsPage(Gtk.Overlay):
         self.seasons = []
         self.current_episodes = []
         self.selected_torrent = None
+        self._user_explicitly_selected_stream = False
         self.quality_buttons = []
         self._restoring_state = False
         self._destroyed = False
@@ -1761,6 +1847,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
             def make_play_cb(st):
                 def on_play_clicked(b):
+                    self._user_explicitly_selected_stream = True
                     self.selected_torrent = st
                     self.on_watch_clicked(None)
                 return on_play_clicked
@@ -1777,6 +1864,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
             def make_dl_cb(st):
                 def on_dl_clicked(b):
+                    self._user_explicitly_selected_stream = True
                     self.selected_torrent = st
                     self._download_stream_item(st)
                 return on_dl_clicked
@@ -1793,6 +1881,7 @@ class MovieDetailsPage(Gtk.Overlay):
 
             def make_row_click_cb(stream_item, curr_row_box):
                 def on_pressed(gesture, n_press, x, y):
+                    self._user_explicitly_selected_stream = True
                     self.selected_torrent = stream_item
                     if not curr_row_box.has_css_class("selected"):
                         child = self.streams_list_box.get_first_child()
@@ -3623,17 +3712,7 @@ class MovieDetailsPage(Gtk.Overlay):
             rem_st = getattr(self.window, 'remembered_working_stream', None) or getattr(self.window, 'selected_torrent', None)
 
         def _stream_sort_key_all(t):
-            from . import api
-            is_http = 1 if t.get('is_http') else 0
-            seeds = int(t.get('seeders') or 0)
-            has_seeds = 1 if (is_http or seeds > 0) else 0
-            is_remembered = 1 if (rem_st and _streams_match(t, rem_st)) else 0
-            ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
-            is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
-            q_val = int(t.get('q_val') or 0)
-            ping_ok = 1 if t.get('ping_status') is True else 0
-            size = float(t.get('size_gb') or 0.0)
-            return (has_seeds, is_remembered, ep_m, is_pref, q_val, ping_ok, is_http, seeds, size)
+            return stream_sort_key_all(t, sel_s=sel_s, sel_e=sel_e, ep_t=ep_t, pref_prov=pref_prov, rem_st=rem_st)
 
         def _stream_sort_key_1080p(t):
             from . import api
@@ -3807,7 +3886,13 @@ class MovieDetailsPage(Gtk.Overlay):
             if getattr(self, "remembered_working_stream", None) and target_t_list:
                 idx = _find_stream_index_exact(self.remembered_working_stream, target_t_list)
                 if idx >= 0:
-                    self.selected_torrent = target_t_list[idx]
+                    is_all_prov = (source_idx == 0)
+                    is_all_qual = (target_btn and target_btn.get_label() == "All")
+                    user_chose = getattr(self, '_user_explicitly_selected_stream', False)
+                    if is_all_prov and is_all_qual and not user_chose:
+                        self.selected_torrent = target_t_list[0]
+                    else:
+                        self.selected_torrent = target_t_list[idx]
 
             if target_btn and target_t_list:
                 if not target_btn.get_active():
@@ -3951,7 +4036,23 @@ class MovieDetailsPage(Gtk.Overlay):
                 selected = None
                 self.selected_torrent = None
 
-        if selected and any(_streams_match(selected, t) for t in t_list):
+        is_all_providers = (source_idx == 0 and sel_prov_name == "All Providers")
+        is_all_resolution = getattr(self, 'user_selected_quality', 'All') in ('All', None)
+        user_explicit = getattr(self, '_user_explicitly_selected_stream', False)
+
+        if is_all_providers and is_all_resolution and not user_explicit:
+            pref_prov = getattr(self, 'preferred_direct_provider', None)
+            rem_st = getattr(self, 'remembered_working_stream', None)
+            sort_all_fn = lambda t: stream_sort_key_all(t, sel_s=sel_s, sel_e=sel_e, ep_t=ep_t, pref_prov=pref_prov, rem_st=rem_st)
+            if t_list:
+                t_list_sorted = sorted(t_list, key=sort_all_fn, reverse=True)
+                self.selected_torrent = t_list_sorted[0]
+            elif raw_t_list:
+                raw_sorted = sorted(raw_t_list, key=sort_all_fn, reverse=True)
+                self.selected_torrent = raw_sorted[0]
+            else:
+                self.selected_torrent = None
+        elif selected and any(_streams_match(selected, t) for t in t_list):
             self.selected_torrent = next(t for t in t_list if _streams_match(selected, t))
         else:
             working_stream = getattr(self, "remembered_working_stream", None)
@@ -7243,6 +7344,12 @@ class CineWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             self.inhibit_cookie = 0
+
+        try:
+            from . import player
+            player.cleanup_torrents_and_cache_on_exit()
+        except Exception:
+            pass
 
         return False
 
