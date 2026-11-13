@@ -5943,6 +5943,30 @@ def is_direct_stream(stream):
     return False
 
 
+def is_torrent_addon(addon):
+    """Determine if an addon dictionary represents a torrent provider."""
+    if not isinstance(addon, dict):
+        return False
+    name = str(addon.get("name") or "").lower()
+    addon_id = str(addon.get("id") or "").lower()
+    desc = str(addon.get("description") or "").lower()
+    manifest_url = str(addon.get("manifest_url") or "").lower()
+
+    torrent_keywords = (
+        "torrent", "torrentio", "knightcrawler", "torrentclaw", "yts",
+        "piratebay", "1337x", "eztv", "p2p", "jackett", "prowlarr",
+        "annatar", "mediafusion", "debrid", "comet", "bitsearch",
+        "torlock", "kickass", "rarbg", "solidtorrents", "limetorrents",
+    )
+    for kw in torrent_keywords:
+        if kw in name or kw in addon_id or kw in manifest_url:
+            return True
+    if "torrent" in desc or "p2p" in desc:
+        return True
+    return False
+
+
+
 def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
     if not all_streams:
         return []
@@ -7213,9 +7237,19 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         )
     ]
 
+    direct_stream_addons = [a for a in all_stream_addons if not is_torrent_addon(a)]
+    torrent_stream_addons = [a for a in all_stream_addons if is_torrent_addon(a)]
+
+    if source_scope == "direct":
+        all_stream_addons = direct_stream_addons
+        torrent_stream_addons = []
+    elif source_scope == "torrent":
+        all_stream_addons = torrent_stream_addons
+        direct_stream_addons = []
+
     plugin_scrapers = (
         plugins.get_enabled_scrapers_for_type(actual_media)
-        if plugins.is_plugins_enabled()
+        if plugins.is_plugins_enabled() and source_scope != "torrent"
         else []
     )
     if provider_scope:
@@ -7230,7 +7264,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     from . import cloudstream
     enabled_cloudstream_plugins = [
         p for p in cloudstream.get_all_plugins() if p.get("enabled")
-    ] if cloudstream.is_cloudstream_enabled() else []
+    ] if cloudstream.is_cloudstream_enabled() and source_scope != "torrent" else []
     runnable_cloudstream_plugins = [
         p for p in enabled_cloudstream_plugins if cloudstream.is_provider_runnable(p)
     ]
@@ -7483,8 +7517,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     import concurrent.futures
     total_providers = len(all_stream_addons) + len(plugin_scrapers) + (1 if has_active_cloudstream else 0)
-    max_workers_limit = 24 if plugin_scrapers else 6
-    num_workers = min(max(total_providers, 2), max_workers_limit) if total_providers > 0 else 1
+    max_workers_limit = 24
+    num_workers = min(max(total_providers, 4), max_workers_limit) if total_providers > 0 else 1
     if num_workers > 0 and total_providers > 0:
         if abort_event and abort_event.is_set():
             return []
@@ -7495,6 +7529,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         except RuntimeError:
             return []
         future_to_addon = {}
+        futures = set()
         queried_addon_urls = set()
         queried_plugin_ids = set()
         effective_collection_timeout = provider_collection_timeout
@@ -7535,12 +7570,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             else:
                 resolve_future = None
 
-            # Submit immediately for any plugin scrapers if TMDB ID is directly known.
-            # Prefer the verified known_tmdb_id from the details page; only fall back to
-            # a title-based resolve when the details page did not supply a TMDB ID, and
-            # log clearly so stale lookups are distinguishable in the debug output.
-            # Submitting plugins first allows their local sandboxed processes to launch
-            # immediately without being blocked behind network I/O from Stremio addons.
+            # Direct stream providers:
+            # 1. Plugin scrapers (Nuvio)
             initial_tmdb_id = known_tmdb_id
             if not initial_tmdb_id and plugin_scrapers:
                 initial_tmdb_id = tmdb_helper.resolve_to_tmdb_id(imdb_id, actual_media, title, year=expected_year)
@@ -7560,13 +7591,17 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     if abort_event and abort_event.is_set():
                         return []
                     print(f"[STREAM DEBUG] direct TMDB ID accepted plugin={scraper.get('name')!r} tmdb_id={initial_tmdb_id!r}")
-                    future_to_addon[executor.submit(fetch_from_plugin, scraper, initial_tmdb_id)] = (scraper, initial_tmdb_id)
+                    p_fut = executor.submit(fetch_from_plugin, scraper, initial_tmdb_id)
+                    future_to_addon[p_fut] = (scraper, initial_tmdb_id)
+                    futures.add(p_fut)
                     queried_plugin_ids.add(scraper.get("id"))
 
+            # 2. CloudStream
             from . import cloudstream
             can_run_cs = (
                 cloudstream.is_cloudstream_enabled()
                 and bool(title)
+                and (source_scope != "torrent")
                 and (
                     not provider_scope
                     or provider_scope == "All Providers"
@@ -7577,35 +7612,86 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             if can_run_cs:
                 cs_fut = executor.submit(fetch_from_cloudstream)
                 future_to_addon[cs_fut] = ({"name": "CloudStream", "is_cloudstream": True}, title)
+                futures.add(cs_fut)
 
-            # Submit immediately for any addon that directly supports initial imdb_id
-            for addon in all_stream_addons:
+            # 3. Direct Stremio addons (if any)
+            for addon in direct_stream_addons:
                 if abort_event and abort_event.is_set():
                     return []
                 m_url = addon.get("manifest_url", "")
                 if has_stream_resource(addon, media_type=actual_media, item_id=imdb_id):
-                    print(f"[STREAM DEBUG] direct ID accepted addon={addon.get('name')!r} id={imdb_id!r}")
-                    future_to_addon[executor.submit(fetch_from_addon, addon, imdb_id)] = (addon, imdb_id)
+                    print(f"[STREAM DEBUG] direct ID accepted direct addon={addon.get('name')!r} id={imdb_id!r}")
+                    d_fut = executor.submit(fetch_from_addon, addon, imdb_id)
+                    future_to_addon[d_fut] = (addon, imdb_id)
+                    futures.add(d_fut)
                     queried_addon_urls.add(m_url)
                 else:
-                    print(f"[STREAM DEBUG] direct ID not supported addon={addon.get('name')!r} id={imdb_id!r}")
+                    print(f"[STREAM DEBUG] direct ID not supported direct addon={addon.get('name')!r} id={imdb_id!r}")
 
-            futures = set(future_to_addon.keys())
+            # 4. Torrent addons staging:
+            torrent_addons_submitted = False
+            latest_resolved_ids = []
+
+            def _submit_torrent_addons():
+                nonlocal torrent_addons_submitted
+                if torrent_addons_submitted or not torrent_stream_addons:
+                    return
+                torrent_addons_submitted = True
+                print(f"[STREAM DEBUG] submitting {len(torrent_stream_addons)} torrent addon(s)")
+                for addon in torrent_stream_addons:
+                    if abort_event and abort_event.is_set():
+                        return
+                    m_url = addon.get("manifest_url", "")
+                    if m_url in queried_addon_urls:
+                        continue
+                    if has_stream_resource(addon, media_type=actual_media, item_id=imdb_id):
+                        print(f"[STREAM DEBUG] direct ID accepted torrent addon={addon.get('name')!r} id={imdb_id!r}")
+                        fut = executor.submit(fetch_from_addon, addon, imdb_id)
+                        future_to_addon[fut] = (addon, imdb_id)
+                        queried_addon_urls.add(m_url)
+                        futures.add(fut)
+                    elif latest_resolved_ids:
+                        for cur_id in latest_resolved_ids:
+                            if has_stream_resource(addon, media_type=actual_media, item_id=cur_id):
+                                print(f"[STREAM DEBUG] resolved ID accepted torrent addon={addon.get('name')!r} id={cur_id!r}")
+                                fut = executor.submit(fetch_from_addon, addon, cur_id)
+                                future_to_addon[fut] = (addon, cur_id)
+                                queried_addon_urls.add(m_url)
+                                futures.add(fut)
+                                break
+
+            has_direct_providers = bool(plugin_scrapers or can_run_cs or direct_stream_addons)
+            if not has_direct_providers:
+                _submit_torrent_addons()
+
+            direct_priority_deadline = time.monotonic() + 1.5 if (has_direct_providers and torrent_stream_addons and not torrent_addons_submitted) else 0.0
+
             if resolve_future:
                 futures.add(resolve_future)
 
             while futures:
                 if abort_event and abort_event.is_set():
                     return []
-                # A provider can spend up to 4 seconds waiting for its host
-                # slot and another 10 seconds in urlopen. Keep this budget
-                # above that combined worst case so the first lookup is not
-                # reported empty while its addon workers are still running.
-                wait_timeout = max(0.0, collection_deadline - time.monotonic())
+
+                if not torrent_addons_submitted and torrent_stream_addons:
+                    has_direct_streams = any(is_direct_stream(s) for s in all_raw_streams)
+                    deadline_passed = (time.monotonic() >= direct_priority_deadline)
+                    all_direct_done = all(f.done() for f in future_to_addon.keys() if f != resolve_future)
+                    if has_direct_streams or deadline_passed or all_direct_done:
+                        _submit_torrent_addons()
+
+                if not torrent_addons_submitted and torrent_stream_addons:
+                    wait_timeout = max(0.0, min(direct_priority_deadline - time.monotonic(), collection_deadline - time.monotonic()))
+                else:
+                    wait_timeout = max(0.0, collection_deadline - time.monotonic())
+
                 done, futures = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED, timeout=wait_timeout)
                 if abort_event and abort_event.is_set():
                     return []
                 if not done:
+                    if not torrent_addons_submitted and torrent_stream_addons:
+                        _submit_torrent_addons()
+                        continue
                     print(f"[STREAM DEBUG] provider collection timed out pending={len(futures)}")
                     break
 
@@ -7613,10 +7699,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     if future == resolve_future:
                         try:
                             resolved_ids = future.result() or []
+                            latest_resolved_ids = resolved_ids
                             if resolved_ids:
                                 from .tmdb_helper import _decode_provider_item_id
                                 is_encoded_id = bool(_decode_provider_item_id(imdb_id))
-                                for addon in all_stream_addons:
+                                target_addons = all_stream_addons if torrent_addons_submitted else direct_stream_addons
+                                for addon in target_addons:
                                     if abort_event and abort_event.is_set():
                                         return []
                                     m_url = addon.get("manifest_url", "")
@@ -7667,8 +7755,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                             futures.add(new_fut)
                         except Exception as e:
                             print(f"Error resolving IDs: {e}")
-                        except Exception as e:
-                            print(f"Error resolving IDs: {e}")
                     else:
                         addon_obj = None
                         try:
@@ -7696,6 +7782,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                         callback(preserved_scope + current_scope, is_cached=False, is_complete=False)
                                     else:
                                         callback(current_parsed, is_cached=False, is_complete=False)
+                                if not torrent_addons_submitted and torrent_stream_addons and any(is_direct_stream(s) for s in streams):
+                                    _submit_torrent_addons()
                         except Exception as e:
                             print(f"[STREAM DEBUG] addon future failed addon={addon_obj.get('name') if addon_obj else 'Unknown'!r}: {type(e).__name__}: {e}")
         except RuntimeError as e:

@@ -224,6 +224,205 @@ class TestExitCleanupAndStreamPriority(unittest.TestCase):
         # Since user explicitly selected s_4k_torrent, it must NOT be overridden
         self.assertEqual(page.selected_torrent, s_4k_torrent)
 
+    def test_sorting_individual_resolutions_direct_first(self):
+        """When viewing specific resolutions (720p, 1080p, More, 4K), direct streams must come first, then torrents."""
+        # 720p
+        s_720_direct = {"name": "720p Direct", "quality": "720p", "is_http": True, "url": "https://direct.com/720"}
+        s_720_torrent_high = {"name": "720p Torrent 120s", "quality": "720p", "is_torrent": True, "seeders": 120, "url": "magnet:?xt=urn:btih:720a"}
+        s_720_torrent_low = {"name": "720p Torrent 15s", "quality": "720p", "is_torrent": True, "seeders": 15, "url": "magnet:?xt=urn:btih:720b"}
+        s_720_torrent_dead = {"name": "720p Torrent 0s", "quality": "720p", "is_torrent": True, "seeders": 0, "url": "magnet:?xt=urn:btih:720c"}
+
+        list_720 = [s_720_torrent_dead, s_720_torrent_low, s_720_torrent_high, s_720_direct]
+        sorted_720 = sorted(list_720, key=window.stream_sort_key_all, reverse=True)
+        self.assertEqual(sorted_720, [s_720_direct, s_720_torrent_high, s_720_torrent_low, s_720_torrent_dead])
+
+        # 1080p
+        s_1080_direct = {"name": "1080p Direct", "quality": "1080p", "is_http": True, "url": "https://direct.com/1080"}
+        s_1080_torrent_high = {"name": "1080p Torrent 200s", "quality": "1080p", "is_torrent": True, "seeders": 200, "url": "magnet:?xt=urn:btih:1080a"}
+        s_1080_torrent_low = {"name": "1080p Torrent 30s", "quality": "1080p", "is_torrent": True, "seeders": 30, "url": "magnet:?xt=urn:btih:1080b"}
+
+        list_1080 = [s_1080_torrent_low, s_1080_torrent_high, s_1080_direct]
+        sorted_1080 = sorted(list_1080, key=window.stream_sort_key_all, reverse=True)
+        self.assertEqual(sorted_1080, [s_1080_direct, s_1080_torrent_high, s_1080_torrent_low])
+
+        # More (480p)
+        s_more_direct = {"name": "480p Direct", "quality": "480p", "is_http": True, "url": "https://direct.com/480"}
+        s_more_torrent_high = {"name": "480p Torrent 80s", "quality": "480p", "is_torrent": True, "seeders": 80, "url": "magnet:?xt=urn:btih:480a"}
+        s_more_torrent_low = {"name": "480p Torrent 10s", "quality": "480p", "is_torrent": True, "seeders": 10, "url": "magnet:?xt=urn:btih:480b"}
+
+        list_more = [s_more_torrent_low, s_more_torrent_high, s_more_direct]
+        sorted_more = sorted(list_more, key=window.stream_sort_key_all, reverse=True)
+        self.assertEqual(sorted_more, [s_more_direct, s_more_torrent_high, s_more_torrent_low])
+
+        # 4K
+        s_4k_direct = {"name": "4K Direct", "quality": "4K", "is_http": True, "url": "https://direct.com/4k"}
+        s_4k_torrent_high = {"name": "4K Torrent 150s", "quality": "4K", "is_torrent": True, "seeders": 150, "url": "magnet:?xt=urn:btih:4ka"}
+        s_4k_torrent_low = {"name": "4K Torrent 20s", "quality": "4K", "is_torrent": True, "seeders": 20, "url": "magnet:?xt=urn:btih:4kb"}
+
+        list_4k = [s_4k_torrent_low, s_4k_torrent_high, s_4k_direct]
+        sorted_4k = sorted(list_4k, key=window.stream_sort_key_all, reverse=True)
+        self.assertEqual(sorted_4k, [s_4k_direct, s_4k_torrent_high, s_4k_torrent_low])
+
+    def test_on_watch_clicked_with_specific_resolution_prefers_direct(self):
+        """When resolution is 720p, More, or 4K, clicking play prefers direct stream first then torrent."""
+        for q_label, direct_q in [("720p", "720p"), ("More", "480p"), ("4K", "4K")]:
+            page = MagicMock()
+            page.media_type = "movie"
+            page.is_channel = False
+            page.source_idx = 0
+            page.user_selected_quality = q_label
+            page._user_explicitly_selected_stream = False
+            page.movie_stub = {"id": "tt12345", "title": "Test Movie"}
+            page.selected_season = None
+            page.selected_episode = None
+            page.selected_video = None
+            page.provider_dropdown.get_model.return_value.get_string.return_value = "All Providers"
+            page.provider_dropdown.get_model.return_value.get_n_items.return_value = 1
+            page.provider_dropdown.get_selected.return_value = 0
+
+            s_torrent = {"name": f"{q_label} Torrent 100s", "quality": direct_q, "is_torrent": True, "seeders": 100, "url": f"magnet:?xt=urn:btih:{q_label}"}
+            s_direct = {"name": f"{q_label} Direct", "quality": direct_q, "is_http": True, "url": f"https://direct.com/{q_label}"}
+            page.current_t_list = [s_torrent, s_direct]
+            page.selected_torrent = s_torrent
+
+            window.MovieDetailsPage.on_watch_clicked(page, None)
+            self.assertEqual(page.selected_torrent, s_direct, f"Failed for resolution {q_label}")
+
+    def test_is_torrent_addon(self):
+        from src import api
+        # Torrent addons
+        self.assertTrue(api.is_torrent_addon({"name": "Torrentio", "manifest_url": "https://torrentio.strem.fun/manifest.json"}))
+        self.assertTrue(api.is_torrent_addon({"name": "KnightCrawler", "manifest_url": "https://knightcrawler.elfhosted.com/manifest.json"}))
+        self.assertTrue(api.is_torrent_addon({"name": "TorrentClaw", "id": "org.torrentclaw"}))
+        self.assertTrue(api.is_torrent_addon({"name": "ThePirateBay+", "id": "tpb-addon"}))
+        self.assertTrue(api.is_torrent_addon({"name": "1337x", "id": "1337x-torrents"}))
+        self.assertTrue(api.is_torrent_addon({"name": "YTS.mx", "description": "Download YTS torrents"}))
+
+        # Direct addons
+        self.assertFalse(api.is_torrent_addon({"name": "IPTV-Org", "id": "local.iptv-org", "manifest_url": "https://iptv.org/manifest.json"}))
+        self.assertFalse(api.is_torrent_addon({"name": "CyberFlix Catalog", "id": "cyberflix", "manifest_url": "https://cyberflix.strem.io/manifest.json"}))
+        self.assertFalse(api.is_torrent_addon({"name": "Cinemeta", "id": "cinemeta", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"}))
+
+    def test_get_torrents_streamed_direct_providers_prioritized(self):
+        """Verify that get_torrents_streamed schedules direct providers first before torrent addons."""
+        from src import api
+        order_of_calls = []
+
+        direct_addon = {
+            "name": "DirectAddon",
+            "manifest_url": "https://direct.addon/manifest.json",
+            "resources": [{"name": "stream", "types": ["movie"]}],
+            "types": ["movie"],
+            "idPrefixes": ["tt"],
+            "enabled": True,
+        }
+        torrent_addon = {
+            "name": "Torrentio",
+            "manifest_url": "https://torrentio.strem.fun/manifest.json",
+            "resources": [{"name": "stream", "types": ["movie"]}],
+            "types": ["movie"],
+            "idPrefixes": ["tt"],
+            "enabled": True,
+        }
+
+        def mock_fetch_addon(addon, cur_id):
+            name = addon.get("name")
+            order_of_calls.append(name)
+            if name == "DirectAddon":
+                return name, [{"url": "https://direct.com/stream.mp4", "name": "Direct Stream", "is_http": True, "quality": "1080p"}]
+            else:
+                return name, [{"url": "magnet:?xt=urn:btih:123", "name": "Torrent Stream", "is_torrent": True, "seeders": 100, "quality": "1080p"}]
+
+        with patch("src.api.database.get_addons", return_value=[direct_addon, torrent_addon]), \
+             patch("src.api.database.get_cached_streams", return_value=None), \
+             patch("src.plugins.is_plugins_enabled", return_value=False), \
+             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
+             patch("src.tmdb_helper.resolve_all_provider_ids", return_value=[]), \
+             patch("src.api.database.save_cached_streams_full", side_effect=lambda *args, **kwargs: args[3]), \
+             patch.object(api, "fetch_items", return_value=[]):
+
+            # Patch _request_addon_streams inside api
+            with patch("src.api._request_addon_streams") as mock_req:
+                def fake_req(addon, url, **kwargs):
+                    return mock_fetch_addon(addon, "tt12345")[1]
+                mock_req.side_effect = fake_req
+
+                results = api.get_torrents_streamed("tt12345", media_type="movie", force_refresh=True)
+
+        # Direct addon must have been queried first!
+        self.assertTrue(len(order_of_calls) >= 2)
+        self.assertEqual(order_of_calls[0], "DirectAddon")
+        self.assertEqual(order_of_calls[1], "Torrentio")
+        # Direct stream must be ranked above torrent stream in results
+        self.assertTrue(results[0].get("is_http"))
+
+    def test_get_torrents_streamed_scoped_isolation(self):
+        """Verify that source_scope='direct' skips torrent addons and source_scope='torrent' skips direct addons."""
+        from src import api
+
+        direct_addon = {
+            "name": "DirectAddon",
+            "manifest_url": "https://direct.addon/manifest.json",
+            "resources": [{"name": "stream", "types": ["movie"]}],
+            "types": ["movie"],
+            "idPrefixes": ["tt"],
+            "enabled": True,
+        }
+        torrent_addon = {
+            "name": "Torrentio",
+            "manifest_url": "https://torrentio.strem.fun/manifest.json",
+            "resources": [{"name": "stream", "types": ["movie"]}],
+            "types": ["movie"],
+            "idPrefixes": ["tt"],
+            "enabled": True,
+        }
+
+        # Test source_scope == "direct"
+        called_addons = []
+        with patch("src.api.database.get_addons", return_value=[direct_addon, torrent_addon]), \
+             patch("src.api.database.get_cached_streams", return_value=None), \
+             patch("src.plugins.is_plugins_enabled", return_value=False), \
+             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
+             patch("src.tmdb_helper.resolve_all_provider_ids", return_value=[]), \
+             patch("src.api.database.save_cached_streams_full", side_effect=lambda *args, **kwargs: args[3]), \
+             patch("src.api.database.save_cached_streams_partial", side_effect=lambda *args, **kwargs: args[2]), \
+             patch.object(api, "fetch_items", return_value=[]):
+
+            with patch("src.api._request_addon_streams") as mock_req:
+                def fake_req(addon, url, **kwargs):
+                    called_addons.append(addon.get("name"))
+                    return [{"url": "https://direct.com/stream.mp4", "name": "Direct Stream", "is_http": True, "quality": "1080p"}]
+                mock_req.side_effect = fake_req
+
+                api.get_torrents_streamed("tt12345", media_type="movie", source_scope="direct", force_refresh=True)
+
+        self.assertIn("DirectAddon", called_addons)
+        self.assertNotIn("Torrentio", called_addons)
+
+        # Test source_scope == "torrent"
+        called_addons = []
+        with patch("src.api.database.get_addons", return_value=[direct_addon, torrent_addon]), \
+             patch("src.api.database.get_cached_streams", return_value=None), \
+             patch("src.plugins.is_plugins_enabled", return_value=False), \
+             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
+             patch("src.tmdb_helper.resolve_all_provider_ids", return_value=[]), \
+             patch("src.api.database.save_cached_streams_full", side_effect=lambda *args, **kwargs: args[3]), \
+             patch("src.api.database.save_cached_streams_partial", side_effect=lambda *args, **kwargs: args[2]), \
+             patch.object(api, "fetch_items", return_value=[]):
+
+            with patch("src.api._request_addon_streams") as mock_req:
+                def fake_req(addon, url, **kwargs):
+                    called_addons.append(addon.get("name"))
+                    return [{"url": "magnet:?xt=urn:btih:123", "name": "Torrent Stream", "is_torrent": True, "seeders": 100, "quality": "1080p"}]
+                mock_req.side_effect = fake_req
+
+                api.get_torrents_streamed("tt12345", media_type="movie", source_scope="torrent", force_refresh=True)
+
+        self.assertIn("Torrentio", called_addons)
+        self.assertNotIn("DirectAddon", called_addons)
+
+
+
 
 if __name__ == "__main__":
     unittest.main()

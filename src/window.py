@@ -451,7 +451,8 @@ def stream_sort_key_all(t, sel_s=None, sel_e=None, ep_t=None, pref_prov=None, re
     is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
     is_remembered = 1 if (rem_st and _streams_match(t, rem_st)) else 0
     size = float(t.get('size_gb') or 0.0)
-    return (has_seeds, ep_m, tier, ping_ok, is_pref, is_remembered, seeds, size)
+    is_under_4gb = 1 if ((0 < size < 4.0) or (size == 0.0)) else 0
+    return (has_seeds, ep_m, tier, ping_ok, is_pref, is_remembered, is_under_4gb, seeds, size)
 
 
 
@@ -3714,40 +3715,9 @@ class MovieDetailsPage(Gtk.Overlay):
         def _stream_sort_key_all(t):
             return stream_sort_key_all(t, sel_s=sel_s, sel_e=sel_e, ep_t=ep_t, pref_prov=pref_prov, rem_st=rem_st)
 
-        def _stream_sort_key_1080p(t):
-            from . import api
-            is_http = 1 if t.get('is_http') else 0
-            seeds = int(t.get('seeders') or 0)
-            has_seeds = 1 if (is_http or seeds > 0) else 0
-            is_remembered = 1 if (rem_st and _streams_match(t, rem_st)) else 0
-            ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
-            is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
-            size = float(t.get('size_gb') or 0.0)
-            is_under_4gb = (0 < size < 4.0) or (size == 0.0)
-            p_size = 1 if is_under_4gb else 0
-            ping_ok = 1 if t.get('ping_status') is True else 0
-            return (has_seeds, is_remembered, ep_m, is_pref, p_size, ping_ok, is_http, seeds, size)
-
-        def _stream_sort_key_general(t):
-            from . import api
-            is_http = 1 if t.get('is_http') else 0
-            seeds = int(t.get('seeders') or 0)
-            has_seeds = 1 if (is_http or seeds > 0) else 0
-            is_remembered = 1 if (rem_st and _streams_match(t, rem_st)) else 0
-            ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
-            is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
-            ping_ok = 1 if t.get('ping_status') is True else 0
-            size = float(t.get('size_gb') or 0.0)
-            return (has_seeds, is_remembered, ep_m, is_pref, ping_ok, is_http, seeds, size)
-
         for q_label in ["All", "4K", "1080p", "720p", "More"]:
             if quality_groups[q_label]:
-                if q_label == "All":
-                    quality_groups[q_label].sort(key=_stream_sort_key_all, reverse=True)
-                elif q_label == "1080p":
-                    quality_groups[q_label].sort(key=_stream_sort_key_1080p, reverse=True)
-                else:
-                    quality_groups[q_label].sort(key=_stream_sort_key_general, reverse=True)
+                quality_groups[q_label].sort(key=_stream_sort_key_all, reverse=True)
 
         def update_file_dropdown_ui(t_list):
             if not t_list:
@@ -3785,10 +3755,13 @@ class MovieDetailsPage(Gtk.Overlay):
                 from . import api
                 if api.match_stream_to_episode(curr_sel, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
                     curr_sel = None
-            if curr_sel and t_list:
+            user_explicit = getattr(self, '_user_explicitly_selected_stream', False)
+            if user_explicit and curr_sel and t_list:
                 selected_idx = _find_stream_index_exact(curr_sel, t_list)
                 if selected_idx < 0:
                     selected_idx = 0
+            else:
+                selected_idx = 0
                 
             self._programmatic_dropdown_switch = True
             try:
@@ -4037,10 +4010,9 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.selected_torrent = None
 
         is_all_providers = (source_idx == 0 and sel_prov_name == "All Providers")
-        is_all_resolution = getattr(self, 'user_selected_quality', 'All') in ('All', None)
         user_explicit = getattr(self, '_user_explicitly_selected_stream', False)
 
-        if is_all_providers and is_all_resolution and not user_explicit:
+        if is_all_providers and not user_explicit:
             pref_prov = getattr(self, 'preferred_direct_provider', None)
             rem_st = getattr(self, 'remembered_working_stream', None)
             sort_all_fn = lambda t: stream_sort_key_all(t, sel_s=sel_s, sel_e=sel_e, ep_t=ep_t, pref_prov=pref_prov, rem_st=rem_st)
@@ -4048,8 +4020,18 @@ class MovieDetailsPage(Gtk.Overlay):
                 t_list_sorted = sorted(t_list, key=sort_all_fn, reverse=True)
                 self.selected_torrent = t_list_sorted[0]
             elif raw_t_list:
-                raw_sorted = sorted(raw_t_list, key=sort_all_fn, reverse=True)
-                self.selected_torrent = raw_sorted[0]
+                user_q = getattr(self, 'user_selected_quality', 'All')
+                if user_q and user_q != 'All':
+                    raw_matching = [t for t in raw_t_list if _normalize_stream_quality(t) == user_q]
+                    if raw_matching:
+                        raw_sorted = sorted(raw_matching, key=sort_all_fn, reverse=True)
+                        self.selected_torrent = raw_sorted[0]
+                    else:
+                        raw_sorted = sorted(raw_t_list, key=sort_all_fn, reverse=True)
+                        self.selected_torrent = raw_sorted[0]
+                else:
+                    raw_sorted = sorted(raw_t_list, key=sort_all_fn, reverse=True)
+                    self.selected_torrent = raw_sorted[0]
             else:
                 self.selected_torrent = None
         elif selected and any(_streams_match(selected, t) for t in t_list):
