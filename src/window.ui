@@ -471,52 +471,63 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                     <property name="margin-end">12</property>
                                     <property name="halign">3</property>
                                     <child>
+                                      <object class="GtkButton" id="discover_reset_btn">
+                                        <property name="icon-name">view-refresh-symbolic</property>
+                                        <property name="valign">3</property>
+                                        <property name="tooltip-text" translatable="yes">Reset all Discover filters</property>
+                                        <style>
+                                          <class name="flat"/>
+                                          <class name="circular"/>
+                                        </style>
+                                      </object>
+                                    </child>
+                                    <child>
                                       <object class="GtkDropDown" id="type_dropdown">
                                         <property name="valign">3</property>
                                         <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">All Types</property>
+                                        <property name="tooltip-text" translatable="yes">Type</property>
                                       </object>
                                     </child>
                                     <child>
                                       <object class="GtkDropDown" id="catalog_dropdown">
                                         <property name="valign">3</property>
                                         <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">All Catalogs</property>
+                                        <property name="tooltip-text" translatable="yes">Catalog</property>
                                       </object>
                                     </child>
                                     <child>
                                       <object class="GtkDropDown" id="section_dropdown">
                                         <property name="valign">3</property>
                                         <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">All Sections</property>
+                                        <property name="tooltip-text" translatable="yes">Section</property>
                                       </object>
                                     </child>
                                     <child>
                                       <object class="GtkDropDown" id="genre_dropdown">
                                         <property name="valign">3</property>
                                         <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">All Genres</property>
+                                        <property name="tooltip-text" translatable="yes">Genre</property>
                                       </object>
                                     </child>
                                     <child>
                                       <object class="GtkDropDown" id="year_dropdown">
                                         <property name="valign">3</property>
                                         <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">All Years</property>
+                                        <property name="tooltip-text" translatable="yes">Year</property>
                                       </object>
                                     </child>
                                     <child>
                                       <object class="GtkDropDown" id="language_dropdown">
                                         <property name="valign">3</property>
                                         <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">All Languages</property>
+                                        <property name="tooltip-text" translatable="yes">Language</property>
                                       </object>
                                     </child>
                                     <child>
                                       <object class="GtkDropDown" id="country_dropdown">
                                         <property name="valign">3</property>
                                         <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">All Countries</property>
+                                        <property name="tooltip-text" translatable="yes">Country</property>
                                       </object>
                                     </child>
                                     <child>
@@ -527,20 +538,14 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                       </object>
                                     </child>
                                     <child>
-                                      <object class="GtkButton" id="discover_reset_btn">
-                                        <property name="label" translatable="yes">Reset</property>
+                                      <object class="GtkToggleButton" id="unique_check">
+                                        <property name="icon-name">view-grid-symbolic</property>
                                         <property name="valign">3</property>
-                                        <property name="tooltip-text" translatable="yes">Reset all Discover filters</property>
+                                        <property name="tooltip-text" translatable="yes">Unique View (Deduplicate media across multiple provider streams/catalogs)</property>
                                         <style>
                                           <class name="flat"/>
+                                          <class name="circular"/>
                                         </style>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkCheckButton" id="unique_check">
-                                        <property name="label" translatable="yes">Unique</property>
-                                        <property name="valign">3</property>
-                                        <property name="tooltip-text" translatable="yes">Deduplicate media across multiple provider streams/catalogs</property>
                                       </object>
                                     </child>
                                     <child>

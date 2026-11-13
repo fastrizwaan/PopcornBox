@@ -4619,7 +4619,7 @@ class CineWindow(Adw.ApplicationWindow):
     country_dropdown: Gtk.DropDown = Gtk.Template.Child()
     network_dropdown: Gtk.DropDown = Gtk.Template.Child()
     discover_reset_btn: Gtk.Button = Gtk.Template.Child()
-    unique_check: Gtk.CheckButton = Gtk.Template.Child()
+    unique_check: Gtk.ToggleButton = Gtk.Template.Child()
     discover_spinner: Gtk.Spinner = Gtk.Template.Child()
     filter_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
     unique_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
@@ -7786,8 +7786,14 @@ class CineWindow(Adw.ApplicationWindow):
         self.content_seen_ids = set()
 
         # Populate search catalog dropdown with lightweight placeholder; build full list asynchronously
-        self.search_catalogs_list = [{"display_name": "All Catalogs", "manifest_url": None, "catalog_id": None}]
-        self.search_catalog_dropdown.set_model(Gtk.StringList.new(["All Catalogs"]))
+        self.search_catalogs_list = [{"display_name": "Catalog", "manifest_url": None, "catalog_id": None}]
+        self.search_catalog_dropdown.set_model(Gtk.StringList.new(["Catalog"]))
+        sc_f = self._create_discover_dropdown_factory() if hasattr(self, "_create_discover_dropdown_factory") else None
+        if isinstance(sc_f, Gtk.ListItemFactory) and hasattr(self.search_catalog_dropdown, "set_factory"):
+            self.search_catalog_dropdown.set_factory(sc_f)
+        sc_lf = self._create_discover_dropdown_list_factory() if hasattr(self, "_create_discover_dropdown_list_factory") else None
+        if isinstance(sc_lf, Gtk.ListItemFactory) and hasattr(self.search_catalog_dropdown, "set_list_factory"):
+            self.search_catalog_dropdown.set_list_factory(sc_lf)
         GLib.timeout_add(1500, self._update_search_catalog_dropdown)
 
         def on_search_catalog_changed(dropdown, pspec):
@@ -8482,7 +8488,7 @@ class CineWindow(Adw.ApplicationWindow):
         self.current_year = None
         self.current_language = None
         self.current_country = None
-        self._discover_country_items = ["All Countries"]
+        self._discover_country_items = ["Country"]
         self._syncing_sort_dropdown = False
         self.category_btn_stack.set_visible_child_name("home")
         self.library_stack.set_visible_child_name("discover")
@@ -9204,25 +9210,25 @@ class CineWindow(Adw.ApplicationWindow):
 
         cur_sort = getattr(self, "current_sort", "Recent")
         if cur_sort == "Year" or (len(str(cur_sort)) == 4 and str(cur_sort).isdigit()):
-            if val_str in ("All Years", _("All Years"), "All", _("All")):
+            if val_str in ("All Years", _("All Years"), "Year", _("Year"), "All", _("All")):
                 self.current_year = None
             else:
                 self.current_year = val_str
             self.current_genre = None
         elif cur_sort == "Language":
-            if val_str in ("All Languages", _("All Languages"), "All", _("All")):
+            if val_str in ("All Languages", _("All Languages"), "Language", _("Language"), "All", _("All")):
                 self.current_language = None
                 self.current_genre = None
             else:
                 self.current_language = val_str
                 self.current_genre = val_str
         elif cur_sort == "Genre":
-            if val_str in ("All Genres", _("All Genres"), "All", _("All")):
+            if val_str in ("All Genres", _("All Genres"), "Genre", _("Genre"), "All", _("All")):
                 self.current_genre = None
             else:
                 self.current_genre = val_str
         else:
-            if val_str in ("All Genres", _("All Genres"), "All", _("All")):
+            if val_str in ("All Genres", _("All Genres"), "Genre", _("Genre"), "All", _("All")):
                 self.current_genre = None
             else:
                 self.current_genre = val_str
@@ -9319,6 +9325,57 @@ class CineWindow(Adw.ApplicationWindow):
             self._apply_sort_to_current_catalog()
             self._refresh_content()
 
+    def _create_discover_dropdown_factory(self):
+        factory = Gtk.SignalListItemFactory()
+        def _on_setup(_f, list_item):
+            label = Gtk.Label(xalign=0.0)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            label.set_max_width_chars(14)
+            list_item.set_child(label)
+        def _on_bind(_f, list_item):
+            label = list_item.get_child()
+            item = list_item.get_item()
+            txt = item.get_string() if item and hasattr(item, "get_string") else str(item or "")
+            label.set_text(txt)
+            label.set_tooltip_text(txt)
+        factory.connect("setup", _on_setup)
+        factory.connect("bind", _on_bind)
+        return factory
+
+    def _create_discover_dropdown_list_factory(self):
+        factory = Gtk.SignalListItemFactory()
+        def _on_setup(_f, list_item):
+            label = Gtk.Label(xalign=0.0)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            label.set_max_width_chars(36)
+            list_item.set_child(label)
+        def _on_bind(_f, list_item):
+            label = list_item.get_child()
+            item = list_item.get_item()
+            txt = item.get_string() if item and hasattr(item, "get_string") else str(item or "")
+            label.set_text(txt)
+        factory.connect("setup", _on_setup)
+        factory.connect("bind", _on_bind)
+        return factory
+
+    def _update_unique_btn_icon(self, btn=None):
+        target = btn or getattr(self, "unique_check", None)
+        if target is not None and hasattr(target, "set_icon_name"):
+            is_active = target.get_active() if hasattr(target, "get_active") else False
+            disp = target.get_display() if hasattr(target, "get_display") else None
+            theme = Gtk.IconTheme.get_for_display(disp) if disp else None
+            if is_active:
+                icon_name = "list-symbolic" if (theme and theme.has_icon("list-symbolic")) else "view-list-symbolic"
+            else:
+                icon_name = "view-grid-symbolic"
+            target.set_icon_name(icon_name)
+            if hasattr(target, "set_tooltip_text"):
+                target.set_tooltip_text(
+                    _("Unique View: On (Showing deduplicated media)")
+                    if is_active
+                    else _("Unique View: Off (Deduplicate media across multiple provider streams/catalogs)")
+                )
+
     def _init_discover_toolbar(self):
         """Initialize the Discover secondary filter toolbar underneath the headerbar."""
         self._syncing_discover_toolbar = True
@@ -9334,8 +9391,15 @@ class CineWindow(Adw.ApplicationWindow):
                 getattr(self, "country_dropdown", None),
                 getattr(self, "network_dropdown", None),
             ]:
-                if dd is not None and hasattr(dd, "set_expression"):
-                    dd.set_expression(expr)
+                if dd is not None:
+                    if hasattr(dd, "set_expression"):
+                        dd.set_expression(expr)
+                    f = self._create_discover_dropdown_factory() if hasattr(self, "_create_discover_dropdown_factory") else None
+                    if isinstance(f, Gtk.ListItemFactory) and hasattr(dd, "set_factory"):
+                        dd.set_factory(f)
+                    lf = self._create_discover_dropdown_list_factory() if hasattr(self, "_create_discover_dropdown_list_factory") else None
+                    if isinstance(lf, Gtk.ListItemFactory) and hasattr(dd, "set_list_factory"):
+                        dd.set_list_factory(lf)
                 self._watch_discover_filter_popover(dd)
 
             # Backward compatibility alias
@@ -9370,6 +9434,8 @@ class CineWindow(Adw.ApplicationWindow):
                 self.discover_reset_btn.connect("clicked", self._reset_discover_filters)
             if hasattr(self, "unique_check") and self.unique_check:
                 self.unique_check.connect("toggled", self._on_discover_unique_toggled)
+                self.unique_check.connect("notify::active", lambda b, p: self._update_unique_btn_icon(b))
+                self._update_unique_btn_icon(self.unique_check)
             if hasattr(self, "discover_search_entry") and self.discover_search_entry:
                 self.discover_search_entry.connect("search-changed", self._on_discover_search_changed)
                 self.discover_search_entry.connect("activate", self._on_discover_search_activated)
@@ -9532,7 +9598,7 @@ class CineWindow(Adw.ApplicationWindow):
             if not is_fetching:
                 active_q = _extract_active_discover_query(self)
                 cur_genre = getattr(self, "current_genre", None)
-                if cur_genre in ("All Genres", _("All Genres"), "All"):
+                if cur_genre in ("All Genres", _("All Genres"), "Genre", _("Genre"), "All"):
                     cur_genre = None
                 if active_q and cur_genre:
                     msg = _(f"No {cur_genre} items matching '{active_q}'.")
@@ -9717,10 +9783,10 @@ class CineWindow(Adw.ApplicationWindow):
         from . import api
         all_addons = api.database.get_addons()
         items = [{
-            "display_name": "All Catalogs",
+            "display_name": "Catalog",
             "addon": None,
             "manifest_url": None,
-            "addon_name": "All Catalogs"
+            "addon_name": "Catalog"
         }]
 
         seen_urls = set()
@@ -9786,7 +9852,7 @@ class CineWindow(Adw.ApplicationWindow):
     def _populate_discover_section_dropdown(self, addon, chosen_type, catalog_item=None):
         from . import api
         items = [{
-            "display_name": "All Sections",
+            "display_name": "Section",
             "cat": None,
             "catalog_id": None
         }]
@@ -9881,7 +9947,7 @@ class CineWindow(Adw.ApplicationWindow):
         # genres of their own (or for audio/live-TV providers).
         if addon is None or self._is_unique_mode_active():
             genres = database.get_available_genres(chosen_type)
-            self._discover_genre_items = ["All Genres"] + genres
+            self._discover_genre_items = ["Genre"] + genres
             if hasattr(self, "genre_dropdown") and self.genre_dropdown:
                 self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
                 self.genre_dropdown.set_selected(0)
@@ -9890,7 +9956,7 @@ class CineWindow(Adw.ApplicationWindow):
             return
         if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat):
             self._set_discover_filter_dropdowns_visible(False)
-            self._discover_genre_items = ["All Genres"]
+            self._discover_genre_items = ["Genre"]
             if getattr(self, "genre_dropdown", None):
                 self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
                 self.genre_dropdown.set_selected(0)
@@ -9936,14 +10002,14 @@ class CineWindow(Adw.ApplicationWindow):
 
         if hasattr(self, "genre_dropdown") and self.genre_dropdown:
             if not supports_genre:
-                self._discover_genre_items = ["All Genres"]
+                self._discover_genre_items = ["Genre"]
                 self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
                 self.genre_dropdown.set_selected(0)
                 self.genre_dropdown.set_sensitive(False)
                 self.genre_dropdown.set_visible(False)
             else:
                 genres_to_use = declared_genres if declared_genres else database.get_available_genres(chosen_type)
-                self._discover_genre_items = ["All Genres"] + genres_to_use
+                self._discover_genre_items = ["Genre"] + genres_to_use
                 self.genre_dropdown.set_model(Gtk.StringList.new(self._discover_genre_items))
                 self.genre_dropdown.set_selected(0)
                 self.genre_dropdown.set_sensitive(True)
@@ -9956,7 +10022,7 @@ class CineWindow(Adw.ApplicationWindow):
         # year support of their own (or for audio/live-TV providers).
         if addon is None or self._is_unique_mode_active():
             years = database.get_available_years(chosen_type)
-            self._discover_year_items = ["All Years"] + years
+            self._discover_year_items = ["Year"] + years
             if hasattr(self, "year_dropdown") and self.year_dropdown:
                 self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
                 self.year_dropdown.set_selected(0)
@@ -9965,7 +10031,7 @@ class CineWindow(Adw.ApplicationWindow):
             return
         if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat):
             self._set_discover_filter_dropdowns_visible(False)
-            self._discover_year_items = ["All Years"]
+            self._discover_year_items = ["Year"]
             if getattr(self, "year_dropdown", None):
                 self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
                 self.year_dropdown.set_selected(0)
@@ -9999,13 +10065,13 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "year_dropdown") and self.year_dropdown:
             if supports_year:
                 years = database.get_available_years(chosen_type)
-                self._discover_year_items = ["All Years"] + years
+                self._discover_year_items = ["Year"] + years
                 self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
                 self.year_dropdown.set_selected(0)
                 self.year_dropdown.set_sensitive(True)
                 self.year_dropdown.set_visible(True)
             else:
-                self._discover_year_items = ["All Years"]
+                self._discover_year_items = ["Year"]
                 self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
                 self.year_dropdown.set_selected(0)
                 self.year_dropdown.set_sensitive(False)
@@ -10015,7 +10081,7 @@ class CineWindow(Adw.ApplicationWindow):
         from . import database
         if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat):
             self._set_discover_filter_dropdowns_visible(False)
-            self._discover_language_items = ["All Languages"]
+            self._discover_language_items = ["Language"]
             if getattr(self, "language_dropdown", None):
                 self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
                 self.language_dropdown.set_selected(0)
@@ -10026,7 +10092,7 @@ class CineWindow(Adw.ApplicationWindow):
         # applied to returned items in the app, so provider declarations do not
         # determine which languages users can select.
         langs = database.get_available_languages()
-        self._discover_language_items = ["All Languages"] + langs
+        self._discover_language_items = ["Language"] + langs
         if hasattr(self, "language_dropdown") and self.language_dropdown:
             self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
             self.language_dropdown.set_selected(0)
@@ -10037,7 +10103,7 @@ class CineWindow(Adw.ApplicationWindow):
         from . import database
         if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat):
             self._set_discover_filter_dropdowns_visible(False)
-            self._discover_country_items = ["All Countries"]
+            self._discover_country_items = ["Country"]
             if getattr(self, "country_dropdown", None):
                 self.country_dropdown.set_model(Gtk.StringList.new(self._discover_country_items))
                 self.country_dropdown.set_selected(0)
@@ -10045,7 +10111,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self.country_dropdown.set_visible(False)
             return
         countries = database.get_available_countries(chosen_type)
-        self._discover_country_items = ["All Countries"] + countries
+        self._discover_country_items = ["Country"] + countries
         if hasattr(self, "country_dropdown") and self.country_dropdown:
             self.country_dropdown.set_model(Gtk.StringList.new(self._discover_country_items))
             self.country_dropdown.set_selected(0)
@@ -10060,7 +10126,7 @@ class CineWindow(Adw.ApplicationWindow):
             "ManoramaMAX", "Chaupal", "Hungama Play", "Hulu", "Paramount+",
             "Peacock", "BBC", "Showtime", "Starz",
         ]
-        options = ["All Networks"] + sorted(common, key=str.casefold)
+        options = ["Network"] + sorted(common, key=str.casefold)
         self._discover_network_items = options
         if getattr(self, "network_dropdown", None):
             self.network_dropdown.set_model(Gtk.StringList.new(options))
@@ -10276,28 +10342,28 @@ class CineWindow(Adw.ApplicationWindow):
         sec_info = self._discover_section_items[s_sel] if hasattr(self, "_discover_section_items") and s_sel < len(self._discover_section_items) else {}
         catalog_id = sec_info.get("catalog_id")
         section = sec_info.get("display_name")
-        if section == "All Sections":
+        if section in ("All Sections", _("All Sections"), "Section", _("Section"), "All", None):
             section = None
 
         g_item = self.genre_dropdown.get_selected_item() if hasattr(self, "genre_dropdown") and self.genre_dropdown else None
         g_str = g_item.get_string() if g_item else None
-        genre = g_str if g_str and g_str not in ("All Genres", _("All Genres"), "All") else None
+        genre = g_str if g_str and g_str not in ("All Genres", _("All Genres"), "Genre", _("Genre"), "All") else None
 
         y_item = self.year_dropdown.get_selected_item() if hasattr(self, "year_dropdown") and self.year_dropdown else None
         y_str = y_item.get_string() if y_item else None
-        year = y_str if y_str and y_str not in ("All Years", _("All Years"), "All") else None
+        year = y_str if y_str and y_str not in ("All Years", _("All Years"), "Year", _("Year"), "All") else None
 
         l_item = self.language_dropdown.get_selected_item() if hasattr(self, "language_dropdown") and self.language_dropdown else None
         l_str = l_item.get_string() if l_item else None
-        language = l_str if l_str and l_str not in ("All Languages", _("All Languages"), "All") else None
+        language = l_str if l_str and l_str not in ("All Languages", _("All Languages"), "Language", _("Language"), "All") else None
 
         c_country_item = self.country_dropdown.get_selected_item() if hasattr(self, "country_dropdown") and self.country_dropdown else None
         c_country_str = c_country_item.get_string() if c_country_item else None
-        country = c_country_str if c_country_str and c_country_str not in ("All Countries", _("All Countries"), "All") else None
+        country = c_country_str if c_country_str and c_country_str not in ("All Countries", _("All Countries"), "Country", _("Country"), "All") else None
 
         network_item = self.network_dropdown.get_selected_item() if getattr(self, "network_dropdown", None) else None
         network_str = network_item.get_string() if network_item else None
-        network = network_str if network_str and network_str not in ("All Networks", _("All Networks"), "All") else None
+        network = network_str if network_str and network_str not in ("All Networks", _("All Networks"), "Network", _("Network"), "All") else None
 
         unique_only = self._is_unique_mode_active()
         query = self._discover_result_search_query()
@@ -10700,13 +10766,13 @@ class CineWindow(Adw.ApplicationWindow):
                 return False
 
         filter_lang = getattr(self, "current_language", None)
-        if isinstance(filter_lang, str) and filter_lang and filter_lang not in ("All Languages", _("All Languages"), "All"):
+        if isinstance(filter_lang, str) and filter_lang and filter_lang not in ("All Languages", _("All Languages"), "Language", _("Language"), "All"):
             from . import api
             if not api.filter_items_by_genre([item], filter_lang):
                 return False
 
         filter_country = getattr(self, "current_country", None)
-        if isinstance(filter_country, str) and filter_country and filter_country not in ("All Countries", _("All Countries"), "All"):
+        if isinstance(filter_country, str) and filter_country and filter_country not in ("All Countries", _("All Countries"), "Country", _("Country"), "All"):
             from . import api
             if not api.filter_items_by_country([item], filter_country, media_type=filter_type):
                 return False
@@ -10838,15 +10904,15 @@ class CineWindow(Adw.ApplicationWindow):
         if not isinstance(section_scope, dict):
             section_scope = None
         selected_genre = getattr(self, "current_genre", None)
-        if not isinstance(selected_genre, str) or selected_genre in ("All Genres", _("All Genres"), "All"):
+        if not isinstance(selected_genre, str) or selected_genre in ("All Genres", _("All Genres"), "Genre", _("Genre"), "All"):
             selected_genre = None
 
         selected_lang = getattr(self, "current_language", None)
-        if not isinstance(selected_lang, str) or selected_lang in ("All Languages", _("All Languages"), "All"):
+        if not isinstance(selected_lang, str) or selected_lang in ("All Languages", _("All Languages"), "Language", _("Language"), "All"):
             selected_lang = None
 
         selected_country = getattr(self, "current_country", None)
-        if not isinstance(selected_country, str) or selected_country in ("All Countries", _("All Countries"), "All"):
+        if not isinstance(selected_country, str) or selected_country in ("All Countries", _("All Countries"), "Country", _("Country"), "All"):
             selected_country = None
 
         active_query = _extract_active_discover_query(self)
@@ -11191,19 +11257,19 @@ class CineWindow(Adw.ApplicationWindow):
         req_id = self.unique_request_id
         abort_ev = getattr(self, "_unique_abort_event", None)
         cur_genre = getattr(self, "current_genre", None)
-        if not isinstance(cur_genre, str) or cur_genre in ("All Genres", _("All Genres"), "All"):
+        if not isinstance(cur_genre, str) or cur_genre in ("All Genres", _("All Genres"), "Genre", _("Genre"), "All"):
             cur_genre = None
         cur_year = getattr(self, "current_year", None)
-        if not isinstance(cur_year, (str, int)) or str(cur_year) in ("All Years", _("All Years"), "All"):
+        if not isinstance(cur_year, (str, int)) or str(cur_year) in ("All Years", _("All Years"), "Year", _("Year"), "All"):
             cur_year = None
         cur_lang = getattr(self, "current_language", None)
-        if not isinstance(cur_lang, str) or cur_lang in ("All Languages", _("All Languages"), "All"):
+        if not isinstance(cur_lang, str) or cur_lang in ("All Languages", _("All Languages"), "Language", _("Language"), "All"):
             cur_lang = None
         cur_country = getattr(self, "current_country", None)
-        if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "All"):
+        if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "Country", _("Country"), "All"):
             cur_country = None
         cur_network = getattr(self, "current_network", None)
-        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
+        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "Network", _("Network"), "All"):
             cur_network = None
         cur_sort = getattr(self, "current_sort", "Recent")
         if not isinstance(cur_sort, str):
@@ -11966,16 +12032,16 @@ class CineWindow(Adw.ApplicationWindow):
                 fetch_genre = genre
                 cur_sort_val = getattr(self, "current_sort", None)
                 cur_lang = getattr(self, "current_language", None)
-                if not isinstance(cur_lang, str) or cur_lang in ("All Languages", _("All Languages"), "All"):
+                if not isinstance(cur_lang, str) or cur_lang in ("All Languages", _("All Languages"), "Language", _("Language"), "All"):
                     cur_lang = None
                 cur_country = getattr(self, "current_country", None)
-                if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "All"):
+                if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "Country", _("Country"), "All"):
                     cur_country = None
 
                 genre_unsupported = bool(genre and not api.catalog_supports_genre(catalog, genre))
 
                 if cur_sort_val == "Year" or (cat_id == "year" and not genre):
-                    fetch_genre = str(year) if year and str(year) not in ("All Years", "All", _("All Years")) else ""
+                    fetch_genre = str(year) if year and str(year) not in ("All Years", "All", _("All Years"), "Year", _("Year")) else ""
                 elif not genre and cur_lang:
                     fetch_genre = cur_lang if api.catalog_supports_genre(catalog, cur_lang) else ""
                 elif not genre and cur_country:
@@ -12076,7 +12142,7 @@ class CineWindow(Adw.ApplicationWindow):
                     return
 
                 if page_to_fetch == 1:
-                    if year and str(year) not in ("All Years", "All", _("All Years")):
+                    if year and str(year) not in ("All Years", "All", _("All Years"), "Year", _("Year")):
                         db_first_items = database.get_cached_items_by_year(
                             year,
                             media_type=target_db_mt,
@@ -12220,7 +12286,7 @@ class CineWindow(Adw.ApplicationWindow):
                 if _is_event_set(abort_ev):
                     self.is_fetching_content = False
                     return
-                yr_str = str(year) if year and str(year) not in ("All Years", "All", _("All Years")) else ""
+                yr_str = str(year) if year and str(year) not in ("All Years", "All", _("All Years"), "Year", _("Year")) else ""
                 if catalog.get("_source") == "tmdb_catalog":
                     from . import tmdb_helper
                     items, total_pages = tmdb_helper.fetch_default_tmdb_catalog_page(
@@ -12787,19 +12853,19 @@ class CineWindow(Adw.ApplicationWindow):
         if not isinstance(cur_sort, str):
             cur_sort = "Recent"
         cur_year = getattr(self, "current_year", None)
-        if not isinstance(cur_year, (str, int)) or str(cur_year) in ("All Years", _("All Years"), "All"):
+        if not isinstance(cur_year, (str, int)) or str(cur_year) in ("All Years", _("All Years"), "Year", _("Year"), "All"):
             cur_year = None
         cur_genre = getattr(self, "current_genre", None)
-        if not isinstance(cur_genre, str) or cur_genre in ("All Genres", _("All Genres"), "All"):
+        if not isinstance(cur_genre, str) or cur_genre in ("All Genres", _("All Genres"), "Genre", _("Genre"), "All"):
             cur_genre = None
         cur_lang = getattr(self, "current_language", None)
-        if not isinstance(cur_lang, str) or cur_lang in ("All Languages", _("All Languages"), "All"):
+        if not isinstance(cur_lang, str) or cur_lang in ("All Languages", _("All Languages"), "Language", _("Language"), "All"):
             cur_lang = None
         cur_country = getattr(self, "current_country", None)
-        if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "All"):
+        if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "Country", _("Country"), "All"):
             cur_country = None
         cur_network = getattr(self, "current_network", None)
-        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
+        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "Network", _("Network"), "All"):
             cur_network = None
         from . import cloudstream
         if filter_addon_url:
@@ -12915,7 +12981,7 @@ class CineWindow(Adw.ApplicationWindow):
                 if cur_country and not filter_addon_url and not api.catalog_supports_genre(cat, cur_country) and not api.catalog_language_for_country(cat, cur_country):
                     continue
 
-                if cur_year and cur_year not in ("All Years", _("All Years"), "All"):
+                if cur_year and cur_year not in ("All Years", _("All Years"), "Year", _("Year"), "All"):
                     c_type_raw = str(cat.get('type') or 'movie').lower()
                     if c_type_raw in ('tv', 'channel', 'live', 'radio'):
                         continue
@@ -13576,19 +13642,19 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "category_btn_stack") and hasattr(self.category_btn_stack, "get_visible_child_name"):
             cat_btn = self.category_btn_stack.get_visible_child_name() or "home"
         cur_lang = getattr(self, "current_language", None)
-        if not isinstance(cur_lang, str) or cur_lang in ("All Languages", _("All Languages"), "All"):
+        if not isinstance(cur_lang, str) or cur_lang in ("All Languages", _("All Languages"), "Language", _("Language"), "All"):
             cur_lang = None
         cur_country = getattr(self, "current_country", None)
-        if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "All"):
+        if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "Country", _("Country"), "All"):
             cur_country = None
         cur_network = getattr(self, "current_network", None)
-        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
+        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "Network", _("Network"), "All"):
             cur_network = None
         cur_genre = getattr(self, "current_genre", None)
-        if not isinstance(cur_genre, str) or cur_genre in ("All Genres", _("All Genres"), "All"):
+        if not isinstance(cur_genre, str) or cur_genre in ("All Genres", _("All Genres"), "Genre", _("Genre"), "All"):
             cur_genre = None
         cur_year = getattr(self, "current_year", None)
-        if not isinstance(cur_year, (str, int)) or str(cur_year) in ("All Years", _("All Years"), "All"):
+        if not isinstance(cur_year, (str, int)) or str(cur_year) in ("All Years", _("All Years"), "Year", _("Year"), "All"):
             cur_year = None
         cur_sort = getattr(self, "current_sort", "Recent")
         if not isinstance(cur_sort, str):
@@ -13637,16 +13703,16 @@ class CineWindow(Adw.ApplicationWindow):
 
         is_home = (getattr(self, "category_btn_stack", None) and hasattr(self.category_btn_stack, "get_visible_child_name") and self.category_btn_stack.get_visible_child_name() == "home")
         cur_lang = getattr(self, "current_language", None)
-        if not isinstance(cur_lang, str) or cur_lang in ("All Languages", _("All Languages"), "All"):
+        if not isinstance(cur_lang, str) or cur_lang in ("All Languages", _("All Languages"), "Language", _("Language"), "All"):
             cur_lang = None
         cur_country = getattr(self, "current_country", None)
-        if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "All"):
+        if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "Country", _("Country"), "All"):
             cur_country = None
         cur_network = getattr(self, "current_network", None)
-        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
+        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "Network", _("Network"), "All"):
             cur_network = None
         cur_genre = getattr(self, "current_genre", None)
-        if not isinstance(cur_genre, str) or cur_genre in ("All Genres", _("All Genres"), "All"):
+        if not isinstance(cur_genre, str) or cur_genre in ("All Genres", _("All Genres"), "Genre", _("Genre"), "All"):
             cur_genre = None
         
         # 1. Instant cache hit: Switch visible view immediately with zero refetch
@@ -13887,7 +13953,7 @@ class CineWindow(Adw.ApplicationWindow):
         end_idx = min(start_idx + batch_size, len(self._discover_catalog_list))
         batch_items = self._discover_catalog_list[start_idx:end_idx]
         cur_network = getattr(self, "current_network", None)
-        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "All"):
+        if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "Network", _("Network"), "All"):
             cur_network = None
         
         debug_log(f"_load_next_discover_batch START (req_id={req_id}, rows {start_idx}..{end_idx} of {len(self._discover_catalog_list)})", f"Titles: {[b.get('title') for b in batch_items]}")
@@ -13958,10 +14024,10 @@ class CineWindow(Adw.ApplicationWindow):
 
                         if row_info.get("_source") == "genre_cache":
                             current_l = getattr(self, "current_language", None)
-                            if not isinstance(current_l, str) or current_l in ("All Languages", _("All Languages"), "All"):
+                            if not isinstance(current_l, str) or current_l in ("All Languages", _("All Languages"), "Language", _("Language"), "All"):
                                 current_l = None
                             current_c = getattr(self, "current_country", None)
-                            if not isinstance(current_c, str) or current_c in ("All Countries", _("All Countries"), "All"):
+                            if not isinstance(current_c, str) or current_c in ("All Countries", _("All Countries"), "Country", _("Country"), "All"):
                                 current_c = None
                             req_country = row_info.get("country") or current_c
                             if req_country and not row_info.get("genre"):
@@ -14105,16 +14171,16 @@ class CineWindow(Adw.ApplicationWindow):
                             return (row_info, items)
 
                         current_g = getattr(self, "current_genre", None)
-                        if not isinstance(current_g, str) or current_g in ("All Genres", _("All Genres"), "All"):
+                        if not isinstance(current_g, str) or current_g in ("All Genres", _("All Genres"), "Genre", _("Genre"), "All"):
                             current_g = None
                         current_y = getattr(self, "current_year", None)
-                        if not isinstance(current_y, (str, int)) or str(current_y) in ("All Years", _("All Years"), "All"):
+                        if not isinstance(current_y, (str, int)) or str(current_y) in ("All Years", _("All Years"), "Year", _("Year"), "All"):
                             current_y = None
                         current_l = getattr(self, "current_language", None)
-                        if not isinstance(current_l, str) or current_l in ("All Languages", _("All Languages"), "All"):
+                        if not isinstance(current_l, str) or current_l in ("All Languages", _("All Languages"), "Language", _("Language"), "All"):
                             current_l = None
                         current_c = getattr(self, "current_country", None)
-                        if not isinstance(current_c, str) or current_c in ("All Countries", _("All Countries"), "All"):
+                        if not isinstance(current_c, str) or current_c in ("All Countries", _("All Countries"), "Country", _("Country"), "All"):
                             current_c = None
 
                         if current_g and not api.catalog_supports_filter(row_info, current_g):
@@ -14366,10 +14432,10 @@ class CineWindow(Adw.ApplicationWindow):
                     more_catalogs = self._discover_next_row_index < len(self._discover_catalog_list)
 
                     active_l = getattr(self, "current_language", None)
-                    if not isinstance(active_l, str) or active_l in ("All Languages", _("All Languages"), "All"):
+                    if not isinstance(active_l, str) or active_l in ("All Languages", _("All Languages"), "Language", _("Language"), "All"):
                         active_l = None
                     active_c = getattr(self, "current_country", None)
-                    if not isinstance(active_c, str) or active_c in ("All Countries", _("All Countries"), "All"):
+                    if not isinstance(active_c, str) or active_c in ("All Countries", _("All Countries"), "Country", _("Country"), "All"):
                         active_c = None
                     limit_empty = 2 if (active_l or active_c) else 4
 
@@ -18108,9 +18174,9 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "update_category_buttons_visibility"):
             self.update_category_buttons_visibility()
 
-        # Build dynamic media types based on Stremio addons, always including "All Types" as the primary filter
+        # Build dynamic media types based on Stremio addons, always including "Type" as the primary filter
         type_items = [
-            ("All Types", "all"),
+            ("Type", "all"),
             ("Movies+Series", "movie_series"),
             ("Movies", "movie"),
             ("Series", "series"),
@@ -18263,7 +18329,7 @@ class CineWindow(Adw.ApplicationWindow):
                 series_cats = api.get_available_search_catalogs("series", only_working=False)
 
             seen_cat_keys = set()
-            new_list = [{"display_name": "All Catalogs", "manifest_url": None, "catalog_id": None}]
+            new_list = [{"display_name": "Catalog", "manifest_url": None, "catalog_id": None}]
 
             for cat in movie_cats + series_cats + anime_cats:
                 key = (cat["manifest_url"], cat["catalog_id"])

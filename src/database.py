@@ -3471,10 +3471,10 @@ def get_stored_genres(media_type=None):
 
 def get_cached_items_by_country(country, media_type=None, genre=None, year=None, sort_mode=None, limit=60, offset=0, language=None):
     """Retrieve catalog item dicts from SQLite cache matching a specific country and optional media_type/genre/year/sort_mode/language."""
-    if not country or country in ("All", "All Countries", "all"):
-        if genre and genre not in ("All", "All Genres", "all"):
+    if not country or country in ("All", "All Countries", "Country", "all"):
+        if genre and genre not in ("All", "All Genres", "Genre", "all"):
             return get_cached_items_by_genre(genre, media_type=media_type, year=year, sort_mode=sort_mode, limit=limit, offset=offset, language=language)
-        if language and language not in ("All", "All Languages", "all"):
+        if language and language not in ("All", "All Languages", "Language", "all"):
             return get_cached_items_by_genre(language, media_type=media_type, year=year, sort_mode=sort_mode, limit=limit, offset=offset)
         if year:
             return get_cached_items_by_year(year, media_type=media_type, genre=genre, sort_mode=sort_mode, limit=limit, offset=offset, language=language)
@@ -3493,10 +3493,10 @@ def get_cached_items_by_country(country, media_type=None, genre=None, year=None,
                 WHERE ic.country = ? COLLATE NOCASE
             """
             params = [norm_c]
-            if genre and genre not in ("All", "All Genres", "all"):
+            if genre and genre not in ("All", "All Genres", "Genre", "all"):
                 query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
                 params.append(genre.strip())
-            if language and language not in ("All", "All Languages", "all"):
+            if language and language not in ("All", "All Languages", "Language", "all"):
                 query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
                 params.append(language.strip())
             if media_type and media_type not in ("all", "discover"):
@@ -3510,7 +3510,7 @@ def get_cached_items_by_country(country, media_type=None, genre=None, year=None,
                 else:
                     query += " AND ic.media_type = ?"
                     params.append(mt)
-            if year and str(year) not in ("All Years", "All", "all", "None"):
+            if year and str(year) not in ("All Years", "Year", "All", "all", "None"):
                 yr_str = str(year).strip()
                 query += " AND (ic.year LIKE ? OR json_extract(m.data, '$.year') LIKE ?)"
                 params.extend([f"{yr_str}%", f"{yr_str}%"])
@@ -3558,10 +3558,10 @@ def get_cached_items_by_country(country, media_type=None, genre=None, year=None,
 
 def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None, limit=60, offset=0, language=None, country=None):
     """Retrieve catalog item dicts from SQLite cache matching a specific genre and optional media_type/year/sort_mode/language/country."""
-    if not genre or genre in ("All", "All Genres", "all"):
-        if country and country not in ("All", "All Countries", "all"):
+    if not genre or genre in ("All", "All Genres", "Genre", "all"):
+        if country and country not in ("All", "All Countries", "Country", "all"):
             return get_cached_items_by_country(country, media_type=media_type, year=year, sort_mode=sort_mode, limit=limit, offset=offset, language=language)
-        if language and language not in ("All", "All Languages", "all"):
+        if language and language not in ("All", "All Languages", "Language", "all"):
             return get_cached_items_by_genre(language, media_type=media_type, year=year, sort_mode=sort_mode, limit=limit, offset=offset, country=country)
         if year:
             return get_cached_items_by_year(year, media_type=media_type, sort_mode=sort_mode, limit=limit, offset=offset, country=country)
@@ -3579,10 +3579,10 @@ def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None,
                 WHERE ig.genre = ? COLLATE NOCASE
             """
             params = [genre.strip()]
-            if language and language not in ("All", "All Languages", "all") and language.strip().lower() != genre.strip().lower():
+            if language and language not in ("All", "All Languages", "Language", "all") and language.strip().lower() != genre.strip().lower():
                 query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
                 params.append(language.strip())
-            if country and country not in ("All", "All Countries", "all"):
+            if country and country not in ("All", "All Countries", "Country", "all"):
                 query += " AND m.id IN (SELECT item_id FROM item_countries WHERE country = ? COLLATE NOCASE)"
                 params.append(normalize_country_name(country))
             if media_type and media_type not in ("all", "discover"):
@@ -3651,7 +3651,7 @@ def get_cached_items_by_genre(genre, media_type=None, year=None, sort_mode=None,
 
 def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, limit=80, offset=0, language=None, country=None):
     """Retrieve catalog item dicts from SQLite cache matching a specific release year and optional media_type/genre/language/country."""
-    if not year or str(year) in ("All Years", "All", "all", "None"):
+    if not year or str(year) in ("All Years", "Year", "All", "all", "None"):
         return []
     yr_str = str(year).strip()
     if not (yr_str.isdigit() and len(yr_str) == 4):
@@ -3664,10 +3664,10 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
             cursor = conn.cursor()
 
             effective_genre = genre
-            if (not effective_genre or effective_genre in ("All", "All Genres", "all")) and language and language not in ("All", "All Languages", "all"):
+            if (not effective_genre or effective_genre in ("All", "All Genres", "Genre", "all")) and language and language not in ("All", "All Languages", "Language", "all"):
                 effective_genre = language
 
-            if effective_genre and str(effective_genre) not in ("All", "All Genres", "all"):
+            if effective_genre and str(effective_genre) not in ("All", "All Genres", "Genre", "all"):
                 query = """
                     SELECT m.data
                     FROM item_genres ig
@@ -3676,10 +3676,10 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
                       AND (ig.year = ? OR json_extract(m.data, '$.year') = ? OR json_extract(m.data, '$.year') = ?)
                 """
                 params = [effective_genre.strip(), yr_str, yr_str, int(yr_str)]
-                if language and language not in ("All", "All Languages", "all") and language.strip().lower() != effective_genre.strip().lower():
+                if language and language not in ("All", "All Languages", "Language", "all") and language.strip().lower() != effective_genre.strip().lower():
                     query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
                     params.append(language.strip())
-                if country and country not in ("All", "All Countries", "all"):
+                if country and country not in ("All", "All Countries", "Country", "all"):
                     query += " AND m.id IN (SELECT item_id FROM item_countries WHERE country = ? COLLATE NOCASE)"
                     params.append(normalize_country_name(country))
                 if media_type and media_type not in ("all", "discover"):
@@ -3701,10 +3701,10 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
                            OR m.id IN (SELECT item_id FROM item_genres WHERE year = ?))
                 """
                 params = [yr_str, int(yr_str), yr_str]
-                if language and language not in ("All", "All Languages", "all"):
+                if language and language not in ("All", "All Languages", "Language", "all"):
                     query += " AND m.id IN (SELECT item_id FROM item_genres WHERE genre = ? COLLATE NOCASE)"
                     params.append(language.strip())
-                if country and country not in ("All", "All Countries", "all"):
+                if country and country not in ("All", "All Countries", "Country", "all"):
                     query += " AND m.id IN (SELECT item_id FROM item_countries WHERE country = ? COLLATE NOCASE)"
                     params.append(normalize_country_name(country))
                 if media_type and media_type not in ("all", "discover"):
@@ -3777,10 +3777,10 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                 cond_params = [f"%{q_str}%"] * 5
 
             effective_genre = genre
-            if (not effective_genre or effective_genre in ("All", "All Genres", "all")) and language and language not in ("All", "All Languages", "all"):
+            if (not effective_genre or effective_genre in ("All", "All Genres", "Genre", "all")) and language and language not in ("All", "All Languages", "Language", "all"):
                 effective_genre = language
 
-            if effective_genre and str(effective_genre) not in ("All", "All Genres", "all"):
+            if effective_genre and str(effective_genre) not in ("All", "All Genres", "Genre", "all"):
                 sql = f"""
                     SELECT m.data
                     FROM item_genres ig
@@ -3789,10 +3789,10 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                       AND {search_condition}
                 """
                 params = [effective_genre.strip()] + cond_params
-                if language and language not in ("All", "All Languages", "all") and language.strip().lower() != effective_genre.strip().lower():
+                if language and language not in ("All", "All Languages", "Language", "all") and language.strip().lower() != effective_genre.strip().lower():
                     sql += " AND m.id IN (SELECT item_id FROM item_genres WHERE lower(genre) = lower(?))"
                     params.append(str(language).strip())
-                if country and country not in ("All", "All Countries", "all"):
+                if country and country not in ("All", "All Countries", "Country", "all"):
                     sql += " AND m.id IN (SELECT item_id FROM item_countries WHERE lower(country) = lower(?))"
                     params.append(normalize_country_name(country))
             else:
@@ -3802,10 +3802,10 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                     WHERE {search_condition}
                 """
                 params = list(cond_params)
-                if language and language not in ("All", "All Languages", "all"):
+                if language and language not in ("All", "All Languages", "Language", "all"):
                     sql += " AND m.id IN (SELECT item_id FROM item_genres WHERE lower(genre) = lower(?))"
                     params.append(str(language).strip())
-                if country and country not in ("All", "All Countries", "all"):
+                if country and country not in ("All", "All Countries", "Country", "all"):
                     sql += " AND m.id IN (SELECT item_id FROM item_countries WHERE lower(country) = lower(?))"
                     params.append(normalize_country_name(country))
 
@@ -3826,7 +3826,7 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                     sql += " AND m.media_type = ?"
                     params.append(mt)
 
-            if year and str(year) not in ("All Years", "All", "all", "None"):
+            if year and str(year) not in ("All Years", "Year", "All", "all", "None"):
                 yr_str = str(year).strip()
                 sql += " AND (json_extract(m.data, '$.year') LIKE ?)"
                 params.append(f"{yr_str}%")

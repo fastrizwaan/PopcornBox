@@ -315,46 +315,53 @@ template $CineWindow: Adw.ApplicationWindow {
                   margin-end: 12;
                   halign: center;
 
+                  Button discover_reset_btn {
+                    icon-name: "view-refresh-symbolic";
+                    valign: center;
+                    tooltip-text: _("Reset all Discover filters");
+                    styles ["flat", "circular"]
+                  }
+
                   DropDown type_dropdown {
                     valign: center;
                     enable-search: true;
-                    tooltip-text: _("All Types");
+                    tooltip-text: _("Type");
                   }
 
                   DropDown catalog_dropdown {
                     valign: center;
                     enable-search: true;
-                    tooltip-text: _("All Catalogs");
+                    tooltip-text: _("Catalog");
                   }
 
                   DropDown section_dropdown {
                     valign: center;
                     enable-search: true;
-                    tooltip-text: _("All Sections");
+                    tooltip-text: _("Section");
                   }
 
                   DropDown genre_dropdown {
                     valign: center;
                     enable-search: true;
-                    tooltip-text: _("All Genres");
+                    tooltip-text: _("Genre");
                   }
 
                   DropDown year_dropdown {
                     valign: center;
                     enable-search: true;
-                    tooltip-text: _("All Years");
+                    tooltip-text: _("Year");
                   }
 
                   DropDown language_dropdown {
                     valign: center;
                     enable-search: true;
-                    tooltip-text: _("All Languages");
+                    tooltip-text: _("Language");
                   }
 
                   DropDown country_dropdown {
                     valign: center;
                     enable-search: true;
-                    tooltip-text: _("All Countries");
+                    tooltip-text: _("Country");
                   }
 
                   DropDown network_dropdown {
@@ -363,17 +370,11 @@ template $CineWindow: Adw.ApplicationWindow {
                     tooltip-text: _("Network");
                   }
 
-                  Button discover_reset_btn {
-                    label: _("Reset");
+                  ToggleButton unique_check {
+                    icon-name: "view-grid-symbolic";
                     valign: center;
-                    tooltip-text: _("Reset all Discover filters");
-                    styles ["flat"]
-                  }
-
-                  CheckButton unique_check {
-                    label: _("Unique");
-                    valign: center;
-                    tooltip-text: _("Deduplicate media across multiple provider streams/catalogs");
+                    tooltip-text: _("Unique View (Deduplicate media across multiple provider streams/catalogs)");
+                    styles ["flat", "circular"]
                   }
 
                   ToggleButton discover_search_btn {

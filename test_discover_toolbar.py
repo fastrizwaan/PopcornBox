@@ -71,6 +71,8 @@ class TestDiscoverToolbar(unittest.TestCase):
         for name in ("discover", "content", "unique", "search_results"):
             self.win.library_stack.add_named(Gtk.Box(), name)
 
+        self.win.main_stack.get_visible_child_name.return_value = "library"
+
         self.win.discover_options_revealer = Gtk.Revealer()
         self.win.discover_back_box = Gtk.Box()
         self.win.discover_grid_title = Gtk.Label()
@@ -113,10 +115,13 @@ class TestDiscoverToolbar(unittest.TestCase):
 
         # Attach methods under test
         self.win._init_discover_toolbar = lambda: CineWindow._init_discover_toolbar(self.win)
+        self.win._create_discover_dropdown_factory = lambda: CineWindow._create_discover_dropdown_factory(self.win)
+        self.win._create_discover_dropdown_list_factory = lambda: CineWindow._create_discover_dropdown_list_factory(self.win)
+        self.win._update_unique_btn_icon = lambda b=None: CineWindow._update_unique_btn_icon(self.win, b)
         self.win._get_current_discover_type = lambda: CineWindow._get_current_discover_type(self.win)
         self.win._populate_discover_type_dropdown = lambda: CineWindow._populate_discover_type_dropdown(self.win)
         self.win._populate_discover_catalog_dropdown = lambda ct: CineWindow._populate_discover_catalog_dropdown(self.win, ct)
-        self.win._populate_discover_section_dropdown = lambda a, ct: CineWindow._populate_discover_section_dropdown(self.win, a, ct)
+        self.win._populate_discover_section_dropdown = lambda a, ct, ac=None: CineWindow._populate_discover_section_dropdown(self.win, a, ct, ac)
         self.win._populate_discover_genre_dropdown = lambda a, ct, ac=None: CineWindow._populate_discover_genre_dropdown(self.win, a, ct, ac)
         self.win._populate_discover_year_dropdown = lambda a, ct, ac=None: CineWindow._populate_discover_year_dropdown(self.win, a, ct, ac)
         self.win._populate_discover_language_dropdown = lambda a, ct, ac=None: CineWindow._populate_discover_language_dropdown(self.win, a, ct, ac)
@@ -181,42 +186,42 @@ class TestDiscoverToolbar(unittest.TestCase):
             patcher.stop()
 
     def test_initial_toolbar_population(self):
-        """Toolbar should initialize with 'All Types', 'All Catalogs', 'All Sections', 'All Genres', 'All Years', 'All Languages'."""
+        """Toolbar should initialize with 'Type', 'Catalog', 'Section', 'Genre', 'Year', 'Language'."""
         self.win._init_discover_toolbar()
 
         # Type dropdown
         t_model = self.win.type_dropdown.get_model()
         self.assertGreater(t_model.get_n_items(), 0)
-        self.assertEqual(t_model.get_string(0), "All Types")
+        self.assertEqual(t_model.get_string(0), "Type")
         self.assertEqual(self.win.type_dropdown.get_selected(), 0)
 
         # Catalog dropdown
         c_model = self.win.catalog_dropdown.get_model()
         self.assertGreater(c_model.get_n_items(), 0)
-        self.assertEqual(c_model.get_string(0), "All Catalogs")
+        self.assertEqual(c_model.get_string(0), "Catalog")
         self.assertEqual(self.win.catalog_dropdown.get_selected(), 0)
 
         # Section dropdown
         s_model = self.win.section_dropdown.get_model()
         self.assertEqual(s_model.get_n_items(), 1)
-        self.assertEqual(s_model.get_string(0), "All Sections")
+        self.assertEqual(s_model.get_string(0), "Section")
 
         # Genre dropdown
         g_model = self.win.genre_dropdown.get_model()
         self.assertGreater(g_model.get_n_items(), 1)
-        self.assertEqual(g_model.get_string(0), "All Genres")
+        self.assertEqual(g_model.get_string(0), "Genre")
         self.assertTrue(self.win.genre_dropdown.get_sensitive())
 
         # Year dropdown
         y_model = self.win.year_dropdown.get_model()
         self.assertGreater(y_model.get_n_items(), 1)
-        self.assertEqual(y_model.get_string(0), "All Years")
+        self.assertEqual(y_model.get_string(0), "Year")
         self.assertTrue(self.win.year_dropdown.get_sensitive())
 
         # Language dropdown
         l_model = self.win.language_dropdown.get_model()
         self.assertGreater(l_model.get_n_items(), 1)
-        self.assertEqual(l_model.get_string(0), "All Languages")
+        self.assertEqual(l_model.get_string(0), "Language")
         self.assertTrue(self.win.language_dropdown.get_sensitive())
 
         # Unique check
@@ -305,7 +310,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         # Feeds should contain Popular Movies and New Movies
         s_model = self.win.section_dropdown.get_model()
         feeds = [s_model.get_string(i) for i in range(s_model.get_n_items())]
-        self.assertIn("All Sections", feeds)
+        self.assertIn("Section", feeds)
         self.assertIn("Popular Movies", feeds)
         self.assertIn("New Movies", feeds)
 
@@ -336,17 +341,17 @@ class TestDiscoverToolbar(unittest.TestCase):
 
         self.win._init_discover_toolbar()
         self.win._discover_catalog_items = [
-            {"display_name": "All Catalogs", "addon": None, "manifest_url": None},
+            {"display_name": "Catalog", "addon": None, "manifest_url": None},
             {"display_name": "Simple Torrent Feed", "addon": mock_addon_no_genre, "manifest_url": mock_addon_no_genre["manifest_url"]}
         ]
-        self.win.catalog_dropdown.set_model(Gtk.StringList.new(["All Catalogs", "Simple Torrent Feed"]))
+        self.win.catalog_dropdown.set_model(Gtk.StringList.new(["Catalog", "Simple Torrent Feed"]))
         self.win.catalog_dropdown.set_selected(1)
         self.win._on_discover_catalog_changed(self.win.catalog_dropdown, None)
 
         self.assertFalse(self.win.genre_dropdown.get_sensitive())
         g_model = self.win.genre_dropdown.get_model()
         self.assertEqual(g_model.get_n_items(), 1)
-        self.assertEqual(g_model.get_string(0), "All Genres")
+        self.assertEqual(g_model.get_string(0), "Genre")
 
     def test_reload_catalog_grid_unique_only(self):
         """When unique_only is True, reload_catalog_grid switches to 'unique' stack page and refreshes unique view."""
@@ -1091,7 +1096,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         CineWindow._populate_discover_genre_dropdown(self.win, addon, "all", "year")
         model = self.win.genre_dropdown.get_model()
         items = [model.get_string(i) for i in range(model.get_n_items())]
-        self.assertIn("All Genres", items)
+        self.assertIn("Genre", items)
         self.assertNotIn("2026", items)
         self.assertNotIn("2025", items)
         self.assertNotIn("2024", items)
@@ -1260,20 +1265,20 @@ class TestDiscoverToolbar(unittest.TestCase):
             self.assertEqual(btn.get_visible(), should_be_visible, f"Tab {tab_name} visibility mismatch")
 
     def test_type_dropdown_always_contains_all_types_even_after_addon_update(self):
-        """Verify type_dropdown always includes 'All Types' at index 0 and retains it across addon updates."""
+        """Verify type_dropdown always includes 'Type' at index 0 and retains it across addon updates."""
         self.win._init_discover_toolbar()
 
         # 1. Initial state
         t_model = self.win.type_dropdown.get_model()
-        self.assertEqual(t_model.get_string(0), "All Types")
+        self.assertEqual(t_model.get_string(0), "Type")
         self.assertEqual(self.win.media_type_keys[0], "all")
-        self.assertEqual(self.win.media_type_labels[0], "All Types")
+        self.assertEqual(self.win.media_type_labels[0], "Type")
         self.assertEqual(self.win._get_current_discover_type(), "all")
 
         # 2. Simulate addon reload / media types update
         CineWindow._update_supported_media_types(self.win)
         t_model = self.win.type_dropdown.get_model()
-        self.assertEqual(t_model.get_string(0), "All Types")
+        self.assertEqual(t_model.get_string(0), "Type")
         self.assertEqual(t_model.get_string(1), "Movies+Series")
         self.assertEqual(t_model.get_string(2), "Movies")
         self.assertEqual(t_model.get_string(3), "Series")

@@ -2757,7 +2757,7 @@ def catalog_supports_genre(cat, genre):
     - genre is empty/None/All (no genre filtering requested)
     - The catalog defines genre filtering and the genre matches supported options (case-insensitive)
     """
-    if not genre or genre in ("All", "All Genres", "all"):
+    if not genre or genre in ("All", "All Genres", "Genre", "all"):
         return True
     if not cat:
         return False
@@ -2910,7 +2910,7 @@ def filter_items_by_genre(items, genre, media_type=None):
     from . import database
 
     # If no genre filtering requested, still enforce media_type compatibility if provided
-    if not genre or genre in ("All", "All Genres", "all"):
+    if not genre or genre in ("All", "All Genres", "Genre", "all"):
         if media_type and media_type != "all":
             return [it for it in items if is_item_type_compatible(it, media_type)]
         return items or []
@@ -3219,7 +3219,7 @@ def filter_items_by_country(items, country, media_type=None):
 
     from . import database
 
-    if not country or country in ("All", "All Countries", "all"):
+    if not country or country in ("All", "All Countries", "Country", "all"):
         if media_type and media_type != "all":
             return [it for it in items if is_item_type_compatible(it, media_type)]
         return items or []
