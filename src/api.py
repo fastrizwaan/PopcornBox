@@ -5943,6 +5943,13 @@ def is_direct_stream(stream):
     return False
 
 
+_known_torrent_addons = set()
+
+def mark_addon_as_torrent(addon_identifier):
+    """Dynamically register an addon as a torrent provider."""
+    if addon_identifier:
+        _known_torrent_addons.add(str(addon_identifier).lower())
+
 def is_torrent_addon(addon):
     """Determine if an addon dictionary represents a torrent provider."""
     if not isinstance(addon, dict):
@@ -5952,17 +5959,35 @@ def is_torrent_addon(addon):
     desc = str(addon.get("description") or "").lower()
     manifest_url = str(addon.get("manifest_url") or "").lower()
 
+    if any(k in _known_torrent_addons for k in (name, addon_id, manifest_url) if k):
+        return True
+
     torrent_keywords = (
         "torrent", "torrentio", "knightcrawler", "torrentclaw", "yts",
         "piratebay", "1337x", "eztv", "p2p", "jackett", "prowlarr",
         "annatar", "mediafusion", "debrid", "comet", "bitsearch",
         "torlock", "kickass", "rarbg", "solidtorrents", "limetorrents",
+        "pipe", "boringways", "seeders", "peers", "magnet", "webtorrent",
     )
     for kw in torrent_keywords:
         if kw in name or kw in addon_id or kw in manifest_url:
             return True
-    if "torrent" in desc or "p2p" in desc:
+    if any(k in desc for k in ("torrent", "p2p", "seeders", "peers", "magnet")):
         return True
+
+    # Try inspecting any base64 encoded URL component in manifest_url
+    if "/" in manifest_url:
+        import base64
+        for part in manifest_url.split("/"):
+            part_clean = part.split(".")[0]
+            if len(part_clean) >= 8 and len(part_clean) % 4 in (0, 2, 3):
+                try:
+                    padded = part_clean + "=" * ((4 - len(part_clean) % 4) % 4)
+                    decoded = base64.b64decode(padded).decode("utf-8", errors="ignore").lower()
+                    if any(k in decoded for k in ("seeders", "torrent", "magnet", "peers")):
+                        return True
+                except Exception:
+                    pass
     return False
 
 
@@ -6018,6 +6043,9 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             or str(s.get("magnet") or "").startswith("magnet:")
             or stream_url.split('?')[0].lower().endswith(".torrent")
         )
+        if is_torrent and source_addon_names:
+            for aname in source_addon_names:
+                mark_addon_as_torrent(aname)
         is_http = not is_torrent and bool(
             stream_url.startswith(("http://", "https://"))
             or s.get("is_http")

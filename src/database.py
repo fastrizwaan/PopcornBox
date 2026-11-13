@@ -92,7 +92,7 @@ def _ensure_db():
         temp_file = DB_FILE.with_name(f"data.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
             with open(temp_file, "w") as f:
-                json.dump({"favorites": [], "watched": [], "history": [], "continue_watching": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}, f, indent=4)
+                json.dump({"favorites": [], "watched": [], "history": [], "continue_watching": [], "downloads": [], "settings": {}, "addons": DEFAULT_ADDONS}, f, indent=2)
             temp_file.replace(DB_FILE)
         except Exception:
             try:
@@ -174,6 +174,30 @@ def _read_db():
                 data["history"] = []
             if "continue_watching" not in data:
                 data["continue_watching"] = []
+            else:
+                # Prune bloated stream_queue and selected_torrent from continue_watching
+                for item in data.get("continue_watching", []):
+                    if isinstance(item, dict):
+                        q = item.get("stream_queue")
+                        if isinstance(q, list) and len(q) > 2:
+                            idx = max(0, min(int(item.get("stream_queue_index") or 0), len(q) - 1)) if q else 0
+                            trimmed = q[idx:idx + 2] if idx < len(q) else q[:2]
+                            item["stream_queue"] = [
+                                _normalize_stream_for_storage(s) or s for s in trimmed
+                            ]
+                            item["stream_queue_index"] = 0
+                            migrated = True
+                        elif isinstance(q, list) and q:
+                            norm_q = [_normalize_stream_for_storage(s) or s for s in q]
+                            if norm_q != q:
+                                item["stream_queue"] = norm_q
+                                migrated = True
+                        st = item.get("selected_torrent")
+                        if isinstance(st, dict):
+                            norm_st = _normalize_stream_for_storage(st) or st
+                            if norm_st != st:
+                                item["selected_torrent"] = norm_st
+                                migrated = True
             if "downloads" not in data:
                 data["downloads"] = []
             if "plugin_repositories" not in data:
@@ -514,7 +538,7 @@ def _write_db_file(target, payload):
     dump_started = time.perf_counter()
     try:
         with open(temp_file, "w") as f:
-            json.dump(clean_data, f, indent=4, default=str)
+            json.dump(clean_data, f, indent=2, default=str)
             f.flush()
             written = f.tell()
             os.fsync(f.fileno())
@@ -600,7 +624,7 @@ def _write_db(data):
             dump_started = time.perf_counter()
             try:
                 with open(temp_file, "w") as f:
-                    json.dump(clean_data, f, indent=4, default=str)
+                    json.dump(clean_data, f, indent=2, default=str)
                     # Flush to disk before the rename: without fsync a crash can
                     # persist the rename while the contents are still unwritten,
                     # leaving a truncated data.json behind.
@@ -1089,6 +1113,21 @@ def save_continue_watching(item, sync_to_remote=True):
         if "last_watched" not in item:
             updated_item["last_watched"] = int(time.time())
 
+        # Cap stream_queue to at most 2 streams and normalize stream dicts to keep data.json lightweight
+        if "stream_queue" in updated_item and isinstance(updated_item["stream_queue"], (list, tuple)):
+            q = list(updated_item["stream_queue"])
+            q_idx = max(0, min(int(updated_item.get("stream_queue_index") or 0), len(q) - 1)) if q else 0
+            trimmed = q[q_idx:q_idx + 2] if q_idx < len(q) else q[:2]
+            updated_item["stream_queue"] = [
+                _normalize_stream_for_storage(s) or s for s in trimmed
+            ]
+            updated_item["stream_queue_index"] = 0
+        if "selected_torrent" in updated_item and isinstance(updated_item["selected_torrent"], dict):
+            updated_item["selected_torrent"] = (
+                _normalize_stream_for_storage(updated_item["selected_torrent"])
+                or updated_item["selected_torrent"]
+            )
+
         new_cw.insert(0, updated_item)
         db["continue_watching"] = new_cw[:100]
         _write_db(db)
@@ -1334,13 +1373,30 @@ def _normalize_stream_for_storage(stream):
     if not stream or not isinstance(stream, dict):
         return None
     res = {}
-    for k in ["url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx", "quality", "q_val", "size", "size_gb", "seeders", "stream_title", "title", "filename", "is_http", "is_torrent", "stream_type", "is_external", "ytId", "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles", "saved_at", "binge_group", "expires_at", "has_expiring_credentials", "is_nuvio_plugin", "plugin_scraper_id", "plugin_scraper_tmdb_id"]:
+    allowed_fields = [
+        "url", "magnet", "hash", "infoHash", "sources", "file_index", "fileIdx",
+        "quality", "q_val", "size", "size_gb", "seeders", "stream_title", "title",
+        "filename", "is_http", "is_torrent", "stream_type", "is_external", "ytId",
+        "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles",
+        "saved_at", "binge_group", "expires_at", "has_expiring_credentials",
+        "is_nuvio_plugin", "plugin_scraper_id", "plugin_scraper_tmdb_id",
+        "headers", "is_cloudstream", "cloudstream_provider_id"
+    ]
+    for k in allowed_fields:
         if k in stream and stream[k] is not None:
             res[k] = stream[k]
     if "addon_name" in stream and "addon_names" not in res:
         res["addon_names"] = [stream["addon_name"]]
     elif res.get("addon_names") and not res.get("addon_name"):
         res["addon_name"] = res["addon_names"][0]
+
+    # Limit bulky nested collections to prevent data.json bloat
+    if "subtitles" in res and isinstance(res["subtitles"], list):
+        res["subtitles"] = res["subtitles"][:5]
+    if "sources" in res and isinstance(res["sources"], list):
+        res["sources"] = res["sources"][:3]
+    if "headers" in res and isinstance(res["headers"], dict):
+        res["headers"] = {str(hk): str(hv) for hk, hv in res["headers"].items() if len(str(hv)) < 1000}
 
     bh = res.get("behaviorHints")
     if not res.get("binge_group") and isinstance(bh, dict):

@@ -17138,9 +17138,8 @@ class CineWindow(Adw.ApplicationWindow):
         season = getattr(self, "_current_playing_item", {}).get("season")
         episode = getattr(self, "_current_playing_item", {}).get("episode")
 
-        # Save verified working stream to database
-        if p_id:
-            database.save_working_stream(p_id, season, episode, working_stream)
+        # Batch save verified working stream and preferred settings to DB in one write
+        settings_to_save = {}
 
         # Update preferred provider
         addon_names = working_stream.get("addon_names", [])
@@ -17149,11 +17148,11 @@ class CineWindow(Adw.ApplicationWindow):
             if working_stream.get("is_http"):
                 self.preferred_direct_provider = prov
                 if p_id:
-                    database.set_setting(f"preferred_direct_provider_{p_id}", prov)
-                database.set_setting("last_direct_provider", prov)
+                    settings_to_save[f"preferred_direct_provider_{p_id}"] = prov
+                settings_to_save["last_direct_provider"] = prov
             if p_id:
-                database.set_setting(f"preferred_provider_{p_id}", prov)
-            database.set_setting("last_provider", prov)
+                settings_to_save[f"preferred_provider_{p_id}"] = prov
+            settings_to_save["last_provider"] = prov
             page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
             if page:
                 if working_stream.get("is_http"):
@@ -17171,10 +17170,13 @@ class CineWindow(Adw.ApplicationWindow):
         if working_q:
             self.user_selected_quality = working_q
             if p_id:
-                database.set_setting(f"preferred_quality_{p_id}", working_q)
-            database.set_setting("preferred_quality", working_q)
+                settings_to_save[f"preferred_quality_{p_id}"] = working_q
+            settings_to_save["preferred_quality"] = working_q
             if page:
                 page.user_selected_quality = working_q
+
+        if p_id or settings_to_save:
+            database.save_playback_preferences(p_id, season, episode, working_stream, settings_to_save)
 
         # Update _current_playing_item with working stream placed at index 0
         if getattr(self, "_current_playing_item", None):
@@ -17192,7 +17194,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._current_playing_item["stream_url"] = st_url
             if working_stream.get("magnet"):
                 self._current_playing_item["magnet"] = working_stream["magnet"]
-            database.save_continue_watching(self._current_playing_item)
+            database.save_continue_watching_async(self._current_playing_item)
 
     def _on_no_streams_found(self):
         self.hide_player_loading()
@@ -18135,7 +18137,7 @@ class CineWindow(Adw.ApplicationWindow):
                                 item_id = self._current_playing_item.get("id") or self._current_playing_item.get("imdb_id")
                                 database.remove_continue_watching(item_id, blacklist=False)
                         else:
-                            database.save_continue_watching(self._current_playing_item)
+                            database.save_continue_watching_async(self._current_playing_item)
                 except Exception as e:
                     logger.debug(f"Error saving progress on close player: {e}")
 

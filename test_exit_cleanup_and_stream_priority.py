@@ -421,7 +421,103 @@ class TestExitCleanupAndStreamPriority(unittest.TestCase):
         self.assertIn("Torrentio", called_addons)
         self.assertNotIn("DirectAddon", called_addons)
 
+    def test_is_torrent_addon_pipe_and_dynamic_registration(self):
+        from src import api
+        pipe_addon = {
+            "id": "org.boringways.pipe",
+            "name": "Pipe",
+            "manifest_url": "https://pipe.boringways.workers.dev/eyJsIjpbIkVuZ2xpc2giLCJIaW5kaSJdLCJ0cyI6InNlZWRlcnMifQ/manifest.json",
+            "description": "All your streams in one pipe.",
+        }
+        self.assertTrue(api.is_torrent_addon(pipe_addon))
 
+        custom_addon = {
+            "id": "custom.unknown.provider",
+            "name": "CustomProvider",
+            "manifest_url": "https://unknown.com/manifest.json",
+        }
+        self.assertFalse(api.is_torrent_addon(custom_addon))
+
+        # Dynamic registration
+        api.mark_addon_as_torrent("CustomProvider")
+        self.assertTrue(api.is_torrent_addon(custom_addon))
+
+    def test_continue_watching_queue_pruning(self):
+        test_db_dir = tempfile.mkdtemp()
+        test_db_file = Path(test_db_dir) / "data.json"
+        orig_db_file = database.DB_FILE
+        try:
+            database.DB_FILE = test_db_file
+            database.reset_json_cache()
+
+            dummy_queue = [
+                {"url": f"http://example.com/{i}", "title": f"Stream {i}", "seeders": i, "subtitles": [{"lang": "en"}] * 10}
+                for i in range(50)
+            ]
+            item = {
+                "id": "tt1234567",
+                "title": "Test Title",
+                "stream_queue": dummy_queue,
+                "stream_queue_index": 3,
+                "selected_torrent": dummy_queue[3],
+                "position": 100.0,
+                "duration": 500.0,
+            }
+
+            database.save_continue_watching(item, sync_to_remote=False)
+
+            cw = database.get_continue_watching()
+            self.assertEqual(len(cw), 1)
+            saved_item = cw[0]
+            # Stream queue must be capped to at most 2 streams
+            self.assertLessEqual(len(saved_item.get("stream_queue", [])), 2)
+            self.assertEqual(saved_item.get("stream_queue_index"), 0)
+            self.assertEqual(saved_item["stream_queue"][0]["url"], "http://example.com/3")
+            # Subtitles should be capped
+            self.assertLessEqual(len(saved_item["stream_queue"][0].get("subtitles", [])), 5)
+        finally:
+            database.DB_FILE = orig_db_file
+            database.reset_json_cache()
+            shutil.rmtree(test_db_dir, ignore_errors=True)
+
+    def test_database_read_migration_prunes_bloat(self):
+        test_db_dir = tempfile.mkdtemp()
+        test_db_file = Path(test_db_dir) / "data.json"
+        orig_db_file = database.DB_FILE
+        try:
+            database.DB_FILE = test_db_file
+            database.reset_json_cache()
+
+            import json
+            dummy_queue = [
+                {"url": f"http://example.com/{i}", "title": f"Stream {i}", "seeders": i}
+                for i in range(80)
+            ]
+            bloated_cw = [{
+                "id": "tt7654321",
+                "title": "Bloated Title",
+                "stream_queue": dummy_queue,
+                "stream_queue_index": 2,
+                "selected_torrent": dummy_queue[2]
+            }]
+            raw_db = {
+                "favorites": [], "watched": [], "history": [],
+                "continue_watching": bloated_cw, "downloads": [],
+                "settings": {}, "addons": database.DEFAULT_ADDONS
+            }
+            with open(test_db_file, "w") as f:
+                json.dump(raw_db, f, indent=4)
+
+            # _read_db should migrate and prune
+            data = database._read_db()
+            cw_item = data["continue_watching"][0]
+            self.assertLessEqual(len(cw_item["stream_queue"]), 2)
+            self.assertEqual(cw_item["stream_queue_index"], 0)
+            self.assertEqual(cw_item["stream_queue"][0]["url"], "http://example.com/2")
+        finally:
+            database.DB_FILE = orig_db_file
+            database.reset_json_cache()
+            shutil.rmtree(test_db_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
