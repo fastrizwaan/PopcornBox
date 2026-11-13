@@ -4594,6 +4594,7 @@ class CineWindow(Adw.ApplicationWindow):
     discover_filter_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
     library_window_title: Adw.WindowTitle = Gtk.Template.Child()
     discover_options_revealer: Gtk.Revealer = Gtk.Template.Child()
+    discover_toolbar_scroll: Gtk.ScrolledWindow = Gtk.Template.Child()
     discover_toolbar: Gtk.Box = Gtk.Template.Child()
     discover_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
     discover_box: Gtk.Box = Gtk.Template.Child()

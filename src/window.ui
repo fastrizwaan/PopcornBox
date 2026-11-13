@@ -18,6 +18,12 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
         <condition>max-width: 550sp</condition>
         <setter object="controls_separator" property="visible">false</setter>
         <setter object="controls_wrap_box" property="child-spacing">2</setter>
+        <setter object="home_active_content" property="label"></setter>
+        <setter object="movies_active_content" property="label"></setter>
+        <setter object="series_active_content" property="label"></setter>
+        <setter object="anime_active_content" property="label"></setter>
+        <setter object="discover_active_content" property="label"></setter>
+        <setter object="header_local_nav_box" property="visible">false</setter>
       </object>
     </child>
     <property name="content">
@@ -57,7 +63,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                   <object class="GtkMenuButton" id="home_active_btn">
                                                     <property name="always-show-arrow">true</property>
                                                     <property name="child">
-                                                      <object class="AdwButtonContent">
+                                                      <object class="AdwButtonContent" id="home_active_content">
                                                         <property name="icon-name">go-home-symbolic</property>
                                                         <property name="label" translatable="yes">Home</property>
                                                       </object>
@@ -116,7 +122,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                   <object class="GtkMenuButton" id="movies_active_btn">
                                                     <property name="always-show-arrow">true</property>
                                                     <property name="child">
-                                                      <object class="AdwButtonContent">
+                                                      <object class="AdwButtonContent" id="movies_active_content">
                                                         <property name="icon-name">popcorn-movies-symbolic</property>
                                                         <property name="label" translatable="yes">Movies</property>
                                                       </object>
@@ -175,7 +181,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                   <object class="GtkMenuButton" id="series_active_btn">
                                                     <property name="always-show-arrow">true</property>
                                                     <property name="child">
-                                                      <object class="AdwButtonContent">
+                                                      <object class="AdwButtonContent" id="series_active_content">
                                                         <property name="icon-name">popcorn-tv-series-symbolic</property>
                                                         <property name="label" translatable="yes">Series</property>
                                                       </object>
@@ -234,7 +240,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                   <object class="GtkMenuButton" id="anime_active_btn">
                                                     <property name="always-show-arrow">true</property>
                                                     <property name="child">
-                                                      <object class="AdwButtonContent">
+                                                      <object class="AdwButtonContent" id="anime_active_content">
                                                         <property name="icon-name">popcorn-anime-symbolic</property>
                                                         <property name="label" translatable="yes">Anime</property>
                                                       </object>
@@ -293,7 +299,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                   <object class="GtkButton" id="discover_active_btn">
                                                     <property name="action-name">win.toggle-discover</property>
                                                     <property name="child">
-                                                      <object class="AdwButtonContent">
+                                                      <object class="AdwButtonContent" id="discover_active_content">
                                                         <property name="icon-name">popcorn-discover-symbolic</property>
                                                         <property name="label" translatable="yes">Discover</property>
                                                       </object>
@@ -367,7 +373,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                       </object>
                                     </child>
                                     <child type="end">
-                                      <object class="GtkBox">
+                                      <object class="GtkBox" id="header_local_nav_box">
                                         <property name="spacing">2</property>
                                         <child>
                                           <object class="GtkButton">
@@ -426,7 +432,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                         <child>
                                           <object class="GtkSearchEntry" id="search_entry">
                                             <property name="placeholder-text" translatable="yes">Search PopcornBox...</property>
-                                            <property name="width-request">400</property>
+                                            <property name="hexpand">true</property>
+                                            <property name="width-request">180</property>
                                           </object>
                                         </child>
                                         <child>
@@ -446,103 +453,114 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                           <object class="GtkRevealer" id="discover_options_revealer">
                             <property name="transition-type">5</property>
                             <child>
-                              <object class="GtkBox" id="discover_toolbar">
-                                <property name="orientation">0</property>
-                                <property name="spacing">6</property>
-                                <property name="margin-top">6</property>
-                                <property name="margin-bottom">6</property>
-                                <property name="margin-start">12</property>
-                                <property name="margin-end">12</property>
-                                <property name="halign">3</property>
+                              <object class="GtkScrolledWindow" id="discover_toolbar_scroll">
+                                <property name="hscrollbar-policy">1</property>
+                                <property name="vscrollbar-policy">2</property>
+                                <property name="propagate-natural-width">true</property>
+                                <property name="propagate-natural-height">true</property>
+                                <style>
+                                  <class name="discover-toolbar-scroll"/>
+                                </style>
                                 <child>
-                                  <object class="GtkDropDown" id="type_dropdown">
-                                    <property name="valign">3</property>
-                                    <property name="enable-search">true</property>
-                                    <property name="tooltip-text" translatable="yes">All Types</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkDropDown" id="catalog_dropdown">
-                                    <property name="valign">3</property>
-                                    <property name="enable-search">true</property>
-                                    <property name="tooltip-text" translatable="yes">All Catalogs</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkDropDown" id="section_dropdown">
-                                    <property name="valign">3</property>
-                                    <property name="enable-search">true</property>
-                                    <property name="tooltip-text" translatable="yes">All Sections</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkDropDown" id="genre_dropdown">
-                                    <property name="valign">3</property>
-                                    <property name="enable-search">true</property>
-                                    <property name="tooltip-text" translatable="yes">All Genres</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkDropDown" id="year_dropdown">
-                                    <property name="valign">3</property>
-                                    <property name="enable-search">true</property>
-                                    <property name="tooltip-text" translatable="yes">All Years</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkDropDown" id="language_dropdown">
-                                    <property name="valign">3</property>
-                                    <property name="enable-search">true</property>
-                                    <property name="tooltip-text" translatable="yes">All Languages</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkDropDown" id="country_dropdown">
-                                    <property name="valign">3</property>
-                                    <property name="enable-search">true</property>
-                                    <property name="tooltip-text" translatable="yes">All Countries</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkDropDown" id="network_dropdown">
-                                    <property name="valign">3</property>
-                                    <property name="enable-search">true</property>
-                                    <property name="tooltip-text" translatable="yes">Network</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton" id="discover_reset_btn">
-                                    <property name="label" translatable="yes">Reset</property>
-                                    <property name="valign">3</property>
-                                    <property name="tooltip-text" translatable="yes">Reset all Discover filters</property>
-                                    <style>
-                                      <class name="flat"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkCheckButton" id="unique_check">
-                                    <property name="label" translatable="yes">Unique</property>
-                                    <property name="valign">3</property>
-                                    <property name="tooltip-text" translatable="yes">Deduplicate media across multiple provider streams/catalogs</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkToggleButton" id="discover_search_btn">
-                                    <property name="icon-name">filter-symbolic</property>
-                                    <property name="valign">3</property>
-                                    <property name="tooltip-text" translatable="yes">Filter loaded results</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="circular"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkSpinner" id="discover_spinner">
-                                    <property name="valign">3</property>
-                                    <property name="spinning">false</property>
-                                    <property name="tooltip-text" translatable="yes">Loading...</property>
+                                  <object class="GtkBox" id="discover_toolbar">
+                                    <property name="orientation">0</property>
+                                    <property name="spacing">6</property>
+                                    <property name="margin-top">6</property>
+                                    <property name="margin-bottom">6</property>
+                                    <property name="margin-start">12</property>
+                                    <property name="margin-end">12</property>
+                                    <property name="halign">3</property>
+                                    <child>
+                                      <object class="GtkDropDown" id="type_dropdown">
+                                        <property name="valign">3</property>
+                                        <property name="enable-search">true</property>
+                                        <property name="tooltip-text" translatable="yes">All Types</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkDropDown" id="catalog_dropdown">
+                                        <property name="valign">3</property>
+                                        <property name="enable-search">true</property>
+                                        <property name="tooltip-text" translatable="yes">All Catalogs</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkDropDown" id="section_dropdown">
+                                        <property name="valign">3</property>
+                                        <property name="enable-search">true</property>
+                                        <property name="tooltip-text" translatable="yes">All Sections</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkDropDown" id="genre_dropdown">
+                                        <property name="valign">3</property>
+                                        <property name="enable-search">true</property>
+                                        <property name="tooltip-text" translatable="yes">All Genres</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkDropDown" id="year_dropdown">
+                                        <property name="valign">3</property>
+                                        <property name="enable-search">true</property>
+                                        <property name="tooltip-text" translatable="yes">All Years</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkDropDown" id="language_dropdown">
+                                        <property name="valign">3</property>
+                                        <property name="enable-search">true</property>
+                                        <property name="tooltip-text" translatable="yes">All Languages</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkDropDown" id="country_dropdown">
+                                        <property name="valign">3</property>
+                                        <property name="enable-search">true</property>
+                                        <property name="tooltip-text" translatable="yes">All Countries</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkDropDown" id="network_dropdown">
+                                        <property name="valign">3</property>
+                                        <property name="enable-search">true</property>
+                                        <property name="tooltip-text" translatable="yes">Network</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkButton" id="discover_reset_btn">
+                                        <property name="label" translatable="yes">Reset</property>
+                                        <property name="valign">3</property>
+                                        <property name="tooltip-text" translatable="yes">Reset all Discover filters</property>
+                                        <style>
+                                          <class name="flat"/>
+                                        </style>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkCheckButton" id="unique_check">
+                                        <property name="label" translatable="yes">Unique</property>
+                                        <property name="valign">3</property>
+                                        <property name="tooltip-text" translatable="yes">Deduplicate media across multiple provider streams/catalogs</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkToggleButton" id="discover_search_btn">
+                                        <property name="icon-name">filter-symbolic</property>
+                                        <property name="valign">3</property>
+                                        <property name="tooltip-text" translatable="yes">Filter loaded results</property>
+                                        <style>
+                                          <class name="flat"/>
+                                          <class name="circular"/>
+                                        </style>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkSpinner" id="discover_spinner">
+                                        <property name="valign">3</property>
+                                        <property name="spinning">false</property>
+                                        <property name="tooltip-text" translatable="yes">Loading...</property>
+                                      </object>
+                                    </child>
                                   </object>
                                 </child>
                               </object>
@@ -964,12 +982,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 <child>
                                   <object class="GtkToggleButton" id="fav_active_btn">
                                     <property name="active">true</property>
-                                    <property name="child">
-                                      <object class="AdwButtonContent">
-                                        <property name="icon-name">starred-symbolic</property>
-                                        <property name="label" translatable="yes">Favorites</property>
-                                      </object>
-                                    </property>
+                                    <property name="icon-name">starred-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Favorites</property>
                                     <style>
                                       <class name="flat"/>
                                       <class name="local-nav-btn"/>
@@ -1152,12 +1166,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 <child>
                                   <object class="GtkToggleButton" id="hist_active_btn">
                                     <property name="active">true</property>
-                                    <property name="child">
-                                      <object class="AdwButtonContent">
-                                        <property name="icon-name">document-open-recent-symbolic</property>
-                                        <property name="label" translatable="yes">History</property>
-                                      </object>
-                                    </property>
+                                    <property name="icon-name">document-open-recent-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">History</property>
                                     <style>
                                       <class name="flat"/>
                                       <class name="local-nav-btn"/>
@@ -1480,12 +1490,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 <child>
                                   <object class="GtkToggleButton" id="cw_active_btn">
                                     <property name="active">true</property>
-                                    <property name="child">
-                                      <object class="AdwButtonContent">
-                                        <property name="icon-name">media-playback-start-symbolic</property>
-                                        <property name="label" translatable="yes">Continue Watching</property>
-                                      </object>
-                                    </property>
+                                    <property name="icon-name">media-playback-start-symbolic</property>
+                                    <property name="tooltip-text" translatable="yes">Continue Watching</property>
                                     <style>
                                       <class name="flat"/>
                                       <class name="local-nav-btn"/>

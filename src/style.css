@@ -461,6 +461,15 @@ button.continue-play-btn:active {
   padding-right: 8px;
 }
 
+.discover-toolbar-scroll {
+  background: transparent;
+}
+
+.discover-toolbar-scroll scrollbar.horizontal {
+  background: transparent;
+  border: none;
+}
+
 .discover-filter-toggle-btn {
   font-weight: 600;
   border-radius: 9999px;

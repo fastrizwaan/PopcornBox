@@ -15,6 +15,12 @@ template $CineWindow: Adw.ApplicationWindow {
     setters {
       controls_separator.visible: false;
       controls_wrap_box.child-spacing: 2;
+      home_active_content.label: "";
+      movies_active_content.label: "";
+      series_active_content.label: "";
+      anime_active_content.label: "";
+      discover_active_content.label: "";
+      header_local_nav_box.visible: false;
     }
   }
 
@@ -43,7 +49,7 @@ template $CineWindow: Adw.ApplicationWindow {
                         styles ["linked"]
                         MenuButton home_active_btn {
                           always-show-arrow: true;
-                          child: Adw.ButtonContent {
+                          child: Adw.ButtonContent home_active_content {
                             icon-name: "go-home-symbolic";
                             label: _("Home");
                           };
@@ -82,7 +88,7 @@ template $CineWindow: Adw.ApplicationWindow {
                         }
                         MenuButton movies_active_btn {
                           always-show-arrow: true;
-                          child: Adw.ButtonContent {
+                          child: Adw.ButtonContent movies_active_content {
                             icon-name: "popcorn-movies-symbolic";
                             label: _("Movies");
                           };
@@ -121,7 +127,7 @@ template $CineWindow: Adw.ApplicationWindow {
                         }
                         MenuButton series_active_btn {
                           always-show-arrow: true;
-                          child: Adw.ButtonContent {
+                          child: Adw.ButtonContent series_active_content {
                             icon-name: "popcorn-tv-series-symbolic";
                             label: _("Series");
                           };
@@ -160,7 +166,7 @@ template $CineWindow: Adw.ApplicationWindow {
                         }
                         MenuButton anime_active_btn {
                           always-show-arrow: true;
-                          child: Adw.ButtonContent {
+                          child: Adw.ButtonContent anime_active_content {
                             icon-name: "popcorn-anime-symbolic";
                             label: _("Anime");
                           };
@@ -199,7 +205,7 @@ template $CineWindow: Adw.ApplicationWindow {
                         }
                         Button discover_active_btn {
                           action-name: "win.toggle-discover";
-                          child: Adw.ButtonContent {
+                          child: Adw.ButtonContent discover_active_content {
                             icon-name: "popcorn-discover-symbolic";
                             label: _("Discover");
                           };
@@ -256,7 +262,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 }
 
                 [end]
-                Box {
+                Box header_local_nav_box {
                   spacing: 2;
                   Button { action-name: "win.open-continue-watching"; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
                   Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
@@ -280,7 +286,8 @@ template $CineWindow: Adw.ApplicationWindow {
                 spacing: 6;
                 SearchEntry search_entry {
                   placeholder-text: _("Search PopcornBox...");
-                  width-request: 400;
+                  hexpand: true;
+                  width-request: 180;
                 }
                 DropDown search_catalog_dropdown {
                   valign: center;
@@ -292,89 +299,97 @@ template $CineWindow: Adw.ApplicationWindow {
             }
             Revealer discover_options_revealer {
               transition-type: slide_down;
-              Box discover_toolbar {
-                orientation: horizontal;
-                spacing: 6;
-                margin-top: 6;
-                margin-bottom: 6;
-                margin-start: 12;
-                margin-end: 12;
-                halign: center;
+              ScrolledWindow discover_toolbar_scroll {
+                hscrollbar-policy: automatic;
+                vscrollbar-policy: never;
+                propagate-natural-width: true;
+                propagate-natural-height: true;
+                styles ["discover-toolbar-scroll"]
 
-                DropDown type_dropdown {
-                  valign: center;
-                  enable-search: true;
-                  tooltip-text: _("All Types");
-                }
+                Box discover_toolbar {
+                  orientation: horizontal;
+                  spacing: 6;
+                  margin-top: 6;
+                  margin-bottom: 6;
+                  margin-start: 12;
+                  margin-end: 12;
+                  halign: center;
 
-                DropDown catalog_dropdown {
-                  valign: center;
-                  enable-search: true;
-                  tooltip-text: _("All Catalogs");
-                }
+                  DropDown type_dropdown {
+                    valign: center;
+                    enable-search: true;
+                    tooltip-text: _("All Types");
+                  }
 
-                DropDown section_dropdown {
-                  valign: center;
-                  enable-search: true;
-                  tooltip-text: _("All Sections");
-                }
+                  DropDown catalog_dropdown {
+                    valign: center;
+                    enable-search: true;
+                    tooltip-text: _("All Catalogs");
+                  }
 
-                DropDown genre_dropdown {
-                  valign: center;
-                  enable-search: true;
-                  tooltip-text: _("All Genres");
-                }
+                  DropDown section_dropdown {
+                    valign: center;
+                    enable-search: true;
+                    tooltip-text: _("All Sections");
+                  }
 
-                DropDown year_dropdown {
-                  valign: center;
-                  enable-search: true;
-                  tooltip-text: _("All Years");
-                }
+                  DropDown genre_dropdown {
+                    valign: center;
+                    enable-search: true;
+                    tooltip-text: _("All Genres");
+                  }
 
-                DropDown language_dropdown {
-                  valign: center;
-                  enable-search: true;
-                  tooltip-text: _("All Languages");
-                }
+                  DropDown year_dropdown {
+                    valign: center;
+                    enable-search: true;
+                    tooltip-text: _("All Years");
+                  }
 
-                DropDown country_dropdown {
-                  valign: center;
-                  enable-search: true;
-                  tooltip-text: _("All Countries");
-                }
+                  DropDown language_dropdown {
+                    valign: center;
+                    enable-search: true;
+                    tooltip-text: _("All Languages");
+                  }
 
-                DropDown network_dropdown {
-                  valign: center;
-                  enable-search: true;
-                  tooltip-text: _("Network");
-                }
+                  DropDown country_dropdown {
+                    valign: center;
+                    enable-search: true;
+                    tooltip-text: _("All Countries");
+                  }
 
-                Button discover_reset_btn {
-                  label: _("Reset");
-                  valign: center;
-                  tooltip-text: _("Reset all Discover filters");
-                  styles ["flat"]
-                }
+                  DropDown network_dropdown {
+                    valign: center;
+                    enable-search: true;
+                    tooltip-text: _("Network");
+                  }
 
-                CheckButton unique_check {
-                  label: _("Unique");
-                  valign: center;
-                  tooltip-text: _("Deduplicate media across multiple provider streams/catalogs");
-                }
+                  Button discover_reset_btn {
+                    label: _("Reset");
+                    valign: center;
+                    tooltip-text: _("Reset all Discover filters");
+                    styles ["flat"]
+                  }
 
-                ToggleButton discover_search_btn {
-                  icon-name: "filter-symbolic";
-                  valign: center;
-                  tooltip-text: _("Filter loaded results");
-                  styles ["flat", "circular"]
-                }
+                  CheckButton unique_check {
+                    label: _("Unique");
+                    valign: center;
+                    tooltip-text: _("Deduplicate media across multiple provider streams/catalogs");
+                  }
 
-                // Always allocated so the toolbar never reflows; it only
-                // animates while a discover or unique page is loading.
-                Spinner discover_spinner {
-                  valign: center;
-                  spinning: false;
-                  tooltip-text: _("Loading...");
+                  ToggleButton discover_search_btn {
+                    icon-name: "filter-symbolic";
+                    valign: center;
+                    tooltip-text: _("Filter loaded results");
+                    styles ["flat", "circular"]
+                  }
+
+                  // Always allocated so the toolbar never reflows; it only
+                  // animates while a discover or unique page is loading.
+                  Spinner discover_spinner {
+                    valign: center;
+                    spinning: false;
+                    tooltip-text: _("Loading...");
+                  }
                 }
               }
             }
@@ -613,7 +628,7 @@ template $CineWindow: Adw.ApplicationWindow {
               Box {
                 spacing: 2;
                 Button { action-name: "win.open-continue-watching"; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
-                ToggleButton fav_active_btn { active: true; child: Adw.ButtonContent { icon-name: "starred-symbolic"; label: _("Favorites"); }; styles ["flat", "local-nav-btn"] }
+                ToggleButton fav_active_btn { active: true; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
               }
             }
@@ -684,7 +699,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 spacing: 2;
                 Button { action-name: "win.open-continue-watching"; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
-                ToggleButton hist_active_btn { active: true; child: Adw.ButtonContent { icon-name: "document-open-recent-symbolic"; label: _("History"); }; styles ["flat", "local-nav-btn"] }
+                ToggleButton hist_active_btn { active: true; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
               }
             }
             ScrolledWindow history_scrolled {
@@ -822,7 +837,7 @@ template $CineWindow: Adw.ApplicationWindow {
               [end]
               Box {
                 spacing: 2;
-                ToggleButton cw_active_btn { active: true; child: Adw.ButtonContent { icon-name: "media-playback-start-symbolic"; label: _("Continue Watching"); }; styles ["flat", "local-nav-btn"] }
+                ToggleButton cw_active_btn { active: true; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
                 Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
               }
