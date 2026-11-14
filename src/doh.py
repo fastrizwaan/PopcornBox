@@ -83,7 +83,7 @@ def _should_bypass_doh(host: str) -> bool:
     return False
 
 
-def doh_resolve(hostname: str, timeout: float = 2.0) -> list[str]:
+def doh_resolve(hostname: str, timeout: float = 1.5) -> list[str]:
     """
     Resolves *hostname* via DNS-over-HTTPS.
     Returns list of IP strings, or empty list on failure.
@@ -105,40 +105,27 @@ def doh_resolve(hostname: str, timeout: float = 2.0) -> list[str]:
     _thread_local.in_doh = True
     ips = []
     try:
-        # Try Cloudflare DoH first
-        cf_url = f"https://cloudflare-dns.com/dns-query?name={urllib.parse.quote(host_clean)}&type=A"
-        req = urllib.request.Request(cf_url, headers={
-            "Accept": "application/dns-json",
-            "User-Agent": "PopcornBox-DoH/1.0"
-        })
-        try:
-            with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                for a in data.get("Answer", []):
-                    if a.get("type") == 1:
-                        ip = a.get("data", "").strip()
-                        if _is_ip_literal(ip):
-                            ips.append(ip)
-        except Exception:
-            pass
-
-        # Try Google DoH fallback if Cloudflare didn't return any IPs
-        if not ips:
-            g_url = f"https://dns.google/resolve?name={urllib.parse.quote(host_clean)}&type=A"
-            req = urllib.request.Request(g_url, headers={
-                "Accept": "application/json",
+        endpoints = [
+            (f"https://cloudflare-dns.com/dns-query?name={urllib.parse.quote(host_clean)}&type=A", "application/dns-json"),
+            (f"https://dns.google/resolve?name={urllib.parse.quote(host_clean)}&type=A", "application/json"),
+        ]
+        for url, accept_hdr in endpoints:
+            req = urllib.request.Request(url, headers={
+                "Accept": accept_hdr,
                 "User-Agent": "PopcornBox-DoH/1.0"
             })
             try:
                 with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     for a in data.get("Answer", []):
-                        if a.get("type") == 1:
+                        if a.get("type") in (1, 28):  # A or AAAA
                             ip = a.get("data", "").strip()
                             if _is_ip_literal(ip):
                                 ips.append(ip)
+                if ips:
+                    break
             except Exception:
-                pass
+                continue
     finally:
         _thread_local.in_doh = False
 
@@ -159,7 +146,27 @@ def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     if getattr(_thread_local, "in_doh", False) or not _enabled:
         return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
-    if not isinstance(host, str) or _should_bypass_doh(host):
+    if not isinstance(host, str):
+        return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
+    host_clean = host.strip().lower().rstrip(".")
+    # Fast path: bootstrap hosts resolve directly to bootstrap IPs without external DNS
+    if host_clean in _BOOTSTRAP_HOSTS:
+        results = []
+        for ip in _BOOTSTRAP_HOSTS[host_clean]:
+            ip_family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+            if family not in (0, ip_family):
+                continue
+            try:
+                res = _orig_getaddrinfo(ip, port, ip_family, type, proto, flags)
+                if res:
+                    results.extend(res)
+            except Exception:
+                pass
+        if results:
+            return results
+
+    if _should_bypass_doh(host):
         return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
     ips = doh_resolve(host)

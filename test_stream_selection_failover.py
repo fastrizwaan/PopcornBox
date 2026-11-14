@@ -163,6 +163,93 @@ class TestStreamSelectionAndFailover(unittest.TestCase):
             self.assertTrue(any("Quick Download" in s["name"] for s in sources))
             self.assertTrue(any("workers.dev" in s["url"] for s in sources))
 
+    def test_play_stream_with_failover_sanitizes_queue_for_direct_stream(self):
+        """play_stream_with_failover must purge all torrents from queue when a direct stream is played."""
+        mock_win = MagicMock()
+        mock_win.stream_request_id = 0
+        mock_win.main_stack = MagicMock()
+        mock_win.main_stack.get_visible_child_name.return_value = "details"
+        mock_win.details_box = MagicMock()
+        mock_win.details_box.get_first_child.return_value = None
+
+        direct_1 = {"url": "https://server.com/ep2.mp4", "is_http": True, "name": "Direct 1"}
+        direct_2 = {"url": "https://server.com/ep2_alt.mp4", "is_http": True, "name": "Direct 2"}
+        torrent_1 = {"magnet": "magnet:?xt=urn:btih:4444444444444444444444444444444444444444", "name": "Torrent 1"}
+
+        mixed_queue = [direct_1, torrent_1, direct_2]
+
+        with patch("src.database.get_continue_watching_item", return_value=None), \
+             patch("src.database.save_continue_watching_async"), \
+             patch.object(window.CineWindow, "_play_current_stream_from_queue"):
+            window.CineWindow.play_stream_with_failover(mock_win, mixed_queue, initial_index=0, title="Ep 2")
+
+        # The resulting stream_queue MUST only contain direct_1 and direct_2
+        self.assertEqual(len(mock_win.stream_queue), 2)
+        self.assertEqual(mock_win.stream_queue[0], direct_1)
+        self.assertEqual(mock_win.stream_queue[1], direct_2)
+        for s in mock_win.stream_queue:
+            self.assertFalse(window.is_torrent_stream(s))
+            self.assertTrue(window.is_direct_stream(s))
+
+    def test_play_stream_with_failover_sanitizes_queue_for_torrent_stream(self):
+        """play_stream_with_failover must purge all direct streams from queue when a torrent is played."""
+        mock_win = MagicMock()
+        mock_win.stream_request_id = 0
+        mock_win.main_stack = MagicMock()
+        mock_win.main_stack.get_visible_child_name.return_value = "details"
+        mock_win.details_box = MagicMock()
+        mock_win.details_box.get_first_child.return_value = None
+
+        torrent_1 = {"magnet": "magnet:?xt=urn:btih:5555555555555555555555555555555555555555", "name": "Torrent 1"}
+        torrent_2 = {"magnet": "magnet:?xt=urn:btih:6666666666666666666666666666666666666666", "name": "Torrent 2"}
+        direct_1 = {"url": "https://server.com/ep2.mp4", "is_http": True, "name": "Direct 1"}
+
+        mixed_queue = [torrent_1, direct_1, torrent_2]
+
+        with patch("src.database.get_continue_watching_item", return_value=None), \
+             patch("src.database.save_continue_watching_async"), \
+             patch.object(window.CineWindow, "_play_current_stream_from_queue"):
+            window.CineWindow.play_stream_with_failover(mock_win, mixed_queue, initial_index=0, title="Ep 2")
+
+        self.assertEqual(len(mock_win.stream_queue), 2)
+        self.assertEqual(mock_win.stream_queue[0], torrent_1)
+        self.assertEqual(mock_win.stream_queue[1], torrent_2)
+        for s in mock_win.stream_queue:
+            self.assertTrue(window.is_torrent_stream(s))
+            self.assertFalse(window.is_direct_stream(s))
+
+    def test_fresh_stream_candidates_strict_isolation(self):
+        """_fresh_stream_candidates must not produce torrent candidates when auto-healing an HTTP stream."""
+        failed_direct = {"url": "https://dead.com/video.mp4", "is_http": True, "name": "Dead Direct"}
+        fresh_direct = {"url": "https://alive.com/video.mp4", "is_http": True, "name": "Alive Direct"}
+        fresh_torrent = {"magnet": "magnet:?xt=urn:btih:7777777777777777777777777777777777777777", "name": "Fresh Torrent"}
+
+        fresh_queue = [fresh_torrent, fresh_direct]
+        candidates = window._fresh_stream_candidates(refreshed=fresh_torrent, fresh_queue=fresh_queue, previous=failed_direct)
+
+        # Torrent must be completely filtered out; only fresh_direct kept
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["url"], "https://alive.com/video.mp4")
+
+    def test_api_find_best_matching_stream_strict_isolation(self):
+        """api.find_best_matching_stream must never match a torrent to a direct stream."""
+        direct_st = {"url": "https://stream.com/vid.mp4", "is_http": True, "quality": "1080p", "size_gb": 2.0}
+        torrent_candidate = {"magnet": "magnet:?xt=urn:btih:8888888888888888888888888888888888888888", "quality": "1080p", "size_gb": 2.0}
+
+        matched = api.find_best_matching_stream(direct_st, [torrent_candidate])
+        self.assertIsNone(matched)
+
+    def test_doh_resolve_and_bootstrap(self):
+        """DoH resolver must handle bootstrap hosts and return IP list without system DNS queries."""
+        import socket
+        from src import doh
+        doh.enable_global_doh(True)
+        cf_addrs = [r[4][0] for r in socket.getaddrinfo("cloudflare-dns.com", 443)]
+        self.assertIn("1.1.1.1", cf_addrs)
+
+        g_addrs = [r[4][0] for r in socket.getaddrinfo("dns.google", 443)]
+        self.assertIn("8.8.8.8", g_addrs)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6413,11 +6413,19 @@ def find_best_matching_stream(target_stream, candidate_streams, preferred_provid
     target_fn = (target_stream.get("filename") or "").strip().lower()
     target_title = (target_stream.get("stream_title") or target_stream.get("title") or "").strip().lower()
     target_size = float(target_stream.get("size_gb") or 0.0)
+    target_is_direct = is_direct_stream(target_stream)
+    target_is_torrent = is_torrent_stream(target_stream)
 
     best_score = -1
     best_cand = None
 
     for c in candidate_streams:
+        if not isinstance(c, dict):
+            continue
+        if target_is_direct and not is_direct_stream(c):
+            continue
+        if target_is_torrent and not is_torrent_stream(c):
+            continue
         score = 0
         c_prov_match = stream_matches_provider(c, target_prov)
         if c_prov_match:
@@ -6551,6 +6559,15 @@ def refresh_stream(imdb_id, media_type="movie", season=None, episode=None, old_s
                 while len(_REFRESH_RESULT_CACHE) > 40:
                     _REFRESH_RESULT_CACHE.pop(next(iter(_REFRESH_RESULT_CACHE)))
     
+    target_is_direct = is_direct_stream(old_stream) if old_stream else False
+    target_is_torrent = is_torrent_stream(old_stream) if old_stream else False
+
+    if fresh_streams:
+        if target_is_direct:
+            fresh_streams = [s for s in fresh_streams if is_direct_stream(s)]
+        elif target_is_torrent:
+            fresh_streams = [s for s in fresh_streams if is_torrent_stream(s)]
+
     if not fresh_streams:
         return old_stream, []
     

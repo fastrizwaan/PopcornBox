@@ -262,51 +262,6 @@ def _filter_items_from_available_addons(items):
             kept.append(item)
     return kept
 
-def _fresh_stream_candidates(refreshed, fresh_queue, previous):
-    """Return newly fetched playable links, excluding the known dead link."""
-    previous_identity = _stream_identity(previous)
-    candidates = []
-    seen = set()
-    ordered = []
-    if _stream_link_changed(refreshed, previous):
-        ordered.append(refreshed)
-    if isinstance(fresh_queue, (list, tuple)):
-        ordered.extend(fresh_queue)
-    for stream in ordered:
-        if not isinstance(stream, dict):
-            continue
-        identity = _stream_identity(stream)
-        if identity is None or identity == previous_identity or identity in seen:
-            continue
-        seen.add(identity)
-        stream["_refreshed"] = True
-        candidates.append(stream)
-    return candidates
-
-
-def _merge_fresh_stream_queue(primary, fallback=(), exclude_streams=()):
-    excluded = {_stream_identity(stream) for stream in (exclude_streams or ())}
-    merged = []
-    seen = set()
-    for stream in list(primary or ()) + list(fallback or ()):
-        if not isinstance(stream, dict):
-            continue
-        identity = _stream_identity(stream)
-        if identity is not None and (identity in excluded or identity in seen):
-            continue
-        if identity is not None:
-            seen.add(identity)
-        merged.append(stream)
-    return merged
-
-def _stream_link_changed(refreshed, previous):
-    """True when a refresh actually produced a different playable link."""
-    if not isinstance(refreshed, dict) or not refreshed:
-        return False
-    old = previous if isinstance(previous, dict) else {}
-    return (refreshed.get("url") or refreshed.get("magnet")) != (old.get("url") or old.get("magnet"))
-
-
 def is_torrent_stream(stream):
     """Determine if a stream dictionary represents a torrent stream."""
     if not isinstance(stream, dict):
@@ -338,6 +293,69 @@ def is_direct_stream(stream):
     if url.startswith(("http://", "https://")):
         return True
     return False
+
+
+def _fresh_stream_candidates(refreshed, fresh_queue, previous):
+    """Return newly fetched playable links, excluding the known dead link."""
+    previous_identity = _stream_identity(previous)
+    is_direct = is_direct_stream(previous) if previous else False
+    is_torrent = is_torrent_stream(previous) if previous else False
+    candidates = []
+    seen = set()
+    ordered = []
+    if _stream_link_changed(refreshed, previous):
+        ordered.append(refreshed)
+    if isinstance(fresh_queue, (list, tuple)):
+        ordered.extend(fresh_queue)
+    for stream in ordered:
+        if not isinstance(stream, dict):
+            continue
+        if is_direct and not is_direct_stream(stream):
+            continue
+        if is_torrent and not is_torrent_stream(stream):
+            continue
+        identity = _stream_identity(stream)
+        if identity is None or identity == previous_identity or identity in seen:
+            continue
+        seen.add(identity)
+        stream["_refreshed"] = True
+        candidates.append(stream)
+    return candidates
+
+
+def _merge_fresh_stream_queue(primary, fallback=(), exclude_streams=()):
+    excluded = {_stream_identity(stream) for stream in (exclude_streams or ())}
+    target_stream = None
+    for s in list(primary or ()) + list(fallback or ()):
+        if isinstance(s, dict):
+            target_stream = s
+            break
+    is_direct = is_direct_stream(target_stream) if target_stream else False
+    is_torrent = is_torrent_stream(target_stream) if target_stream else False
+
+    merged = []
+    seen = set()
+    for stream in list(primary or ()) + list(fallback or ()):
+        if not isinstance(stream, dict):
+            continue
+        if is_direct and not is_direct_stream(stream):
+            continue
+        if is_torrent and not is_torrent_stream(stream):
+            continue
+        identity = _stream_identity(stream)
+        if identity is not None and (identity in excluded or identity in seen):
+            continue
+        if identity is not None:
+            seen.add(identity)
+        merged.append(stream)
+    return merged
+
+def _stream_link_changed(refreshed, previous):
+    """True when a refresh actually produced a different playable link."""
+    if not isinstance(refreshed, dict) or not refreshed:
+        return False
+    old = previous if isinstance(previous, dict) else {}
+    return (refreshed.get("url") or refreshed.get("magnet")) != (old.get("url") or old.get("magnet"))
 
 
 def _normalize_stream_quality(stream):
@@ -16019,12 +16037,12 @@ class CineWindow(Adw.ApplicationWindow):
         if not getattr(self, "stream_queue", None) or not isinstance(new_streams, (list, tuple)):
             return
         # Do not pollute direct stream queues with torrents or vice versa!
-        first_st = self.stream_queue[0] if self.stream_queue else None
-        if first_st and isinstance(first_st, dict):
-            if is_direct_stream(first_st):
-                new_streams = [s for s in new_streams if is_direct_stream(s)]
-            elif is_torrent_stream(first_st):
-                new_streams = [s for s in new_streams if is_torrent_stream(s)]
+        queue_is_direct = any(is_direct_stream(s) for s in self.stream_queue)
+        queue_is_torrent = any(is_torrent_stream(s) for s in self.stream_queue)
+        if queue_is_direct and not queue_is_torrent:
+            new_streams = [s for s in new_streams if is_direct_stream(s)]
+        elif queue_is_torrent and not queue_is_direct:
+            new_streams = [s for s in new_streams if is_torrent_stream(s)]
 
         existing_keys = set()
         for s in self.stream_queue:
@@ -17047,6 +17065,17 @@ class CineWindow(Adw.ApplicationWindow):
 
         # Merge stream-level subtitles from the current queue entry
         current_stream = self.stream_queue[self.stream_queue_index] if self.stream_queue and self.stream_queue_index < len(self.stream_queue) else {}
+        # Strict stream isolation: direct streams must NEVER fail over to torrents, and torrents must NEVER fail over to direct streams.
+        if current_stream and isinstance(current_stream, dict):
+            if is_direct_stream(current_stream):
+                self.stream_queue = [s for s in self.stream_queue if is_direct_stream(s)]
+            elif is_torrent_stream(current_stream):
+                self.stream_queue = [s for s in self.stream_queue if is_torrent_stream(s)]
+            try:
+                self.stream_queue_index = self.stream_queue.index(current_stream)
+            except ValueError:
+                self.stream_queue_index = 0
+
         entry_subs = current_stream.get("subtitles") if isinstance(current_stream, dict) else None
         all_subs = stream_subtitles or entry_subs
 
@@ -17569,6 +17598,13 @@ class CineWindow(Adw.ApplicationWindow):
 
         curr_idx = self.stream_queue_index
         remaining = self.stream_queue[curr_idx + 1:]
+        # Strict isolation during failover advance
+        if failed_st and isinstance(failed_st, dict):
+            if is_direct_stream(failed_st):
+                remaining = [s for s in remaining if is_direct_stream(s)]
+            elif is_torrent_stream(failed_st):
+                remaining = [s for s in remaining if is_torrent_stream(s)]
+            self.stream_queue = self.stream_queue[:curr_idx + 1] + remaining
         from . import api
         if target_prov and remaining:
             same_prov_streams = [s for s in remaining if api.stream_matches_provider(s, target_prov)]

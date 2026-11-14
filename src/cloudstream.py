@@ -2967,14 +2967,16 @@ def _extract_gdflix_sources(url, referer=None):
                 s["name"] = "GDFlix [PixelDrain]"
                 sources.append(s)
         elif any(k in t_upper for k in ("DIRECT DL", "DIRECT SERVER", "FSL V2", "CLOUD DOWNLOAD [R2]")):
-            sources.append({
-                "name": f"GDFlix [{t_clean}]",
-                "url": link,
-                "quality": q_val,
-                "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": target_url},
-                "is_hls": ".m3u8" in link,
-                "is_dash": False,
-            })
+            dl_url = urllib.parse.urljoin(target_url, link)
+            if dl_url.startswith(("http://", "https://")):
+                sources.append({
+                    "name": f"GDFlix [{t_clean}]",
+                    "url": dl_url,
+                    "quality": q_val,
+                    "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": target_url},
+                    "is_hls": ".m3u8" in dl_url,
+                    "is_dash": False,
+                })
         elif "/cflare/" in link or "FAST CLOUD" in t_upper or "ZIPDISK" in t_upper:
             try:
                 cf_target = urllib.parse.urljoin(candidate_url, link)
@@ -2984,14 +2986,16 @@ def _extract_gdflix_sources(url, referer=None):
                     c_clean = re.sub(r"<[^>]+>", "", c_text).strip()
                     c_upper = c_clean.upper()
                     if any(k in c_upper for k in ("CLOUD RESUME", "QUICK DOWNLOAD", "DIRECT DOWNLOAD")) or any(k in c_href.lower() for k in ("workers.dev", "cloudpaglu", "r2.dev")):
-                        sources.append({
-                            "name": f"GDFlix [{c_clean}]",
-                            "url": c_href,
-                            "quality": q_val,
-                            "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": cf_target},
-                            "is_hls": ".m3u8" in c_href,
-                            "is_dash": False,
-                        })
+                        full_cf_url = urllib.parse.urljoin(cf_target, c_href)
+                        if full_cf_url.startswith(("http://", "https://")):
+                            sources.append({
+                                "name": f"GDFlix [{c_clean}]",
+                                "url": full_cf_url,
+                                "quality": q_val,
+                                "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": cf_target},
+                                "is_hls": ".m3u8" in full_cf_url,
+                                "is_dash": False,
+                            })
             except Exception as e:
                 logger.debug(f"cflare extraction failed: {e}")
         elif "INSTANT DL" in t_upper or "INSTANT DOWNLOAD" in t_upper:
@@ -3000,7 +3004,7 @@ def _extract_gdflix_sources(url, referer=None):
                 if loc:
                     m_url = re.search(r"url=([^&]+)", loc)
                     real_dl = urllib.parse.unquote(m_url.group(1)) if m_url else loc
-                    if not any(b in real_dl.lower() for b in ("video-downloads.googleusercontent.com", "pages.dev", "googleusercontent.com")):
+                    if real_dl.startswith(("http://", "https://")) and not any(b in real_dl.lower() for b in ("video-downloads.googleusercontent.com", "pages.dev", "googleusercontent.com")):
                         sources.append({
                             "name": "GDFlix [Instant Download]",
                             "url": real_dl,
@@ -7627,7 +7631,7 @@ def playback_source_to_stream_dict(source, provider_name, provider_id):
     if not raw_url:
         return None
     if not (raw_url.startswith("http://") or raw_url.startswith("https://") or raw_url.startswith("magnet:")):
-        logger.warning(f"[CloudStream] Dropped non-HTTP/non-magnet stream URL: {raw_url}")
+        logger.debug(f"[CloudStream] Dropped non-HTTP/non-magnet stream URL: {raw_url}")
         return None
     raw_url_lower = raw_url.lower()
     if any(k in raw_url_lower for k in ("/movies-by-quality/", "/movies-by-size/", "/category/", "/how-to-download/", "/tag/", "/genres/", "/join/")):
