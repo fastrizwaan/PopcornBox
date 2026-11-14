@@ -43,6 +43,10 @@ from .preferences import Preferences, settings
 from .mpris import MPRIS
 from .save_session import is_same_playlist
 from .utils import logger, debug_log
+from . import doh
+
+# Initialize secure DNS-over-HTTPS
+doh.init_doh()
 
 os.environ["GSK_RENDERER"] = "gl"
 

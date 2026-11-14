@@ -249,6 +249,7 @@ class Preferences(Adw.Dialog):
     restore_config_btn: Gtk.Button = Gtk.Template.Child()
     stremio_sync_now_row: Adw.ActionRow = Gtk.Template.Child()
     stremio_sync_now_btn: Gtk.Button = Gtk.Template.Child()
+    doh_switch_row: Adw.SwitchRow = Gtk.Template.Child()
 
     def __init__(self, window, **kwargs):
         super().__init__(**kwargs)
@@ -315,7 +316,18 @@ class Preferences(Adw.Dialog):
         if hasattr(self, "prefs_cloudstream_plugins_row") and self.prefs_cloudstream_plugins_row:
             self.prefs_cloudstream_plugins_row.connect("activated", self._on_cloudstream_plugins_activated)
 
+        if hasattr(self, "doh_switch_row") and self.doh_switch_row:
+            doh_active = bool(database.get_setting("doh_enabled", True))
+            self.doh_switch_row.set_active(doh_active)
+            self.doh_switch_row.connect("notify::active", self._on_doh_toggled)
+
         self.connect("closed", self._disconnect_settings)
+
+    def _on_doh_toggled(self, row, _pspec):
+        from . import doh
+        active = row.get_active()
+        database.set_setting("doh_enabled", active)
+        doh.enable_global_doh(active)
 
     def _on_nuvio_plugins_activated(self, _row):
         self.close()

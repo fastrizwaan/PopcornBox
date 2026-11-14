@@ -505,6 +505,18 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
             </child>
             <child>
               <object class="AdwPreferencesGroup">
+                <property name="title" translatable="yes">Network &amp; DNS</property>
+                <child>
+                  <object class="AdwSwitchRow" id="doh_switch_row">
+                    <property name="title" translatable="yes">DNS-over-HTTPS (DoH)</property>
+                    <property name="subtitle" translatable="yes">Resolve domains securely via Cloudflare and Google to bypass ISP censorship and DNS poisoning</property>
+                    <property name="active">true</property>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
+              <object class="AdwPreferencesGroup">
                 <property name="title" translatable="yes">Backup &amp; Restore</property>
                 <property name="description" translatable="yes">Backup or restore all addons, plugins, and CloudStream repositories</property>
                 <child>

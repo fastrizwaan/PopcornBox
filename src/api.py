@@ -51,42 +51,18 @@ _SSL_CONTEXT = _create_ssl_context()
 # ---------------------------------------------------------------------------
 
 import http.client as _http_client
+from . import doh
 
-# hostname -> (real_ips_tuple, monotonic_timestamp)
-_DOH_CACHE = {}
-_DOH_CACHE_LOCK = threading.Lock()
-_DOH_CACHE_TTL = 600  # 10 minutes
+# Initialize global DoH if enabled by user
+doh.init_doh()
+
+_doh_resolve = doh.doh_resolve
 
 # Hosts where DoH resolution already returned the same IP as the system
 # resolver, i.e. DNS is not poisoned for that host.  No point retrying DoH
 # for these -- they fail for a genuine server reason.
 _DOH_NOT_POISONED = set()
 _DOH_NOT_POISONED_LOCK = threading.Lock()
-
-
-def _doh_resolve(hostname):
-    """Resolve *hostname* via Google DNS-over-HTTPS, returning a list of IPs.
-
-    Returns an empty list on any failure so callers can fall through.  Results
-    are cached for ``_DOH_CACHE_TTL`` seconds.
-    """
-    now = time.monotonic()
-    with _DOH_CACHE_LOCK:
-        entry = _DOH_CACHE.get(hostname)
-        if entry and now - entry[1] < _DOH_CACHE_TTL:
-            return list(entry[0])
-    try:
-        doh_url = f"https://dns.google/resolve?name={urllib.parse.quote(hostname)}&type=A"
-        req = urllib.request.Request(doh_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=4, context=_SSL_CONTEXT) as resp:
-            data = json.loads(resp.read())
-        ips = [a["data"] for a in data.get("Answer", []) if a.get("type") == 1]
-        if ips:
-            with _DOH_CACHE_LOCK:
-                _DOH_CACHE[hostname] = (tuple(ips), now)
-        return ips
-    except Exception:
-        return []
 
 
 def _is_dns_poisoned(hostname):

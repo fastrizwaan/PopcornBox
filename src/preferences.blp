@@ -453,6 +453,16 @@ template $Preferences: Adw.Dialog {
 			}
 
 			Adw.PreferencesGroup {
+				title: _("Network & DNS");
+
+				Adw.SwitchRow doh_switch_row {
+					title: _("DNS-over-HTTPS (DoH)");
+					subtitle: _("Resolve domains securely via Cloudflare and Google to bypass ISP censorship and DNS poisoning");
+					active: true;
+				}
+			}
+
+			Adw.PreferencesGroup {
 				title: _("Backup & Restore");
 				description: _("Backup or restore all addons, plugins, and CloudStream repositories");
 
