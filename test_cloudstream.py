@@ -6,6 +6,7 @@ import io
 import json
 import zipfile
 import hashlib
+import base64
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1183,6 +1184,80 @@ class TestCloudStream(unittest.TestCase):
         streams = cloudstream.extract_video_streams("https://pixeldrain.com/u/sample789")
         self.assertEqual(len(streams), 1)
         self.assertEqual(streams[0]["url"], "https://pixeldrain.com/api/file/sample789?download")
+
+        with patch.object(cloudstream, "extract_voe", return_value=[{"name": "VOE", "url": "https://stream.voe/m3u8"}]) as m_voe:
+            res = cloudstream.extract_video_streams("https://tubelessceliolymph.com/e/test")
+            self.assertEqual(res, [{"name": "VOE", "url": "https://stream.voe/m3u8"}])
+            m_voe.assert_called_once_with("https://tubelessceliolymph.com/e/test")
+
+        with patch.object(cloudstream, "extract_mp4upload", return_value=[{"name": "Mp4Upload", "url": "https://mp4upload.com/vid.mp4"}]) as m_mp4:
+            res = cloudstream.extract_video_streams("https://www.mp4upload.com/embed-test.html")
+            self.assertEqual(res, [{"name": "Mp4Upload", "url": "https://mp4upload.com/vid.mp4"}])
+            m_mp4.assert_called_once_with("https://www.mp4upload.com/embed-test.html")
+
+        with patch.object(cloudstream, "extract_vidoza", return_value=[{"name": "Vidoza", "url": "https://vidoza.net/vid.mp4"}]) as m_vid:
+            res = cloudstream.extract_video_streams("https://videzz.net/test")
+            self.assertEqual(res, [{"name": "Vidoza", "url": "https://vidoza.net/vid.mp4"}])
+            m_vid.assert_called_once_with("https://videzz.net/test")
+
+    def test_voe_extractor_encrypted_f7(self):
+        json_payload = json.dumps({
+            "source": "https://delivery.voe.sx/hls/master.m3u8",
+            "direct_access_url": "https://delivery.voe.sx/mp4/video.mp4"
+        })
+        b1 = base64.b64encode(json_payload.encode("utf-8")).decode("utf-8")
+        r1 = b1[::-1]
+        s1 = "".join(chr(ord(c) + 3) for c in r1)
+        b2 = base64.b64encode(s1.encode("utf-8")).decode("utf-8")
+        b2_pat = b2[:5] + "@$" + b2[5:15] + "^^" + b2[15:]
+        rot = []
+        for c in b2_pat:
+            if "A" <= c <= "Z":
+                rot.append(chr((ord(c) - ord("A") + 13) % 26 + ord("A")))
+            elif "a" <= c <= "z":
+                rot.append(chr((ord(c) - ord("a") + 13) % 26 + ord("a")))
+            else:
+                rot.append(c)
+        enc_str = "".join(rot)
+        mock_html = f"""
+        <html>
+        <head>
+            <script type="application/json">["{enc_str}"]</script>
+        </head>
+        </html>
+        """
+        with patch.object(cloudstream, "_http_get_text", return_value=mock_html):
+            streams = cloudstream.extract_voe("https://voe.sx/e/test1234")
+            self.assertEqual(len(streams), 2)
+            self.assertEqual(streams[0]["name"], "VOE [HLS]")
+            self.assertEqual(streams[0]["url"], "https://delivery.voe.sx/hls/master.m3u8")
+            self.assertTrue(streams[0]["is_hls"])
+            self.assertEqual(streams[1]["name"], "VOE [MP4]")
+            self.assertEqual(streams[1]["url"], "https://delivery.voe.sx/mp4/video.mp4")
+            self.assertFalse(streams[1]["is_hls"])
+
+    def test_mp4upload_extractor(self):
+        packed_js = "eval(function(p,a,c,k,e,d){while(c--)if(k[c])p=p.replace(new RegExp('\\\\b'+c+'\\\\b','g'),k[c]);return p}('0.1(\"2://3.4.5:6/7/8.9\");',10,10,'player|src|https|www|mp4upload|com|282|d|sample|mp4'.split('|'),0,{}))"
+        mock_html = f"<html><script type='text/javascript'>{packed_js}</script></html>"
+        with patch.object(cloudstream, "_http_get_text", return_value=mock_html):
+            streams = cloudstream.extract_mp4upload("https://www.mp4upload.com/embed-test123.html")
+            self.assertEqual(len(streams), 1)
+            self.assertEqual(streams[0]["name"], "Mp4Upload")
+            self.assertEqual(streams[0]["url"], "https://www.mp4upload.com:282/d/sample.mp4")
+
+    def test_vidoza_extractor(self):
+        mock_html = """
+        <html>
+        <script>
+        var sourcesCode = [{ src: "https://str38.vidoza.net/vod/v2/test.mp4", type: "video/mp4", label:"SD", res:"720"}];
+        </script>
+        </html>
+        """
+        with patch.object(cloudstream, "_http_get_text", return_value=mock_html):
+            streams = cloudstream.extract_vidoza("https://vidoza.net/embed-abc.html")
+            self.assertEqual(len(streams), 1)
+            self.assertEqual(streams[0]["name"], "Vidoza [720p]")
+            self.assertEqual(streams[0]["url"], "https://str38.vidoza.net/vod/v2/test.mp4")
 
     def test_cloudstream_tv_type_int_and_wire(self):
         self.assertEqual(cloudstream.CloudStreamTvType.from_wire(1), cloudstream.CloudStreamTvType.Movie)

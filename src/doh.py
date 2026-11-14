@@ -30,7 +30,8 @@ logger = logging.getLogger("PopcornBox.DoH")
 
 _DOH_CACHE = {}
 _DOH_CACHE_LOCK = threading.Lock()
-_DOH_CACHE_TTL = 900  # 15 minutes
+_DOH_CACHE_TTL = 900  # 15 minutes positive cache
+_DOH_NEGATIVE_CACHE_TTL = 60  # 60 seconds negative cache (no IPs found)
 
 _orig_getaddrinfo = socket.getaddrinfo
 _is_hooked = False
@@ -44,6 +45,10 @@ _BOOTSTRAP_HOSTS = {
     "cloudflare-dns.com": ["1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"],
     "one.one.one.one": ["1.1.1.1", "1.0.0.1"],
     "dns.google": ["8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844"],
+    "dns.adguard-dns.com": ["94.140.14.140", "94.140.14.141", "2a10:50c0::ad1:ff", "2a10:50c0::ad2:ff"],
+    "dns.adguard.com": ["94.140.14.140", "94.140.14.141", "2a10:50c0::ad1:ff", "2a10:50c0::ad2:ff"],
+    "doh.dns.sb": ["185.222.222.222", "45.11.45.11", "2a09::", "2a11::"],
+    "dns.quad9.net": ["9.9.9.9", "149.112.112.112", "2620:fe::fe", "2620:fe::9"],
 }
 
 _SPECIAL_HOSTS = {"localhost", "localhost.localdomain"}
@@ -85,31 +90,40 @@ def _should_bypass_doh(host: str) -> bool:
     return False
 
 
-def doh_resolve(hostname: str, timeout: float = 1.5) -> list[str]:
+def doh_resolve(hostname: str, timeout: float = 1.5, record_type: str = "A") -> list[str]:
     """
     Resolves *hostname* via DNS-over-HTTPS.
     Returns list of IP strings, or empty list on failure.
-    Uses in-memory cache with TTL.
+    Uses in-memory cache with TTL.  Negative results (no IPs found from any
+    DoH provider) are cached for a shorter period to avoid hammering DoH
+    servers for unreachable or non-existent domains.
     """
     if not hostname or _should_bypass_doh(hostname):
         return []
 
     host_clean = hostname.strip().lower().rstrip(".")
+    rec_type = "AAAA" if str(record_type).upper() == "AAAA" else "A"
+    cache_key = (host_clean, rec_type)
     now = time.monotonic()
 
-    # 1. Check in-memory cache
+    # 1. Check in-memory cache (positive and negative)
     with _DOH_CACHE_LOCK:
-        entry = _DOH_CACHE.get(host_clean)
-        if entry and (now - entry[1]) < _DOH_CACHE_TTL:
-            return list(entry[0])
+        entry = _DOH_CACHE.get(cache_key)
+        if entry is not None:
+            cached_ips, cached_at = entry
+            ttl = _DOH_NEGATIVE_CACHE_TTL if not cached_ips else _DOH_CACHE_TTL
+            if (now - cached_at) < ttl:
+                return list(cached_ips)
 
     # 2. Query DoH providers with recursion guard
     _thread_local.in_doh = True
     ips = []
     try:
         endpoints = [
-            (f"https://cloudflare-dns.com/dns-query?name={urllib.parse.quote(host_clean)}&type=A", "application/dns-json"),
-            (f"https://dns.google/resolve?name={urllib.parse.quote(host_clean)}&type=A", "application/json"),
+            (f"https://cloudflare-dns.com/dns-query?name={urllib.parse.quote(host_clean)}&type={rec_type}", "application/dns-json"),
+            (f"https://dns.google/resolve?name={urllib.parse.quote(host_clean)}&type={rec_type}", "application/json"),
+            (f"https://dns.adguard-dns.com/resolve?name={urllib.parse.quote(host_clean)}&type={rec_type}", "application/dns-json"),
+            (f"https://doh.dns.sb/dns-query?name={urllib.parse.quote(host_clean)}&type={rec_type}", "application/dns-json"),
         ]
         for url, accept_hdr in endpoints:
             req = urllib.request.Request(url, headers={
@@ -131,13 +145,11 @@ def doh_resolve(hostname: str, timeout: float = 1.5) -> list[str]:
     finally:
         _thread_local.in_doh = False
 
-    if ips:
-        unique_ips = list(dict.fromkeys(ips))
-        with _DOH_CACHE_LOCK:
-            _DOH_CACHE[host_clean] = (unique_ips, now)
-        return unique_ips
-
-    return []
+    unique_ips = list(dict.fromkeys(ips))
+    # Cache both positive (long TTL) and negative (short TTL) results
+    with _DOH_CACHE_LOCK:
+        _DOH_CACHE[cache_key] = (unique_ips, now)
+    return unique_ips
 
 
 def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
@@ -172,7 +184,15 @@ def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     if _should_bypass_doh(host):
         return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
-    ips = doh_resolve(host)
+    if family == socket.AF_INET6:
+        ips = doh_resolve(host, record_type="AAAA")
+    elif family == socket.AF_INET:
+        ips = doh_resolve(host, record_type="A")
+    else:
+        ips = doh_resolve(host)
+        if not ips:
+            ips = doh_resolve(host, record_type="AAAA")
+
     if ips:
         results = []
         for ip in ips:
@@ -255,6 +275,17 @@ class _LocalDoHProxyHandler(threading.Thread):
                 path = parsed.path or "/"
                 if parsed.query:
                     path += "?" + parsed.query
+
+                if not host:
+                    for l in lines[1:]:
+                        if l.lower().startswith(b"host:"):
+                            host_val = l.split(b":", 1)[1].strip().decode("latin-1", errors="ignore")
+                            h_str, _, p_str = host_val.partition(":")
+                            host = h_str
+                            if p_str.isdigit():
+                                port = int(p_str)
+                            break
+
                 try:
                     remote = socket.create_connection((host, port), timeout=12)
                 except Exception:
@@ -292,7 +323,7 @@ class _LocalDoHProxyHandler(threading.Thread):
         sockets = [s1, s2]
         try:
             while True:
-                r, _, _ = select.select(sockets, [], [], 20)
+                r, _, _ = select.select(sockets, [], [], 60)
                 if not r:
                     break
                 for s in r:

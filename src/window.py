@@ -5160,6 +5160,15 @@ class CineWindow(Adw.ApplicationWindow):
             watch_history_path=WATCH_HISTORY_JSONL,
         )
 
+        try:
+            from . import doh
+            if doh.is_global_doh_enabled():
+                doh_proxy = doh.get_doh_proxy_url()
+                if doh_proxy:
+                    self.mpv["http-proxy"] = doh_proxy
+        except Exception:
+            pass
+
         if self.mpv["window-maximized"] or settings.get_boolean("is-maximized"):
             self.maximize()
 
@@ -16397,6 +16406,17 @@ class CineWindow(Adw.ApplicationWindow):
             is_youtube_raw_url
             or (url and isinstance(url, str) and any(d in url.lower() for d in ("dailymotion.com/video/", "dai.ly/", "twitch.tv/")) and not url.lower().endswith((".m3u8", ".mp4", ".mkv", ".webm")))
         )
+
+        # Route MPV through local DoH proxy if DoH is enabled to prevent DNS poisoning on stream CDNs
+        try:
+            from . import doh
+            if doh.is_global_doh_enabled():
+                doh_proxy = doh.get_doh_proxy_url()
+                self.mpv["http-proxy"] = doh_proxy or ""
+            else:
+                self.mpv["http-proxy"] = ""
+        except Exception:
+            pass
 
         if is_web_media_url:
             # Let MPV's ytdl_hook.lua handle raw web video URLs (YouTube, Dailymotion, Twitch)

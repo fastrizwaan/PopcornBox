@@ -325,9 +325,15 @@ class Preferences(Adw.Dialog):
 
     def _on_doh_toggled(self, row, _pspec):
         from . import doh
-        active = row.get_active()
+        active = bool(row.get_active())
         database.set_setting("doh_enabled", active)
         doh.enable_global_doh(active)
+        if hasattr(self, "win") and hasattr(self.win, "mpv") and self.win.mpv:
+            try:
+                proxy_url = doh.get_doh_proxy_url() if active else ""
+                self.win.mpv["http-proxy"] = proxy_url or ""
+            except Exception:
+                pass
 
     def _on_nuvio_plugins_activated(self, _row):
         self.close()

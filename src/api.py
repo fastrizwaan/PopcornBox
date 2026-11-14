@@ -66,7 +66,7 @@ _DOH_NOT_POISONED_LOCK = threading.Lock()
 
 
 def _is_dns_poisoned(hostname):
-    """Return True if the system resolver likely gives a poisoned IP.
+    """Return True if the system resolver likely gives a poisoned IP or blocks the host.
 
     CDNs like Cloudflare, BunnyCDN and Akamai serve different IPs based on
     location, so a simple "DoH IP ≠ system IP" check would false-positive on
@@ -75,6 +75,9 @@ def _is_dns_poisoned(hostname):
     fail the TLS handshake because the interception server does not have a
     valid certificate for the hostname — or, more commonly, it simply drops
     the connection during the handshake (the ``UNEXPECTED_EOF`` error).
+
+    If the system resolver fails with gaierror / NXDOMAIN, but DoH can
+    resolve the host, the domain is being censored/blocked by system DNS.
 
     A passing TLS handshake proves DNS is fine (regardless of whether the IP
     matches DoH); a failing one combined with a *different* DoH answer is a
@@ -93,11 +96,17 @@ def _is_dns_poisoned(hostname):
     try:
         system_ip = socket.gethostbyname(hostname)
     except Exception:
-        return False
+        system_ip = None
+
+    if system_ip is None:
+        # System DNS failed to resolve at all (NXDOMAIN / ISP DNS block).
+        # If DoH resolves it, the domain is being censored/blocked by system DNS.
+        doh_ips = _doh_resolve(hostname)
+        return bool(doh_ips)
 
     tls_ok = False
     try:
-        raw = socket.create_connection((system_ip, 443), timeout=2)
+        raw = socket.create_connection((system_ip, 443), timeout=3)
         try:
             ctx = _SSL_CONTEXT or ssl.create_default_context()
             ssock = ctx.wrap_socket(raw, server_hostname=hostname)
@@ -121,12 +130,17 @@ def _is_dns_poisoned(hostname):
     return system_ip not in doh_ips
 
 
-def _doh_fetch(url, headers=None, timeout=5.0, max_redirects=5):
+def _doh_fetch(url, headers=None, timeout=5.0, max_redirects=5, method="GET", data=None):
     """Fetch *url* by connecting directly to a DoH-resolved IP.
 
     Returns the response body bytes, or *None* on failure.  Only useful when
     ``_is_dns_poisoned()`` has confirmed the system DNS is lying.
     Follows HTTP redirects (e.g. 301/302).
+
+    Unlike the regular urllib path, this function never falls back to the
+    system (potentially poisoned) DNS resolver when DoH returns no results —
+    it simply fails so the caller can try another strategy rather than
+    silently connecting to a spoofed / censored IP.
     """
     current_url = url
     for _ in range(max_redirects):
@@ -141,14 +155,14 @@ def _doh_fetch(url, headers=None, timeout=5.0, max_redirects=5):
 
         doh_ips = _doh_resolve(hostname)
         if not doh_ips:
-            try:
-                system_ip = socket.gethostbyname(hostname)
-                doh_ips = [system_ip]
-            except Exception:
-                return None
+            # Do NOT fall back to system DNS here: if the caller is using
+            # _doh_fetch it is because the system DNS is suspected to be
+            # poisoned.  Using the system resolver would return the blocked IP
+            # and produce the same SSL/connection error we are trying to bypass.
+            return None
 
         redirect_url = None
-        for ip in doh_ips[:2]:
+        for ip in doh_ips[:3]:
             try:
                 raw = socket.create_connection((ip, port), timeout=timeout)
                 try:
@@ -162,15 +176,25 @@ def _doh_fetch(url, headers=None, timeout=5.0, max_redirects=5):
                         "Host": hostname,
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Accept": "*/*",
+                        "Accept-Encoding": "identity",
                         "Connection": "close",
                     }
                     if headers:
                         req_headers.update(headers)
-                    req_lines = [f"GET {path} HTTP/1.1"]
+                    body_bytes = None
+                    req_method = method.upper() if method else "GET"
+                    if data is not None:
+                        body_bytes = data.encode("utf-8") if isinstance(data, str) else data
+                        req_headers["Content-Length"] = str(len(body_bytes))
+                        if req_method == "GET":
+                            req_method = "POST"
+                    req_lines = [f"{req_method} {path} HTTP/1.1"]
                     for k, v in req_headers.items():
                         req_lines.append(f"{k}: {v}")
                     req_lines.append("\r\n")
                     ssock.sendall("\r\n".join(req_lines).encode("utf-8"))
+                    if body_bytes:
+                        ssock.sendall(body_bytes)
 
                     chunks = []
                     while True:
@@ -178,16 +202,16 @@ def _doh_fetch(url, headers=None, timeout=5.0, max_redirects=5):
                         if not chunk:
                             break
                         chunks.append(chunk)
-                    data = b"".join(chunks)
+                    resp_data = b"".join(chunks)
                 finally:
                     ssock.close()
 
                 # Separate headers from body.
-                sep = data.find(b"\r\n\r\n")
+                sep = resp_data.find(b"\r\n\r\n")
                 if sep < 0:
                     continue
-                header_block = data[:sep].decode("utf-8", errors="replace")
-                body = data[sep + 4:]
+                header_block = resp_data[:sep].decode("utf-8", errors="replace")
+                body = resp_data[sep + 4:]
 
                 status_line = header_block.split("\r\n", 1)[0]
                 parts = status_line.split(None, 2)
@@ -207,7 +231,7 @@ def _doh_fetch(url, headers=None, timeout=5.0, max_redirects=5):
                     if redirect_url:
                         break
 
-                if status_code != 200:
+                if not (200 <= status_code < 300):
                     continue
 
                 # Handle chunked transfer encoding.
@@ -215,6 +239,21 @@ def _doh_fetch(url, headers=None, timeout=5.0, max_redirects=5):
                     body = _decode_chunked(body)
                     if body is None:
                         continue
+
+                # Handle compression if server ignored Accept-Encoding: identity
+                lower_headers = header_block.lower()
+                if "content-encoding: gzip" in lower_headers:
+                    import gzip
+                    try:
+                        body = gzip.decompress(body)
+                    except Exception:
+                        pass
+                elif "content-encoding: deflate" in lower_headers:
+                    import zlib
+                    try:
+                        body = zlib.decompress(body)
+                    except Exception:
+                        pass
 
                 return body
             except Exception:
@@ -1163,9 +1202,11 @@ def _request_addon_streams(addon, url, timeout=None, abort_event=None, retries=N
                 pass
         except urllib.error.URLError as e:
             # DoH bypass for ISP-poisoned DNS (SSL handshake torn down by
-            # the interception IP).
+            # the interception IP or DNS failure / NXDOMAIN).
             reason_str = str(getattr(e, "reason", "")).lower()
-            if host and ("unexpected_eof" in reason_str or "ssl" in reason_str):
+            is_ssl = "unexpected_eof" in reason_str or "ssl" in reason_str
+            is_dns = isinstance(getattr(e, "reason", None), socket.gaierror) or any(k in reason_str for k in ("getaddrinfo", "name or service", "nodename"))
+            if host and (is_ssl or is_dns):
                 try:
                     parsed_host = urllib.parse.urlparse(url).hostname
                     if parsed_host and _is_dns_poisoned(parsed_host):
@@ -1448,10 +1489,12 @@ def _get_cached_request_uncollapsed(url, max_age_hours=2, headers=None, cache_on
             except Exception:
                 pass
         except urllib.error.URLError as e:
-            # If the error is an SSL handshake failure, check whether the
-            # ISP is poisoning DNS for this host and retry via DoH.
+            # If the error is an SSL handshake failure or DNS resolution failure,
+            # check whether the ISP is poisoning/blocking DNS for this host and retry via DoH.
             reason_str = str(getattr(e, "reason", "")).lower()
-            if parsed_host and ("unexpected_eof" in reason_str or "ssl" in reason_str):
+            is_ssl = "unexpected_eof" in reason_str or "ssl" in reason_str
+            is_dns = isinstance(getattr(e, "reason", None), socket.gaierror) or any(k in reason_str for k in ("getaddrinfo", "name or service", "nodename"))
+            if parsed_host and (is_ssl or is_dns):
                 try:
                     if _is_dns_poisoned(parsed_host):
                         doh_body = _doh_fetch(url, timeout=timeout)

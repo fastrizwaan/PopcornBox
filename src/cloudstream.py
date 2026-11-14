@@ -105,7 +105,15 @@ def _http_get_text(url, headers=None, timeout=12.0):
             except Exception:
                 pass
         err_str = str(e).upper()
-        if "UNEXPECTED_EOF" in err_str or "EOF OCCURRED" in err_str or "SSL" in err_str or isinstance(e, urllib.error.URLError):
+        # Trigger DoH bypass only for SSL/TLS errors or DNS-related network
+        # failures (gaierror is wrapped inside URLError by urllib). Avoid
+        # triggering for HTTP-level errors (403, 404, 503…) which are
+        # genuine server responses and don't benefit from DoH.
+        is_ssl_error = "UNEXPECTED_EOF" in err_str or "EOF OCCURRED" in err_str or "SSL" in err_str
+        is_dns_error = isinstance(e, urllib.error.URLError) and not isinstance(
+            getattr(e, "code", None), int
+        )
+        if is_ssl_error or is_dns_error:
             try:
                 try:
                     from .api import _doh_fetch
@@ -140,7 +148,15 @@ def _http_get_bytes(url, headers=None, timeout=25.0):
             except Exception:
                 pass
         err_str = str(e).upper()
-        if "UNEXPECTED_EOF" in err_str or "EOF OCCURRED" in err_str or "SSL" in err_str or isinstance(e, urllib.error.URLError):
+        # Trigger DoH bypass only for SSL/TLS errors or DNS-related network
+        # failures (gaierror is wrapped inside URLError by urllib). Avoid
+        # triggering for HTTP-level errors (403, 404, 503…) which are
+        # genuine server responses and don't benefit from DoH.
+        is_ssl_error = "UNEXPECTED_EOF" in err_str or "EOF OCCURRED" in err_str or "SSL" in err_str
+        is_dns_error = isinstance(e, urllib.error.URLError) and not isinstance(
+            getattr(e, "code", None), int
+        )
+        if is_ssl_error or is_dns_error:
             try:
                 try:
                     from .api import _doh_fetch
@@ -1737,12 +1753,27 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
 
 _DYNAMIC_DOMAINS_CACHE = {}
 _DYNAMIC_DOMAINS_CACHE_TIME = 0
+_DYNAMIC_DOMAINS_CACHE_LOCK = threading.Lock()
 
 def get_dynamic_domain(key, default=None):
-    """Resolves active domain for CloudStream scrapers with fallback and 1-hour cache."""
+    """Resolves active domain for CloudStream scrapers with fallback and 1-hour cache.
+
+    Thread-safe: concurrent callers on first load will all fetch, but the dict
+    update is atomic enough for CPython (last writer wins, all values are valid).
+    The lock prevents multiple threads from issuing redundant network requests
+    simultaneously while the cache is cold.
+    """
     global _DYNAMIC_DOMAINS_CACHE, _DYNAMIC_DOMAINS_CACHE_TIME
     now = time.time()
-    if not _DYNAMIC_DOMAINS_CACHE or (now - _DYNAMIC_DOMAINS_CACHE_TIME) > 3600:
+    # Fast path: cache is warm, no lock needed for read
+    if _DYNAMIC_DOMAINS_CACHE and (now - _DYNAMIC_DOMAINS_CACHE_TIME) <= 3600:
+        return _DYNAMIC_DOMAINS_CACHE.get(key.lower(), default)
+
+    with _DYNAMIC_DOMAINS_CACHE_LOCK:
+        # Re-check under lock in case another thread already refreshed
+        if _DYNAMIC_DOMAINS_CACHE and (now - _DYNAMIC_DOMAINS_CACHE_TIME) <= 3600:
+            return _DYNAMIC_DOMAINS_CACHE.get(key.lower(), default)
+
         for url in [
             "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json",
             "https://raw.githubusercontent.com/SaurabhKaperwan/Utils/refs/heads/main/urls.json",
@@ -1751,9 +1782,11 @@ def get_dynamic_domain(key, default=None):
                 txt = _http_get_text(url, timeout=3.0)
                 data = json.loads(txt)
                 if isinstance(data, dict):
+                    new_cache = {}
                     for k, v in data.items():
                         if isinstance(v, str) and v.startswith("http"):
-                            _DYNAMIC_DOMAINS_CACHE[k.lower()] = v.rstrip("/")
+                            new_cache[k.lower()] = v.rstrip("/")
+                    _DYNAMIC_DOMAINS_CACHE = new_cache
                     _DYNAMIC_DOMAINS_CACHE_TIME = now
                     break
             except Exception:
@@ -2573,6 +2606,180 @@ def extract_gofile(url):
         return []
 
 
+def extract_voe(url):
+    """
+    Extracts direct streams from VOE and its mirrors.
+    Reference: cloudstream/library/.../extractors/Voe.kt
+    """
+    if not url:
+        return []
+    try:
+        html = _http_get_text(url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": url}, timeout=8.0)
+        m_redir = re.search(r"window\.location\.href\s*=\s*['\"]([^'\"]+)['\"];", html)
+        if m_redir:
+            redir_url = m_redir.group(1).strip()
+            html = _http_get_text(redir_url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": url}, timeout=8.0)
+
+        # 1. Try modern encrypted JSON payload (F7)
+        raw_payload = None
+        m_script = re.search(r'<script[^>]*type=[\'"]application/json[\'"][^>]*>([\s\S]*?)</script>', html)
+        if m_script:
+            script_text = m_script.group(1).strip()
+            if '["' in script_text and '"]' in script_text:
+                raw_payload = script_text.split('["', 1)[1].rsplit('"]', 1)[0].strip()
+            else:
+                raw_payload = script_text.strip(' "[]\'')
+        if not raw_payload:
+            m_payload = re.search(r'\[\"([a-zA-Z0-9+/=_%@^\?*!#~&]{30,})\"\]', html)
+            if m_payload:
+                raw_payload = m_payload.group(1).strip()
+
+        if raw_payload:
+            try:
+                v_rot = []
+                for c in raw_payload:
+                    if "A" <= c <= "Z":
+                        v_rot.append(chr((ord(c) - ord("A") + 13) % 26 + ord("A")))
+                    elif "a" <= c <= "z":
+                        v_rot.append(chr((ord(c) - ord("a") + 13) % 26 + ord("a")))
+                    else:
+                        v_rot.append(c)
+                v_s = "".join(v_rot)
+                for pat in ("@$", "^^", "~@", "%?", "*~", "!!", "#&"):
+                    v_s = v_s.replace(pat, "_")
+                v_s = v_s.replace("_", "")
+                v_dec = base64.b64decode(v_s).decode("utf-8", errors="ignore")
+                v_shifted = "".join(chr(ord(c) - 3) for c in v_dec)
+                v_rev = v_shifted[::-1]
+                v_final = base64.b64decode(v_rev).decode("utf-8", errors="ignore")
+                data = json.loads(v_final)
+                streams = []
+                if data.get("source"):
+                    streams.append({
+                        "name": "VOE [HLS]",
+                        "url": data["source"],
+                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": url},
+                        "is_hls": True,
+                        "is_dash": False,
+                    })
+                if data.get("direct_access_url"):
+                    streams.append({
+                        "name": "VOE [MP4]",
+                        "url": data["direct_access_url"],
+                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": url},
+                        "is_hls": False,
+                        "is_dash": False,
+                    })
+                if streams:
+                    return streams
+            except Exception as ex:
+                logger.debug(f"VOE F7 decryption failed: {ex}")
+
+        # 2. Fallback to direct m3u8 or mp4 URLs in script
+        m_hls = re.search(r'["\'](https?://[^"\'\s]+\.m3u8[^"\'\s]*)["\']', html)
+        if m_hls:
+            return [{
+                "name": "VOE [HLS]",
+                "url": m_hls.group(1).replace("\\/", "/"),
+                "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": url},
+                "is_hls": True,
+                "is_dash": False,
+            }]
+        m_mp4 = re.search(r'["\'](https?://[^"\'\s]+\.mp4[^"\'\s]*)["\']', html)
+        if m_mp4:
+            return [{
+                "name": "VOE [MP4]",
+                "url": m_mp4.group(1).replace("\\/", "/"),
+                "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": url},
+                "is_hls": False,
+                "is_dash": False,
+            }]
+    except Exception as e:
+        logger.debug(f"VOE extraction failed for {url}: {e}")
+    return []
+
+
+def extract_mp4upload(url):
+    """
+    Extracts direct MP4 stream from Mp4Upload.
+    Reference: cloudstream/library/.../extractors/Mp4Upload.kt
+    """
+    if not url:
+        return []
+    embed_url = url
+    m = re.search(r"mp4upload\.com/(?:embed-|)([a-zA-Z0-9]+)", url)
+    if m:
+        embed_url = f"https://www.mp4upload.com/embed-{m.group(1)}.html"
+    try:
+        html = _http_get_text(embed_url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": url}, timeout=7.0)
+        unpacked = get_and_unpack(html)
+        m_src = re.search(r'player\.src\(["\'](https?://[^"\']+)["\']\)', unpacked)
+        if not m_src:
+            m_src = re.search(r'player\.src\([\w\W]*?src:\s*["\'](https?://[^"\']+)["\']', unpacked)
+        if m_src:
+            return [{
+                "name": "Mp4Upload",
+                "url": m_src.group(1),
+                "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": embed_url},
+                "is_hls": False,
+                "is_dash": False,
+            }]
+    except Exception as e:
+        logger.debug(f"Mp4Upload extraction failed for {url}: {e}")
+    return []
+
+
+def extract_vidoza(url):
+    """
+    Extracts direct streams from Vidoza and its mirrors (Videzz).
+    Reference: cloudstream/library/.../extractors/Vidoza.kt
+    """
+    if not url:
+        return []
+    try:
+        html = _http_get_text(url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": url}, timeout=8.0)
+        # 1. Match sourcesCode: [...] or sourcesCode = [...]
+        m = re.search(r'sourcesCode\s*[:=]\s*(\[[^\]]+\])', html)
+        if m:
+            raw_arr = m.group(1)
+            clean_arr = raw_arr
+            for key in ("src", "type", "label", "res"):
+                clean_arr = re.sub(r'([{\[,\s])\s*' + key + r'\s*:', "\\g<1>\"" + key + "\":", clean_arr)
+            clean_arr = re.sub(r',\s*([}\]])', r'\1', clean_arr)
+            try:
+                video_data = json.loads(clean_arr)
+                streams = []
+                for item in video_data:
+                    src = item.get("src")
+                    if src:
+                        res = item.get("res") or item.get("label") or ""
+                        streams.append({
+                            "name": f"Vidoza [{res}p]" if (res and not str(res).endswith("p") and str(res).isdigit()) else (f"Vidoza [{res}]" if res else "Vidoza"),
+                            "url": src,
+                            "headers": {"User-Agent": DEFAULT_USER_AGENT},
+                            "is_hls": ".m3u8" in src,
+                            "is_dash": False,
+                        })
+                if streams:
+                    return streams
+            except Exception as je:
+                logger.debug(f"Vidoza JSON parse error: {je}")
+
+        # 2. Fallback to direct src: "https://...mp4" regex
+        m_src = re.findall(r'src\s*:\s*["\'](https?://[^"\']+\.mp4[^"\']*)["\']', html)
+        if m_src:
+            return [{
+                "name": "Vidoza [MP4]",
+                "url": s,
+                "headers": {"User-Agent": DEFAULT_USER_AGENT},
+                "is_hls": False,
+                "is_dash": False,
+            } for s in set(m_src)]
+    except Exception as e:
+        logger.debug(f"Vidoza extraction failed for {url}: {e}")
+    return []
+
+
 def _extract_hubcdn_direct(hubcdn_url, referer=None):
     """
     Extracts direct Google Video stream from a hubcdn.* link.
@@ -3210,6 +3417,22 @@ def extract_video_streams(url, referer=None):
     # 12. Gofile
     if "gofile.io" in lower_u:
         return extract_gofile(clean_u)
+
+    # 13. VOE & mirrors
+    if any(k in lower_u for k in (
+        "voe.", "voe-network.", "audaciousdefaulthouse.", "tubelessceliolymph.",
+        "simpulumlamerop.", "urochsunloath.", "nathanfromsubject.",
+        "yip.su", "metagnathtuggers.", "donaldlineelse.", "charlestoughrace."
+    )):
+        return extract_voe(clean_u)
+
+    # 14. Mp4Upload
+    if "mp4upload." in lower_u:
+        return extract_mp4upload(clean_u)
+
+    # 15. Vidoza & mirrors
+    if any(k in lower_u for k in ("vidoza.", "videzz.")):
+        return extract_vidoza(clean_u)
 
     return []
 
