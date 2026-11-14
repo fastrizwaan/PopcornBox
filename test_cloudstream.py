@@ -1115,6 +1115,226 @@ class TestCloudStream(unittest.TestCase):
             self.assertTrue(len(callback_batches) >= 1)
             self.assertTrue(callback_batches[0][1])
 
+    def test_js_unpacker(self):
+        packed = "eval(function(p,a,c,k,e,d){while(c--)if(k[c])p=p.replace(new RegExp('\\\\b'+c+'\\\\b','g'),k[c]);return p}('0 1=2;',3,3,'var|foo|bar'.split('|'),0,{}))"
+        self.assertTrue(cloudstream.JsUnpacker.detect(packed))
+        unpacked = cloudstream.JsUnpacker.unpack(packed)
+        self.assertIn("var foo=bar;", unpacked)
+
+    def test_pixeldrain_extractor(self):
+        url = "https://pixeldrain.com/u/abcdef12"
+        streams = cloudstream.extract_pixeldrain_stream(url)
+        self.assertEqual(len(streams), 1)
+        self.assertEqual(streams[0]["url"], "https://pixeldrain.com/api/file/abcdef12?download")
+        self.assertEqual(streams[0]["name"], "PixelDrain")
+
+    def test_streamtape_extractor(self):
+        mock_html = """
+        <script>
+        document.getElementById('botlink').innerHTML = '//streamtape.com/get_video?id=xyz123&expires=99999&ip=1.2.3.4&token=abcd';
+        </script>
+        """
+        with patch.object(cloudstream, "_http_get_text", return_value=mock_html):
+            streams = cloudstream.extract_streamtape("https://streamtape.com/v/xyz123")
+            self.assertEqual(len(streams), 1)
+            self.assertTrue(streams[0]["url"].startswith("https://streamtape.com/get_video"))
+            self.assertIn("&stream=1", streams[0]["url"])
+
+    def test_mixdrop_extractor(self):
+        packed_payload = "eval(function(p,a,c,k,e,d){while(c--)if(k[c])p=p.replace(new RegExp('\\\\b'+c+'\\\\b','g'),k[c]);return p}('0.1=\"//2.3/4.5\";',6,6,'wurl|src|s-delivery|mixdrop|video|mp4'.split('|'),0,{}))"
+        mock_html = f"<html><script>{packed_payload}</script></html>"
+        with patch.object(cloudstream, "_http_get_text", return_value=mock_html):
+            streams = cloudstream.extract_mixdrop("https://mixdrop.co/f/xyz")
+            self.assertEqual(len(streams), 1)
+            self.assertEqual(streams[0]["url"], "https://s-delivery.mixdrop/video.mp4")
+
+    def test_extract_video_streams_dispatcher(self):
+        streams = cloudstream.extract_video_streams("https://pixeldrain.com/u/sample789")
+        self.assertEqual(len(streams), 1)
+        self.assertEqual(streams[0]["url"], "https://pixeldrain.com/api/file/sample789?download")
+
+    def test_cloudstream_tv_type_int_and_wire(self):
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire(1), cloudstream.CloudStreamTvType.Movie)
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire("1"), cloudstream.CloudStreamTvType.Movie)
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire(3), cloudstream.CloudStreamTvType.TvSeries)
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire("3"), cloudstream.CloudStreamTvType.TvSeries)
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire(5), cloudstream.CloudStreamTvType.Anime)
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire(10), cloudstream.CloudStreamTvType.Live)
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire("Live"), cloudstream.CloudStreamTvType.Live)
+
+    def test_parse_cloudstream_file_hash(self):
+        raw_hex = "a" * 64
+        h1 = cloudstream.parse_cloudstream_file_hash(raw_hex)
+        self.assertEqual(h1["algorithm"], "sha256")
+        self.assertEqual(h1["hex"], raw_hex)
+        h2 = cloudstream.parse_cloudstream_file_hash(f"sha256-{raw_hex}")
+        self.assertEqual(h2["algorithm"], "sha256")
+        self.assertEqual(h2["hex"], raw_hex)
+
+    def test_parse_archive_episodes_high_and_diverse_tags(self):
+        html = """
+        <div>
+            <h2>Episode 105 - Finale</h2>
+            <a href="https://example.com/ep105.mkv">Download</a>
+            <p><strong>EP 500</strong></p>
+            <a href="https://example.com/ep500.mkv">Download 500</a>
+        </div>
+        """
+        eps = cloudstream.parse_archive_episodes(html)
+        self.assertIn(105, eps)
+        self.assertIn(500, eps)
+        self.assertEqual(eps[105][0][0], "https://example.com/ep105.mkv")
+        self.assertEqual(eps[500][0][0], "https://example.com/ep500.mkv")
+
+    def test_clean_cloudstream_title_codecs(self):
+        t1, y1 = cloudstream.clean_cloudstream_title("Sample Movie (2024) 1080p HEVC x265 ESub")
+        self.assertEqual(t1, "Sample Movie")
+        self.assertEqual(y1, "2024")
+
+        t2, _ = cloudstream.clean_cloudstream_title("Series Title S01 720p H264 AAC Multi Subs")
+        self.assertEqual(t2, "Series Title")
+
+    def test_load_item_to_details_dict_live(self):
+        item = {
+            "provider_id": "live_prov",
+            "data": "live_data",
+            "name": "Live Channel",
+            "type": cloudstream.CloudStreamTvType.Live,
+            "episodes": [],
+        }
+        details = cloudstream.load_item_to_details_dict(item)
+        self.assertEqual(details["type"], "tv")
+        self.assertEqual(details["videos"][0]["title"], "Live Stream")
+
+    def test_fetch_cloudstream_streams_for_single_season_show(self):
+        mock_provider = MagicMock()
+        mock_provider.id = "mock_provider"
+        mock_provider.name = "Mock Provider"
+        mock_provider.supported_types = ["series"]
+        mock_provider.search.return_value = [{"data": "mock_data", "name": "Solo Leveling", "type": "series"}]
+        mock_provider.load.return_value = {
+            "name": "Solo Leveling",
+            "type": "series",
+            "episodes": [
+                {"name": "Episode 1", "episode": 1, "season": None, "data": "ep1_data"},
+                {"name": "Episode 2", "episode": 2, "season": None, "data": "ep2_data"},
+            ]
+        }
+        mock_provider.load_links.return_value = [{"name": "Stream 1", "url": "https://example.com/ep2.mp4"}]
+
+        mock_plugin = {"id": "mock_provider", "name": "Mock Provider", "enabled": True}
+
+        with patch.object(cloudstream, "is_cloudstream_enabled", return_value=True), \
+             patch.object(cloudstream, "get_all_plugins", return_value=[mock_plugin]), \
+             patch.object(cloudstream, "is_provider_runnable", return_value=True), \
+             patch.object(cloudstream, "get_provider", return_value=mock_provider), \
+             patch.object(cloudstream, "get_plugin", return_value=mock_plugin):
+
+            streams = cloudstream.fetch_cloudstream_streams_for_media(
+                title="Solo Leveling",
+                media_type="series",
+                season=1,
+                episode=2,
+            )
+            self.assertEqual(len(streams), 1)
+            self.assertEqual(streams[0]["url"], "https://example.com/ep2.mp4")
+
+    def test_get_streams_for_route_filters_none(self):
+        mock_provider = MagicMock()
+        mock_provider.name = "Mock Provider"
+        mock_provider.load_links.return_value = [
+            {"name": "Bad URL", "url": ""},
+            {"name": "Valid Stream", "url": "https://example.com/valid.mp4"},
+        ]
+        with patch.object(cloudstream, "get_provider", return_value=mock_provider), \
+             patch.object(cloudstream, "get_plugin", return_value={"name": "Mock Provider"}):
+            route_id = "cloudstream:13:mock_provider#item_data"
+            streams = cloudstream.get_streams_for_route(route_id)
+            self.assertEqual(len(streams), 1)
+            self.assertEqual(streams[0]["url"], "https://example.com/valid.mp4")
+
+    def test_clean_cloudstream_title_bollyflix_and_languages(self):
+        cases = [
+            ("The Vvaan (2026) Hindi Movie", ("The Vvaan", "2026")),
+            ("Download The Vvaan (2026) Hindi Movie ~ BollyFlix", ("The Vvaan", "2026")),
+            ("Dune: Part Two (2024) 4K Ultra HD Dual Audio (Hindi-English) - MoviesDrive", ("Dune: Part Two", "2024")),
+            ("Squid Game (2021) Season 2 Complete Hindi Dubbed Web Series ~ MoviesMod", ("Squid Game", "2021")),
+            ("Leo (2023) Tamil Movie [1080p WEB-DL]", ("Leo", "2023")),
+            ("Panchayat S03 (2024) Hindi Web Series - HDHub4u", ("Panchayat", "2024")),
+            ("Scary Movie (2000)", ("Scary Movie", "2000")),
+        ]
+        for raw, expected in cases:
+            res = cloudstream.clean_cloudstream_title(raw)
+            self.assertEqual(res, expected, f"Failed for raw title: {raw!r}")
+
+    def test_playback_source_to_stream_dict_drops_relative_and_category_urls(self):
+        # Category/navigation URL must be rejected
+        cat_src = {"name": "Bollyflix 1080p", "url": "/movies-by-quality/1080p-movies-download-mkv/"}
+        res1 = cloudstream.playback_source_to_stream_dict(cat_src, "Bollyflix", "bollyflix_id")
+        self.assertIsNone(res1)
+
+        # Non-HTTP/non-magnet URL must be rejected
+        bad_src = {"name": "Bad URL", "url": "ftp://files.example.com/video.mp4"}
+        res2 = cloudstream.playback_source_to_stream_dict(bad_src, "Bollyflix", "bollyflix_id")
+        self.assertIsNone(res2)
+
+        # Valid HTTP stream must be accepted
+        good_src = {"name": "Bollyflix 1080p (MixDrop)", "url": "https://server.example.com/stream.mp4", "quality": 1080}
+        res3 = cloudstream.playback_source_to_stream_dict(good_src, "Bollyflix", "bollyflix_id")
+        self.assertIsNotNone(res3)
+        self.assertEqual(res3["url"], "https://server.example.com/stream.mp4")
+
+    def test_extract_video_streams_excludes_locker_page_urls(self):
+        # Locker web pages ending in .mkv must not be treated as direct playable streams
+        locker_url = "https://megaup.net/12345/The_Vvaan_(2026)_Hindi_1080p.mkv"
+        res = cloudstream.extract_video_streams(locker_url)
+        self.assertEqual(res, [])
+
+        # Direct media files on normal CDNs must be recognized
+        direct_url = "https://cdn.example.com/media/file.mp4"
+        res2 = cloudstream.extract_video_streams(direct_url)
+        self.assertEqual(len(res2), 1)
+        self.assertEqual(res2[0]["url"], direct_url)
+
+    def test_bollyflix_load_links_omits_category_navigation(self):
+        provider = cloudstream.BollyflixCloudStreamProvider()
+        fake_html = """
+        <html>
+        <body>
+            <a href="/movies-by-quality/1080p-movies-download-mkv/">1080p</a>
+            <a href="/how-to-download/">How To Download</a>
+            <h2>The Vvaan (2026) Hindi 1080p [2.7GB]</h2>
+            <a href="https://linksmod.top/view/fake123">🔗 Download Links</a>
+        </body>
+        </html>
+        """
+        fake_linksmod_html = """
+        <html>
+        <body>
+            <a href="https://multiup.io/en/mirror/fake456">MultiUp Mirror</a>
+        </body>
+        </html>
+        """
+        def mock_get_text(url, *args, **kwargs):
+            if "bollyflix" in url:
+                return fake_html
+            if "linksmod" in url:
+                return fake_linksmod_html
+            return ""
+
+        with patch.object(cloudstream, "_http_get_text", side_effect=mock_get_text), \
+             patch.object(cloudstream, "_extract_multiup_mirrors", return_value=[{
+                 "name": "MixDrop",
+                 "url": "https://server.mxcontent.net/v2/stream.mp4",
+                 "headers": {"User-Agent": "Mozilla/5.0"},
+                 "is_hls": False,
+             }]):
+            sources = provider.load_links("bollyflix:https://bollyflix.church/the-vvaan-2026-hindi-movie/")
+            self.assertEqual(len(sources), 1)
+            self.assertEqual(sources[0]["url"], "https://server.mxcontent.net/v2/stream.mp4")
+            self.assertIn("1080p", sources[0]["name"])
+            self.assertNotIn("/movies-by-quality/", [s["url"] for s in sources])
+
 
 if __name__ == "__main__":
     unittest.main()

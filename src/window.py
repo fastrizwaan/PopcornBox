@@ -708,6 +708,9 @@ class MovieDetailsPage(Gtk.Overlay):
         title_hbox.set_valign(Gtk.Align.START)
         
         title_str = self.movie_stub.get("title", "")
+        if self.movie_stub.get("is_cloudstream") or str(self.movie_stub.get("id", "")).startswith("cloudstream:"):
+            from .cloudstream import clean_cloudstream_title
+            title_str, _ = clean_cloudstream_title(title_str)
         self.title_label = Gtk.Label(label=title_str if title_str else "Loading...")
         self.title_label.add_css_class("title-1")
         self.title_label.set_halign(Gtk.Align.START)
@@ -2491,7 +2494,11 @@ class MovieDetailsPage(Gtk.Overlay):
             from .movie_widget import fetch_fallback_poster
             fetch_fallback_poster(details.get("id") or self.movie_stub.get("id"), self.media_type, self.poster, details.get("title") or self.movie_stub.get("title"), width=360, height=540, is_priority=True)
             
-        self.title_label.set_text(details.get("title", ""))
+        d_title = details.get("title", "")
+        if self.movie_stub.get("is_cloudstream") or details.get("is_cloudstream") or str(details.get("id", "")).startswith("cloudstream:"):
+            from .cloudstream import clean_cloudstream_title
+            d_title, _ = clean_cloudstream_title(d_title)
+        self.title_label.set_text(d_title)
 
         # Disconnect any previously connected signal handlers before reconnecting
         # to avoid duplicate callbacks when build_ui() is called a second time.
@@ -17216,6 +17223,9 @@ class CineWindow(Adw.ApplicationWindow):
             magnet = api.add_trackers_to_magnet(magnet, sources=sources)
 
         title_text = self.stream_queue_title or "Stream"
+        if getattr(self, "stream_queue_item_id", "") and str(self.stream_queue_item_id).startswith("cloudstream:"):
+            from .cloudstream import clean_cloudstream_title
+            title_text, _ = clean_cloudstream_title(title_text)
         stream_name = torrent.get("filename") or torrent.get("name") or torrent.get("stream_title") or "" if isinstance(torrent, dict) else ""
         if stream_name:
             display_title = f"{title_text} ({stream_name})"
@@ -17260,7 +17270,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         if magnet and (magnet.startswith("http://") or magnet.startswith("https://")):
             self._play_stream(magnet, display_title, headers=headers, preserve_queue=True)
-        elif magnet:
+        elif magnet and (str(magnet).startswith("magnet:") or re.match(r'^[0-9a-fA-F]{40}$', str(magnet)) or str(magnet).endswith(".torrent") or (isinstance(magnet, str) and not str(magnet).startswith("/") and os.path.exists(str(magnet)))):
             from . import player
             file_index = torrent.get("file_index") if isinstance(torrent, dict) else None
             if file_index is None and isinstance(torrent, dict):
@@ -20508,8 +20518,15 @@ class CineWindow(Adw.ApplicationWindow):
                 try:
                     items = provider.search("test") or []
                     if not items:
-                        main_page = provider.get_main_page()
-                        items = main_page[0][1] if main_page else []
+                        main_page = provider.get_main_page() or []
+                        if main_page:
+                            first_entry = main_page[0]
+                            if isinstance(first_entry, (tuple, list)) and len(first_entry) > 1:
+                                items = first_entry[1]
+                            elif isinstance(first_entry, dict):
+                                items = main_page
+                            else:
+                                items = main_page
                     success, count, err = True, len(items), None
                 except Exception as e:
                     success, count, err = False, 0, str(e)

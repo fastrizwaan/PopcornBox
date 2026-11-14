@@ -13,6 +13,8 @@ import json
 import time
 import ssl
 import shutil
+import random
+import string
 import subprocess
 import http.cookiejar
 import hashlib
@@ -70,6 +72,18 @@ def _safe_url(url):
         return str(url).strip().replace(" ", "%20")
 
 
+def _convert_raw_git_url(url):
+    """Convert raw.githubusercontent.com URLs to cdn.jsdelivr.net mirror (CloudStream reference behavior)."""
+    m = re.match(r"^https://raw\.githubusercontent\.com/([A-Za-z0-9_-]+)/([A-Za-z0-9_.-]+)/(.*)$", str(url or ""))
+    if not m:
+        return None
+    user, repo, rest = m.groups()
+    parts = rest.split("/", 1)
+    branch = parts[0]
+    path = parts[1] if len(parts) > 1 else ""
+    return f"https://cdn.jsdelivr.net/gh/{user}/{repo}@{branch}/{path}"
+
+
 def _http_get_text(url, headers=None, timeout=12.0):
     if not url:
         return ""
@@ -82,6 +96,14 @@ def _http_get_text(url, headers=None, timeout=12.0):
         with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
             return resp.read().decode("utf-8", errors="replace")
     except Exception as e:
+        cdn_url = _convert_raw_git_url(url)
+        if cdn_url:
+            try:
+                cdn_req = urllib.request.Request(_safe_url(cdn_url), headers=req_headers)
+                with urllib.request.urlopen(cdn_req, timeout=timeout, context=_SSL_CONTEXT) as resp:
+                    return resp.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
         err_str = str(e).upper()
         if "UNEXPECTED_EOF" in err_str or "EOF OCCURRED" in err_str or "SSL" in err_str or isinstance(e, urllib.error.URLError):
             try:
@@ -106,6 +128,14 @@ def _http_get_bytes(url, headers=None, timeout=25.0):
         with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
             return resp.read()
     except Exception as e:
+        cdn_url = _convert_raw_git_url(url)
+        if cdn_url:
+            try:
+                cdn_req = urllib.request.Request(_safe_url(cdn_url), headers=req_headers)
+                with urllib.request.urlopen(cdn_req, timeout=timeout, context=_SSL_CONTEXT) as resp:
+                    return resp.read()
+            except Exception:
+                pass
         err_str = str(e).upper()
         if "UNEXPECTED_EOF" in err_str or "EOF OCCURRED" in err_str or "SSL" in err_str or isinstance(e, urllib.error.URLError):
             try:
@@ -316,33 +346,53 @@ class CloudStreamTvType:
     Torrent = "Torrent"
     Other = "Other"
 
+    # Reference mapping from cloudstream/library/.../MainAPI.kt enum class TvType(value: Int?)
+    INT_MAP = {
+        1: Movie,
+        2: AnimeMovie,
+        3: TvSeries,
+        4: Cartoon,
+        5: Anime,
+        6: Ova,
+        7: Torrent,
+        8: Documentary,
+        9: AsianDrama,
+        10: Live,
+        13: Music,
+    }
+
     @classmethod
     def from_wire(cls, val):
-        if not val or not isinstance(val, str):
+        if val is None:
             return cls.Other
-        v = val.strip().lower()
-        if v == "movie":
-            return cls.Movie
-        if v in ("tvseries", "series", "show"):
-            return cls.TvSeries
-        if v == "anime":
-            return cls.Anime
-        if v == "animemovie":
-            return cls.AnimeMovie
-        if v == "ova":
-            return cls.Ova
-        if v in ("live", "livetv"):
-            return cls.Live
-        if v == "documentary":
-            return cls.Documentary
-        if v == "cartoon":
-            return cls.Cartoon
-        if v == "asiandrama":
-            return cls.AsianDrama
-        if v == "music":
-            return cls.Music
-        if v == "torrent":
-            return cls.Torrent
+        if isinstance(val, int):
+            return cls.INT_MAP.get(val, cls.Other)
+        if isinstance(val, str):
+            v = val.strip().lower()
+            if v.isdigit():
+                return cls.INT_MAP.get(int(v), cls.Other)
+            if v == "movie":
+                return cls.Movie
+            if v in ("tvseries", "series", "show"):
+                return cls.TvSeries
+            if v == "anime":
+                return cls.Anime
+            if v == "animemovie":
+                return cls.AnimeMovie
+            if v == "ova":
+                return cls.Ova
+            if v in ("live", "livetv"):
+                return cls.Live
+            if v == "documentary":
+                return cls.Documentary
+            if v == "cartoon":
+                return cls.Cartoon
+            if v in ("asiandrama", "drama"):
+                return cls.AsianDrama
+            if v == "music":
+                return cls.Music
+            if v == "torrent":
+                return cls.Torrent
         return cls.Other
 
     @classmethod
@@ -367,12 +417,14 @@ def parse_cloudstream_file_hash(val):
     if not val or not isinstance(val, str):
         return None
     val = val.strip().lower()
-    if "-" not in val:
-        return None
-    algo, hex_str = val.split("-", 1)
-    if algo != "sha256" or len(hex_str) != 64 or not all(c in "0123456789abcdef" for c in hex_str):
-        return None
-    return {"algorithm": algo, "hex": hex_str, "wire": val}
+    if "-" in val:
+        algo, hex_str = val.split("-", 1)
+        if algo != "sha256" or len(hex_str) != 64 or not all(c in "0123456789abcdef" for c in hex_str):
+            return None
+        return {"algorithm": algo, "hex": hex_str, "wire": val}
+    if len(val) == 64 and all(c in "0123456789abcdef" for c in val):
+        return {"algorithm": "sha256", "hex": val, "wire": f"sha256-{val}"}
+    return None
 
 
 def matches_file_hash(file_bytes, hash_obj):
@@ -548,8 +600,9 @@ def parse_plugin_list(repository_manifest_url, plugin_list_url, payload_text):
 
         raw_tv_types = []
         for t in item.get("tvTypes") or []:
-            if isinstance(t, str) and t.strip():
-                raw_tv_types.append(t.strip())
+            t_str = str(t).strip()
+            if t_str and t_str not in raw_tv_types:
+                raw_tv_types.append(t_str)
 
         parsed_tv_types = [CloudStreamTvType.from_wire(t) for t in raw_tv_types]
 
@@ -652,13 +705,14 @@ def parse_archive_episodes(html):
     """
     Parses an intermediate episode archive page (e.g. mdrive, nexdrive, fxlinks, dflinks, modpro, file-dl)
     and returns a mapping of episode_number (int) -> list of (url, label).
+    Supports episode numbers up to 4 digits and HTML tags <h1>-<h6>, <strong>, <b>, <p>, <span>.
     """
     if not html:
         return {}
     episodes = {}
 
-    # Pattern 1: Heading above links (e.g. <h5>EP01...</h5> or -:Episodes: 01:- or <h4>Episode 1</h4>)
-    sections = re.split(r"(?i)(?:<h[3-6][^>]*>\s*(?:EP|Episode)\s*(\d{1,2})|-?:\s*Episodes?:\s*(\d{1,2})\s*:-?)", html)
+    # Pattern 1: Heading above links (e.g. <h5>EP01...</h5> or -:Episodes: 01:- or <h4>Episode 1</h4> or <p><strong>Episode 150</strong></p>)
+    sections = re.split(r"(?i)(?:<(?:h[1-6]|strong|b|p|span)[^>]*>\s*(?:EP|Episode|E)\.?\s*(\d{1,4})|-?:\s*Episodes?:\s*(\d{1,4})\s*:-?)", html)
     if len(sections) > 1:
         i = 1
         while i < len(sections):
@@ -669,7 +723,11 @@ def parse_archive_episodes(html):
                 links = re.findall(r"""<a\b[^>]*href=["\x27](https?://[^"\x27]+)["\x27][^>]*>(.*?)</a>""", block, re.I | re.DOTALL)
                 for h, t in links:
                     h_clean = h.strip()
-                    if any(k in h_clean.lower() for k in ["hubcloud", "fastdl", "nexdrive", "drive", "filebee", "gdflix", "pixeldrain", "only-apis", "dl.", "vcloud"]):
+                    if any(k in h_clean.lower() for k in [
+                        "hubcloud", "fastdl", "nexdrive", "drive", "filebee", "gdflix",
+                        "pixeldrain", "only-apis", "dl.", "vcloud", "gofile", "mixdrop",
+                        "streamwish", "vidhide", "streamtape", "dood"
+                    ]) or any(h_clean.lower().endswith(ext) or f"{ext}?" in h_clean.lower() for ext in (".mkv", ".mp4", ".m3u8", ".mpd")):
                         if not any(existing_h == h_clean for existing_h, _ in episodes.get(ep_num, [])):
                             episodes.setdefault(ep_num, []).append((h_clean, re.sub(r"<[^>]+>", "", t).strip()))
             i += 3
@@ -679,10 +737,14 @@ def parse_archive_episodes(html):
     for m in anchor_matches:
         h, t = m.group(1).strip(), m.group(2)
         clean_t = re.sub(r"<[^>]+>", " ", t).strip()
-        ep_m = re.search(r"\b(?:EP|Episode)\.?\s*(\d{1,2})\b", clean_t, re.I)
+        ep_m = re.search(r"\b(?:EP|Episode|E)\.?\s*(\d{1,4})\b", clean_t, re.I)
         if ep_m:
             ep_num = int(ep_m.group(1))
-            if any(k in h.lower() for k in ["hubcloud", "fastdl", "nexdrive", "drive", "filebee", "gdflix", "pixeldrain", "dl.", "thenaukriadda", "fastdlserver", "vcloud"]):
+            if any(k in h.lower() for k in [
+                "hubcloud", "fastdl", "nexdrive", "drive", "filebee", "gdflix",
+                "pixeldrain", "dl.", "thenaukriadda", "fastdlserver", "vcloud",
+                "gofile", "mixdrop", "streamwish", "vidhide", "streamtape", "dood"
+            ]) or any(h.lower().endswith(ext) or f"{ext}?" in h.lower() for ext in (".mkv", ".mp4", ".m3u8", ".mpd")):
                 if not any(existing_h == h for existing_h, _ in episodes.get(ep_num, [])):
                     episodes.setdefault(ep_num, []).append((h, clean_t))
 
@@ -1906,112 +1968,588 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
 
         try:
             html = _http_get_text(href, timeout=8.0)
-            links = re.findall(r"<a\s+[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>", html, re.I | re.DOTALL)
             sources = []
-            for target_url, text in links:
-                clean_text = re.sub(r"<[^>]+>", "", text).strip()
-                if any(k in target_url for k in ["fastdlserver", "gdflix", "gdlink", "sidexfee", "drive", "hubcloud", "download", "link", "linksmod", "fxlinks"]):
-                    quality_str = ""
-                    for q in ["2160p", "1080p", "720p", "480p"]:
-                        if q in clean_text.lower() or q in target_url.lower():
-                            quality_str = q
-                            break
 
-                    # If fxlinks / archive page, extract specific episode links
-                    if ("fxlinks." in target_url or "/elinks/" in target_url) and target_episode is not None:
-                        try:
-                            l_req = urllib.request.Request(target_url, headers={
-                                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                                "Referer": href
+            sections = []
+            heading_matches = list(re.finditer(r'<h[1-6][^>]*>(.*?)</h[1-6]>', html, re.I | re.DOTALL))
+            for i, h_match in enumerate(heading_matches):
+                h_text = re.sub(r'<[^>]+>', ' ', h_match.group(1)).strip()
+                h_start = h_match.end()
+                h_end = heading_matches[i + 1].start() if i + 1 < len(heading_matches) else len(html)
+                chunk = html[h_start:h_end]
+                sections.append((h_text, chunk))
+
+            if not sections:
+                sections = [("", html)]
+
+            locker_tasks = []
+            other_tasks = []
+
+            for h_text, chunk in sections:
+                quality_str = ""
+                for q in ("2160p", "1080p", "720p", "480p"):
+                    if q in h_text.lower():
+                        quality_str = q
+                        break
+
+                chunk_links = re.findall(r'<a\b[^>]*href=["\']([^\"\']+)["\'][^>]*>(.*?)</a>', chunk, re.I | re.DOTALL)
+                for target_url, text in chunk_links:
+                    target_url = target_url.strip()
+                    clean_text = re.sub(r'<[^>]+>', '', text).strip()
+                    lower_target = target_url.lower()
+
+                    if any(bad in lower_target for bad in (
+                        "/movies-by-quality/", "/movies-by-size/", "/category/",
+                        "/how-to-download/", "/join/", "1xbetflix", "t.me", "telegram"
+                    )):
+                        continue
+
+                    item_quality = quality_str
+                    if not item_quality:
+                        for q in ("2160p", "1080p", "720p", "480p"):
+                            if q in clean_text.lower() or q in lower_target:
+                                item_quality = q
+                                break
+                    q_num = int(re.sub(r"\D", "", item_quality)) if re.sub(r"\D", "", item_quality).isdigit() else 720
+
+                    if "linksmod." in lower_target and "/view/" in lower_target:
+                        locker_tasks.append((target_url, item_quality, q_num))
+                    elif any(k in lower_target for k in ("fastdlserver", "gdflix", "gdlink")):
+                        other_tasks.append(("gdflix", target_url, item_quality, q_num))
+                    elif "fxlinks." in lower_target or "/elinks/" in lower_target:
+                        if target_episode is not None:
+                            other_tasks.append(("fxlinks", target_url, item_quality, q_num))
+                    elif "hubcloud." in lower_target:
+                        other_tasks.append(("hubcloud", target_url, item_quality, q_num))
+
+            def _resolve_bollyflix_locker(task):
+                t_url, it_qual, q_val = task
+                res = []
+                try:
+                    l_html = _http_get_text(t_url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": href}, timeout=6.0)
+                    sub_links = re.findall(r'<a[^>]+href=[\"\'](https?://[^\"\']+)[\"\']', l_html, re.I)
+                    for sub_h in sub_links:
+                        sub_lower = sub_h.lower()
+                        if "multiup." in sub_lower:
+                            mu_sources = _extract_multiup_mirrors(sub_h, referer=t_url)
+                            for s in mu_sources:
+                                res.append({
+                                    "name": f"Bollyflix {it_qual} ({s.get('name')})".strip(),
+                                    "url": s["url"],
+                                    "quality": q_val,
+                                    "headers": s.get("headers") or {"User-Agent": DEFAULT_USER_AGENT},
+                                    "is_hls": s.get("is_hls", False),
+                                    "is_dash": False,
+                                })
+                        elif any(d in sub_lower for d in ("mixdrop.", "mdy48tn97.com")):
+                            md_sources = extract_mixdrop(sub_h)
+                            for s in md_sources:
+                                res.append({
+                                    "name": f"Bollyflix {it_qual} ({s.get('name')})".strip(),
+                                    "url": s["url"],
+                                    "quality": q_val,
+                                    "headers": s.get("headers") or {"User-Agent": DEFAULT_USER_AGENT},
+                                    "is_hls": False,
+                                    "is_dash": False,
+                                })
+                        elif "pixeldrain." in sub_lower:
+                            pd_sources = extract_pixeldrain_stream(sub_h)
+                            for s in pd_sources:
+                                res.append({
+                                    "name": f"Bollyflix {it_qual} (PixelDrain)".strip(),
+                                    "url": s["url"],
+                                    "quality": q_val,
+                                    "headers": s.get("headers") or {"User-Agent": DEFAULT_USER_AGENT},
+                                    "is_hls": False,
+                                    "is_dash": False,
+                                })
+                except Exception as e:
+                    logger.debug(f"Bollyflix locker resolution failed for {t_url}: {e}")
+                return res
+
+            def _resolve_bollyflix_other(task):
+                kind, t_url, it_qual, q_val = task
+                res = []
+                try:
+                    if kind == "gdflix":
+                        gd_sources = _extract_gdflix_sources(t_url, referer=href)
+                        for s in gd_sources:
+                            res.append({
+                                "name": f"Bollyflix {it_qual} ({s.get('name')})".strip(),
+                                "url": s["url"],
+                                "quality": q_val,
+                                "headers": s.get("headers") or {"User-Agent": DEFAULT_USER_AGENT},
+                                "is_hls": s.get("is_hls", False),
+                                "is_dash": False,
                             })
-                            with urllib.request.urlopen(l_req, timeout=6.0) as lr:
-                                l_html = lr.read().decode("utf-8", errors="ignore")
-                            arc_eps = parse_archive_episodes(l_html)
-                            for ep_target_url, _ in arc_eps.get(target_episode, []):
-                                if "hubcloud." in ep_target_url:
-                                    hc_sources = _extract_hubcloud_sources(ep_target_url, referer=target_url)
-                                    for hs in hc_sources:
-                                        ep_pfx = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
-                                        sources.append({
-                                            "name": f"Bollyflix{ep_pfx} {quality_str} ({hs.get('name')})".strip(),
-                                            "url": hs.get("url"),
-                                            "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720,
-                                            "headers": hs.get("headers") or {"User-Agent": "Mozilla/5.0"},
-                                            "is_hls": ".m3u8" in hs.get("url", ""),
-                                            "is_dash": False,
-                                        })
-                                elif "fastdlserver" in ep_target_url or "dl." in ep_target_url:
-                                    resolved = _resolve_short_link(ep_target_url, timeout=5.0)
-                                    if resolved and resolved != ep_target_url:
-                                        ep_pfx = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
-                                        sources.append({
-                                            "name": f"Bollyflix{ep_pfx} {quality_str} (FastDL)".strip(),
-                                            "url": resolved,
-                                            "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720,
-                                            "headers": {"User-Agent": "Mozilla/5.0"},
-                                            "is_hls": ".m3u8" in resolved,
-                                            "is_dash": False,
-                                        })
-                        except Exception as e:
-                            logger.debug(f"Bollyflix fxlinks episode extraction error: {e}")
-
-                    # If linksmod page, extract direct locker links (gofile, megaup, mixdrop, etc.)
-                    elif "linksmod." in target_url and "/view/" in target_url:
-                        try:
-                            l_req = urllib.request.Request(target_url, headers={
-                                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                                "Referer": href
-                            })
-                            with urllib.request.urlopen(l_req, timeout=6.0) as lr:
-                                l_html = lr.read().decode("utf-8", errors="ignore")
-                            sub_links = re.findall(r'<a[^>]+href=[\"\'](https?://[^\"\']+)[\"\'][^>]*>(.*?)</a>', l_html, re.DOTALL)
-                            for sub_h, sub_t in sub_links:
-                                if any(dom in sub_h.lower() for dom in ["gofile.io", "megaup.net", "mixdrop"]):
-                                    sources.append({
-                                        "name": f"Bollyflix {quality_str} ({sub_h.split('/')[2]})".strip(),
-                                        "url": sub_h,
-                                        "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720,
-                                        "headers": {"User-Agent": "Mozilla/5.0"},
-                                        "is_hls": ".m3u8" in sub_h,
-                                        "is_dash": False,
-                                    })
-                        except Exception as e:
-                            logger.debug(f"Bollyflix linksmod resolution failed: {e}")
-
-                    # HubCloud extract
-                    elif "hubcloud." in target_url:
-                        hc_sources = _extract_hubcloud_sources(target_url, referer=href)
+                    elif kind == "hubcloud":
+                        hc_sources = _extract_hubcloud_sources(t_url, referer=href)
                         for hs in hc_sources:
-                            sources.append({
-                                "name": f"Bollyflix {quality_str} ({hs.get('name')})".strip(),
+                            res.append({
+                                "name": f"Bollyflix {it_qual} ({hs.get('name')})".strip(),
                                 "url": hs.get("url"),
-                                "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720,
-                                "headers": hs.get("headers") or {"User-Agent": "Mozilla/5.0"},
+                                "quality": q_val,
+                                "headers": hs.get("headers") or {"User-Agent": DEFAULT_USER_AGENT},
                                 "is_hls": ".m3u8" in hs.get("url", ""),
                                 "is_dash": False,
                             })
+                    elif kind == "fxlinks" and target_episode is not None:
+                        l_html = _http_get_text(t_url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": href}, timeout=6.0)
+                        arc_eps = parse_archive_episodes(l_html)
+                        ep_urls = arc_eps.get(target_episode, [])
+                        for ep_target_url, _ in ep_urls:
+                            ep_pfx = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
+                            extracted = extract_video_streams(ep_target_url, referer=t_url)
+                            if not extracted and any(k in ep_target_url.lower() for k in ("fastdlserver", "gdflix", "gdlink")):
+                                extracted = _extract_gdflix_sources(ep_target_url, referer=t_url)
+                            for es in extracted:
+                                res.append({
+                                    "name": f"Bollyflix{ep_pfx} {it_qual} ({es.get('name')})".strip(),
+                                    "url": es["url"],
+                                    "quality": q_val,
+                                    "headers": es.get("headers") or {"User-Agent": DEFAULT_USER_AGENT},
+                                    "is_hls": es.get("is_hls", False),
+                                    "is_dash": False,
+                                })
+                except Exception as e:
+                    logger.debug(f"Bollyflix other resolution failed for {t_url}: {e}")
+                return res
 
-                    sources.append({
-                        "name": f"Bollyflix {quality_str} ({clean_text})" if quality_str else f"Bollyflix ({clean_text})",
-                        "url": target_url,
-                        "subtitles": [],
-                        "is_hls": ".m3u8" in target_url,
-                        "is_dash": False,
-                    })
+            all_tasks = [(0, t) for t in locker_tasks] + [(1, t) for t in other_tasks]
+            if all_tasks:
+                max_w = min(len(all_tasks), 8)
+                with ThreadPoolExecutor(max_workers=max_w) as ex:
+                    futures = [
+                        ex.submit(_resolve_bollyflix_locker, t) if t_type == 0 else ex.submit(_resolve_bollyflix_other, t)
+                        for t_type, t in all_tasks
+                    ]
+                    for f in futures:
+                        try:
+                            res_items = f.result(timeout=10.0)
+                            if res_items:
+                                sources.extend(res_items)
+                        except Exception as e:
+                            logger.debug(f"Bollyflix future error: {e}")
+
             if sources:
                 return sources
         except Exception as e:
             logger.debug(f"Bollyflix load_links failed: {e}")
+        return []
+
+
+# --- Shared Helpers & Built-in Extractors ---
+
+class JsUnpacker:
+    """
+    De-obfuscates JavaScript packed with Dean Edwards P.A.C.K.E.R.
+    Ported from cloudstream/library/.../utils/JsUnpacker.kt.
+    Supports both instance usage (unpacker.detect(), unpacker.unpack())
+    and static/class usage (JsUnpacker.detect(js), JsUnpacker.unpack(js)).
+    """
+    def __init__(self, packed_js=""):
+        self.packed_js = packed_js or ""
+
+    def detect(self, text=None):
+        if isinstance(self, str) and text is None:
+            target = self
+        elif hasattr(self, "packed_js"):
+            target = self.packed_js if text is None else str(text or "")
+        else:
+            target = str(text or "")
+        js = re.sub(r"\s+", "", target)
+        return bool(re.search(r"eval\(function\(p,a,c,k,e,[rd]", js))
+
+    def unpack(self, text=None):
+        if isinstance(self, str) and text is None:
+            target = self
+        elif hasattr(self, "packed_js"):
+            target = self.packed_js if text is None else str(text or "")
+        else:
+            target = str(text or "")
+        if not target:
+            return ""
+        pattern = r"}\s*\('(.*?)',\s*(\d+|[a-zA-Z0-9]+),\s*(\d+),\s*'([^']*)'\.split\('\|'\)"
+        match = re.search(pattern, target, re.DOTALL)
+        if not match:
+            pattern_alt = r"}\s*\(\s*\"(.*?)\"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\"(.*?)\"\.split\('\|'\)"
+            match = re.search(pattern_alt, target, re.DOTALL)
+        if not match:
+            return ""
+
+        payload, radix_str, count_str, symtab_str = match.groups()
+        try:
+            radix = int(radix_str)
+        except Exception:
+            radix = 36
+        symtab = symtab_str.split("|")
+        ALPHABET_62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+        def _unbase(word):
+            if radix <= 36:
+                try:
+                    return int(word, radix)
+                except ValueError:
+                    return None
+            ret = 0
+            for i, c in enumerate(reversed(word)):
+                val = ALPHABET_62.find(c)
+                if val < 0 or val >= radix:
+                    return None
+                ret += val * (radix ** i)
+            return ret
+
+        def _replace(m):
+            w = m.group(0)
+            idx = _unbase(w)
+            if idx is not None and 0 <= idx < len(symtab) and symtab[idx]:
+                return symtab[idx]
+            return w
+
+        return re.sub(r"\b[a-zA-Z0-9_]+\b", _replace, payload)
+
+
+_PACKED_REGEX = re.compile(r"eval\(function\(p,a,c,k,e,.*?\)\)", re.DOTALL)
+
+def get_packed(string):
+    """Finds packed JS string within HTML or script tag."""
+    if not string:
+        return None
+    m = _PACKED_REGEX.search(string)
+    return m.group(0) if m else None
+
+def get_and_unpack(string):
+    """Extracts packed JS from HTML/script and unpacks it if found."""
+    if not string:
+        return ""
+    packed = get_packed(string)
+    if packed:
+        unpacked = JsUnpacker(packed).unpack()
+        if unpacked:
+            return unpacked
+    unpacker = JsUnpacker(string)
+    if unpacker.detect():
+        unpacked = unpacker.unpack()
+        if unpacked:
+            return unpacked
+    return string
+
+
+def extract_jwplayer_streams(script_or_html, source_name="Stream", main_url="", headers=None):
+    """
+    Extracts stream links and playlists from JWPlayer scripts and JSON configurations.
+    Ported from cloudstream/library/.../extractors/helper/JWPlayerHelper.kt.
+    """
+    if not script_or_html:
+        return []
+    req_headers = dict(headers or {})
+    if main_url and "Referer" not in req_headers:
+        req_headers["Referer"] = main_url
+    if "User-Agent" not in req_headers:
+        req_headers["User-Agent"] = DEFAULT_USER_AGENT
+
+    streams = []
+    seen_urls = set()
+
+    # 1. Direct master.m3u8 or master.txt URLs
+    m3u8_matches = re.findall(r'[:=]\s*["\'](https?://[^"\'\s]+(?:\.m3u8|master\.txt)[^"\'\s]*)["\']', script_or_html)
+    if not m3u8_matches:
+        m3u8_matches = re.findall(r'["\'](https?://[^"\'\s]+(?:\.m3u8|master\.txt)[^"\'\s]*)["\']', script_or_html)
+    for m3u8_url in m3u8_matches:
+        clean_url = m3u8_url.replace("\\/", "/")
+        if clean_url not in seen_urls:
+            seen_urls.add(clean_url)
+            streams.append({
+                "name": source_name,
+                "url": clean_url,
+                "headers": req_headers,
+                "is_hls": True,
+                "is_dash": False,
+            })
+
+    # 2. sources: [{file: "..."}] or file: "..."
+    file_matches = re.findall(r'["\']?file["\']?\s*:\s*["\'](https?://[^"\'\s]+)["\']', script_or_html)
+    for f_url in file_matches:
+        clean_url = f_url.replace("\\/", "/")
+        if clean_url not in seen_urls:
+            seen_urls.add(clean_url)
+            streams.append({
+                "name": source_name,
+                "url": clean_url,
+                "headers": req_headers,
+                "is_hls": ".m3u8" in clean_url or ".txt" in clean_url,
+                "is_dash": ".mpd" in clean_url,
+            })
+
+    return streams
+
+
+def extract_pixeldrain_stream(url):
+    """
+    Extracts direct downloadable/playable stream from a PixelDrain URL.
+    Reference: cloudstream/library/.../extractors/PixelDrainExtractor.kt
+    """
+    if not url:
+        return []
+    m = re.search(r"pixeldrain\.(?:com|dev)/u/([a-zA-Z0-9_-]+)", url)
+    if not m:
+        m = re.search(r"/api/file/([a-zA-Z0-9_-]+)", url)
+    if m:
+        file_id = m.group(1)
+        direct_url = f"https://pixeldrain.com/api/file/{file_id}?download"
         return [{
-            "name": "Bollyflix Source",
-            "url": href,
-            "subtitles": [],
+            "name": "PixelDrain",
+            "url": direct_url,
+            "headers": {
+                "User-Agent": DEFAULT_USER_AGENT,
+                "Referer": url,
+            },
             "is_hls": False,
             "is_dash": False,
         }]
+    return []
 
 
-# --- Shared Helpers for Link Extraction ---
+def extract_doodstream(url):
+    """
+    Extracts direct playable stream from DoodStream and its mirrors.
+    Reference: cloudstream/library/.../extractors/DoodExtractor.kt
+    """
+    if not url:
+        return []
+    embed_url = re.sub(r"/d/([a-zA-Z0-9_-]+)", r"/e/\1", url)
+    try:
+        html = _http_get_text(embed_url, headers={"Referer": url}, timeout=7.0)
+        m_md5 = re.search(r"/pass_md5/([^'\"]+)", html)
+        if not m_md5:
+            return []
+        token = m_md5.group(1)
+        parsed = urllib.parse.urlsplit(embed_url)
+        md5_url = f"{parsed.scheme}://{parsed.netloc}/pass_md5/{token}"
+        md5_resp = _http_get_text(md5_url, headers={"Referer": embed_url}, timeout=7.0).strip()
+        if not md5_resp:
+            return []
+        rand_str = "".join(random.choices(string.ascii_letters + string.digits, k=10))
+        final_stream_url = f"{md5_resp}{rand_str}?token={token}"
+        return [{
+            "name": "DoodStream",
+            "url": final_stream_url,
+            "headers": {
+                "User-Agent": DEFAULT_USER_AGENT,
+                "Referer": "https://dood.la/",
+            },
+            "is_hls": False,
+            "is_dash": False,
+        }]
+    except Exception as e:
+        logger.debug(f"DoodStream extraction failed for {url}: {e}")
+        return []
+
+
+def extract_streamtape(url):
+    """
+    Extracts direct playable stream from StreamTape.
+    Reference: cloudstream/library/.../extractors/StreamTape.kt
+    """
+    if not url:
+        return []
+    try:
+        html = _http_get_text(url, headers={"Referer": url}, timeout=7.0)
+        m = re.search(r"botlink'\)\.innerHTML\s*=\s*(.*?);", html)
+        if m:
+            parts = re.findall(r"['\"]([^'\"]+)['\"]", m.group(1))
+            extracted_path = "".join(parts)
+            if extracted_path:
+                if not extracted_path.startswith("http"):
+                    stream_url = f"https:{extracted_path}&stream=1" if extracted_path.startswith("//") else f"https://streamtape.com{extracted_path}&stream=1"
+                else:
+                    stream_url = f"{extracted_path}&stream=1"
+                return [{
+                    "name": "StreamTape",
+                    "url": stream_url,
+                    "headers": {
+                        "User-Agent": DEFAULT_USER_AGENT,
+                        "Referer": url,
+                    },
+                    "is_hls": False,
+                    "is_dash": False,
+                }]
+    except Exception as e:
+        logger.debug(f"StreamTape extraction failed for {url}: {e}")
+        return []
+
+
+def extract_mixdrop(url):
+    """
+    Extracts direct playable stream from MixDrop.
+    Reference: cloudstream/library/.../extractors/MixDrop.kt
+    """
+    if not url:
+        return []
+    embed_url = re.sub(r"/f/([a-zA-Z0-9_-]+)", r"/e/\1", url)
+    try:
+        html = _http_get_text(embed_url, headers={"Referer": url}, timeout=7.0)
+        unpacked = get_and_unpack(html)
+        m = re.search(r'wurl.*?=.*?"(.*?)";', unpacked)
+        if not m:
+            m = re.search(r'wurl.*?=.*?["\']([^"\']+)["\'];?', unpacked)
+        if m:
+            raw_link = m.group(1)
+            stream_url = f"https:{raw_link}" if raw_link.startswith("//") else (f"https://{raw_link}" if not raw_link.startswith("http") else raw_link)
+            return [{
+                "name": "MixDrop",
+                "url": stream_url,
+                "headers": {
+                    "User-Agent": DEFAULT_USER_AGENT,
+                    "Referer": embed_url,
+                },
+                "is_hls": False,
+                "is_dash": False,
+            }]
+        return []
+    except Exception as e:
+        logger.debug(f"MixDrop extraction failed for {url}: {e}")
+        return []
+
+
+def extract_streamwish(url):
+    """
+    Extracts direct stream from StreamWish and its mirrors.
+    Reference: cloudstream/library/.../extractors/StreamWishExtractor.kt
+    """
+    if not url:
+        return []
+    embed_url = re.sub(r"/(?:f|d)/([a-zA-Z0-9_-]+)", r"/e/\1", url)
+    try:
+        parsed = urllib.parse.urlsplit(embed_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Referer": f"{origin}/",
+            "Origin": origin,
+        }
+        html = _http_get_text(embed_url, headers=headers, timeout=7.0)
+        unpacked = get_and_unpack(html)
+        return extract_jwplayer_streams(unpacked or html, source_name="StreamWish", main_url=origin, headers=headers)
+    except Exception as e:
+        logger.debug(f"StreamWish extraction failed for {url}: {e}")
+        return []
+
+
+def extract_vidhide(url):
+    """
+    Extracts direct stream from VidHide, FileLions, and mirrors.
+    Reference: cloudstream/library/.../extractors/VidHidePro.kt
+    """
+    if not url:
+        return []
+    embed_url = re.sub(r"/(?:d|download|file|f)/([a-zA-Z0-9_-]+)", r"/v/\1", url)
+    try:
+        parsed = urllib.parse.urlsplit(embed_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Referer": f"{origin}/",
+            "Origin": origin,
+        }
+        html = _http_get_text(embed_url, headers=headers, timeout=7.0)
+        unpacked = get_and_unpack(html)
+        return extract_jwplayer_streams(unpacked or html, source_name="VidHide", main_url=origin, headers=headers)
+    except Exception as e:
+        logger.debug(f"VidHide extraction failed for {url}: {e}")
+        return []
+
+
+def extract_filemoon(url):
+    """
+    Extracts direct stream from FileMoon.
+    Reference: cloudstream/library/.../extractors/Filemoon.kt
+    """
+    if not url:
+        return []
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Referer": url,
+        }
+        html = _http_get_text(url, headers=headers, timeout=7.0)
+        m_iframe = re.search(r'<iframe[^>]+src=["\'](https?://[^"\']+)["\']', html)
+        if m_iframe:
+            iframe_url = m_iframe.group(1)
+            html = _http_get_text(iframe_url, headers={"Referer": url, "User-Agent": DEFAULT_USER_AGENT}, timeout=7.0)
+        unpacked = get_and_unpack(html)
+        return extract_jwplayer_streams(unpacked or html, source_name="FileMoon", main_url=origin, headers=headers)
+    except Exception as e:
+        logger.debug(f"FileMoon extraction failed for {url}: {e}")
+        return []
+
+
+def extract_fastream(url):
+    """
+    Extracts direct stream from Fastream.
+    Reference: cloudstream/library/.../extractors/Fastream.kt
+    """
+    if not url:
+        return []
+    try:
+        html = _http_get_text(url, headers={"Referer": url}, timeout=7.0)
+        unpacked = get_and_unpack(html)
+        return extract_jwplayer_streams(unpacked or html, source_name="Fastream", main_url=url)
+    except Exception as e:
+        logger.debug(f"Fastream extraction failed for {url}: {e}")
+        return []
+
+
+def extract_gofile(url):
+    """
+    Extracts direct downloadable stream from Gofile.io.
+    Reference: cloudstream/library/.../extractors/Gofile.kt
+    """
+    if not url:
+        return []
+    m = re.search(r"gofile\.io/(?:d/|\?c=)([a-zA-Z0-9_-]+)", url)
+    if not m:
+        return []
+    content_id = m.group(1)
+    try:
+        req = urllib.request.Request(
+            "https://api.gofile.io/accounts",
+            data=b"{}",
+            headers={"User-Agent": DEFAULT_USER_AGENT, "Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as r:
+            acc_data = json.loads(r.read().decode("utf-8", errors="ignore"))
+        token = acc_data.get("data", {}).get("token")
+        if not token:
+            return []
+
+        c_req = urllib.request.Request(
+            f"https://api.gofile.io/contents/{content_id}",
+            headers={"User-Agent": DEFAULT_USER_AGENT, "Authorization": f"Bearer {token}"}
+        )
+        with urllib.request.urlopen(c_req, timeout=5.0) as r:
+            c_data = json.loads(r.read().decode("utf-8", errors="ignore"))
+        children = c_data.get("data", {}).get("children", {})
+        streams = []
+        for child_id, file_info in children.items():
+            if file_info.get("type") == "file" and file_info.get("link"):
+                streams.append({
+                    "name": f"Gofile ({file_info.get('name', 'File')})",
+                    "url": file_info["link"],
+                    "headers": {
+                        "User-Agent": DEFAULT_USER_AGENT,
+                        "Cookie": f"accountToken={token}",
+                    },
+                    "is_hls": False,
+                    "is_dash": False,
+                })
+        return streams
+    except Exception as e:
+        logger.debug(f"Gofile extraction failed for {url}: {e}")
+        return []
+
 
 def _extract_hubcdn_direct(hubcdn_url, referer=None):
     """
@@ -2019,7 +2557,7 @@ def _extract_hubcdn_direct(hubcdn_url, referer=None):
     """
     try:
         req = urllib.request.Request(hubcdn_url, headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": DEFAULT_USER_AGENT,
             "Referer": referer or hubcdn_url
         })
         with urllib.request.urlopen(req, timeout=8.0) as r:
@@ -2044,16 +2582,24 @@ def _resolve_hubcloud_redirect(url):
         opener = urllib.request.build_opener(_NoRedirect)
         cur = url
         for _ in range(5):
-            req = urllib.request.Request(cur, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"})
+            req = urllib.request.Request(cur, headers={"User-Agent": DEFAULT_USER_AGENT})
             try:
                 res = opener.open(req, timeout=5.0)
+                hx = res.headers.get("hx-redirect")
+                if hx:
+                    cur = urllib.parse.urljoin(cur, hx.strip())
+                    continue
                 break
             except urllib.error.HTTPError as e:
+                hx = e.headers.get("hx-redirect")
+                if hx:
+                    cur = urllib.parse.urljoin(cur, hx.strip())
+                    continue
                 if e.code in (301, 302, 303, 307, 308):
                     loc = e.headers.get("Location")
                     if not loc:
                         break
-                    cur = loc
+                    cur = urllib.parse.urljoin(cur, loc.strip())
                     if "link=" in cur:
                         parsed = urllib.parse.urlparse(cur)
                         qs = urllib.parse.parse_qs(parsed.query)
@@ -2068,14 +2614,15 @@ def _resolve_hubcloud_redirect(url):
 
 def _extract_hubcloud_sources(url, referer=None):
     """
-    Resolves a hubdrive, hubcloud, nexdrive, or fastdl link down to direct playable video streams.
+    Resolves a hubdrive, hubcloud, nexdrive, fastdl, or vcloud link down to direct playable video streams.
+    Reference: cloudstream/library/.../extractors/HubCloud.kt
     """
     sources = []
     try:
         # Step 0: NexDrive / FastDL / VCloud resolution
-        if any(k in url for k in ["nexdrive.", "fastdl.", "vcloud."]):
+        if any(k in url.lower() for k in ["nexdrive.", "fastdl.", "vcloud."]):
             req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "User-Agent": DEFAULT_USER_AGENT,
                 "Referer": referer or url
             })
             with urllib.request.urlopen(req, timeout=6.0) as r:
@@ -2090,15 +2637,17 @@ def _extract_hubcloud_sources(url, referer=None):
                 sources.append({
                     "name": "Direct Google CDN",
                     "url": direct_video,
-                    "headers": {"User-Agent": "Mozilla/5.0"},
+                    "headers": {"User-Agent": DEFAULT_USER_AGENT},
                     "is_http": True,
+                    "is_hls": False,
+                    "is_dash": False,
                 })
                 return sources
 
         # Step 1: If HubDrive, extract HubCloud link
-        if "hubdrive." in url:
+        if "hubdrive." in url.lower():
             req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": DEFAULT_USER_AGENT,
                 "Referer": referer or url
             })
             with urllib.request.urlopen(req, timeout=8.0) as r:
@@ -2110,43 +2659,92 @@ def _extract_hubcloud_sources(url, referer=None):
             else:
                 return []
 
-        # Step 2: On hubcloud.pw/drive/..., extract hubcloud.php link
-        if "hubcloud." in url and "hubcloud.php" not in url:
+        # Step 2: On landing page, navigate to download page
+        if "hubcloud." in url.lower() and "hubcloud.php" not in url.lower():
             req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": DEFAULT_USER_AGENT,
                 "Referer": referer or url
             })
             with urllib.request.urlopen(req, timeout=8.0) as r:
                 html = r.read().decode("utf-8", errors="ignore")
-            m = re.search(r'<a[^>]+href=[\"\'](https?://[^\"\']*hubcloud\.php[^\"\']*)[\"\']', html)
+            m = re.search(r'<a[^>]+id=[\"\']download[\"\'][^>]+href=[\"\']([^\"\']+)[\"\']', html, re.I)
+            if not m:
+                m = re.search(r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]+id=[\"\']download[\"\']', html, re.I)
+            if not m:
+                m = re.search(r'<a[^>]+href=[\"\'](https?://[^\"\']*hubcloud\.php[^\"\']*)[\"\']', html, re.I)
+            if not m:
+                m = re.search(r'<a[^>]+href=[\"\']([^\"\']*(?:/download/|/drive/|hubcloud\.php)[^\"\']*)[\"\']', html, re.I)
             if m:
-                url = m.group(1)
+                found_href = m.group(1).strip()
+                url = urllib.parse.urljoin(url, found_href)
                 referer = url
             else:
                 return []
 
-        # Step 3: On hubcloud.php page, extract direct video streams
-        if "hubcloud.php" in url:
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": referer or url
-            })
-            with urllib.request.urlopen(req, timeout=8.0) as r:
-                html = r.read().decode("utf-8", errors="ignore")
-            dl_matches = re.findall(r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', html, re.DOTALL)
-            for dl_href, dl_text in dl_matches:
-                dl_clean = re.sub(r'<[^>]+>', '', dl_text).strip()
-                if any(k in dl_clean.lower() or k in dl_href.lower() for k in [".mkv", ".mp4", "download file", "server :", "pixel"]):
-                    final_url = dl_href
-                    if "hubcloud.pw" in dl_href:
-                        resolved = _resolve_hubcloud_redirect(dl_href)
-                        if resolved and resolved.startswith("http"):
-                            final_url = resolved
+        # Step 3: Extract direct video streams / download buttons
+        req = urllib.request.Request(url, headers={
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Referer": referer or url
+        })
+        with urllib.request.urlopen(req, timeout=8.0) as r:
+            html = r.read().decode("utf-8", errors="ignore")
+
+        dl_matches = re.findall(r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', html, re.DOTALL)
+        for dl_href, dl_text in dl_matches:
+            dl_clean = re.sub(r'<[^>]+>', '', dl_text).strip()
+            dl_lower = dl_clean.lower()
+            href_lower = dl_href.lower()
+
+            # 3a. PixelDrain
+            if "pixeldra" in dl_lower or "pixel" in dl_lower or "pixeldrain." in href_lower:
+                pd_streams = extract_pixeldrain_stream(dl_href)
+                if pd_streams:
+                    sources.extend(pd_streams)
+                    continue
+
+            # 3b. BuzzServer
+            if "buzzserver" in dl_lower:
+                buzz_link = f"{dl_href.rstrip('/')}/download"
+                resolved_buzz = _resolve_hubcloud_redirect(buzz_link)
+                if resolved_buzz and resolved_buzz != buzz_link and resolved_buzz.startswith("http"):
                     sources.append({
-                        "name": dl_clean,
-                        "url": final_url,
-                        "headers": {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)", "Referer": url}
+                        "name": f"{dl_clean} (BuzzServer)",
+                        "url": resolved_buzz,
+                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": dl_href},
+                        "is_hls": ".m3u8" in resolved_buzz,
+                        "is_dash": False,
                     })
+                continue
+
+            # 3c. HubCDN
+            if "hubcdn." in href_lower:
+                direct_cdn = _extract_hubcdn_direct(dl_href, referer=url)
+                if direct_cdn:
+                    sources.append({
+                        "name": dl_clean or "HubCDN Direct",
+                        "url": direct_cdn,
+                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": dl_href},
+                        "is_hls": False,
+                        "is_dash": False,
+                    })
+                continue
+
+            # 3d. Direct streams & servers
+            if any(k in dl_lower or k in href_lower for k in [
+                ".mkv", ".mp4", "download file", "server :", "fsl server", "s3 server", "fslv2", "mega server", "fast cloud"
+            ]):
+                final_url = dl_href
+                if "hubcloud." in dl_href.lower():
+                    resolved = _resolve_hubcloud_redirect(dl_href)
+                    if resolved and resolved.startswith("http"):
+                        final_url = resolved
+                sources.append({
+                    "name": dl_clean,
+                    "url": final_url,
+                    "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": url},
+                    "is_hls": ".m3u8" in final_url,
+                    "is_dash": False,
+                })
     except Exception as e:
         logger.debug(f"HubCloud extraction error for {url}: {e}")
     return sources
@@ -2180,26 +2778,247 @@ def _resolve_hdhub4u_short_link(target_url, timeout=8.0):
 
 def _extract_hblinks_sources(target_url, referer=None):
     """
-    Extracts HubCloud, HubDrive, and direct streaming links from an hblinks page.
+    Extracts HubCloud, HubDrive, PixelDrain, and direct streaming links from an hblinks page.
     """
     sources = []
     try:
         html = _http_get_text(target_url, headers={"Referer": referer or target_url}, timeout=8.0)
         hc_links = re.findall(
-            r'href\s*=\s*[\"\'](https?://[^\"\']*(?:hubcloud|hubdrive|hubcdn|gdflix|vcloud|nexdrive|fastdl)[^\"\']*)[\"\']',
+            r'href\s*=\s*[\"\'](https?://[^\"\']*(?:hubcloud|hubdrive|hubcdn|gdflix|vcloud|nexdrive|fastdl|pixeldrain|dood|streamtape|streamwish|vidhide)[^\"\']*)[\"\']',
             html,
             re.IGNORECASE,
         )
         for h in hc_links:
-            if "hubcdn." in h:
-                d = _extract_hubcdn_direct(h, referer=target_url)
-                if d:
-                    sources.append({"name": "HubCDN Direct", "url": d, "headers": {"Referer": h}})
-            else:
-                sources.extend(_extract_hubcloud_sources(h, referer=target_url))
+            ext_res = extract_video_streams(h, referer=target_url)
+            if ext_res:
+                sources.extend(ext_res)
     except Exception as e:
         logger.debug(f"Hblinks extraction error for {target_url}: {e}")
     return sources
+
+
+def _extract_multiup_mirrors(multiup_url, referer=None):
+    """
+    Extracts playable video streams from a MultiUp mirror page (e.g. multiup.io/en/mirror/...).
+    MultiUp aggregates mirrors including MixDrop, PixelDrain, StreamTape, FileLions, GoFile.
+    """
+    if not multiup_url:
+        return []
+    clean_url = str(multiup_url).strip()
+    sources = []
+    try:
+        html = _http_get_text(clean_url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": referer or ""}, timeout=8.0)
+        found_links = set(re.findall(r'href=[\"\'](https?://[^\"\']+)[\"\']', html, re.I))
+
+        for mirror_link in found_links:
+            lower_m = mirror_link.lower()
+            if any(dom in lower_m for dom in ("mixdrop.", "mdy48tn97.com")):
+                md_streams = extract_mixdrop(mirror_link)
+                if md_streams:
+                    sources.extend(md_streams)
+            elif "pixeldrain." in lower_m:
+                pd_streams = extract_pixeldrain_stream(mirror_link)
+                if pd_streams:
+                    sources.extend(pd_streams)
+            elif any(dom in lower_m for dom in ("streamtape.", "watchadsontape.")):
+                st_streams = extract_streamtape(mirror_link)
+                if st_streams:
+                    sources.extend(st_streams)
+            elif any(dom in lower_m for dom in ("filelions.", "vidhide.")):
+                vh_streams = extract_vidhide(mirror_link)
+                if vh_streams:
+                    sources.extend(vh_streams)
+    except Exception as e:
+        logger.debug(f"MultiUp mirrors extraction failed for {clean_url}: {e}")
+    return sources
+
+
+def _extract_gdflix_sources(url, referer=None):
+    """
+    Extracts playable video streams from GDFlix/fastdlserver pages.
+    Handles 302 redirects (fastdlserver -> gdflix), dynamic domains (new9.gdflix.io),
+    and parses direct download links, PixelDrain links, FSL V2, etc.
+    """
+    if not url:
+        return []
+    clean_url = str(url).strip()
+    target_url = clean_url
+
+    if "fastdlserver" in target_url or "dl." in target_url:
+        try:
+            loc = _resolve_short_link(target_url, timeout=5.0)
+            if loc and loc != target_url:
+                target_url = loc
+        except Exception as e:
+            logger.debug(f"fastdlserver redirect failed for {clean_url}: {e}")
+
+    html = ""
+    candidate_urls = [target_url]
+    try:
+        parsed = urllib.parse.urlparse(target_url)
+        dyn_host = get_dynamic_domain("gdflix", "https://new9.gdflix.io").rstrip("/")
+        if parsed.netloc and dyn_host:
+            alt_url = f"{dyn_host}{parsed.path}"
+            if parsed.query:
+                alt_url += f"?{parsed.query}"
+            if alt_url != target_url:
+                candidate_urls.append(alt_url)
+    except Exception:
+        pass
+
+    for candidate_url in candidate_urls:
+        try:
+            html = _http_get_text(candidate_url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": referer or ""}, timeout=8.0)
+            if html:
+                break
+        except Exception as e:
+            logger.debug(f"GDFlix fetch failed for {candidate_url}: {e}")
+
+    if not html:
+        return []
+
+    sources = []
+    fn_m = re.search(r"Name\s*:\s*([^<]+)", html, re.I)
+    file_name = fn_m.group(1).strip() if fn_m else ""
+    q_val = 720
+    q_m = re.search(r"(\d{3,4})[pP]", file_name)
+    if q_m:
+        q_val = int(q_m.group(1))
+
+    anchors = re.findall(r'<a\b[^>]*href=["\']([^\"\']+)["\'][^>]*>(.*?)</a>', html, re.I | re.DOTALL)
+    for link, text in anchors:
+        link = link.strip()
+        t_clean = re.sub(r"<[^>]+>", "", text).strip()
+        t_upper = t_clean.upper()
+
+        if "PIXELDRA" in link.upper():
+            pd_sources = extract_pixeldrain_stream(link)
+            for s in pd_sources:
+                s["quality"] = q_val
+                s["name"] = "GDFlix [PixelDrain]"
+                sources.append(s)
+        elif any(k in t_upper for k in ("DIRECT DL", "DIRECT SERVER", "FSL V2", "CLOUD DOWNLOAD [R2]")):
+            sources.append({
+                "name": f"GDFlix [{t_clean}]",
+                "url": link,
+                "quality": q_val,
+                "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": target_url},
+                "is_hls": ".m3u8" in link,
+                "is_dash": False,
+            })
+        elif "INSTANT DL" in t_upper or "INSTANT DOWNLOAD" in t_upper:
+            try:
+                loc = _resolve_short_link(link, timeout=5.0)
+                if loc:
+                    m_url = re.search(r"url=([^&]+)", loc)
+                    real_dl = urllib.parse.unquote(m_url.group(1)) if m_url else loc
+                    sources.append({
+                        "name": "GDFlix [Instant Download]",
+                        "url": real_dl,
+                        "quality": q_val,
+                        "headers": {"User-Agent": DEFAULT_USER_AGENT},
+                        "is_hls": ".m3u8" in real_dl,
+                        "is_dash": False,
+                    })
+            except Exception:
+                pass
+    return sources
+
+
+def extract_video_streams(url, referer=None):
+    """
+    Dispatches a URL to the matching CloudStream extractor.
+    Reference: cloudstream/library/.../utils/ExtractorApi.kt loadExtractor
+    Returns list of stream dicts, or [] if unsupported.
+    """
+    if not url or not isinstance(url, str):
+        return []
+    clean_u = url.strip()
+    lower_u = clean_u.lower()
+
+    # 1. Direct stream files (.m3u8, .mp4, .mkv, .mpd)
+    # Exclude file locker pages that have .mkv/.mp4 in their page path
+    is_locker_page = any(dom in lower_u for dom in (
+        "megaup.", "1fichier.", "dailyuploads.", "rapidgator.", "linksmod.", "multiup.", "gofile.io",
+        "dropgalaxy.", "uploadmaza.", "vikingfile."
+    ))
+    path_without_query = lower_u.split("?")[0]
+    if not is_locker_page and any(path_without_query.endswith(ext) for ext in (".m3u8", ".mp4", ".mkv", ".mpd")):
+        return [{
+            "name": "Direct Stream",
+            "url": clean_u,
+            "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": referer or clean_u},
+            "is_hls": path_without_query.endswith(".m3u8"),
+            "is_dash": path_without_query.endswith(".mpd"),
+        }]
+
+    # 1b. MultiUp mirror pages
+    if "multiup." in lower_u:
+        return _extract_multiup_mirrors(clean_u, referer=referer)
+
+    # 1c. GDFlix / FastDL / GDLink
+    if any(k in lower_u for k in ("gdflix.", "gdlink.")):
+        return _extract_gdflix_sources(clean_u, referer=referer)
+
+    # 2. PixelDrain
+    if "pixeldrain." in lower_u:
+        return extract_pixeldrain_stream(clean_u)
+
+    # 3. HubCDN
+    if "hubcdn." in lower_u:
+        d = _extract_hubcdn_direct(clean_u, referer=referer)
+        if d:
+            return [{
+                "name": "HubCDN Direct",
+                "url": d,
+                "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": clean_u},
+                "is_hls": False,
+                "is_dash": False,
+            }]
+
+    # 4. HubCloud / HubDrive / NexDrive / FastDL / VCloud
+    if any(k in lower_u for k in ("hubcloud.", "hubdrive.", "nexdrive.", "fastdl.", "vcloud.")):
+        return _extract_hubcloud_sources(clean_u, referer=referer)
+
+    # 5. DoodStream
+    if any(k in lower_u for k in ("dood.", "doodstream.", "dooood.", "ds2play.", "dsvplay.")):
+        return extract_doodstream(clean_u)
+
+    # 6. StreamTape
+    if any(k in lower_u for k in ("streamtape.", "watchadsontape.", "shavetape.")):
+        return extract_streamtape(clean_u)
+
+    # 7. MixDrop
+    if any(k in lower_u for k in ("mixdrop.", "mdy48tn97.com")):
+        return extract_mixdrop(clean_u)
+
+    # 8. StreamWish & mirrors
+    if any(k in lower_u for k in (
+        "streamwish.", "mwish.", "dwish.", "embedwish.", "wishembed.",
+        "wishfast.", "sfastwish.", "strwish.", "asnwish.", "cdnwish.", "wishonly.", "playerwish."
+    )):
+        return extract_streamwish(clean_u)
+
+    # 9. VidHide & mirrors
+    if any(k in lower_u for k in (
+        "vidhide.", "vidhidepro.", "vidhidehub.", "vidhidevip.", "vidhidepre.",
+        "filelions.", "smoothpre.", "dhtpre.", "peytonepre."
+    )):
+        return extract_vidhide(clean_u)
+
+    # 10. FileMoon
+    if "filemoon." in lower_u:
+        return extract_filemoon(clean_u)
+
+    # 11. Fastream
+    if "fastream." in lower_u:
+        return extract_fastream(clean_u)
+
+    # 12. Gofile
+    if "gofile.io" in lower_u:
+        return extract_gofile(clean_u)
+
+    return []
 
 
 class HDhub4uCloudStreamProvider(CloudStreamProvider):
@@ -2617,7 +3436,12 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
                     continue
 
                 if (
-                    any(h in lower_url for h in ("greenmotors.", "greenmountmotors.", "hblinks.", "hubdrive.", "hubcloud.", "hubcdn.", "nexdrive.", "fastdl.", "vcloud.", "playdrive.", "gdflix."))
+                    any(h in lower_url for h in (
+                        "greenmotors.", "greenmountmotors.", "hblinks.", "hubdrive.", "hubcloud.",
+                        "hubcdn.", "nexdrive.", "fastdl.", "vcloud.", "playdrive.", "gdflix.",
+                        "pixeldrain.", "streamtape.", "dood.", "doodstream.", "streamwish.",
+                        "vidhide.", "filemoon.", "fastream.", "gofile.",
+                    ))
                     or ("?id=" in lower_url and "hdhub" not in lower_url)
                 ):
                     tasks.append((target_url, raw_text, clean_text, quality_str, quality_num))
@@ -2635,6 +3459,8 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
                             extracted = _extract_hubcloud_sources(dest, referer=t_url)
                         elif dest and any(dest.lower().endswith(ext) or f"{ext}?" in dest.lower() for ext in (".m3u8", ".mp4", ".mpd", ".mkv")):
                             extracted = [{"name": "Direct Stream", "url": dest, "headers": {"Referer": t_url}}]
+                        elif dest:
+                            extracted = extract_video_streams(dest, referer=t_url)
                     elif "hblinks." in l_url:
                         extracted = _extract_hblinks_sources(t_url, referer=href)
                     elif "hubcdn." in l_url:
@@ -2658,6 +3484,10 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
                                 extracted = _extract_hubcloud_sources(resolved_url, referer=t_url)
                             elif any(resolved_lower.endswith(ext) or f"{ext}?" in resolved_lower for ext in (".m3u8", ".mp4", ".mpd", ".mkv")):
                                 extracted = [{"name": "PlayDrive Direct", "url": resolved_url, "headers": {"Referer": t_url}}]
+                            else:
+                                extracted = extract_video_streams(resolved_url, referer=t_url)
+                    else:
+                        extracted = extract_video_streams(t_url, referer=href)
                 except Exception as e:
                     logger.debug(f"HDhub4u link extraction error for {t_url}: {e}")
                 return q_str, q_num, extracted
@@ -2939,20 +3769,24 @@ class MoviesDriveCloudStreamProvider(CloudStreamProvider):
                         if target_episode is not None:
                             archive_eps = parse_archive_episodes(m_html)
                             ep_entries = archive_eps.get(target_episode, [])
-                            hc_links = [h for h, _ in ep_entries if any(k in h for k in ["hubcloud.", "hubdrive.", "nexdrive.", "fastdl.", "vcloud."])]
+                            candidate_links = [h for h, _ in ep_entries]
                         else:
-                            hc_links = re.findall(r'<a[^>]+href=[\"\'](https?://hubcloud\.[^\"\']+)[\"\']', m_html)
+                            candidate_links = re.findall(r'<a[^>]+href=[\"\'](https?://[^\"\']+)[\"\']', m_html)
 
-                        for hc_link in hc_links:
-                            hc_res = _extract_hubcloud_sources(hc_link, referer=target_url)
-                            for hs in hc_res:
+                        for cand_link in candidate_links:
+                            if any(k in cand_link for k in ["hubcloud.", "hubdrive.", "nexdrive.", "fastdl.", "vcloud."]):
+                                hc_res = _extract_hubcloud_sources(cand_link, referer=target_url)
+                            else:
+                                hc_res = extract_video_streams(cand_link, referer=target_url)
+                            for hs in (hc_res or []):
                                 ep_prefix = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
+                                q_val = int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else (hs.get("quality") or 720)
                                 sources.append({
                                     "name": f"MoviesDrive{ep_prefix} {quality_str} ({hs.get('name')})".strip(),
                                     "url": hs.get("url"),
-                                    "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720,
+                                    "quality": q_val,
                                     "headers": hs.get("headers") or {"User-Agent": "Mozilla/5.0"},
-                                    "is_hls": ".m3u8" in hs.get("url", ""),
+                                    "is_hls": hs.get("is_hls") or ".m3u8" in hs.get("url", ""),
                                 })
                     except Exception as e:
                         logger.debug(f"MoviesDrive mdrive extraction failed: {e}")
@@ -2967,6 +3801,16 @@ class MoviesDriveCloudStreamProvider(CloudStreamProvider):
                             "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else 720,
                             "headers": hs.get("headers") or {"User-Agent": "Mozilla/5.0"},
                             "is_hls": ".m3u8" in hs.get("url", ""),
+                        })
+                else:
+                    ext_streams = extract_video_streams(target_url, referer=href)
+                    for es in (ext_streams or []):
+                        sources.append({
+                            "name": f"MoviesDrive {quality_str} ({es.get('name')})".strip(),
+                            "url": es.get("url"),
+                            "quality": int(re.sub(r"\D", "", quality_str)) if re.sub(r"\D", "", quality_str).isdigit() else (es.get("quality") or 720),
+                            "headers": es.get("headers") or {"User-Agent": "Mozilla/5.0"},
+                            "is_hls": es.get("is_hls") or ".m3u8" in es.get("url", ""),
                         })
 
             if sources:
@@ -3216,19 +4060,21 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
                                 m_html = mr.read().decode("utf-8", errors="ignore")
                             arc_eps = parse_archive_episodes(m_html)
                             for ep_target, _ in arc_eps.get(target_episode, []):
-                                if "hubcloud." in ep_target:
+                                if "hubcloud." in ep_target or "hubdrive." in ep_target or "nexdrive." in ep_target:
                                     hc_res = _extract_hubcloud_sources(ep_target, referer=target_url)
-                                    for hs in hc_res:
-                                        ep_pfx = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
-                                        sources.append({
-                                            "name": f"Moviesmod{ep_pfx} ({hs.get('name')})",
-                                            "url": hs.get("url"),
-                                            "headers": hs.get("headers") or {"User-Agent": "Mozilla/5.0"},
-                                            "is_hls": ".m3u8" in hs.get("url", ""),
-                                        })
+                                else:
+                                    hc_res = extract_video_streams(ep_target, referer=target_url)
+                                for hs in (hc_res or []):
+                                    ep_pfx = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
+                                    sources.append({
+                                        "name": f"Moviesmod{ep_pfx} ({hs.get('name')})",
+                                        "url": hs.get("url"),
+                                        "headers": hs.get("headers") or {"User-Agent": "Mozilla/5.0"},
+                                        "is_hls": hs.get("is_hls") or ".m3u8" in hs.get("url", ""),
+                                    })
                         except Exception as e:
                             logger.debug(f"Moviesmod archive ep extraction error: {e}")
-                elif "hubcloud." in target_url:
+                elif any(k in target_url for k in ["hubcloud.", "hubdrive.", "nexdrive."]):
                     hc_res = _extract_hubcloud_sources(target_url, referer=href)
                     for hs in hc_res:
                         sources.append({
@@ -3236,6 +4082,15 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
                             "url": hs.get("url"),
                             "headers": hs.get("headers") or {"User-Agent": "Mozilla/5.0"},
                             "is_hls": ".m3u8" in hs.get("url", ""),
+                        })
+                else:
+                    ext_res = extract_video_streams(target_url, referer=href)
+                    for es in (ext_res or []):
+                        sources.append({
+                            "name": f"Moviesmod ({es.get('name')})",
+                            "url": es.get("url"),
+                            "headers": es.get("headers") or {"User-Agent": "Mozilla/5.0"},
+                            "is_hls": es.get("is_hls") or ".m3u8" in es.get("url", ""),
                         })
             if sources:
                 return sources
@@ -3477,7 +4332,10 @@ class VegaMoviesCloudStreamProvider(CloudStreamProvider):
                                 m_html = mr.read().decode("utf-8", errors="ignore")
                             arc_eps = parse_archive_episodes(m_html)
                             for ep_target, _ in arc_eps.get(target_episode, []):
-                                hc_res = _extract_hubcloud_sources(ep_target, referer=target_url)
+                                if any(k in ep_target for k in ["nexdrive.", "fastdl.", "vcloud.", "hubcloud.", "hubdrive."]):
+                                    hc_res = _extract_hubcloud_sources(ep_target, referer=target_url)
+                                else:
+                                    hc_res = extract_video_streams(ep_target, referer=target_url)
                                 for hs in (hc_res or []):
                                     ep_pfx = f" S{target_season}E{target_episode}" if target_season and target_episode else ""
                                     hs["name"] = f"VegaMovies{ep_pfx} ({hs.get('name', 'Direct')})"
@@ -3488,6 +4346,10 @@ class VegaMoviesCloudStreamProvider(CloudStreamProvider):
                         hc_res = _extract_hubcloud_sources(target_url, referer=href)
                         if hc_res:
                             sources.extend(hc_res)
+                else:
+                    ext_streams = extract_video_streams(target_url, referer=href)
+                    if ext_streams:
+                        sources.extend(ext_streams)
             if sources:
                 return sources
         except Exception as e:
@@ -4614,10 +5476,21 @@ class DudeFilmsCloudStreamProvider(CloudStreamProvider):
                                     hc_res = _extract_hubcloud_sources(hc_link, referer=target_url)
                                     if hc_res:
                                         sources.extend(hc_res)
+                                else:
+                                    ext_res = extract_video_streams(hc_link, referer=target_url)
+                                    if ext_res:
+                                        sources.extend(ext_res)
                         else:
                             hc_res = _extract_hubcloud_sources(target_url, referer=href)
                             if hc_res:
                                 sources.extend(hc_res)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        ext_res = extract_video_streams(target_url, referer=href)
+                        if ext_res:
+                            sources.extend(ext_res)
                     except Exception:
                         pass
         except Exception as e:
@@ -4861,6 +5734,10 @@ class ZinkmoviesCloudStreamProvider(CloudStreamProvider):
                     hc_res = _extract_hubcloud_sources(target_url, referer=href)
                     if hc_res:
                         sources.extend(hc_res)
+                else:
+                    ext_res = extract_video_streams(target_url, referer=href)
+                    if ext_res:
+                        sources.extend(ext_res)
         except Exception as e:
             logger.debug(f"Zinkmovies load_links failed: {e}")
         return sources
@@ -4996,12 +5873,19 @@ class GenericCloudStreamProvider(CloudStreamProvider):
         }
 
     def load_links(self, data_str, season=None, episode=None):
-        if str(data_str).startswith("http://") or str(data_str).startswith("https://"):
+        data_s = str(data_str).strip()
+        if data_s.startswith("http://") or data_s.startswith("https://"):
+            try:
+                extracted = extract_video_streams(data_s)
+                if extracted:
+                    return extracted
+            except Exception:
+                pass
             return [{
                 "name": self.name,
-                "url": data_str,
-                "is_hls": ".m3u8" in data_str,
-                "is_dash": ".mpd" in data_str,
+                "url": data_s,
+                "is_hls": ".m3u8" in data_s,
+                "is_dash": ".mpd" in data_s,
             }]
         return []
 
@@ -5527,33 +6411,46 @@ def bulk_install_and_enable(plugin_ids):
 
 def clean_cloudstream_title(title_text):
     """
-    Cleans release tags, audio formats, codec info, and full movie suffixes
-    from CloudStream catalog titles for clean UI display.
+    Cleans release tags, audio formats, codec info, language/movie suffixes,
+    and site branding from CloudStream catalog titles for clean UI display.
     Returns (clean_title, year).
     """
     if not title_text:
         return "", None
     text = html_lib.unescape(str(title_text)).strip()
-    text = re.sub(r"^(?:download|permanent link to|watch|stream)\s+", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"^(?:download|permanent link to|watch|stream|view)\s+", "", text, flags=re.IGNORECASE).strip()
+    # Strip site branding suffix (e.g. ~ BollyFlix, - HDHub4u, ~ MoviesMod)
+    text = re.sub(
+        r"\s*[-~|@]\s*(?:bollyflix|hdhub4u|moviesmod|moviesdrive|vegamovies|dudefilms|zinkmovies|cinestream|katmoviehd|luxmovies|topmovies|extrapost|filmyfly|filmyzilla|desiremovies|mkvking|allmovieshub|rogmovies|toonstream).*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
     year_match = re.search(r"\b((?:19|20)\d{2})\b", text)
     year = year_match.group(1) if year_match else None
 
     split_match = re.split(
-        r"\s*(?:\[[^\]]*\]|\{[^\}]*\}|\|.*$|\b(?:unrated|uncut|extended(?:\s+edition)?|director'?s\s+cut|theatrical(?:\s+cut)?|limited|proper|repack|remaster(?:ed)?|anniversary\s+edition|special\s+edition|blu[ .-]?ray|brrip|web[ .-]?dl|webrip|hdrip|hq-hdrip|dvdrip|hdtv|hdtc|hq-hdtc|ds4k|imax|x26[45]|(?:2160|1080|720|480)p|4k|dual audio|multi audio|full movie|full series|primevideo|netflix|amzn|disney\+?|hulu)\b)",
+        r"\s*(?:\[[^\]]*\]|\{[^\}]*\}|\|.*$|\b(?:unrated|uncut|extended(?:\s+edition)?|director'?s\s+cut|theatrical(?:\s+cut)?|limited|proper|repack|remaster(?:ed)?|anniversary\s+edition|special\s+edition|blu[ .-]?ray|brrip|web[ .-]?dl|webrip|hdrip|hq-hdrip|dvdrip|hdtv|hdtc|hq-hdtc|ds4k|imax|predvd|hdcam|camrip|dvd|x26[45]|hevc|h26[45]|avc|esubs?|multi\s*subs?|atmos|eac3|dts|aac|ac3|(?:2160|1080|720|480)p|4k|dual\s*audio|multi\s*audio|full\s*movie|full\s*series|primevideo|netflix|amzn|disney\+?|hulu|zee5|sonyliv|hotstar|jiocinema|(?:hindi|tamil|telugu|malayalam|kannada|bengali|marathi|punjabi|gujarati|urdu|english|korean|japanese|chinese|spanish|french|german|russian|italian|south)\s+(?:movie|film|series|web\s*series|drama|dubbed))\b)",
         text,
         maxsplit=1,
         flags=re.IGNORECASE,
     )
-    base = split_match[0].strip(" .-_:|")
+    base = split_match[0].strip(" .-_:|~()[]{}")
     clean = base
     while True:
         prev = clean
         clean = re.sub(
-            r"[\s(\[]*(?:(?:19|20)\d{2}|Season\s*\d+(?:\s*[-–&,]\s*\d+)?|S\d{1,2}(?:\s*[-–&,]\s*S?\d{1,2})?|Complete\s*Series|All\s*Episodes?)[)\]]*\s*$",
+            r"[\s(\[]*(?:(?:19|20)\d{2}|Season\s*\d+(?:\s*[-–&,]\s*\d+)?|S\d{1,2}(?:\s*[-–&,]\s*S?\d{1,2})?|Complete\s*(?:Series)?|All\s*Episodes?|Episodes?\s*\d+(?:\s*[-–&,]\s*\d+)?)[)\]]*\s*$",
             "",
             clean,
             flags=re.IGNORECASE,
-        ).strip(" .-_:|")
+        ).strip(" .-_:|~()[]{}")
+        clean = re.sub(
+            r"[\s(\[]*(?:(?:hindi|tamil|telugu|malayalam|kannada|bengali|marathi|punjabi|gujarati|urdu|english|korean|japanese|chinese|spanish|french|german|russian|italian|south)\s+(?:movie|film|series|web\s*series|drama|dubbed)|dual\s*audio|multi\s*audio|dubbed|subbed)[)\]]*\s*$",
+            "",
+            clean,
+            flags=re.IGNORECASE,
+        ).strip(" .-_:|~()[]{}")
         if clean == prev:
             break
     clean = re.sub(r"\s+", " ", clean).strip()
@@ -5611,7 +6508,7 @@ def load_item_to_details_dict(loaded):
     if not episodes:
         videos.append({
             "id": route_id,
-            "title": "Canlı Yayın" if raw_type == CloudStreamTvType.Live else (clean_name or raw_name),
+            "title": "Live Stream" if raw_type == CloudStreamTvType.Live else (clean_name or raw_name),
             "season": 1 if is_series else None,
             "episode": 1 if is_series else None,
             "thumbnail": loaded.get("background_url") or loaded.get("poster_url"),
@@ -5667,6 +6564,13 @@ def playback_source_to_stream_dict(source, provider_name, provider_id):
     """Converts a CloudStreamPlaybackSource dict into a PopcornBox stream dictionary for MPV."""
     raw_url = str(source.get("url") or source.get("magnet") or "").strip()
     if not raw_url:
+        return None
+    if not (raw_url.startswith("http://") or raw_url.startswith("https://") or raw_url.startswith("magnet:")):
+        logger.warning(f"[CloudStream] Dropped non-HTTP/non-magnet stream URL: {raw_url}")
+        return None
+    raw_url_lower = raw_url.lower()
+    if any(k in raw_url_lower for k in ("/movies-by-quality/", "/movies-by-size/", "/category/", "/how-to-download/", "/tag/", "/genres/", "/join/")):
+        logger.warning(f"[CloudStream] Dropped navigation/category URL mistakenly passed as stream: {raw_url}")
         return None
     if ("tv.imgcdn.kim" in raw_url or "netmirror" in raw_url) and ("?in=" not in raw_url or "stop abusing" in raw_url.lower()):
         logger.warning(f"[CloudStream] Dropped FreeCDN honeypot/unsigned stream: {raw_url}")
@@ -5823,7 +6727,12 @@ def get_streams_for_route(route_id, season=None, episode=None):
             sources = provider.load_links(data, season=season, episode=episode)
         else:
             sources = provider.load_links(data)
-        return [playback_source_to_stream_dict(s, p_name, provider_id) for s in sources]
+        streams = []
+        for s in (sources or []):
+            st = playback_source_to_stream_dict(s, p_name, provider_id)
+            if st:
+                streams.append(st)
+        return streams
     except Exception as e:
         logger.error(f"CloudStream load_links failed for {route_id}: {e}")
         return []
@@ -6124,11 +7033,14 @@ def fetch_cloudstream_streams_for_media(
                                 return None
 
                         link_data = None
+                        req_s = _episode_number(season)
+                        req_e = _episode_number(episode)
                         for ep in loaded.get("episodes") or []:
-                            if (
-                                _episode_number(ep.get("season")) == _episode_number(season)
-                                and _episode_number(ep.get("episode")) == _episode_number(episode)
-                            ):
+                            ep_s = _episode_number(ep.get("season"))
+                            ep_e = _episode_number(ep.get("episode"))
+                            s_matches = (ep_s == req_s) or (req_s in (None, 1) and ep_s is None) or (req_s is None and ep_s == 1)
+                            e_matches = (ep_e == req_e) or (req_e is None)
+                            if s_matches and e_matches:
                                 link_data = ep.get("data")
                                 break
                         if not link_data:
