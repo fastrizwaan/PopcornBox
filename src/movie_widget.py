@@ -38,7 +38,7 @@ IMAGE_CACHE_DIR = os.path.join(BASE_DIR, 'images')
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
 _image_pool = ThreadPoolExecutor(max_workers=10)
-_disk_pool = ThreadPoolExecutor(max_workers=2)
+_disk_pool = ThreadPoolExecutor(max_workers=6)
 _meta_fallback_pool = ThreadPoolExecutor(max_workers=8)
 
 import atexit
@@ -775,6 +775,8 @@ def fetch_fallback_poster(
     def _is_usable_fallback_poster(candidate):
         if not isinstance(candidate, str) or not candidate.startswith(("http://", "https://")):
             return False
+        if database.is_scraper_image_url(candidate):
+            return False
         if not failed_poster_url:
             return True
         if candidate == failed_poster_url:
@@ -794,6 +796,8 @@ def fetch_fallback_poster(
                 is_adult = True
             cached_title = existing.get("title") or existing.get("name")
             cached_poster = existing.get("medium_cover_image") or existing.get("poster")
+            if cached_poster and database.is_scraper_image_url(cached_poster):
+                cached_poster = None
             cached_year = str(existing.get("year", "")) if existing.get("year") else ""
             cached_rating = existing.get("rating") or existing.get("imdbRating") or existing.get("vote_average")
             if cached_title and cached_title != "Unknown":
@@ -917,6 +921,11 @@ def fetch_fallback_poster(
         except Exception:
             pass
 
+    if str(item_id).startswith("tt") and not found_poster:
+        metahub_candidate = f"https://images.metahub.space/poster/medium/{item_id}/img"
+        if _is_usable_fallback_poster(metahub_candidate):
+            found_poster = metahub_candidate
+
     # Save to database cache
     if found_poster or found_title or found_year or found_rating or is_adult:
         try:
@@ -934,6 +943,14 @@ def fetch_fallback_poster(
                 cached["adult"] = True
             cached["id"] = item_id
             database.save_cached_metadata(item_id, item_type, cached)
+
+            cw_item = database.get_continue_watching_item(item_id)
+            if cw_item and found_poster and not database.is_scraper_image_url(found_poster):
+                cw_item["medium_cover_image"] = found_poster
+                cw_item["poster"] = found_poster
+                if found_title and found_title != "Unknown":
+                    cw_item["title"] = found_title
+                database.save_continue_watching(cw_item, sync_to_remote=False)
         except Exception:
             pass
 
@@ -1454,7 +1471,10 @@ class ContinueWatchingWidget(Gtk.Box):
                     130,
                     195,
                     self._apply_resolved_meta,
-                    task_gen
+                    task_gen,
+                    False,
+                    item_data.get("year"),
+                    poster_url,
                 )
             except RuntimeError:
                 pass
@@ -1508,13 +1528,19 @@ class ContinueWatchingWidget(Gtk.Box):
             if is_adult or (database.is_adult_content_hidden() and api.is_adult_item(self.item_data)):
                 self.set_visible(False)
                 return
+            updated = False
             if title and title != "Unknown" and (not self.item_data.get("title") or self.item_data.get("title") == "Unknown"):
                 self.item_data["title"] = title
+                updated = True
                 if hasattr(self, "title_label") and self.title_label:
                     self.title_label.set_label(title)
-            if poster_url:
-                self.item_data["medium_cover_image"] = poster_url
-                self.item_data["poster"] = poster_url
+            if poster_url and not database.is_scraper_image_url(poster_url):
+                if self.item_data.get("medium_cover_image") != poster_url:
+                    self.item_data["medium_cover_image"] = poster_url
+                    self.item_data["poster"] = poster_url
+                    updated = True
+            if updated:
+                database.save_continue_watching(self.item_data, sync_to_remote=False)
         except Exception:
             pass
 

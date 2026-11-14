@@ -727,6 +727,36 @@ class TestCloudStream(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertIn("Inception", results[0]["name"])
 
+    def test_ninekmovies_provider(self):
+        ninek = cloudstream.get_provider("9kMovies")
+        self.assertIsNotNone(ninek)
+        self.assertIsInstance(ninek, cloudstream.NineKMoviesCloudStreamProvider)
+        self.assertNotEqual(ninek.id, cloudstream.DudeFilmsCloudStreamProvider.id)
+
+        repo_key = "https://raw.githubusercontent.com/redowan99/Redowan-CloudStream/master/repo.json#9kMovies"
+        prov_by_repo = cloudstream.get_provider(repo_key)
+        self.assertIsInstance(prov_by_repo, cloudstream.NineKMoviesCloudStreamProvider)
+
+        fake_figure_html = (
+            '<figure>'
+            '<img src="https://example.com/poster.jpg" alt="Stree 2 (2024) Hindi HDRip 1080p Download">'
+            '<figcaption>'
+            '<a href="https://the9kmovies.com/stree-2-2024-hindi-1080p/"><p>Stree 2 (2024) Hindi HDRip 1080p Download</p></a>'
+            '</figcaption>'
+            '</figure>'
+        )
+        with patch.object(cloudstream, "_http_get_text", return_value=fake_figure_html):
+            results = ninek.search("Stree 2")
+            self.assertEqual(len(results), 1)
+            self.assertIn("Stree 2", results[0]["name"])
+            self.assertEqual(results[0]["year"], 2024)
+            self.assertEqual(results[0]["type"], cloudstream.CloudStreamTvType.Movie)
+            self.assertEqual(results[0]["poster_url"], "https://example.com/poster.jpg")
+            self.assertIn("9kmovies:", results[0]["data"])
+
+            loaded = ninek.load(results[0]["data"])
+            self.assertIn("Stree 2", loaded["name"])
+
     def test_strict_title_match_and_search_scoring(self):
         # Strict title matching logic
         self.assertTrue(cloudstream._is_strict_title_match("The Dog Stars", "The Dog Stars (2026) 1080p"))
@@ -997,6 +1027,7 @@ class TestCloudStream(unittest.TestCase):
             cloudstream.MoviesDriveCloudStreamProvider(),
             cloudstream.VegaMoviesCloudStreamProvider(),
             cloudstream.MoviesmodCloudStreamProvider(),
+            cloudstream.NineKMoviesCloudStreamProvider(),
             cloudstream.DudeFilmsCloudStreamProvider(),
             cloudstream.ZinkmoviesCloudStreamProvider(),
             cloudstream.CineStreamCloudStreamProvider(),
@@ -1334,6 +1365,149 @@ class TestCloudStream(unittest.TestCase):
             self.assertEqual(sources[0]["url"], "https://server.mxcontent.net/v2/stream.mp4")
             self.assertIn("1080p", sources[0]["name"])
             self.assertNotIn("/movies-by-quality/", [s["url"] for s in sources])
+
+    def test_cinedoze_provider_registered_and_runnable(self):
+        prov = cloudstream.get_provider("CineDozeProvider")
+        self.assertIsNotNone(prov)
+        self.assertIsInstance(prov, cloudstream.CineDozeCloudStreamProvider)
+        self.assertTrue(cloudstream.is_provider_runnable({"id": "CineDozeProvider"}))
+
+        fake_html = """
+        <html><body>
+            <article>
+                <a href="https://cinedoze.tv/movies/jailer-2-2026-hindi/">
+                    <img src="https://cinedoze.tv/poster.jpg" alt="Jailer 2 (2026) Dual Audio" />
+                </a>
+                <div class="title"><a href="https://cinedoze.tv/movies/jailer-2-2026-hindi/">Jailer 2 (2026) Dual Audio</a></div>
+            </article>
+        </body></html>
+        """
+        with patch.object(cloudstream, "_http_get_text", return_value=fake_html):
+            sections = prov.get_main_page(1)
+            self.assertTrue(len(sections) > 0)
+            self.assertEqual(sections[0][0], "Latest Movies")
+            items = sections[0][1]
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["name"], "Jailer 2 (2026) Dual Audio")
+            self.assertEqual(items[0]["year"], 2026)
+
+    def test_cinetv_provider_registered_and_runnable(self):
+        prov = cloudstream.get_provider("CineTvProvider")
+        self.assertIsNotNone(prov)
+        self.assertIsInstance(prov, cloudstream.CNCVerseCloudStreamProvider)
+        self.assertTrue(cloudstream.is_provider_runnable({"id": "CineTvProvider"}))
+        self.assertTrue(cloudstream.is_provider_runnable({
+            "id": "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CineTvProvider"
+        }))
+
+    def test_cinevood_provider_registered_and_runnable(self):
+        prov = cloudstream.get_provider("CineVoodProvider")
+        self.assertIsNotNone(prov)
+        self.assertIsInstance(prov, cloudstream.CineVoodCloudStreamProvider)
+        self.assertTrue(cloudstream.is_provider_runnable({"id": "CineVoodProvider"}))
+
+    def test_multicloudlinks_extractor(self):
+        page_html = """
+        <html><head>
+        <script>
+            const streamSrc = "https://dr1.multidownload.click/d/test1234?eid=ABC&action=watch";
+        </script>
+        </head><body>
+        <a href="https://new3.multicloudlinks.com/player.php?id=xyz">Player</a>
+        </body></html>
+        """
+        with patch.object(cloudstream, "_http_get_text", return_value=page_html):
+            sources = cloudstream._extract_multicloudlinks_sources("https://new3.multicloudlinks.com/view/test")
+            self.assertTrue(len(sources) >= 1)
+            self.assertEqual(sources[0]["url"], "https://dr1.multidownload.click/d/test1234?eid=ABC&action=watch")
+            self.assertIn("Direct Stream", sources[0]["name"])
+
+    def test_generic_cloudstream_provider_base_url_discovery(self):
+        plugin_dict = {
+            "id": "https://example.com/repo.json#TestPlugin",
+            "name": "TestPlugin",
+            "icon_url": "https://custom-movies.site/logo.png",
+            "is_installed": True,
+        }
+        with patch.object(cloudstream, "get_plugin", return_value=plugin_dict):
+            prov = cloudstream.get_provider("https://example.com/repo.json#TestPlugin")
+            self.assertEqual(prov.get_base_url(), "https://custom-movies.site")
+            self.assertEqual(prov.catalog_sections, ())
+            self.assertFalse(cloudstream.is_provider_runnable(plugin_dict))
+
+        # When no base URL is discoverable and no provider class is registered
+        empty_plugin = {
+            "id": "https://example.com/repo.json#EmptyPlugin",
+            "name": "EmptyPlugin",
+            "icon_url": "https://github.com/logo.png",
+            "is_installed": False,
+        }
+        with patch.object(cloudstream, "get_plugin", return_value=empty_plugin):
+            prov2 = cloudstream.get_provider("https://example.com/repo.json#EmptyPlugin")
+            self.assertIsNone(prov2.get_base_url())
+            self.assertEqual(prov2.catalog_sections, ())
+            self.assertFalse(cloudstream.is_provider_runnable(empty_plugin))
+
+    def test_cloudstream_provider_health_and_offline_exclusion(self):
+        pid = "CineDozeProvider"
+        self.assertTrue(cloudstream.is_provider_online(pid))
+
+        # Mark offline
+        cloudstream.mark_provider_status(pid, False)
+        self.assertFalse(cloudstream.is_provider_online(pid))
+
+        # An unrunnable generic provider is never online
+        self.assertFalse(cloudstream.is_provider_online("nonexistent_generic_provider"))
+
+        # Restore online
+        cloudstream.mark_provider_status(pid, True)
+        self.assertTrue(cloudstream.is_provider_online(pid))
+
+    def test_install_plugin_auto_refresh_on_hash_mismatch(self):
+        # Create a valid minimal cs3 zip package
+        bio = io.BytesIO()
+        with zipfile.ZipFile(bio, "w") as z:
+            z.writestr("manifest.json", json.dumps({"name": "TestPlugin", "pluginClassName": "com.test.TestPlugin"}))
+            z.writestr("classes.dex", b"dex\n035\x00" + b"http://example.com")
+        pkg_bytes = bio.getvalue()
+        real_hash = hashlib.sha256(pkg_bytes).hexdigest()
+
+        stale_plugin = {
+            "id": "https://example.com/repo.json#TestPlugin",
+            "name": "TestPlugin",
+            "package_url": "https://example.com/TestPlugin.cs3",
+            "repository_manifest_url": "https://example.com/repo.json",
+            "storage_key": "test_storage_key",
+            "version": 1,
+            "file_hash": {"algorithm": "sha256", "hex": "0000000000000000000000000000000000000000000000000000000000000000"},
+            "is_installed": False,
+        }
+
+        refreshed_plugin = dict(stale_plugin)
+        refreshed_plugin["version"] = 2
+        refreshed_plugin["file_hash"] = {"algorithm": "sha256", "hex": real_hash}
+
+        current_plugin = [stale_plugin]
+
+        def mock_get_plugin(pid):
+            return current_plugin[0]
+
+        def mock_refresh_repo(url):
+            current_plugin[0] = refreshed_plugin
+            return True, "Refreshed", {}
+
+        with patch.object(cloudstream, "_http_get_bytes", return_value=pkg_bytes), \
+             patch.object(cloudstream, "get_plugin", side_effect=mock_get_plugin), \
+             patch.object(cloudstream, "refresh_repository", side_effect=mock_refresh_repo), \
+             patch.object(database, "update_cloudstream_plugin") as mock_update, \
+             patch.object(cloudstream, "save_package_atomically"):
+            ok, msg = cloudstream.install_plugin("https://example.com/repo.json#TestPlugin")
+            self.assertTrue(ok)
+            self.assertIn("Installed", msg)
+            mock_update.assert_called_once()
+            call_args = mock_update.call_args[0][1]
+            self.assertEqual(call_args["installed_version"], 2)
+            self.assertTrue(call_args["is_installed"])
 
 
 if __name__ == "__main__":

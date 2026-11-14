@@ -6453,16 +6453,17 @@ class CineWindow(Adw.ApplicationWindow):
     def _on_next_clicked(self, *args):
         self._navigate_playlist(+1)
 
-    def _playback_preference_keys(self, item=None, prefix=""):
-        item = item if isinstance(item, dict) else getattr(self, "_current_playing_item", None)
-        if not isinstance(item, dict):
+    def _playback_preference_keys(self, item=None, prefix="", item_context=None):
+        target_item = item if item is not None else item_context
+        target_item = target_item if isinstance(target_item, dict) else getattr(self, "_current_playing_item", None)
+        if not isinstance(target_item, dict):
             return []
-        item_ids = [item.get("imdb_id"), item.get("id"), item.get("item_id"), item.get("tmdb_id")]
-        aliases = item.get("alias_ids")
+        item_ids = [target_item.get("imdb_id"), target_item.get("id"), target_item.get("item_id"), target_item.get("tmdb_id")]
+        aliases = target_item.get("alias_ids")
         if isinstance(aliases, (list, tuple, set)):
             item_ids.extend(aliases)
-        season = item.get("season")
-        episode = item.get("episode")
+        season = target_item.get("season")
+        episode = target_item.get("episode")
         suffix = f"_{season if season is not None else ''}_{episode if episode is not None else ''}"
         keys = []
         for item_id in item_ids:
@@ -6479,35 +6480,42 @@ class CineWindow(Adw.ApplicationWindow):
                 if key not in keys:
                     keys.append(key)
 
-        title = item.get("title") or item.get("name")
+        title = target_item.get("title") or target_item.get("name")
         if title:
             import re
-            media_type = str(item.get("type") or "movie").lower()
+            media_type = str(target_item.get("type") or "movie").lower()
             if media_type in ("tv", "anime"):
                 media_type = "series"
             title_key = re.sub(r"[^\w]+", "_", str(title).strip().casefold()).strip("_")
-            year = str(item.get("year") or "")
+            year = str(target_item.get("year") or "")
             if title_key:
                 key = f"{prefix}title_{media_type}_{year}_{title_key}{suffix}"
                 if key not in keys:
                     keys.append(key)
         return keys
 
-    def _external_subtitle_setting_keys(self, item=None):
-        return self._playback_preference_keys(item=item, prefix="saved_external_subtitle_")
+    def _external_subtitle_setting_keys(self, item=None, item_context=None):
+        target_item = item if item is not None else item_context
+        return self._playback_preference_keys(item=target_item, prefix="saved_external_subtitle_")
 
-    def _get_saved_external_subtitle(self, item=None):
+    def _get_saved_external_subtitle(self, item=None, item_context=None):
+        target_item = item if item is not None else item_context
         from . import database
-        for key in self._external_subtitle_setting_keys(item):
+        for key in self._external_subtitle_setting_keys(target_item):
             saved = database.get_setting(key, None)
             if isinstance(saved, dict) and saved.get("path"):
                 logger.info(f"[SUBS] Found saved subtitle preference for {key}")
                 return saved
         return None
 
-    def _clear_saved_external_subtitle(self, item=None):
+    def _clear_saved_external_subtitle(self, item=None, item_context=None):
+        target_item = item if item is not None else item_context
         from . import database
-        for key in self._external_subtitle_setting_keys(item):
+        keys = []
+        for key in self._external_subtitle_setting_keys(target_item) + self._external_subtitle_setting_keys():
+            if key not in keys:
+                keys.append(key)
+        for key in keys:
             database.set_setting(key, None)
 
     def _remember_audio_preference(self, pref, item_context=None):
@@ -8872,8 +8880,6 @@ class CineWindow(Adw.ApplicationWindow):
         self._discover_views = {}
         self._discover_catalog_list_cache = {}
         self._discover_catalog_list_cache_timestamps = {}
-        # Defer populating addons list to avoid freezing GTK main thread during window presentation
-        GLib.timeout_add(2500, lambda: (self._populate_addons(), False)[1])
         
         # Default Launch Option: Home View (landing page with hidden dropdowns & unique checkbox)
         self._current_discover_type = "all"
@@ -8917,8 +8923,8 @@ class CineWindow(Adw.ApplicationWindow):
         debug_log("CineWindow.__init__ updating category buttons visibility")
         self.update_category_buttons_visibility()
 
-        # Trigger background addon health check on startup (deferred 1s to keep startup instantaneous)
-        GLib.timeout_add(1000, lambda: (self._trigger_background_addon_health_check(), False)[1])
+        # Trigger background addon health check gently after startup (deferred 30s to keep launch instantaneous)
+        GLib.timeout_add_seconds(30, lambda: (self._trigger_background_addon_health_check(), False)[1])
         # Re-verify addon status hourly so a long-running session does not keep
         # stale online/offline badges (and stale session blocks) forever.
         GLib.timeout_add_seconds(3600, self._hourly_addon_health_check)
@@ -8936,8 +8942,10 @@ class CineWindow(Adw.ApplicationWindow):
             from . import api
             def on_health_checked(results):
                 debug_log(f"Addon health check finished: {len(results)} addons verified")
-                if hasattr(self, "_discover_catalog_list_cache"):
-                    self._discover_catalog_list_cache.clear()
+                if hasattr(self, "_discover_catalog_list_cache") and results:
+                    any_offline = any(not r.get("online", True) for r in results.values())
+                    if any_offline:
+                        self._discover_catalog_list_cache.clear()
                 self._apply_addon_health_results(results)
             api.check_addons_health_background(callback=on_health_checked, live=live)
         except Exception as e:
@@ -14726,9 +14734,26 @@ class CineWindow(Adw.ApplicationWindow):
                                 items = [it for it in items if not api.is_adult_item(it)]
                             items = [it for it in items if not api.is_future_item(it)]
                         debug_log(f"discover row FETCHED from API: '{row_title}'", f"Got {len(items) if items else 0} items")
+                        if not items and row_info.get("_source") == "cloudstream":
+                            m_url = row_info.get("manifest_url")
+                            if m_url and str(m_url).startswith("cloudstream://catalog/"):
+                                from . import cloudstream
+                                pid = cloudstream.provider_id_from_catalog_url(m_url)
+                                if pid:
+                                    cloudstream.mark_provider_status(pid, False)
                         return (row_info, items)
                     except Exception as e:
                         logger.error(f"Error fetching discover row {row_info.get('title')}: {e}")
+                        if row_info.get("_source") == "cloudstream":
+                            m_url = row_info.get("manifest_url")
+                            if m_url and str(m_url).startswith("cloudstream://catalog/"):
+                                try:
+                                    from . import cloudstream
+                                    pid = cloudstream.provider_id_from_catalog_url(m_url)
+                                    if pid:
+                                        cloudstream.mark_provider_status(pid, False)
+                                except Exception:
+                                    pass
                         return (row_info, None)
 
                 # Fetch all rows in this batch in parallel and stream completed rows immediately
@@ -14893,6 +14918,14 @@ class CineWindow(Adw.ApplicationWindow):
                         self._set_discover_spinner_active(False)
                         if hasattr(self, "_discover_views") and v_key in self._discover_views:
                             self._discover_views.pop(v_key, None)
+
+                        if filter_addon_url and str(filter_addon_url).startswith("cloudstream://catalog/"):
+                            from . import cloudstream
+                            pid = cloudstream.provider_id_from_catalog_url(filter_addon_url)
+                            if pid:
+                                cloudstream.mark_provider_status(pid, False)
+                                if hasattr(self, "_discover_catalog_list_cache"):
+                                    self._discover_catalog_list_cache.clear()
 
                         if not getattr(target_box, "_has_empty_label", False):
                             empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
@@ -20353,7 +20386,7 @@ class CineWindow(Adw.ApplicationWindow):
 
             def apply_result():
                 self._populate_cloudstream()
-                if ok:
+                if success:
                     self._refresh_cloudstream_catalog_views()
                 self._show_toast(msg)
                 return False
@@ -20398,14 +20431,18 @@ class CineWindow(Adw.ApplicationWindow):
         def worker():
             from . import cloudstream
             ok, msg = cloudstream.install_plugin(plugin_id)
-            if ok and "megaprovider" in plugin_id.lower():
-                provider = cloudstream.get_provider(plugin_id)
-                if provider and hasattr(provider, "sync_repositories"):
-                    added, total, _ = provider.sync_repositories()
-                    msg = f"MegaProvider installed: synced {added}/{total} repositories!"
+            if ok:
+                cloudstream.toggle_plugin(plugin_id, True)
+                if "megaprovider" in plugin_id.lower():
+                    provider = cloudstream.get_provider(plugin_id)
+                    if provider and hasattr(provider, "sync_repositories"):
+                        added, total, _ = provider.sync_repositories()
+                        msg = f"MegaProvider installed: synced {added}/{total} repositories!"
 
             def apply_result():
                 self._populate_cloudstream()
+                if ok:
+                    self._refresh_cloudstream_catalog_views()
                 self._show_toast(msg)
                 return False
 

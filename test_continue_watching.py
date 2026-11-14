@@ -235,5 +235,68 @@ class TestContinueWatching(unittest.TestCase):
         # Must display all 30 cards (up to 36 cards) rather than capping at 15
         self.assertEqual(card_count, 30)
 
+    def test_scraper_image_filtering_and_canonical_fallback(self):
+        from src import database
+        scraper_urls = [
+            "https://moviesmod.tw/wp-content/uploads/2026/11/Download-Awkwafina.webp",
+            "https://bflixcdn.xyz/wp-content/uploads/2026/11/cold-call.jpg",
+            "https://cinedoze.tv/wp-content/uploads/2026/09/Vasiyat-150x150.webp",
+            "https://new14.hdhub4u.cl/wp-content/uploads/movie.jpg",
+            "https://one.1cinevood.beer/wp-content/uploads/poster.jpg"
+        ]
+        canonical_urls = [
+            "https://image.tmdb.org/t/p/w500/nUPnA0I1MTaZRVCsUQc5DS5JA8W.jpg",
+            "https://images.metahub.space/poster/medium/tt8014982/img",
+            "https://live.metahub.space/poster/small/tt10098420/img",
+            "https://m.media-amazon.com/images/M/poster.jpg"
+        ]
+
+        for u in scraper_urls:
+            self.assertTrue(database.is_scraper_image_url(u), f"Should be recognized as scraper: {u}")
+            self.assertFalse(database.is_canonical_image_url(u), f"Should not be recognized as canonical: {u}")
+
+        for u in canonical_urls:
+            self.assertFalse(database.is_scraper_image_url(u), f"Should not be recognized as scraper: {u}")
+            self.assertTrue(database.is_canonical_image_url(u), f"Should be recognized as canonical: {u}")
+
+        # Test save_continue_watching replaces scraper poster for IMDb ID
+        database.save_continue_watching({
+            "id": "tt38992068",
+            "title": "Awkwafina: The Unlikely Cook",
+            "type": "movie",
+            "medium_cover_image": "https://moviesmod.tw/wp-content/uploads/2026/11/Download-Awkwafina.webp",
+            "last_watched": 5000
+        })
+
+        cw = database.get_continue_watching()
+        item = next((x for x in cw if x.get("id") == "tt38992068"), None)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.get("medium_cover_image"), "https://images.metahub.space/poster/medium/tt38992068/img")
+        self.assertEqual(item.get("poster"), "https://images.metahub.space/poster/medium/tt38992068/img")
+
+    def test_movie_widget_fallback_rejects_scraper_poster(self):
+        from src import database, movie_widget
+        self.assertFalse(
+            movie_widget.fetch_fallback_poster.__code__ is None
+        )
+        # Verify fallback logic rejects scraper poster
+        existing_meta = {
+            "id": "tt9999991",
+            "title": "Test Title",
+            "medium_cover_image": "https://moviesmod.tw/wp-content/uploads/bad.jpg",
+            "poster": "https://moviesmod.tw/wp-content/uploads/bad.jpg"
+        }
+        database.save_cached_metadata("tt9999991", "movie", existing_meta)
+        
+        # When fetching fallback poster, scraper URL from cache must not be used
+        movie_widget.fetch_fallback_poster(
+            "tt9999991", "movie", None,
+            title="Test Title",
+            failed_poster_url="https://moviesmod.tw/wp-content/uploads/bad.jpg"
+        )
+        updated = database.get_cached_metadata("tt9999991", "movie")
+        # Should have fallen back to canonical Metahub or not kept the scraper poster
+        self.assertFalse(database.is_scraper_image_url(updated.get("medium_cover_image")))
+
 if __name__ == "__main__":
     unittest.main()

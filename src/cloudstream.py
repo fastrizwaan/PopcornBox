@@ -107,7 +107,10 @@ def _http_get_text(url, headers=None, timeout=12.0):
         err_str = str(e).upper()
         if "UNEXPECTED_EOF" in err_str or "EOF OCCURRED" in err_str or "SSL" in err_str or isinstance(e, urllib.error.URLError):
             try:
-                from .api import _doh_fetch
+                try:
+                    from .api import _doh_fetch
+                except (ImportError, ValueError):
+                    from src.api import _doh_fetch
                 doh_data = _doh_fetch(url, headers=headers, timeout=timeout)
                 if doh_data is not None:
                     return doh_data.decode("utf-8", errors="replace")
@@ -139,7 +142,10 @@ def _http_get_bytes(url, headers=None, timeout=25.0):
         err_str = str(e).upper()
         if "UNEXPECTED_EOF" in err_str or "EOF OCCURRED" in err_str or "SSL" in err_str or isinstance(e, urllib.error.URLError):
             try:
-                from .api import _doh_fetch
+                try:
+                    from .api import _doh_fetch
+                except (ImportError, ValueError):
+                    from src.api import _doh_fetch
                 doh_data = _doh_fetch(url, headers=headers, timeout=timeout)
                 if doh_data is not None:
                     return doh_data
@@ -2738,13 +2744,14 @@ def _extract_hubcloud_sources(url, referer=None):
                     resolved = _resolve_hubcloud_redirect(dl_href)
                     if resolved and resolved.startswith("http"):
                         final_url = resolved
-                sources.append({
-                    "name": dl_clean,
-                    "url": final_url,
-                    "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": url},
-                    "is_hls": ".m3u8" in final_url,
-                    "is_dash": False,
-                })
+                if final_url and (final_url.startswith("http://") or final_url.startswith("https://") or final_url.startswith("magnet:")):
+                    sources.append({
+                        "name": dl_clean,
+                        "url": final_url,
+                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": url},
+                        "is_hls": ".m3u8" in final_url,
+                        "is_dash": False,
+                    })
     except Exception as e:
         logger.debug(f"HubCloud extraction error for {url}: {e}")
     return sources
@@ -2831,6 +2838,68 @@ def _extract_multiup_mirrors(multiup_url, referer=None):
     except Exception as e:
         logger.debug(f"MultiUp mirrors extraction failed for {clean_url}: {e}")
     return sources
+
+
+def _unlock_linksddr(url, referer=None, timeout=8.0):
+    """
+    Unlocks linksddr.com / uptobhai.blog intermediate pages with CSRF tokens
+    to extract destination file hosters (HubCloud, HubDrive, PixelDrain, GoFile, etc.).
+    """
+    if not url:
+        return []
+    clean_url = str(url).strip()
+    try:
+        cj = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        if referer:
+            headers["Referer"] = referer
+        req = urllib.request.Request(_safe_url(clean_url), headers=headers)
+        with opener.open(req, timeout=timeout) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+
+        form_m = re.search(r'<form\b[^>]*>(.*?)</form>', html, re.DOTALL | re.I)
+        if not form_m:
+            raw_links = re.findall(r'<a\b[^>]*href=["\']([^"\']+)["\']', html, re.I)
+            return [
+                l for l in raw_links
+                if l.startswith("http") and not any(skip in l.lower() for skip in [
+                    "linksddr.", "uptobhai.", "facebook.", "whatsapp.", "telegram.",
+                    "/register", "/login", "/money", "/contact", "/faqs", "/page/"
+                ])
+            ]
+
+        form_html = form_m.group(1)
+        inputs = dict(re.findall(r'<input\b[^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']', form_html, re.I))
+        for val, name in re.findall(r'<input\b[^>]*value=["\']([^"\']*)["\'][^>]*name=["\']([^"\']+)["\']', form_html, re.I):
+            inputs.setdefault(name, val)
+
+        action_m = re.search(r'action=["\']([^"\']+)["\']', form_m.group(0), re.I)
+        action_url = urllib.parse.urljoin(clean_url, action_m.group(1)) if (action_m and action_m.group(1)) else clean_url
+
+        post_data = urllib.parse.urlencode(inputs).encode("utf-8")
+        post_headers = headers.copy()
+        post_headers["Content-Type"] = "application/x-www-form-urlencoded"
+        post_headers["Referer"] = clean_url
+        post_req = urllib.request.Request(_safe_url(action_url), data=post_data, headers=post_headers)
+        with opener.open(post_req, timeout=timeout) as resp:
+            post_html = resp.read().decode("utf-8", errors="replace")
+
+        raw_links = re.findall(r'<a\b[^>]*href=["\']([^"\']+)["\']', post_html, re.I)
+        target_links = []
+        for l in raw_links:
+            if l.startswith("http") and not any(skip in l.lower() for skip in [
+                "linksddr.", "uptobhai.", "facebook.", "whatsapp.", "telegram.",
+                "/register", "/login", "/money", "/contact", "/faqs", "/page/"
+            ]):
+                target_links.append(l)
+        return list(dict.fromkeys(target_links))
+    except Exception as e:
+        logger.debug(f"Failed to unlock linksddr {clean_url}: {e}")
+        return []
 
 
 def _extract_gdflix_sources(url, referer=None):
@@ -2925,6 +2994,63 @@ def _extract_gdflix_sources(url, referer=None):
     return sources
 
 
+def _extract_multicloudlinks_sources(url, referer=None):
+    """
+    Extracts playable streams from MultiCloudLinks pages (e.g. new3.multicloudlinks.com/view/...).
+    Parses direct download / Turbo download / watch online player sources.
+    """
+    if not url:
+        return []
+    clean_url = str(url).strip()
+    sources = []
+    try:
+        html = _http_get_text(clean_url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": referer or ""}, timeout=8.0)
+        m_stream = re.search(r'const\s+streamSrc\s*=\s*["\']([^"\']+)["\']', html)
+        if m_stream:
+            sources.append({
+                "name": "MultiCloud [Direct Stream]",
+                "url": m_stream.group(1),
+                "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": clean_url},
+                "is_hls": ".m3u8" in m_stream.group(1),
+                "is_dash": False,
+            })
+
+        player_m = re.search(r'href=["\'](https?://[^"\']*multicloudlinks\.com/player\.php[^\'"]*)["\']', html)
+        if player_m:
+            try:
+                p_html = _http_get_text(player_m.group(1), headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": clean_url}, timeout=6.0)
+                pm_stream = re.search(r'const\s+streamSrc\s*=\s*["\']([^"\']+)["\']', p_html)
+                if pm_stream:
+                    sources.append({
+                        "name": "MultiCloud [Watch]",
+                        "url": pm_stream.group(1),
+                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": player_m.group(1)},
+                        "is_hls": ".m3u8" in pm_stream.group(1),
+                        "is_dash": False,
+                    })
+            except Exception:
+                pass
+
+        links = re.findall(r'<a\b[^>]*href=["\'](https?://[^\"\']+)["\'][^>]*>(.*?)</a>', html, re.I)
+        for h, t in links:
+            t_clean = re.sub(r'<[^>]+>', '', t).strip()
+            if "pixeldra" in h.lower() or "pixeldrain" in t_clean.lower():
+                pd = extract_video_streams(h, referer=clean_url)
+                if pd:
+                    sources.extend(pd)
+            elif "turbo download" in t_clean.lower() or "direct download" in t_clean.lower():
+                sources.append({
+                    "name": f"MultiCloud [{t_clean}]",
+                    "url": h,
+                    "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": clean_url},
+                    "is_hls": ".m3u8" in h,
+                    "is_dash": False,
+                })
+    except Exception as e:
+        logger.debug(f"MultiCloudLinks extraction failed for {clean_url}: {e}")
+    return sources
+
+
 def extract_video_streams(url, referer=None):
     """
     Dispatches a URL to the matching CloudStream extractor.
@@ -2959,6 +3085,10 @@ def extract_video_streams(url, referer=None):
     # 1c. GDFlix / FastDL / GDLink
     if any(k in lower_u for k in ("gdflix.", "gdlink.")):
         return _extract_gdflix_sources(clean_u, referer=referer)
+
+    # 1d. MultiCloudLinks
+    if "multicloudlinks." in lower_u:
+        return _extract_multicloudlinks_sources(clean_u, referer=referer)
 
     # 2. PixelDrain
     if "pixeldrain." in lower_u:
@@ -5222,6 +5352,229 @@ class CNCVerseCloudStreamProvider(CloudStreamProvider):
         return []
 
 
+class NineKMoviesCloudStreamProvider(CloudStreamProvider):
+    id = "https://raw.githubusercontent.com/redowan99/Redowan-CloudStream/master/repo.json#9kMovies"
+    name = "9kMovies"
+    supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+    )
+
+    DEFAULT_BASE = "https://the9kmovies.com"
+
+    def _get_base_url(self):
+        return get_dynamic_domain("9kmovies", self.DEFAULT_BASE)
+
+    def _extract_thumbs(self, page_html, base_url):
+        movies, series = [], []
+        seen = set()
+        figures = re.findall(r'<figure\b[^>]*>(.*?)</figure>', page_html, re.DOTALL | re.I)
+        if not figures:
+            figures = re.findall(r'<div\b[^>]*class=["\'][^"\']*thumb[^"\']*["\'][^>]*>(.*?)</div>\s*</div>', page_html, re.DOTALL | re.I)
+
+        for fig in figures:
+            link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', fig, re.I)
+            if not link_m:
+                continue
+            href = urllib.parse.urljoin(f"{base_url}/", html_lib.unescape(link_m.group(1)).strip())
+            if href in seen or any(skip in href.lower() for skip in ["/category/", "/how-to", "/contact", "/dmca", "/privacy", "/terms"]):
+                continue
+
+            img_m = re.search(r'<img\b[^>]*>', fig, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            poster = None
+            for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            title = ""
+            t_m = re.search(r'<figcaption\b[^>]*>.*?<a\b[^>]*>(?:<p\b[^>]*>)?(.*?)(?:</p>)?</a>', fig, re.DOTALL | re.I)
+            alt_m = re.search(r'\balt=["\']([^"\']+)["\']', img_tag, re.I)
+            title_attr = re.search(r'\btitle=["\']([^"\']+)["\']', img_tag, re.I)
+
+            if t_m:
+                title = re.sub(r'<[^>]+>', ' ', t_m.group(1))
+            elif alt_m:
+                title = alt_m.group(1)
+            elif title_attr:
+                title = title_attr.group(1)
+
+            title = html_lib.unescape(title).strip()
+            title = re.sub(r'^(?:permanent link to|download)\s+', '', title, flags=re.I).strip()
+            title = re.sub(r'\s+', ' ', title)
+            if not title:
+                continue
+
+            seen.add(href)
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\b(?:season\b|series\b|s\d{1,2}(?:e\d{1,2})?|episodes?|ep\s*\d+)\b", title, re.I))
+            item = {
+                "provider_id": self.id,
+                "data": f"9kmovies:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            }
+            (series if is_series else movies).append(item)
+
+        return movies, series
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, headers={"Referer": f"{base}/"}, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"9kMovies catalog page {page} failed: {e}")
+            return []
+
+        movies, series = self._extract_thumbs(page_html, base)
+        sections = []
+        if movies:
+            sections.append(("Latest Movies", movies))
+        if series:
+            sections.append(("Latest Series", series))
+        return sections
+
+    def search(self, query):
+        if not query or not query.strip():
+            return []
+        base = self._get_base_url().rstrip("/")
+        clean_q = re.sub(r"[^\w\s-]", " ", query).strip()
+        url = f"{base}/?s={urllib.parse.quote(clean_q)}"
+        try:
+            html = _http_get_text(url, headers={"Referer": f"{base}/"}, timeout=8.0)
+            movies, series = self._extract_thumbs(html, base)
+            items = []
+            for it in movies + series:
+                items.append({
+                    "provider_id": self.id,
+                    "data": it["data"],
+                    "name": it["name"],
+                    "type": it["type"],
+                    "poster_url": it.get("poster_url"),
+                    "background_url": it.get("background_url"),
+                    "description": it.get("description"),
+                    "year": it.get("year"),
+                    "rating_percent": None,
+                    "tags": ["9kMovies"],
+                    "episodes": [],
+                })
+            return items
+        except Exception as e:
+            logger.debug(f"9kMovies search failed: {e}")
+            return []
+
+    def load(self, data_str):
+        href = str(data_str).replace("9kmovies:", "").strip()
+        if "#" in href:
+            href = href.split("#")[0].strip()
+        base = self._get_base_url()
+        try:
+            html = _http_get_text(href, headers={"Referer": base}, timeout=8.0)
+            t_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL | re.I)
+            if not t_match:
+                t_match = re.search(r"<h2[^>]*>(.*?)</h2>", html, re.DOTALL | re.I)
+            if not t_match:
+                t_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.DOTALL | re.I)
+            if not t_match:
+                t_match = re.search(r"<figcaption\b[^>]*>.*?<a\b[^>]*>(?:<p\b[^>]*>)?(.*?)(?:</p>)?</a>", html, re.DOTALL | re.I)
+            title = re.sub(r"<[^>]+>", "", t_match.group(1)).strip() if t_match else "9kMovies Media"
+            title = html_lib.unescape(title).strip()
+
+            img_m = re.search(r'<img\b[^>]*class=["\'][^"\']*wp-post-image[^"\']*["\'][^>]*>', html, re.I)
+            if not img_m:
+                img_m = re.search(r'<div class=["\'](?:entry-content|page-body|thumb)[^"\']*["\'][^>]*>.*?<img\b[^>]*>', html, re.DOTALL | re.I)
+            if not img_m:
+                img_m = re.search(r'<img\b[^>]*>', html, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            poster = None
+            for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\b(?:season\b|series\b|s\d{1,2}(?:e\d{1,2})?|episodes?|ep\s*\d+)\b", title, re.I))
+
+            return {
+                "provider_id": self.id,
+                "data": f"9kmovies:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+                "rating_percent": None,
+                "tags": ["9kMovies"],
+                "episodes": [],
+            }
+        except Exception as e:
+            logger.debug(f"9kMovies load failed for {href}: {e}")
+            return {
+                "provider_id": self.id,
+                "data": data_str,
+                "name": "9kMovies Media",
+                "type": CloudStreamTvType.Movie,
+                "poster_url": None,
+                "background_url": None,
+                "description": "",
+                "year": None,
+                "rating_percent": None,
+                "tags": ["9kMovies"],
+                "episodes": [],
+            }
+
+    def load_links(self, data_str, season=None, episode=None):
+        clean_url = str(data_str).replace("9kmovies:", "").strip()
+        if "#" in clean_url:
+            clean_url = clean_url.split("#")[0].strip()
+        base = self._get_base_url()
+        try:
+            page_html = _http_get_text(clean_url, headers={"Referer": base}, timeout=10.0)
+        except Exception as e:
+            logger.debug(f"9kMovies load_links failed for {clean_url}: {e}")
+            return []
+
+        raw_links = re.findall(r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', page_html, re.I | re.DOTALL)
+        intermediate_urls = []
+        for href, txt in raw_links:
+            clean_txt = re.sub(r'<[^>]+>', '', txt).strip().lower()
+            if any(k in href.lower() for k in ["linksddr.", "uptobhai.", "/view/"]) or any(k in clean_txt for k in ["download", "fastdl", "direct link", "watch online"]):
+                if not any(skip in href.lower() for skip in ["1cinevood", "the9kmovies", "9kmovies", "facebook", "telegram", "whatsapp", "/category/", "/how-to"]):
+                    if href not in intermediate_urls:
+                        intermediate_urls.append(href)
+
+        streams = []
+        for target_url in intermediate_urls[:3]:
+            try:
+                if any(k in target_url.lower() for k in ["linksddr.", "uptobhai.", "/view/"]):
+                    unlocked_links = _unlock_linksddr(target_url, referer=clean_url)
+                else:
+                    unlocked_links = [target_url]
+
+                for dest_url in unlocked_links:
+                    st = extract_video_streams(dest_url, referer=target_url)
+                    if st:
+                        for s in st:
+                            s["name"] = f"9kMovies {s.get('name')}"
+                            streams.append(s)
+            except Exception as e:
+                logger.debug(f"9kMovies stream extraction failed for {target_url}: {e}")
+
+        return streams
+
+
 class DudeFilmsCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#DudeFilms"
     name = "DudeFilms"
@@ -5792,7 +6145,7 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
 
     def search(self, query):
         results = []
-        for p in [HDhub4uCloudStreamProvider(), BollyflixCloudStreamProvider(), MoviesDriveCloudStreamProvider(), DudeFilmsCloudStreamProvider(), ZinkmoviesCloudStreamProvider(), VegaMoviesCloudStreamProvider()]:
+        for p in [HDhub4uCloudStreamProvider(), BollyflixCloudStreamProvider(), MoviesDriveCloudStreamProvider(), NineKMoviesCloudStreamProvider(), DudeFilmsCloudStreamProvider(), ZinkmoviesCloudStreamProvider(), VegaMoviesCloudStreamProvider()]:
             try:
                 res = p.search(query)
                 if res:
@@ -5812,6 +6165,8 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
             return VegaMoviesCloudStreamProvider().load(data_str)
         if "moviesmod:" in data_str:
             return MoviesmodCloudStreamProvider().load(data_str)
+        if "9kmovies:" in data_str:
+            return NineKMoviesCloudStreamProvider().load(data_str)
         if "dudefilms:" in data_str:
             return DudeFilmsCloudStreamProvider().load(data_str)
         if "zinkmovies:" in data_str:
@@ -5835,6 +6190,8 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
             return VegaMoviesCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if "moviesmod:" in data_str:
             return MoviesmodCloudStreamProvider().load_links(data_str, season=season, episode=episode)
+        if "9kmovies:" in data_str:
+            return NineKMoviesCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if "dudefilms:" in data_str:
             return DudeFilmsCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if "zinkmovies:" in data_str:
@@ -5845,19 +6202,597 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
             return TorrentioCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if isinstance(data_str, str) and ("ott" in data_str or "net52" in data_str):
             return CNCVerseCloudStreamProvider().load_links(data_str, season=season, episode=episode)
+        if "cinedoze:" in data_str:
+            return CineDozeCloudStreamProvider().load_links(data_str, season=season, episode=episode)
+        if "cinevood:" in data_str:
+            return CineVoodCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         return []
+
+
+class CineDozeCloudStreamProvider(CloudStreamProvider):
+    id = "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CineDozeProvider"
+    name = "CineDozeProvider"
+    supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+    )
+
+    DEFAULT_BASE = "https://cinedoze.tv"
+
+    def _get_base_url(self):
+        return get_dynamic_domain("cinedoze", self.DEFAULT_BASE)
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=10.0)
+        except Exception as e:
+            logger.debug(f"CineDoze catalog page {page} failed: {e}")
+            return []
+
+        movies, series = [], []
+        seen = set()
+        articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
+        for art in articles:
+            link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
+            if not link_m:
+                continue
+            href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_m.group(1)).strip())
+            if href in seen or any(skip in href for skip in ["/genre/", "/tag/", "/category/"]):
+                continue
+
+            img_m = re.search(r'<img\b[^>]*>', art, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            poster = None
+            for attr in ("data-src", "data-lazy-src", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            title = ""
+            h_m = re.search(r'<(?:h[1-6]|div)\b[^>]*class=["\'][^"\']*title[^"\']*["\'][^>]*>(.*?)</(?:h[1-6]|div)>', art, re.I | re.DOTALL)
+            alt_m = re.search(r'\balt=["\']([^"\']+)["\']', img_tag, re.I)
+            if h_m:
+                title = re.sub(r'<[^>]+>', ' ', h_m.group(1))
+            elif alt_m:
+                title = alt_m.group(1)
+
+            title = html_lib.unescape(title).strip()
+            title = re.sub(r'^(?:download|watch)\s+', '', title, flags=re.I).strip()
+            title = re.sub(r'\s+', ' ', title)
+            if not title:
+                continue
+
+            seen.add(href)
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I)) or "/series/" in href or "/tvshows/" in href
+            item = {
+                "provider_id": self.id,
+                "data": f"cinedoze:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            }
+            (series if is_series else movies).append(item)
+
+        sections = []
+        if movies:
+            sections.append(("Latest Movies", movies))
+        if series:
+            sections.append(("Latest Series", series))
+        return sections
+
+    def search(self, query):
+        if not query or not query.strip():
+            return []
+        base = self._get_base_url().rstrip("/")
+        search_url = f"{base}/?s={urllib.parse.quote(str(query).strip())}"
+        try:
+            page_html = _http_get_text(search_url, timeout=10.0)
+        except Exception as e:
+            logger.debug(f"CineDoze search failed: {e}")
+            return []
+
+        results = []
+        seen = set()
+        articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
+        for art in articles:
+            link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
+            if not link_m:
+                continue
+            href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_m.group(1)).strip())
+            if href in seen or any(skip in href for skip in ["/genre/", "/tag/", "/category/"]):
+                continue
+
+            img_m = re.search(r'<img\b[^>]*>', art, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            poster = None
+            for attr in ("data-src", "data-lazy-src", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            title = ""
+            h_m = re.search(r'<(?:h[1-6]|div)\b[^>]*class=["\'][^"\']*title[^"\']*["\'][^>]*>(.*?)</(?:h[1-6]|div)>', art, re.I | re.DOTALL)
+            alt_m = re.search(r'\balt=["\']([^"\']+)["\']', img_tag, re.I)
+            if h_m:
+                title = re.sub(r'<[^>]+>', ' ', h_m.group(1))
+            elif alt_m:
+                title = alt_m.group(1)
+
+            title = html_lib.unescape(title).strip()
+            title = re.sub(r'^(?:download|watch)\s+', '', title, flags=re.I).strip()
+            title = re.sub(r'\s+', ' ', title)
+            if not title:
+                continue
+
+            seen.add(href)
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I)) or "/series/" in href or "/tvshows/" in href
+            results.append({
+                "provider_id": self.id,
+                "data": f"cinedoze:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            })
+        return results
+
+    def load(self, data_str):
+        clean_url = str(data_str).replace("cinedoze:", "").strip()
+        try:
+            page_html = _http_get_text(clean_url, timeout=10.0)
+        except Exception as e:
+            logger.debug(f"CineDoze load failed for {clean_url}: {e}")
+            page_html = ""
+
+        title = ""
+        og_t = re.search(r'<meta\b[^>]*property=["\']og:title["\'][^>]*content=["\']([^"\']+)["\']', page_html, re.I)
+        if og_t:
+            title = html_lib.unescape(og_t.group(1)).strip()
+        if not title:
+            h_m = re.search(r'<h1\b[^>]*>(.*?)</h1>', page_html, re.I | re.DOTALL)
+            if h_m:
+                title = re.sub(r'<[^>]+>', '', h_m.group(1)).strip()
+
+        poster = None
+        og_img = re.search(r'<meta\b[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', page_html, re.I)
+        if og_img:
+            poster = html_lib.unescape(og_img.group(1)).strip()
+
+        desc = ""
+        og_d = re.search(r'<meta\b[^>]*property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']', page_html, re.I)
+        if og_d:
+            desc = html_lib.unescape(og_d.group(1)).strip()
+
+        y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+        year = int(y_m.group(1)) if y_m else None
+        is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I)) or "/series/" in clean_url
+
+        episodes = []
+        if is_series:
+            ep_links = re.findall(r'<a\b[^>]*href=["\'](https?://[^"\']*/episodes?/[^"\']*)["\'][^>]*>(.*?)</a>', page_html, re.I | re.DOTALL)
+            for ep_href, ep_txt in ep_links:
+                ep_txt_clean = re.sub(r'<[^>]+>', ' ', ep_txt).strip()
+                s_m = re.search(r'S(\d+)', ep_txt_clean, re.I)
+                e_m = re.search(r'E(\d+)', ep_txt_clean, re.I)
+                s_num = int(s_m.group(1)) if s_m else 1
+                e_num = int(e_m.group(1)) if e_m else 1
+                episodes.append({
+                    "data": f"cinedoze:{ep_href}",
+                    "name": ep_txt_clean or f"Episode {e_num}",
+                    "season": s_num,
+                    "episode": e_num,
+                    "poster_url": poster,
+                })
+
+        return {
+            "provider_id": self.id,
+            "data": data_str,
+            "name": title or "CineDoze Media",
+            "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+            "poster_url": poster,
+            "background_url": None,
+            "description": desc,
+            "year": year,
+            "rating_percent": None,
+            "tags": [],
+            "episodes": episodes,
+        }
+
+    def load_links(self, data_str, season=None, episode=None):
+        clean_url = str(data_str).replace("cinedoze:", "").strip()
+        try:
+            page_html = _http_get_text(clean_url, headers={"Referer": self._get_base_url()}, timeout=10.0)
+        except Exception as e:
+            logger.debug(f"CineDoze load_links failed for {clean_url}: {e}")
+            return []
+
+        target_links = []
+        tr_rows = re.findall(r'<tr\b[^>]*id=["\']link-\d+["\'][^>]*>(.*?)</tr>', page_html, re.DOTALL | re.I)
+        for tr in tr_rows:
+            link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', tr, re.I)
+            quality_m = re.search(r'<strong\b[^>]*class=["\']quality["\'][^>]*>([^<]+)</strong>', tr, re.I)
+            quality_str = quality_m.group(1).strip() if quality_m else ""
+            if link_m:
+                target_links.append((link_m.group(1), quality_str))
+
+        if not target_links:
+            raw_links = re.findall(r'<a\b[^>]*href=["\'](https?://[^"\']*(?:/links/|savelinks|multicloud|gdflix)[^"\']*)["\']', page_html, re.I)
+            for r in raw_links:
+                target_links.append((r, ""))
+
+        streams = []
+        for link_url, q_label in target_links[:6]:
+            try:
+                if "cinedoze.tv/links/" in link_url:
+                    inter_html = _http_get_text(link_url, headers={"Referer": clean_url}, timeout=8.0)
+                    extracted_urls = re.findall(r'href=["\'](https?://[^"\']*(?:multicloudlinks|gdflix|gdxfiles|filepress|pixeldrain)[^"\']*)["\']', inter_html, re.I)
+                    for ext_u in extracted_urls:
+                        st = extract_video_streams(ext_u, referer=link_url)
+                        if st:
+                            for s in st:
+                                if q_label and q_label not in s.get("name", ""):
+                                    s["name"] = f"CineDoze [{q_label}] {s.get('name')}"
+                                streams.append(s)
+                else:
+                    st = extract_video_streams(link_url, referer=clean_url)
+                    if st:
+                        for s in st:
+                            if q_label and q_label not in s.get("name", ""):
+                                s["name"] = f"CineDoze [{q_label}] {s.get('name')}"
+                            streams.append(s)
+            except Exception as e:
+                logger.debug(f"CineDoze stream extraction failed for {link_url}: {e}")
+
+        return streams
+
+
+class CineVoodCloudStreamProvider(CloudStreamProvider):
+    id = "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CineVoodProvider"
+    name = "CineVoodProvider"
+    supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+    )
+
+    DEFAULT_BASE = "https://one.1cinevood.beer"
+
+    def _get_base_url(self):
+        dyn = get_dynamic_domain("cinevood", self.DEFAULT_BASE)
+        if dyn and "cinevood.loan" not in dyn:
+            return dyn
+        return self.DEFAULT_BASE
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=10.0)
+        except Exception as e:
+            logger.debug(f"CineVood catalog page {page} failed: {e}")
+            return []
+
+        movies, series = [], []
+        seen = set()
+        articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
+        for art in articles:
+            link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
+            if not link_m:
+                continue
+            href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_m.group(1)).strip())
+            if href in seen or any(skip in href for skip in ["/category/", "/how-to-"]):
+                continue
+
+            img_m = re.search(r'<img\b[^>]*>', art, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            poster = None
+            for attr in ("data-src", "data-lazy-src", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            title = ""
+            h_m = re.search(r'<h[1-6]\b[^>]*class=["\'][^"\']*entry-title[^"\']*["\'][^>]*><a\b[^>]*>([^<]+)</a>', art, re.I)
+            alt_m = re.search(r'\balt=["\']([^"\']+)["\']', img_tag, re.I)
+            t_m = re.search(r'title=["\']([^"\']+)["\']', art, re.I)
+            if h_m:
+                title = h_m.group(1)
+            elif t_m:
+                title = t_m.group(1)
+            elif alt_m:
+                title = alt_m.group(1)
+
+            title = html_lib.unescape(title).strip()
+            title = re.sub(r'^(?:download|watch)\s+', '', title, flags=re.I).strip()
+            title = re.sub(r'\s+', ' ', title)
+            if not title:
+                continue
+
+            seen.add(href)
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
+            item = {
+                "provider_id": self.id,
+                "data": f"cinevood:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            }
+            (series if is_series else movies).append(item)
+
+        sections = []
+        if movies:
+            sections.append(("Latest Movies", movies))
+        if series:
+            sections.append(("Latest Series", series))
+        return sections
+
+    def search(self, query):
+        if not query or not query.strip():
+            return []
+        base = self._get_base_url().rstrip("/")
+        search_url = f"{base}/?s={urllib.parse.quote(str(query).strip())}"
+        try:
+            page_html = _http_get_text(search_url, timeout=10.0)
+        except Exception as e:
+            logger.debug(f"CineVood search failed: {e}")
+            return []
+
+        results = []
+        seen = set()
+        articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
+        for art in articles:
+            link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
+            if not link_m:
+                continue
+            href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_m.group(1)).strip())
+            if href in seen or any(skip in href for skip in ["/category/", "/how-to-"]):
+                continue
+
+            img_m = re.search(r'<img\b[^>]*>', art, re.I)
+            img_tag = img_m.group(0) if img_m else ""
+            poster = None
+            for attr in ("data-src", "data-lazy-src", "src"):
+                pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
+                if pm and not pm.group(1).startswith("data:"):
+                    poster = html_lib.unescape(pm.group(1)).strip()
+                    break
+
+            title = ""
+            h_m = re.search(r'<h[1-6]\b[^>]*class=["\'][^"\']*entry-title[^"\']*["\'][^>]*><a\b[^>]*>([^<]+)</a>', art, re.I)
+            alt_m = re.search(r'\balt=["\']([^"\']+)["\']', img_tag, re.I)
+            t_m = re.search(r'title=["\']([^"\']+)["\']', art, re.I)
+            if h_m:
+                title = h_m.group(1)
+            elif t_m:
+                title = t_m.group(1)
+            elif alt_m:
+                title = alt_m.group(1)
+
+            title = html_lib.unescape(title).strip()
+            title = re.sub(r'^(?:download|watch)\s+', '', title, flags=re.I).strip()
+            title = re.sub(r'\s+', ' ', title)
+            if not title:
+                continue
+
+            seen.add(href)
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
+            results.append({
+                "provider_id": self.id,
+                "data": f"cinevood:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            })
+        return results
+
+    def load(self, data_str):
+        clean_url = str(data_str).replace("cinevood:", "").strip()
+        try:
+            page_html = _http_get_text(clean_url, timeout=10.0)
+        except Exception as e:
+            logger.debug(f"CineVood load failed for {clean_url}: {e}")
+            page_html = ""
+
+        title = ""
+        og_t = re.search(r'<meta\b[^>]*property=["\']og:title["\'][^>]*content=["\']([^"\']+)["\']', page_html, re.I)
+        if og_t:
+            title = html_lib.unescape(og_t.group(1)).strip()
+        if not title:
+            h_m = re.search(r'<h1\b[^>]*>(.*?)</h1>', page_html, re.I | re.DOTALL)
+            if h_m:
+                title = re.sub(r'<[^>]+>', '', h_m.group(1)).strip()
+
+        poster = None
+        og_img = re.search(r'<meta\b[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', page_html, re.I)
+        if og_img:
+            poster = html_lib.unescape(og_img.group(1)).strip()
+
+        desc = ""
+        og_d = re.search(r'<meta\b[^>]*property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']', page_html, re.I)
+        if og_d:
+            desc = html_lib.unescape(og_d.group(1)).strip()
+
+        y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+        year = int(y_m.group(1)) if y_m else None
+        is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
+
+        return {
+            "provider_id": self.id,
+            "data": data_str,
+            "name": title or "CineVood Media",
+            "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+            "poster_url": poster,
+            "background_url": None,
+            "description": desc,
+            "year": year,
+            "rating_percent": None,
+            "tags": [],
+            "episodes": [],
+        }
+
+    def load_links(self, data_str, season=None, episode=None):
+        clean_url = str(data_str).replace("cinevood:", "").strip()
+        try:
+            page_html = _http_get_text(clean_url, headers={"Referer": self._get_base_url()}, timeout=10.0)
+        except Exception as e:
+            logger.debug(f"CineVood load_links failed for {clean_url}: {e}")
+            return []
+
+        raw_links = re.findall(r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', page_html, re.I | re.DOTALL)
+        streams = []
+        for href, txt in raw_links:
+            clean_txt = re.sub(r'<[^>]+>', '', txt).strip()
+            if any(k in href.lower() or k in clean_txt.lower() for k in ["fastdl", "gdflix", "hubcloud", "multicloud", "drive", "download"]):
+                if not any(skip in href for skip in ["1cinevood", "cinevood", "facebook", "telegram", "whatsapp"]):
+                    st = extract_video_streams(href, referer=clean_url)
+                    if st:
+                        for s in st:
+                            s["name"] = f"CineVood {s.get('name')}"
+                            streams.append(s)
+        return streams
 
 
 class GenericCloudStreamProvider(CloudStreamProvider):
-    def __init__(self, provider_id, name="CloudStream Provider"):
+    def __init__(self, provider_id, name="CloudStream Provider", base_url=None):
         self.id = provider_id
         self.name = name
         self.supported_types = ["movie", "series", "live", "tv", "other"]
+        self._base_url = base_url
 
-    def search(self, query):
+    def get_base_url(self):
+        if getattr(self, "_base_url", None):
+            return self._base_url
+
+        plugin = get_plugin(self.id)
+        if plugin:
+            icon = plugin.get("icon_url", "")
+            if icon:
+                p = urllib.parse.urlparse(icon)
+                if p.scheme in ("http", "https") and p.netloc and not any(skip in p.netloc.lower() for skip in [
+                    "github", "google", "wikimedia", "gstatic", "i.ibb.co", "i.postimg.cc", "t2.gstatic.com", "imgur.com"
+                ]):
+                    self._base_url = f"{p.scheme}://{p.netloc}"
+                    return self._base_url
+
+            storage_key = plugin.get("storage_key")
+            if storage_key:
+                pkg_file = os.path.join(get_packages_dir(), f"{storage_key}.cs3")
+                if os.path.exists(pkg_file) and zipfile.is_zipfile(pkg_file):
+                    try:
+                        with zipfile.ZipFile(pkg_file) as z:
+                            if "classes.dex" in z.namelist():
+                                dex = z.read("classes.dex")
+                                urls = re.findall(rb'https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\x00\s\"\'<>]*)?', dex)
+                                candidates = []
+                                for u in urls:
+                                    try:
+                                        s = u.decode("utf-8")
+                                        p = urllib.parse.urlparse(s)
+                                        h = p.netloc.lower()
+                                        if not any(skip in h for skip in [
+                                            "github", "android", "google", "cloudflare", "w3.org", "schema.org", "apache",
+                                            "jsdelivr", "tmdb", "themoviedb", "buymeacoffee", "gofile.io", "dood.", "streamtape"
+                                        ]):
+                                            candidates.append(f"{p.scheme}://{p.netloc}")
+                                    except Exception:
+                                        pass
+                                if candidates:
+                                    self._base_url = max(set(candidates), key=candidates.count)
+                                    return self._base_url
+                    except Exception:
+                        pass
+        self._base_url = None
+        return None
+
+    catalog_sections = ()
+
+    def get_main_page(self, page=1):
         return []
 
+    def search(self, query):
+        if not query or not query.strip():
+            return []
+        base = self.get_base_url()
+        if not base:
+            return []
+        base = base.rstrip("/")
+        search_url = f"{base}/?s={urllib.parse.quote(str(query).strip())}"
+        try:
+            page_html = _http_get_text(search_url, timeout=10.0)
+        except Exception as e:
+            logger.debug(f"{self.name} search failed: {e}")
+            return []
+        return self._parse_cards(page_html, base)
+
     def load(self, data_str):
+        clean_url = str(data_str).replace("generic:", "").strip()
+        if clean_url.startswith("http://") or clean_url.startswith("https://"):
+            try:
+                page_html = _http_get_text(clean_url, timeout=10.0)
+            except Exception:
+                page_html = ""
+            title = ""
+            og_t = re.search(r'<meta\b[^>]*property=["\']og:title["\'][^>]*content=["\']([^"\']+)["\']', page_html, re.I)
+            if og_t:
+                title = html_lib.unescape(og_t.group(1)).strip()
+            if not title:
+                h_m = re.search(r'<h1\b[^>]*>(.*?)</h1>', page_html, re.I | re.DOTALL)
+                if h_m:
+                    title = re.sub(r'<[^>]+>', '', h_m.group(1)).strip()
+
+            poster = None
+            og_img = re.search(r'<meta\b[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', page_html, re.I)
+            if og_img:
+                poster = html_lib.unescape(og_img.group(1)).strip()
+
+            desc = ""
+            og_d = re.search(r'<meta\b[^>]*property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']', page_html, re.I)
+            if og_d:
+                desc = html_lib.unescape(og_d.group(1)).strip()
+
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
+
+            return {
+                "provider_id": self.id,
+                "data": data_str,
+                "name": title or self.name,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": None,
+                "description": desc or f"CloudStream provider {self.name}",
+                "year": year,
+                "rating_percent": None,
+                "tags": [],
+                "episodes": [],
+            }
+
         return {
             "provider_id": self.id,
             "data": data_str,
@@ -5873,7 +6808,7 @@ class GenericCloudStreamProvider(CloudStreamProvider):
         }
 
     def load_links(self, data_str, season=None, episode=None):
-        data_s = str(data_str).strip()
+        data_s = str(data_str).replace("generic:", "").strip()
         if data_s.startswith("http://") or data_s.startswith("https://"):
             try:
                 extracted = extract_video_streams(data_s)
@@ -5881,6 +6816,18 @@ class GenericCloudStreamProvider(CloudStreamProvider):
                     return extracted
             except Exception:
                 pass
+
+            try:
+                page_html = _http_get_text(data_s, timeout=8.0)
+                links = re.findall(r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>', page_html, re.I)
+                for h in links[:15]:
+                    if any(k in h.lower() for k in ["filepress", "gdflix", "multicloud", "hubcloud", "pixeldrain", "gofile", ".m3u8", ".mp4"]):
+                        st = extract_video_streams(h, referer=data_s)
+                        if st:
+                            return st
+            except Exception:
+                pass
+
             return [{
                 "name": self.name,
                 "url": data_s,
@@ -5977,6 +6924,23 @@ _PROVIDERS["MovieBoxProviderIN"] = cncverse_prov
 _PROVIDERS["MovieBoxProvider"] = cncverse_prov
 _PROVIDERS["Rtally"] = cncverse_prov
 _PROVIDERS["HDOProvider"] = cncverse_prov
+_PROVIDERS["https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CineTvProvider"] = cncverse_prov
+_PROVIDERS["CineTvProvider"] = cncverse_prov
+_PROVIDERS["CineTv"] = cncverse_prov
+
+cinedoze_prov = CineDozeCloudStreamProvider()
+register_provider(cinedoze_prov)
+_PROVIDERS["https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CineDozeProvider"] = cinedoze_prov
+_PROVIDERS["CineDozeProvider"] = cinedoze_prov
+_PROVIDERS["CineDoze"] = cinedoze_prov
+
+cinevood_prov = CineVoodCloudStreamProvider()
+register_provider(cinevood_prov)
+_PROVIDERS["https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CineVoodProvider"] = cinevood_prov
+_PROVIDERS["https://raw.githubusercontent.com/rockhero1234/cinephile/builds/repo.json#Cinevood"] = cinevood_prov
+_PROVIDERS["CineVoodProvider"] = cinevood_prov
+_PROVIDERS["CineVood"] = cinevood_prov
+_PROVIDERS["Cinevood"] = cinevood_prov
 
 vegamovies_prov = VegaMoviesCloudStreamProvider()
 register_provider(vegamovies_prov)
@@ -5990,10 +6954,16 @@ _PROVIDERS["https://raw.githubusercontent.com/redowan99/Redowan-CloudStream/mast
 _PROVIDERS["TheMoviesFlix"] = moviesdrive_prov
 _PROVIDERS["MoviesDrive"] = moviesdrive_prov
 
+ninekmovies_prov = NineKMoviesCloudStreamProvider()
+register_provider(ninekmovies_prov)
+_PROVIDERS["https://raw.githubusercontent.com/redowan99/Redowan-CloudStream/master/repo.json#9kMovies"] = ninekmovies_prov
+_PROVIDERS["9kMovies"] = ninekmovies_prov
+_PROVIDERS["NineKMovies"] = ninekmovies_prov
+_PROVIDERS["9kmovies"] = ninekmovies_prov
+
 dudefilms_prov = DudeFilmsCloudStreamProvider()
 register_provider(dudefilms_prov)
-_PROVIDERS["https://raw.githubusercontent.com/redowan99/Redowan-CloudStream/master/repo.json#9kMovies"] = dudefilms_prov
-_PROVIDERS["9kMovies"] = dudefilms_prov
+_PROVIDERS["https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#DudeFilms"] = dudefilms_prov
 _PROVIDERS["DudeFilms"] = dudefilms_prov
 
 zinkmovies_prov = ZinkmoviesCloudStreamProvider()
@@ -6034,6 +7004,7 @@ def is_provider_runnable(plugin):
     """
     Check if a plugin has a compatible runtime/adapter.
     Returns True only if an active Python provider adapter is registered.
+    (GenericCloudStreamProvider has no Python scraper implementation and returns False).
     """
     if not isinstance(plugin, dict):
         return False
@@ -6044,6 +7015,44 @@ def is_provider_runnable(plugin):
     if not prov or type(prov) is GenericCloudStreamProvider:
         return False
     return True
+
+
+_PROVIDER_HEALTH = {}
+_PROVIDER_HEALTH_LOCK = threading.Lock()
+_PROVIDER_OFFLINE_TTL = 300.0  # 5 minutes
+
+
+def is_provider_online(provider_id):
+    """
+    Check if a CloudStream provider is currently online and functional.
+    Returns False if the provider has no runnable Python adapter,
+    or if it was marked offline recently (< 5 minutes).
+    """
+    if not provider_id:
+        return False
+    prov = get_provider(provider_id)
+    if not prov or type(prov) is GenericCloudStreamProvider:
+        return False
+
+    with _PROVIDER_HEALTH_LOCK:
+        entry = _PROVIDER_HEALTH.get(str(provider_id))
+        if entry is not None:
+            is_online, ts = entry
+            if not is_online:
+                if (time.time() - ts) < _PROVIDER_OFFLINE_TTL:
+                    return False
+                _PROVIDER_HEALTH.pop(str(provider_id), None)
+    return True
+
+
+def mark_provider_status(provider_id, is_online, error=None):
+    """
+    Record provider health status (online=True or online=False).
+    """
+    if not provider_id:
+        return
+    with _PROVIDER_HEALTH_LOCK:
+        _PROVIDER_HEALTH[str(provider_id)] = (bool(is_online), time.time())
 
 
 def _catalog_type_matches(catalog_type, media_type):
@@ -6085,7 +7094,9 @@ def get_catalogs(media_type="all"):
             continue
         plugin_id = str(plugin.get("id") or "").strip()
         provider = get_provider(plugin_id)
-        if not plugin_id or not provider:
+        if not plugin_id or not provider or type(provider) is GenericCloudStreamProvider:
+            continue
+        if not is_provider_online(plugin_id):
             continue
         for section in getattr(provider, "catalog_sections", ()) or ():
             if not isinstance(section, dict):
@@ -6129,17 +7140,38 @@ def _get_provider_main_page(provider, page):
         cached = _MAIN_PAGE_CACHE.get(cache_key)
         if cached and now - cached[0] < _MAIN_PAGE_CACHE_TTL_SECONDS:
             return cached[1]
+
+    try:
         try:
-            try:
-                sections = provider.get_main_page(page=page)
-            except TypeError:
-                sections = provider.get_main_page()
-            sections = list(sections or [])
-        except Exception as e:
-            logger.debug(f"CloudStream catalog fetch failed provider={provider.name!r}: {e}")
-            sections = []
-        _MAIN_PAGE_CACHE[cache_key] = (now, sections)
-        return sections
+            sections = provider.get_main_page(page=page)
+        except TypeError:
+            sections = provider.get_main_page()
+        sections = list(sections or [])
+    except Exception as e:
+        logger.debug(f"CloudStream catalog fetch failed provider={provider.name!r}: {e}")
+        sections = []
+
+    total_items = 0
+    for sec in sections:
+        if isinstance(sec, (tuple, list)) and len(sec) >= 2:
+            it = sec[1]
+        elif isinstance(sec, dict):
+            it = sec.get("items") or sec.get("results") or []
+        else:
+            it = []
+        if isinstance(it, list):
+            total_items += len(it)
+
+    if total_items > 0:
+        mark_provider_status(provider.id, True)
+        with _MAIN_PAGE_CACHE_LOCK:
+            _MAIN_PAGE_CACHE[cache_key] = (now, sections)
+    else:
+        mark_provider_status(provider.id, False)
+        with _MAIN_PAGE_CACHE_LOCK:
+            _MAIN_PAGE_CACHE[cache_key] = (now - _MAIN_PAGE_CACHE_TTL_SECONDS + 15.0, [])
+
+    return sections
 
 
 def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=None):
@@ -6314,9 +7346,11 @@ def remove_repository(manifest_url):
 
 # --- Plugin Package Management ---
 
-def install_plugin(plugin_id):
+def install_plugin(plugin_id, auto_refreshed=False):
     """
     Downloads and installs a CloudStream .cs3 package, verifies SHA-256 and ZIP safety.
+    If a checksum mismatch occurs due to upstream repository updates, automatically
+    refreshes the parent repository and retries once.
     Returns (success: bool, message: str).
     """
     plugin = get_plugin(plugin_id)
@@ -6333,11 +7367,6 @@ def install_plugin(plugin_id):
         if not data:
             return False, "Downloaded package is empty"
 
-        # Size check
-        expected_size = plugin.get("file_size")
-        if expected_size and len(data) != expected_size:
-            logger.warning(f"Package size mismatch for {plugin.get('name')}: expected {expected_size}, got {len(data)}")
-
         # ZIP inspection & safety checks
         inspect_cs3_package(data)
 
@@ -6345,7 +7374,19 @@ def install_plugin(plugin_id):
         expected_hash = plugin.get("file_hash")
         verified = matches_file_hash(data, expected_hash)
         if expected_hash and not verified:
+            # Check if upstream repository was updated with a new version/hash
+            repo_url = plugin.get("repository_manifest_url")
+            if repo_url and not auto_refreshed:
+                logger.info(f"SHA-256 mismatch for {plugin.get('name')}. Auto-refreshing repository '{repo_url}' to fetch latest hashes...")
+                ok, _, _ = refresh_repository(repo_url)
+                if ok:
+                    return install_plugin(plugin_id, auto_refreshed=True)
             return False, "SHA-256 checksum mismatch on downloaded package"
+
+        # Size check
+        expected_size = plugin.get("file_size")
+        if expected_size and len(data) != expected_size:
+            logger.warning(f"Package size mismatch for {plugin.get('name')}: expected {expected_size}, got {len(data)}")
 
         # Atomically save
         save_package_atomically(plugin["storage_key"], data)
@@ -6799,7 +7840,7 @@ def search_all_enabled_providers(query, timeout=10.0):
 
 
 def fetch_cloudstream_streams_for_media(
-    title, media_type, year=None, season=None, episode=None, timeout=12.0, imdb_id=None, catalog_title=None
+    title, media_type, year=None, season=None, episode=None, timeout=12.0, imdb_id=None, catalog_title=None, exclude_route=None
 ):
     """
     Searches enabled CloudStream providers for a standard movie or episode,
@@ -6814,6 +7855,16 @@ def fetch_cloudstream_streams_for_media(
     ]
     if not enabled_plugins:
         return []
+
+    excluded_provider_id = None
+    excluded_provider_name = None
+    if exclude_route:
+        parsed_route = parse_cloudstream_route_id(exclude_route)
+        if parsed_route:
+            excluded_provider_id = parsed_route[0]
+            ex_prov = get_provider(excluded_provider_id)
+            if ex_prov:
+                excluded_provider_name = getattr(ex_prov, "name", None)
 
     seen_impls = set()
     deduped_plugins = []
@@ -6870,6 +7921,12 @@ def fetch_cloudstream_streams_for_media(
     def _worker(plugin):
         provider = get_provider(plugin["id"])
         if not provider:
+            return []
+        if excluded_provider_id and (
+            plugin.get("id") == excluded_provider_id
+            or getattr(provider, "id", None) == excluded_provider_id
+            or (excluded_provider_name and (plugin.get("name") == excluded_provider_name or getattr(provider, "name", None) == excluded_provider_name))
+        ):
             return []
         # Check if provider supports this media type
         if getattr(provider, "id", "") == MegaProviderCloudStreamProvider.id or isinstance(provider, MegaProviderCloudStreamProvider):

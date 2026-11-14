@@ -851,6 +851,31 @@ def remove_history(item_or_id, sync_to_remote=True):
 
 # --- Continue Watching ---
 
+def is_scraper_image_url(url):
+    """Returns True if the image URL is from a temporary pirate/scraper host."""
+    if not url or not isinstance(url, str):
+        return False
+    u = url.lower()
+    return any(d in u for d in (
+        "moviesmod.", "bollyflix.", "vegamovies.", "bflixcdn.", "cinedoze.",
+        "dudefilms.", "zinkmovies.", "hdhub4u.", "1cinevood.", "cinevood.",
+        "wp-content/uploads", "cdn.jsdelivr.net/gh/phisher", "movies4u."
+    ))
+
+
+def is_canonical_image_url(url):
+    """Returns True if the image URL is from a trusted studio/metadata CDN."""
+    if not url or not isinstance(url, str):
+        return False
+    u = url.lower()
+    if is_scraper_image_url(u):
+        return False
+    return any(d in u for d in (
+        "image.tmdb.org", "images.metahub.space", "live.metahub.space",
+        "media-amazon.com", "m.media-amazon.com", "imdb.com"
+    ))
+
+
 def _continue_watching_item_ids(item):
     """Return the string IDs that identify a Continue Watching item."""
     if not isinstance(item, dict):
@@ -961,6 +986,23 @@ def get_continue_watching():
             db_curr["removed_continue_watching"] = [str(v) for v in rem_list if str(v) in rem_list_ids]
             db_curr["continue_watching"] = curr_cw[:100]
             _write_db(db_curr)
+
+    for it in valid_cw:
+        iid = str(it.get("imdb_id") or it.get("id") or "")
+        p = it.get("medium_cover_image") or it.get("poster")
+        if iid.startswith("tt") and is_scraper_image_url(p):
+            clean_p = f"https://images.metahub.space/poster/medium/{iid}/img"
+            it["medium_cover_image"] = clean_p
+            it["poster"] = clean_p
+        elif iid.startswith("tmdb:") and is_scraper_image_url(p):
+            cached = get_cached_metadata(iid)
+            cp = (cached or {}).get("medium_cover_image") or (cached or {}).get("poster")
+            if cp and not is_scraper_image_url(cp):
+                it["medium_cover_image"] = cp
+                it["poster"] = cp
+            else:
+                it.pop("medium_cover_image", None)
+                it.pop("poster", None)
 
     return sorted(valid_cw, key=lambda x: x.get("last_watched", 0), reverse=True)
 
@@ -1152,6 +1194,23 @@ def save_continue_watching(item, sync_to_remote=True):
                 _normalize_stream_for_storage(updated_item["selected_torrent"])
                 or updated_item["selected_torrent"]
             )
+
+        # Ensure a canonical IMDb or TMDB ID is not saved with a broken scraper poster
+        i_id = str(updated_item.get("imdb_id") or updated_item.get("id") or "")
+        curr_poster = updated_item.get("medium_cover_image") or updated_item.get("poster")
+        if i_id.startswith("tt") and is_scraper_image_url(curr_poster):
+            clean_poster = f"https://images.metahub.space/poster/medium/{i_id}/img"
+            updated_item["medium_cover_image"] = clean_poster
+            updated_item["poster"] = clean_poster
+        elif i_id.startswith("tmdb:") and is_scraper_image_url(curr_poster):
+            cached = get_cached_metadata(i_id)
+            cp = (cached or {}).get("medium_cover_image") or (cached or {}).get("poster")
+            if cp and not is_scraper_image_url(cp):
+                updated_item["medium_cover_image"] = cp
+                updated_item["poster"] = cp
+            else:
+                updated_item.pop("medium_cover_image", None)
+                updated_item.pop("poster", None)
 
         new_cw.insert(0, updated_item)
         db["continue_watching"] = new_cw[:100]
@@ -2229,6 +2288,30 @@ def _get_cache_db():
     except Exception:
         pass
 
+    # Migration: Purge temporary scraper poster URLs from canonical IMDb metadata
+    try:
+        cur = _cache_conn.cursor()
+        cur.execute("SELECT val FROM cache_meta WHERE key = 'clean_scraper_posters_v2'")
+        if not cur.fetchone():
+            cur.execute("SELECT id, data FROM metadata_cache WHERE (id LIKE 'tt%' OR id LIKE 'tmdb:%') AND (data LIKE '%moviesmod.%' OR data LIKE '%bollyflix.%' OR data LIKE '%bflixcdn.%' OR data LIKE '%1cinevood.%' OR data LIKE '%cinedoze.%' OR data LIKE '%dudefilms.%' OR data LIKE '%zinkmovies.%' OR data LIKE '%hdhub4u.%' OR data LIKE '%vegamovies.%' OR data LIKE '%movies4u.%' OR data LIKE '%wp-content/uploads%')")
+            for r_id, d_str in cur.fetchall():
+                try:
+                    d = json.loads(d_str)
+                    if r_id.startswith("tt"):
+                        clean_poster = f"https://images.metahub.space/poster/medium/{r_id}/img"
+                        d["poster"] = clean_poster
+                        d["medium_cover_image"] = clean_poster
+                    elif r_id.startswith("tmdb:"):
+                        d.pop("poster", None)
+                        d.pop("medium_cover_image", None)
+                    _cache_conn.execute("UPDATE metadata_cache SET data=? WHERE id=?", (json.dumps(d), r_id))
+                except Exception:
+                    pass
+            _cache_conn.execute("INSERT OR REPLACE INTO cache_meta (key, val) VALUES ('clean_scraper_posters_v2', '1')")
+            _cache_conn.commit()
+    except Exception:
+        pass
+
     # Migration: Invalidate catalog_cache entries where series catalogs were corrupted with movies
     try:
         _cache_conn.execute("CREATE TABLE IF NOT EXISTS cache_meta (key TEXT PRIMARY KEY, val TEXT)")
@@ -2697,6 +2780,8 @@ def hydrate_items_from_metadata(items, media_type=None):
                         if not it.get("medium_cover_image") and not it.get("poster"):
                             cov = meta.get("medium_cover_image") or meta.get("poster")
                             if cov:
+                                if is_scraper_image_url(cov) and str(it.get("id", "")).startswith("tt"):
+                                    cov = f"https://images.metahub.space/poster/medium/{it['id']}/img"
                                 it["medium_cover_image"] = cov
                                 it["poster"] = cov
                                 it_updated = True

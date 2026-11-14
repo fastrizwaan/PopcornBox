@@ -2119,8 +2119,11 @@ def check_addons_health_background(callback=None, live=False):
                 retry_pending = []
                 # Keep the burst small: addons often share a host, and many
                 # parallel manifest fetches can trip their rate limits.
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(pending))) as pool:
-                    futures = [pool.submit(_ping_addon, a) for a in pending]
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(2, len(pending))) as pool:
+                    futures = []
+                    for a in pending:
+                        futures.append(pool.submit(_ping_addon, a))
+                        time.sleep(0.08)
                     for f in concurrent.futures.as_completed(futures):
                         try:
                             outcome = f.result()
@@ -4769,10 +4772,23 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
 
     # Preserve existing valid poster from parameter or database cache before replacing with addon poster
     existing = database.get_cached_metadata(imdb_id)
-    existing_poster = poster or (existing.get("medium_cover_image") if existing and not is_tmdb_metadata else None)
+    res_poster = res.get("medium_cover_image") or res.get("poster")
+    if res_poster and database.is_canonical_image_url(res_poster):
+        existing_poster = res_poster
+    elif poster and not database.is_scraper_image_url(poster):
+        existing_poster = poster
+    elif res_poster and not database.is_scraper_image_url(res_poster):
+        existing_poster = res_poster
+    elif existing and not is_tmdb_metadata and existing.get("medium_cover_image") and not database.is_scraper_image_url(existing.get("medium_cover_image")):
+        existing_poster = existing.get("medium_cover_image")
+    elif poster:
+        existing_poster = poster
+    else:
+        existing_poster = res_poster
 
     if existing_poster:
         res["medium_cover_image"] = existing_poster
+        res["poster"] = existing_poster
     else:
         current_poster = res.get("medium_cover_image", "")
         if not current_poster and not is_tmdb_metadata and not (str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://")):
@@ -4896,7 +4912,17 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
     if is_valid_meta(res):
         database.save_cached_metadata(imdb_id, media_type, res)
         if res.get("id") and res.get("id") != imdb_id:
-            database.save_cached_metadata(res.get("id"), media_type, res)
+            target_id = str(res.get("id"))
+            clean_res = dict(res)
+            curr_p = clean_res.get("medium_cover_image") or clean_res.get("poster")
+            if target_id.startswith("tt") and database.is_scraper_image_url(curr_p):
+                clean_p = f"https://images.metahub.space/poster/medium/{target_id}/img"
+                clean_res["medium_cover_image"] = clean_p
+                clean_res["poster"] = clean_p
+            elif target_id.startswith("tmdb:") and database.is_scraper_image_url(curr_p):
+                clean_res.pop("medium_cover_image", None)
+                clean_res.pop("poster", None)
+            database.save_cached_metadata(target_id, media_type, clean_res)
     return res
 
 def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True, poster=None, prefer_tmdb=False, expected_year=None):
@@ -4939,7 +4965,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 and (not year_text or not cached_year or cached_year == year_text)
                 and cached_title_matches
             ):
-                if poster:
+                if poster and not database.is_scraper_image_url(poster):
                     cached_route_meta["medium_cover_image"] = poster
                     cached_route_meta["poster"] = poster
                 if raw_catalog_title:
@@ -4957,13 +4983,14 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 if without_year and without_year not in title_candidates:
                     title_candidates.append(without_year)
 
+            clean_poster = None if database.is_scraper_image_url(poster) else poster
             for search_title in title_candidates:
                 try:
                     tmdb_meta = fetch_tmdb_standalone_metadata(
                         None,
                         media_type=media_type,
                         title=search_title,
-                        poster=poster,
+                        poster=clean_poster,
                         year=year_text,
                     )
                 except Exception as e:
@@ -7033,7 +7060,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         except Exception as e:
             print(f"[STREAM DEBUG] CloudStream immediate route lookup failed: {e}")
 
-    if str(imdb_id).startswith("cloudstream:") and not initial_cs_streams:
+    if str(imdb_id).startswith("cloudstream:"):
         # A search-card route may have no playable links on its own. Try its
         # canonical identity when available, then continue through provider
         # discovery by title if TMDB resolution is unavailable.
@@ -7488,8 +7515,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         from . import cloudstream
         if not cloudstream.is_cloudstream_enabled() or not title:
             return "CloudStream", []
-        if initial_cs_streams:
-            return "CloudStream", []
         try:
             cs_streams = cloudstream.fetch_cloudstream_streams_for_media(
                 title=title,
@@ -7500,6 +7525,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 timeout=cloudstream_timeout,
                 imdb_id=imdb_id,
                 catalog_title=catalog_title,
+                exclude_route=target_cs_route if initial_cs_streams else None,
             )
             return "CloudStream", cs_streams or []
         except Exception as e:

@@ -230,6 +230,21 @@ class TestResumeAudioSubtitle(unittest.TestCase):
         win.mpv.__setitem__.assert_any_call("sub-visibility", "no")
         self.assertTrue(win._subtitles_configured_for_file)
 
+    def test_clear_saved_external_subtitle_accepts_item_context(self):
+        """_clear_saved_external_subtitle supports both item and item_context kwargs."""
+        win = MagicMock()
+        win._playback_preference_keys = window.CineWindow._playback_preference_keys.__get__(win, window.CineWindow)
+        win._external_subtitle_setting_keys = window.CineWindow._external_subtitle_setting_keys.__get__(win, window.CineWindow)
+        win._clear_saved_external_subtitle = window.CineWindow._clear_saved_external_subtitle.__get__(win, window.CineWindow)
+
+        item = {"id": "tt55555", "season": 1, "episode": 2}
+        # Calling with item_context should not raise TypeError
+        win._clear_saved_external_subtitle(item_context=item)
+        # Calling with item should not raise TypeError
+        win._clear_saved_external_subtitle(item=item)
+        # Calling with no arguments should not raise TypeError
+        win._clear_saved_external_subtitle()
+
 
 if __name__ == "__main__":
     unittest.main()
