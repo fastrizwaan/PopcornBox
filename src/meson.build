@@ -46,6 +46,7 @@ cine_sources = [
   'backup.py',
   'company_dialog.py',
   'database.py',
+  'doh.py',
   'download_row.py',
   'history.py',
   'hls_proxy.py',
