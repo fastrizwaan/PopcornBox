@@ -92,6 +92,38 @@ class TestDoH(unittest.TestCase):
         doh.enable_global_doh(False)
         self.assertFalse(doh.is_global_doh_enabled())
 
+    def test_bootstrap_hosts_resolution(self):
+        doh.enable_global_doh(True)
+        try:
+            # cloudflare-dns.com should resolve to 1.1.1.1 without calling doh_resolve
+            with patch.object(doh, "doh_resolve") as mock_resolve:
+                addrs = socket.getaddrinfo("cloudflare-dns.com", 443)
+                self.assertTrue(len(addrs) >= 1)
+                mock_resolve.assert_not_called()
+                sockaddrs = [item[4][0] for item in addrs]
+                self.assertIn("1.1.1.1", sockaddrs)
+        finally:
+            doh.enable_global_doh(False)
+
+    def test_doh_proxy_url_and_env(self):
+        doh.enable_global_doh(False)
+        self.assertIsNone(doh.get_doh_proxy_url())
+        self.assertEqual(doh.get_doh_env(), {})
+
+        doh.enable_global_doh(True)
+        try:
+            url = doh.get_doh_proxy_url()
+            self.assertIsNotNone(url)
+            self.assertTrue(url.startswith("http://127.0.0.1:"))
+
+            env = doh.get_doh_env()
+            self.assertEqual(env.get("HTTP_PROXY"), url)
+            self.assertEqual(env.get("HTTPS_PROXY"), url)
+            self.assertIn("localhost", env.get("NO_PROXY", ""))
+        finally:
+            doh.enable_global_doh(False)
+            self.assertIsNone(doh.get_doh_proxy_url())
+
 
 if __name__ == "__main__":
     unittest.main()

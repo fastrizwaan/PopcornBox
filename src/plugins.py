@@ -604,12 +604,22 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
     }
 
     try:
+        env = dict(os.environ)
+        try:
+            from . import doh
+            doh_env = doh.get_doh_env()
+            if doh_env:
+                env.update(doh_env)
+        except Exception as e:
+            logger.debug(f"Could not configure DoH proxy for scraper runtime: {e}")
+
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=env,
         )
         input_data = json.dumps(payload)
         stdout, stderr = proc.communicate(input_data, timeout=timeout)

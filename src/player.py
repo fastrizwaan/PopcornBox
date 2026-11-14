@@ -1031,7 +1031,13 @@ def resolve_youtube_url(clean_id_or_url, watch_url=None):
                 "-f", "best[height<=1080]/bestvideo[height<=1080]+bestaudio/best",
                 watch_url
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+            run_env = dict(os.environ)
+            try:
+                from . import doh
+                run_env.update(doh.get_doh_env())
+            except Exception:
+                pass
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=12, env=run_env)
             if res.returncode == 0 and res.stdout.strip():
                 import json
                 try:

@@ -16,7 +16,9 @@ Features:
 import ipaddress
 import json
 import logging
+import os
 import re
+import select
 import socket
 import threading
 import time
@@ -143,14 +145,12 @@ def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     Hooked `socket.getaddrinfo` that resolves domains via DoH before calling
     system resolver on the resolved IP addresses.
     """
-    if getattr(_thread_local, "in_doh", False) or not _enabled:
-        return _orig_getaddrinfo(host, port, family, type, proto, flags)
-
     if not isinstance(host, str):
         return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
     host_clean = host.strip().lower().rstrip(".")
-    # Fast path: bootstrap hosts resolve directly to bootstrap IPs without external DNS
+    # Fast path: bootstrap hosts resolve directly to bootstrap IPs without external DNS,
+    # even when inside doh_resolve itself
     if host_clean in _BOOTSTRAP_HOSTS:
         results = []
         for ip in _BOOTSTRAP_HOSTS[host_clean]:
@@ -165,6 +165,9 @@ def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
                 pass
         if results:
             return results
+
+    if getattr(_thread_local, "in_doh", False) or not _enabled:
+        return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
     if _should_bypass_doh(host):
         return _orig_getaddrinfo(host, port, family, type, proto, flags)
@@ -189,6 +192,216 @@ def _custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
 
+# ---------------------------------------------------------------------------
+# Local DoH Forward Proxy Server (for Deno / Scraper Subprocesses)
+# ---------------------------------------------------------------------------
+
+_proxy_server = None
+_proxy_port = 0
+_proxy_lock = threading.Lock()
+
+
+class _LocalDoHProxyHandler(threading.Thread):
+    def __init__(self, client_sock):
+        super().__init__(daemon=True)
+        self.client = client_sock
+
+    def run(self):
+        remote = None
+        try:
+            req_data = b""
+            while b"\r\n\r\n" not in req_data:
+                chunk = self.client.recv(4096)
+                if not chunk:
+                    break
+                req_data += chunk
+                if len(req_data) > 65536:
+                    break
+            if not req_data:
+                return
+
+            header_part, _, body = req_data.partition(b"\r\n\r\n")
+            lines = header_part.split(b"\r\n")
+            if not lines:
+                return
+
+            request_line = lines[0].decode("latin-1", errors="ignore")
+            parts = request_line.split()
+            if len(parts) < 2:
+                return
+
+            method, target = parts[0], parts[1]
+
+            if method.upper() == "CONNECT":
+                # HTTPS tunneling
+                host_str, _, port_str = target.partition(":")
+                port = int(port_str) if port_str.isdigit() else 443
+                try:
+                    remote = socket.create_connection((host_str, port), timeout=12)
+                except Exception:
+                    try:
+                        self.client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+                    except Exception:
+                        pass
+                    return
+
+                self.client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                self._pipe(self.client, remote)
+            else:
+                # Plain HTTP proxying
+                parsed = urllib.parse.urlsplit(target)
+                host = parsed.hostname
+                port = parsed.port or 80
+                path = parsed.path or "/"
+                if parsed.query:
+                    path += "?" + parsed.query
+                try:
+                    remote = socket.create_connection((host, port), timeout=12)
+                except Exception:
+                    try:
+                        self.client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+                    except Exception:
+                        pass
+                    return
+
+                # Reconstruct HTTP request with relative path
+                first_line = f"{method} {path} HTTP/1.1\r\n".encode("latin-1")
+                out_headers = [first_line]
+                for l in lines[1:]:
+                    if l.lower().startswith(b"proxy-connection:"):
+                        continue
+                    out_headers.append(l + b"\r\n")
+                out_headers.append(b"\r\n")
+                remote.sendall(b"".join(out_headers) + body)
+                self._pipe(self.client, remote)
+        except Exception:
+            pass
+        finally:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            if remote:
+                try:
+                    remote.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _pipe(s1, s2):
+        sockets = [s1, s2]
+        try:
+            while True:
+                r, _, _ = select.select(sockets, [], [], 20)
+                if not r:
+                    break
+                for s in r:
+                    data = s.recv(32768)
+                    if not data:
+                        return
+                    other = s2 if s is s1 else s1
+                    other.sendall(data)
+        except Exception:
+            pass
+        finally:
+            for s in sockets:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+
+
+class _LocalDoHProxyServer(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.port = self.sock.getsockname()[1]
+        self.sock.listen(64)
+        self.running = True
+        self.ready_event = threading.Event()
+
+    def run(self):
+        self.ready_event.set()
+        while self.running:
+            try:
+                client, _ = self.sock.accept()
+                _LocalDoHProxyHandler(client).start()
+            except Exception:
+                break
+
+    def stop(self):
+        self.running = False
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+
+
+def get_doh_proxy_url() -> str | None:
+    """
+    Returns the local DoH forward proxy URL ('http://127.0.0.1:<port>') for external
+    processes (such as Deno for Nuvio plugins or yt-dlp) to route through DoH.
+    Starts the proxy server lazily on demand if DoH is enabled.
+    """
+    global _proxy_server, _proxy_port
+    if not is_global_doh_enabled():
+        return None
+
+    with _proxy_lock:
+        if _proxy_server is not None and _proxy_server.is_alive():
+            return f"http://127.0.0.1:{_proxy_port}"
+
+        try:
+            server = _LocalDoHProxyServer()
+            server.start()
+            server.ready_event.wait(timeout=2.0)
+            _proxy_server = server
+            _proxy_port = server.port
+            logger.info(f"Local DoH proxy server started on 127.0.0.1:{_proxy_port}")
+            return f"http://127.0.0.1:{_proxy_port}"
+        except Exception as e:
+            logger.error(f"Failed to start local DoH proxy server: {e}")
+            return None
+
+
+def stop_doh_proxy():
+    """Stops the local DoH proxy server if running."""
+    global _proxy_server, _proxy_port
+    with _proxy_lock:
+        if _proxy_server is not None:
+            try:
+                _proxy_server.stop()
+            except Exception:
+                pass
+            _proxy_server = None
+            _proxy_port = 0
+            logger.info("Local DoH proxy server stopped.")
+
+
+def get_doh_env() -> dict:
+    """
+    Returns environment variable dictionary with HTTP_PROXY and HTTPS_PROXY
+    configured to use the local DoH proxy if DoH is enabled, or empty dict.
+    """
+    if not is_global_doh_enabled():
+        return {}
+    url = get_doh_proxy_url()
+    if not url:
+        return {}
+    return {
+        "HTTP_PROXY": url,
+        "HTTPS_PROXY": url,
+        "http_proxy": url,
+        "https_proxy": url,
+        "ALL_PROXY": url,
+        "all_proxy": url,
+        "NO_PROXY": "localhost,127.0.0.1,::1",
+        "no_proxy": "localhost,127.0.0.1,::1",
+    }
+
+
 def enable_global_doh(enabled: bool = True):
     """Enables or disables the global DoH socket hook."""
     global _enabled, _is_hooked
@@ -204,6 +417,7 @@ def enable_global_doh(enabled: bool = True):
                 socket.getaddrinfo = _orig_getaddrinfo
                 _is_hooked = False
                 logger.info("Global DNS-over-HTTPS (DoH) disabled.")
+            stop_doh_proxy()
 
 
 def is_global_doh_enabled() -> bool:

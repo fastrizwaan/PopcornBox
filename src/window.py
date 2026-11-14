@@ -1535,6 +1535,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     # A metadata refresh must not restore a Continue Watching
                     # episode over the one the user just picked here.
                     self._user_selected_episode = True
+                    self._user_explicitly_selected_stream = False
                     self.movie_stub["season"] = s_val
                     self.movie_stub["episode"] = episode_num
                     primary_id = (self.movie_stub.get("alias_ids") or [self.movie_stub.get("id") or self.movie_stub.get("imdb_id")])[0]
@@ -2820,6 +2821,7 @@ class MovieDetailsPage(Gtk.Overlay):
                         self._preferred_series_season = s_val
                         self._preferred_series_episode = self.selected_episode
                         self._user_selected_episode = True
+                        self._user_explicitly_selected_stream = False
                     primary_id = (self.movie_stub.get("alias_ids") or [self.movie_stub.get("id") or self.movie_stub.get("imdb_id")])[0]
                     self.remembered_working_stream = database.get_working_stream(primary_id, getattr(self, 'selected_season', None), self.selected_episode)
                     if self.remembered_working_stream:
@@ -3370,6 +3372,8 @@ class MovieDetailsPage(Gtk.Overlay):
             self.current_t_list = []
             self.torrents = []
             self.selected_torrent = None
+            self.remembered_working_stream = None
+            self._user_explicitly_selected_stream = False
             if hasattr(self, 'provider_dropdown'):
                 self._ignore_provider_signals = True
                 try:
@@ -4040,15 +4044,15 @@ class MovieDetailsPage(Gtk.Overlay):
             t_list = [t for t in t_list if api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH]
             raw_t_list = [t for t in raw_t_list if api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH]
 
+        user_explicit = getattr(self, '_user_explicitly_selected_stream', False)
         selected = getattr(self, 'selected_torrent', None)
-        if selected and sel_s is not None and sel_e is not None:
+        if selected and sel_s is not None and sel_e is not None and not user_explicit:
             from . import api
             if api.match_stream_to_episode(selected, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
                 selected = None
                 self.selected_torrent = None
 
         is_all_providers = (source_idx == 0 and sel_prov_name == "All Providers")
-        user_explicit = getattr(self, '_user_explicitly_selected_stream', False)
 
         if user_explicit and getattr(self, 'selected_torrent', None):
             self.remembered_working_stream = self.selected_torrent
@@ -4085,6 +4089,11 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.selected_torrent = selected
         else:
             working_stream = getattr(self, "remembered_working_stream", None)
+            if working_stream and sel_s is not None and sel_e is not None:
+                from . import api
+                if api.match_stream_to_episode(working_stream, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
+                    working_stream = None
+                    self.remembered_working_stream = None
             if not working_stream:
                 from . import database
                 item_id = (
@@ -7832,15 +7841,16 @@ class CineWindow(Adw.ApplicationWindow):
                 error = raw_error.decode("utf-8", errors="ignore") if isinstance(raw_error, bytes) else str(raw_error or "")
 
                 # A previous stream can emit an end-file event as the next one
-                # starts loading. Ignore those replacement events, but process
-                # real open/read errors so HTTP 403/428 responses can trigger
-                # the stream queue's refresh and failover path.
+                # starts loading. Ignore replacement events that occur before
+                # the new media has started, but process real open/read errors
+                # so dead/expired streams can trigger failover.
                 if getattr(self, "is_loading_stream", False):
                     if reason != b"error":
                         return
-                    if "no audio or video data played" in error.lower() or "aborted" in error.lower() or not error:
-                        logger.debug(f"Ignoring previous stream displacement: {error}")
-                        return
+                    if not getattr(self, "_stream_media_started", False):
+                        if "no audio or video data played" in error.lower() or "aborted" in error.lower():
+                            logger.debug(f"Ignoring previous stream displacement: {error}")
+                            return
 
                 curr_pos = self.mpv.playlist_pos
 
@@ -17281,7 +17291,8 @@ class CineWindow(Adw.ApplicationWindow):
             cand = self.stream_queue[self.stream_queue_index]
             c_url = cand.get("url") or cand.get("magnet") if isinstance(cand, dict) else None
             if c_url and (c_url.startswith("http://") or c_url.startswith("https://")):
-                if api.is_stream_url_expired(c_url, buffer_seconds=30):
+                cand_saved = cand.get("saved_at") or cand.get("created_at") or cand.get("timestamp")
+                if api.is_stream_url_expired(c_url, buffer_seconds=30, saved_at=cand_saved):
                     logger.info(f"Skipping expired stream in queue: {c_url}")
                     self.stream_queue_index += 1
                     continue

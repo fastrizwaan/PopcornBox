@@ -1330,7 +1330,13 @@ class DailymotionCloudStreamProvider(CloudStreamProvider):
                     "-j",
                     f"https://www.dailymotion.com/video/{vid}",
                 ]
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                run_env = dict(os.environ)
+                try:
+                    from . import doh
+                    run_env.update(doh.get_doh_env())
+                except Exception:
+                    pass
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10, env=run_env)
                 if proc.returncode == 0 and proc.stdout.strip():
                     info = json.loads(proc.stdout)
                     stream_url = info.get("url")
@@ -1594,7 +1600,13 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
                     "--dump-single-json",
                     f"ytsearch20:{query.strip()}",
                 ]
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                run_env = dict(os.environ)
+                try:
+                    from . import doh
+                    run_env.update(doh.get_doh_env())
+                except Exception:
+                    pass
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10, env=run_env)
                 if proc.returncode == 0 and proc.stdout.strip():
                     data = json.loads(proc.stdout)
                     entries = data.get("entries") or []
@@ -2087,6 +2099,8 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
                                 "headers": s.get("headers") or {"User-Agent": DEFAULT_USER_AGENT},
                                 "is_hls": s.get("is_hls", False),
                                 "is_dash": False,
+                                "has_expiring_credentials": s.get("has_expiring_credentials", False),
+                                "created_at": s.get("created_at"),
                             })
                     elif kind == "hubcloud":
                         hc_sources = _extract_hubcloud_sources(t_url, referer=href)
@@ -2116,6 +2130,8 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
                                     "headers": es.get("headers") or {"User-Agent": DEFAULT_USER_AGENT},
                                     "is_hls": es.get("is_hls", False),
                                     "is_dash": False,
+                                    "has_expiring_credentials": es.get("has_expiring_credentials", False),
+                                    "created_at": es.get("created_at"),
                                 })
                 except Exception as e:
                     logger.debug(f"Bollyflix other resolution failed for {t_url}: {e}")
@@ -3004,7 +3020,11 @@ def _extract_gdflix_sources(url, referer=None):
                 if loc:
                     m_url = re.search(r"url=([^&]+)", loc)
                     real_dl = urllib.parse.unquote(m_url.group(1)) if m_url else loc
-                    if real_dl.startswith(("http://", "https://")) and not any(b in real_dl.lower() for b in ("video-downloads.googleusercontent.com", "pages.dev", "googleusercontent.com")):
+                    if "pages.dev/?url=" in real_dl:
+                        m_inner = re.search(r"url=([^&]+)", real_dl)
+                        if m_inner:
+                            real_dl = urllib.parse.unquote(m_inner.group(1))
+                    if real_dl.startswith(("http://", "https://")) and "pages.dev" not in real_dl.lower():
                         sources.append({
                             "name": "GDFlix [Instant Download]",
                             "url": real_dl,
@@ -3012,9 +3032,28 @@ def _extract_gdflix_sources(url, referer=None):
                             "headers": {"User-Agent": DEFAULT_USER_AGENT},
                             "is_hls": ".m3u8" in real_dl,
                             "is_dash": False,
+                            "has_expiring_credentials": True,
+                            "created_at": time.time(),
                         })
             except Exception:
                 pass
+        elif "gofile" in t_upper or "multiup" in link.lower() or "/realtime/multiup.php" in link.lower():
+            try:
+                mu_url = urllib.parse.urljoin(target_url, link)
+                mu_html = _http_get_text(mu_url, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": target_url}, timeout=6.0)
+                m_fast = re.search(r'href=["\'](/download-fast/[^"\']+)["\']', mu_html, re.I)
+                if m_fast:
+                    dl_fast = urllib.parse.urljoin("https://multiup.io/", m_fast.group(1))
+                    sources.append({
+                        "name": "GDFlix [MultiUp Fast]",
+                        "url": dl_fast,
+                        "quality": q_val,
+                        "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": "https://multiup.io/"},
+                        "is_hls": False,
+                        "is_dash": False,
+                    })
+            except Exception as e:
+                logger.debug(f"GDFlix MultiUp extraction failed: {e}")
     return sources
 
 
@@ -7722,6 +7761,8 @@ def playback_source_to_stream_dict(source, provider_name, provider_id):
         "is_http": not is_torrent,
         "stream_type": "torrent" if is_torrent else ("hls" if is_hls else ("dash" if is_dash else "direct")),
         "cloudstream_provider_id": provider_id,
+        "has_expiring_credentials": bool(source.get("has_expiring_credentials")),
+        "saved_at": source.get("saved_at") or source.get("created_at") or time.time(),
     }
 
     if is_torrent:
@@ -8034,7 +8075,7 @@ def fetch_cloudstream_streams_for_media(
                         or _normalized_type(item.get("type")) in (norm_type, "other")
                     )
                 ]
-                candidate_items = typed_items or list(search_items)
+                candidate_items = typed_items if norm_type in ("movie", "series") else (typed_items or list(search_items))
                 scored = []
                 ranked_fallbacks = []
                 for order, item in enumerate(candidate_items):
@@ -8058,9 +8099,14 @@ def fetch_cloudstream_streams_for_media(
                     if not title_matches and not has_imdb_match:
                         # CloudStream search results are already ranked by the
                         # provider. Keep year-verified localized titles as a
-                        # fallback, as the reference client does.
+                        # fallback only when there is genuine title word overlap.
                         if requested_year and candidate_year == requested_year:
-                            ranked_fallbacks.append((order, item))
+                            q_words = [w for w in re.sub(r"[^\w\s]", "", (title or "").lower()).split() if w not in _STOP_WORDS]
+                            c_words = [w for w in re.sub(r"[^\w\s]", "", candidate_name.lower()).split() if w not in _STOP_WORDS]
+                            if q_words and c_words:
+                                overlap = len(set(q_words).intersection(set(c_words)))
+                                if overlap >= max(1, len(set(q_words))):
+                                    ranked_fallbacks.append((order, item))
                         continue
 
                     score = 100 if has_imdb_match else (60 if candidate_name.casefold() == title.casefold() else 40)

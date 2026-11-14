@@ -117,8 +117,8 @@ class TestStreamSelectionAndFailover(unittest.TestCase):
         self.assertIn("magnet", mock_win.stream_queue[1])
         self.assertEqual(mock_win.stream_queue[1]["magnet"], "magnet:?xt=urn:btih:3333333333333333333333333333333333333333")
 
-    def test_gdflix_filters_unplayable_googleusercontent(self):
-        """GDFlix extractor must discard video-downloads.googleusercontent.com links that return 400."""
+    def test_gdflix_extracts_instant_download_googleusercontent(self):
+        """GDFlix extractor must extract video-downloads.googleusercontent.com links with expiring credentials flag."""
         html_page = """
         <html>
         <head><title>File</title></head>
@@ -129,9 +129,11 @@ class TestStreamSelectionAndFailover(unittest.TestCase):
         </html>
         """
         with patch("src.cloudstream._http_get_text", return_value=html_page), \
-             patch("src.cloudstream._resolve_short_link", return_value="https://video-downloads.googleusercontent.com/ADGPM2mTfRZIvQQb4QHiwAb0j9fZyJg5E1NmGaMzeCXurNIDaJf3Er"):
+             patch("src.cloudstream._resolve_short_link", return_value="https://fastdl-one.pages.dev/?url=https://video-downloads.googleusercontent.com/ADGPM2mTfRZIvQQb4QHiwAb0j9fZyJg5E1NmGaMzeCXurNIDaJf3Er"):
             sources = cloudstream._extract_gdflix_sources("https://gdflix.dev/file/abc")
-            self.assertEqual(len(sources), 0)
+            self.assertEqual(len(sources), 1)
+            self.assertEqual(sources[0]["url"], "https://video-downloads.googleusercontent.com/ADGPM2mTfRZIvQQb4QHiwAb0j9fZyJg5E1NmGaMzeCXurNIDaJf3Er")
+            self.assertTrue(sources[0].get("has_expiring_credentials"))
 
     def test_gdflix_extracts_cflare_direct_streams(self):
         """GDFlix extractor must extract Cloud Resume and Quick Download links from /cflare/ subpages."""

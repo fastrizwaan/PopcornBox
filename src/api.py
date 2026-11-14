@@ -560,8 +560,13 @@ EXPIRING_CREDENTIAL_QUERY_KEYS = {
 EXPIRING_CREDENTIAL_FRAGMENTS = ("token", "signature", "expires", "expiry")
 
 def has_likely_expiring_playback_credentials(url):
-    """Return True if the URL contains query parameters indicating short-lived tokens/signatures."""
-    if not url or not isinstance(url, str) or "?" not in url:
+    """Return True if the URL contains tokens/signatures indicating short-lived credentials."""
+    if not url or not isinstance(url, str):
+        return False
+    u_lower = url.lower()
+    if any(h in u_lower for h in ("video-downloads.googleusercontent.com", "googleusercontent.com", "fastdl-one.pages.dev", "instadl.rest")):
+        return True
+    if "?" not in url:
         return False
     try:
         parsed = urllib.parse.urlparse(url)
@@ -6830,7 +6835,13 @@ def _ping_stream_url(stream):
                     cmd.extend(['-headers', headers_str])
                 cmd.extend(['-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', url])
 
-                res = _subprocess.run(cmd, capture_output=True, timeout=3.5)
+                run_env = dict(os.environ)
+                try:
+                    from . import doh
+                    run_env.update(doh.get_doh_env())
+                except Exception:
+                    pass
+                res = _subprocess.run(cmd, capture_output=True, timeout=3.5, env=run_env)
                 if res.returncode == 0:
                     stream["is_working"] = True
                     return stream
@@ -6839,7 +6850,13 @@ def _ping_stream_url(stream):
 
         # Fallback to urllib if ffprobe fails (or isn't available)
         try:
-            req = urllib.request.Request(url, headers=headers, method='HEAD')
+            req_headers = dict(headers)
+            has_presigned_sig = any(k in url for k in ("X-Amz-Signature", "X-Amz-Algorithm", "token=", "sig="))
+            if has_presigned_sig:
+                req_headers["Range"] = "bytes=0-1024"
+                req = urllib.request.Request(url, headers=req_headers, method='GET')
+            else:
+                req = urllib.request.Request(url, headers=req_headers, method='HEAD')
             with urllib.request.urlopen(req, timeout=3.0, context=_SSL_CONTEXT) as resp:
                 if resp.status < 400:
                     stream["is_working"] = True
