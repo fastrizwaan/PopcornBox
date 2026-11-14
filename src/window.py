@@ -133,6 +133,23 @@ HOME_EXCLUDED_MEDIA_TYPES = {
 def _streams_match(s1, s2):
     return api.streams_match(s1, s2)
 
+def _stream_identity(stream):
+    if not isinstance(stream, dict):
+        return None
+    link = stream.get("url") or stream.get("magnet")
+    if link:
+        return ("link", str(link))
+    hash_value = stream.get("hash") or stream.get("infoHash")
+    if hash_value:
+        file_index = stream.get("file_index")
+        if file_index is None:
+            file_index = stream.get("fileIdx")
+        return ("hash", str(hash_value).lower(), str(file_index or ""))
+    fallback_id = stream.get("ytId") or stream.get("externalUrl")
+    if fallback_id:
+        return ("id", str(fallback_id).strip().lower())
+    return ("object", id(stream))
+
 def _is_torrent_stream(stream):
     if not isinstance(stream, dict):
         return False
@@ -151,13 +168,16 @@ def _is_event_set(event):
 
 def _find_stream_index(stream, stream_list):
     if not stream or not stream_list: return 0
-    for idx, item in enumerate(stream_list):
-        if _streams_match(stream, item):
-            return idx
-    return 0
+    idx = _find_stream_index_exact(stream, stream_list)
+    return max(0, idx)
 
 def _find_stream_index_exact(stream, stream_list):
     if not stream or not stream_list: return -1
+    target_ident = _stream_identity(stream)
+    if target_ident and target_ident[0] != "object":
+        for idx, item in enumerate(stream_list):
+            if _stream_identity(item) == target_ident:
+                return idx
     for idx, item in enumerate(stream_list):
         if _streams_match(stream, item):
             return idx
@@ -241,24 +261,6 @@ def _filter_items_from_available_addons(items):
         if not url or url.startswith("builtin:") or addon_state.get(url, False):
             kept.append(item)
     return kept
-
-def _stream_identity(stream):
-    if not isinstance(stream, dict):
-        return None
-    link = stream.get("url") or stream.get("magnet")
-    if link:
-        return ("link", str(link))
-    hash_value = stream.get("hash") or stream.get("infoHash")
-    if hash_value:
-        file_index = stream.get("file_index")
-        if file_index is None:
-            file_index = stream.get("fileIdx")
-        return ("hash", str(hash_value).lower(), str(file_index or ""))
-    fallback_id = stream.get("ytId") or stream.get("externalUrl")
-    if fallback_id:
-        return ("id", str(fallback_id).strip().lower())
-    return ("object", id(stream))
-
 
 def _fresh_stream_candidates(refreshed, fresh_queue, previous):
     """Return newly fetched playable links, excluding the known dead link."""
@@ -1760,8 +1762,15 @@ class MovieDetailsPage(Gtk.Overlay):
             row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             row_box.add_css_class("stream-card-row")
 
-            is_selected = getattr(self, 'selected_torrent', None) and _streams_match(t, self.selected_torrent)
-            if not getattr(self, 'selected_torrent', None) and idx == 0:
+            is_selected = False
+            if getattr(self, 'selected_torrent', None):
+                target_ident = _stream_identity(self.selected_torrent)
+                t_ident = _stream_identity(t)
+                if target_ident and t_ident and target_ident[0] != "object":
+                    is_selected = (t_ident == target_ident)
+                else:
+                    is_selected = _streams_match(t, self.selected_torrent)
+            elif idx == 0:
                 is_selected = True
                 self.selected_torrent = t
 
@@ -1853,6 +1862,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 def on_play_clicked(b):
                     self._user_explicitly_selected_stream = True
                     self.selected_torrent = st
+                    self.remembered_working_stream = st
                     self.on_watch_clicked(None)
                 return on_play_clicked
 
@@ -1870,6 +1880,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 def on_dl_clicked(b):
                     self._user_explicitly_selected_stream = True
                     self.selected_torrent = st
+                    self.remembered_working_stream = st
                     self._download_stream_item(st)
                 return on_dl_clicked
 
@@ -1887,6 +1898,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 def on_pressed(gesture, n_press, x, y):
                     self._user_explicitly_selected_stream = True
                     self.selected_torrent = stream_item
+                    self.remembered_working_stream = stream_item
                     if not curr_row_box.has_css_class("selected"):
                         child = self.streams_list_box.get_first_child()
                         while child:
@@ -3774,7 +3786,8 @@ class MovieDetailsPage(Gtk.Overlay):
             try:
                 self.file_dropdown.set_model(Gtk.StringList.new(strings))
                 self.file_dropdown.set_selected(selected_idx)
-                self.selected_torrent = t_list[selected_idx]
+                if not (user_explicit and curr_sel and selected_idx == 0 and _stream_identity(curr_sel) != _stream_identity(t_list[0])):
+                    self.selected_torrent = t_list[selected_idx]
             finally:
                 self._programmatic_dropdown_switch = False
             self.render_streams_list()
@@ -4019,7 +4032,9 @@ class MovieDetailsPage(Gtk.Overlay):
         is_all_providers = (source_idx == 0 and sel_prov_name == "All Providers")
         user_explicit = getattr(self, '_user_explicitly_selected_stream', False)
 
-        if is_all_providers and not user_explicit:
+        if user_explicit and getattr(self, 'selected_torrent', None):
+            self.remembered_working_stream = self.selected_torrent
+        elif is_all_providers and not user_explicit:
             pref_prov = getattr(self, 'preferred_direct_provider', None)
             rem_st = getattr(self, 'remembered_working_stream', None)
             sort_all_fn = lambda t: stream_sort_key_all(t, sel_s=sel_s, sel_e=sel_e, ep_t=ep_t, pref_prov=pref_prov, rem_st=rem_st)
@@ -4041,8 +4056,15 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.selected_torrent = raw_sorted[0]
             else:
                 self.selected_torrent = None
-        elif selected and any(_streams_match(selected, t) for t in t_list):
-            self.selected_torrent = next(t for t in t_list if _streams_match(selected, t))
+        elif selected:
+            sel_ident = _stream_identity(selected)
+            exact_match = next((t for t in t_list if _stream_identity(t) == sel_ident), None) if sel_ident and sel_ident[0] != "object" else None
+            if exact_match:
+                self.selected_torrent = exact_match
+            elif any(_streams_match(selected, t) for t in t_list):
+                self.selected_torrent = next(t for t in t_list if _streams_match(selected, t))
+            else:
+                self.selected_torrent = selected
         else:
             working_stream = getattr(self, "remembered_working_stream", None)
             if not working_stream:
@@ -4206,6 +4228,12 @@ class MovieDetailsPage(Gtk.Overlay):
         else:
             all_matching = [t for t in all_matching if is_torrent_stream(t)]
 
+        # Direct streams must ONLY fail over to direct streams; torrents to torrents
+        if is_direct:
+            cand_pool = [t for t in (t_list + all_matching) if is_direct_stream(t)]
+        else:
+            cand_pool = [t for t in (t_list + all_matching) if is_torrent_stream(t)]
+
         pref_prov = getattr(self, 'preferred_direct_provider', None)
         pref_q = getattr(self, 'user_selected_quality', None)
 
@@ -4243,16 +4271,20 @@ class MovieDetailsPage(Gtk.Overlay):
                     tier = 8 if same_q else 9
                 return (tier, -seeds, -float(t.get("size_gb") or 0.0))
 
+        sel_ident = _stream_identity(self.selected_torrent)
         candidates = []
+        seen_identities = {sel_ident} if sel_ident and sel_ident[0] != "object" else set()
         from . import api
-        for t in t_list:
-            if not _streams_match(t, self.selected_torrent) and not any(_streams_match(t, c) for c in candidates):
-                if sel_s is None or sel_e is None or api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH:
-                    candidates.append(t)
-        for t in all_matching:
-            if not _streams_match(t, self.selected_torrent) and not any(_streams_match(t, c) for c in candidates):
-                if sel_s is None or sel_e is None or api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH:
-                    candidates.append(t)
+        for t in cand_pool:
+            t_ident = _stream_identity(t)
+            if t_ident and t_ident[0] != "object":
+                if t_ident in seen_identities:
+                    continue
+                seen_identities.add(t_ident)
+            elif _streams_match(t, self.selected_torrent) or any(_streams_match(t, c) for c in candidates):
+                continue
+            if sel_s is None or sel_e is None or api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH:
+                candidates.append(t)
 
         if is_direct or pref_prov or pref_q:
             candidates.sort(key=_queue_sort_priority)
@@ -15986,6 +16018,14 @@ class CineWindow(Adw.ApplicationWindow):
     def _extend_stream_queue(self, new_streams):
         if not getattr(self, "stream_queue", None) or not isinstance(new_streams, (list, tuple)):
             return
+        # Do not pollute direct stream queues with torrents or vice versa!
+        first_st = self.stream_queue[0] if self.stream_queue else None
+        if first_st and isinstance(first_st, dict):
+            if is_direct_stream(first_st):
+                new_streams = [s for s in new_streams if is_direct_stream(s)]
+            elif is_torrent_stream(first_st):
+                new_streams = [s for s in new_streams if is_torrent_stream(s)]
+
         existing_keys = set()
         for s in self.stream_queue:
             if isinstance(s, dict):

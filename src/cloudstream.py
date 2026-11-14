@@ -2975,20 +2975,40 @@ def _extract_gdflix_sources(url, referer=None):
                 "is_hls": ".m3u8" in link,
                 "is_dash": False,
             })
+        elif "/cflare/" in link or "FAST CLOUD" in t_upper or "ZIPDISK" in t_upper:
+            try:
+                cf_target = urllib.parse.urljoin(candidate_url, link)
+                cf_html = _http_get_text(cf_target, headers={"User-Agent": DEFAULT_USER_AGENT, "Referer": candidate_url}, timeout=6.0)
+                cf_anchors = re.findall(r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', cf_html, re.I | re.DOTALL)
+                for c_href, c_text in cf_anchors:
+                    c_clean = re.sub(r"<[^>]+>", "", c_text).strip()
+                    c_upper = c_clean.upper()
+                    if any(k in c_upper for k in ("CLOUD RESUME", "QUICK DOWNLOAD", "DIRECT DOWNLOAD")) or any(k in c_href.lower() for k in ("workers.dev", "cloudpaglu", "r2.dev")):
+                        sources.append({
+                            "name": f"GDFlix [{c_clean}]",
+                            "url": c_href,
+                            "quality": q_val,
+                            "headers": {"User-Agent": DEFAULT_USER_AGENT, "Referer": cf_target},
+                            "is_hls": ".m3u8" in c_href,
+                            "is_dash": False,
+                        })
+            except Exception as e:
+                logger.debug(f"cflare extraction failed: {e}")
         elif "INSTANT DL" in t_upper or "INSTANT DOWNLOAD" in t_upper:
             try:
                 loc = _resolve_short_link(link, timeout=5.0)
                 if loc:
                     m_url = re.search(r"url=([^&]+)", loc)
                     real_dl = urllib.parse.unquote(m_url.group(1)) if m_url else loc
-                    sources.append({
-                        "name": "GDFlix [Instant Download]",
-                        "url": real_dl,
-                        "quality": q_val,
-                        "headers": {"User-Agent": DEFAULT_USER_AGENT},
-                        "is_hls": ".m3u8" in real_dl,
-                        "is_dash": False,
-                    })
+                    if not any(b in real_dl.lower() for b in ("video-downloads.googleusercontent.com", "pages.dev", "googleusercontent.com")):
+                        sources.append({
+                            "name": "GDFlix [Instant Download]",
+                            "url": real_dl,
+                            "quality": q_val,
+                            "headers": {"User-Agent": DEFAULT_USER_AGENT},
+                            "is_hls": ".m3u8" in real_dl,
+                            "is_dash": False,
+                        })
             except Exception:
                 pass
     return sources
