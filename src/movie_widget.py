@@ -1080,45 +1080,52 @@ class MovieWidget(Gtk.Box):
                 if extracted_year and not movie_data.get("year"):
                     movie_data["year"] = extracted_year
 
-        # Only check metadata cache if essential info (poster or title) is missing, avoiding main thread SQLite lock contention
-        if database.METADATA_HYDRATION_ENABLED and item_id and (not poster_url or not has_valid_title):
+        # Check metadata cache for missing info or cached certification/flags
+        cached = None
+        if database.is_adult_content_hidden() and item_id:
             try:
                 cached = database.get_cached_metadata(item_id, item_type)
-                if cached:
-                    c_title = cached.get("title") or cached.get("name")
-                    if c_title and c_title != "Unknown" and not has_valid_title:
-                        movie_data["title"] = c_title
-                        has_valid_title = True
-                    c_poster = cached.get("medium_cover_image") or cached.get("poster")
-                    if c_poster and "://yts.gg/assets/images/" in c_poster:
-                        c_poster = c_poster.replace("://yts.gg/assets/images/", "://img.yts.gg/assets/images/")
-                    if c_poster and not poster_url:
-                        poster_url = c_poster
-                        movie_data["medium_cover_image"] = c_poster
-                    c_year = str(cached.get("year", "")) if cached.get("year") else ""
-                    if c_year and not movie_data.get("year"):
-                        movie_data["year"] = c_year
-                    if cached.get("genres") and not movie_data.get("genres"):
-                        movie_data["genres"] = list(cached["genres"])
-                    c_desc = cached.get("description") or cached.get("overview")
-                    if c_desc and not movie_data.get("description"):
-                        movie_data["description"] = c_desc
-                    if cached.get("imdbRating") and not movie_data.get("imdbRating"):
-                        movie_data["imdbRating"] = str(cached["imdbRating"])
-                    if cached.get("rating") and not movie_data.get("rating"):
-                        movie_data["rating"] = str(cached["rating"])
-                    if cached.get("runtime") and not movie_data.get("runtime"):
-                        movie_data["runtime"] = str(cached["runtime"])
-                    if cached.get("cast") and not movie_data.get("cast"):
-                        movie_data["cast"] = list(cached["cast"])
             except Exception:
-                pass
-            if str(item_id).startswith("tt") and (not has_valid_title or not poster_url):
-                try:
-                    from . import api
-                    api.queue_metadata_hydration(str(item_id), item_type, item_dict=movie_data)
-                except Exception:
-                    pass
+                cached = None
+
+        if cached and isinstance(cached, dict):
+            c_title = cached.get("title") or cached.get("name")
+            if c_title and c_title != "Unknown" and not has_valid_title:
+                movie_data["title"] = c_title
+                has_valid_title = True
+            c_poster = cached.get("medium_cover_image") or cached.get("poster")
+            if c_poster and "://yts.gg/assets/images/" in c_poster:
+                c_poster = c_poster.replace("://yts.gg/assets/images/", "://img.yts.gg/assets/images/")
+            if c_poster and not poster_url:
+                poster_url = c_poster
+                movie_data["medium_cover_image"] = c_poster
+            c_year = str(cached.get("year", "")) if cached.get("year") else ""
+            if c_year and not movie_data.get("year"):
+                movie_data["year"] = c_year
+            if cached.get("genres") and not movie_data.get("genres"):
+                movie_data["genres"] = list(cached["genres"])
+            c_desc = cached.get("description") or cached.get("overview")
+            if c_desc and not movie_data.get("description"):
+                movie_data["description"] = c_desc
+            if cached.get("imdbRating") and not movie_data.get("imdbRating"):
+                movie_data["imdbRating"] = str(cached["imdbRating"])
+            if cached.get("rating") and not movie_data.get("rating"):
+                movie_data["rating"] = str(cached["rating"])
+            if cached.get("runtime") and not movie_data.get("runtime"):
+                movie_data["runtime"] = str(cached["runtime"])
+            if cached.get("cast") and not movie_data.get("cast"):
+                movie_data["cast"] = list(cached["cast"])
+            if cached.get("certification") and not movie_data.get("certification"):
+                movie_data["certification"] = cached["certification"]
+            if cached.get("contentRating") and not movie_data.get("contentRating"):
+                movie_data["contentRating"] = cached["contentRating"]
+            if cached.get("adult") or cached.get("isAdult"):
+                movie_data["adult"] = True
+
+        if database.is_adult_content_hidden():
+            from . import api
+            if api.is_adult_item(movie_data) or api.is_content_filtered(movie_data) or (cached and (api.is_adult_item(cached) or api.is_content_filtered(cached))):
+                self.set_visible(False)
 
         with _IMAGE_GEN_LOCK:
             task_gen = _IMAGE_GENERATION_ID
@@ -1222,43 +1229,49 @@ class MovieWidget(Gtk.Box):
         # Keep the callback path available if metadata hydration is enabled.
         def _on_card_hydrated(t, y, p, *args):
             try:
-                r = args[1] if len(args) >= 2 else (args[0] if len(args) == 1 else None)
-                if not r and item_id:
+                is_adult = False
+                r = None
+                if len(args) >= 2:
+                    is_adult = bool(args[0])
+                    r = args[1]
+                elif len(args) == 1:
+                    if isinstance(args[0], bool):
+                        is_adult = args[0]
+                    else:
+                        r = args[0]
+
+                if not is_adult and item_id:
                     cached_m = database.get_cached_metadata(item_id)
-                    if cached_m:
-                        r = cached_m.get("imdbRating") or cached_m.get("rating") or cached_m.get("vote_average")
-                self._apply_resolved_meta(t, y, p, rating=r)
+                    if cached_m and isinstance(cached_m, dict):
+                        if not r:
+                            r = cached_m.get("imdbRating") or cached_m.get("rating") or cached_m.get("vote_average")
+                        if cached_m.get("certification") and not self.movie_data.get("certification"):
+                            self.movie_data["certification"] = cached_m["certification"]
+                        if cached_m.get("adult") or cached_m.get("isAdult"):
+                            self.movie_data["adult"] = True
+                        from . import api
+                        if database.is_adult_content_hidden() and (api.is_adult_item(cached_m) or api.is_content_filtered(cached_m) or api.is_adult_item(self.movie_data) or api.is_content_filtered(self.movie_data)):
+                            is_adult = True
+
+                self._apply_resolved_meta(t, y, p, is_adult=is_adult, rating=r)
             except Exception:
                 pass
             return False
 
-        if database.METADATA_HYDRATION_ENABLED and item_id:
-            try:
-                from . import api
-                api.register_hydration_listener(item_id, _on_card_hydrated)
-                self._hydration_item_id = item_id
-                self._hydration_cb = _on_card_hydrated
-            except Exception:
-                pass
         if isinstance(self.movie_data, dict) and "_on_hydrated" in self.movie_data:
             self.movie_data.pop("_on_hydrated", None)
 
     def do_unroot(self):
-        if getattr(self, "_hydration_item_id", None) and getattr(self, "_hydration_cb", None):
-            try:
-                from . import api
-                api.unregister_hydration_listener(self._hydration_item_id, self._hydration_cb)
-            except Exception:
-                pass
-            self._hydration_item_id = None
-            self._hydration_cb = None
         Gtk.Box.do_unroot(self)
 
     def _apply_resolved_meta(self, title, year, poster_url, is_adult=False, rating=None, *args, **kwargs):
         try:
             from . import api
-            if is_adult or (database.is_adult_content_hidden() and api.is_adult_item(self.movie_data)):
+            if is_adult or (database.is_adult_content_hidden() and (api.is_adult_item(self.movie_data) or api.is_content_filtered(self.movie_data))):
                 self.set_visible(False)
+                p = self.get_parent()
+                if p is not None and hasattr(p, "set_visible") and "FlowBoxChild" in type(p).__name__:
+                    p.set_visible(False)
                 return
             if title and title != "Unknown" and (not self.movie_data.get("title") or self.movie_data.get("title") == "Unknown"):
                 self.movie_data["title"] = title
@@ -1352,6 +1365,11 @@ class ContinueWatchingWidget(Gtk.Box):
         self.on_play_clicked = on_play_clicked
         self.remove_btn_ref = None
         self.play_btn_ref = None
+
+        if database.is_adult_content_hidden():
+            from . import api
+            if api.is_adult_item(item_data) or api.is_content_filtered(item_data):
+                self.set_visible(False)
         
         self.set_size_request(130, 240)
         self.set_hexpand(False)

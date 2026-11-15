@@ -347,39 +347,12 @@ def cleanup_torrents_and_cache_on_exit():
             except Exception:
                 pass
 
-    # 3. Delete cache folder contents (api, images)
+    # 3. Clear temporary stream url cache (keep persistent images and api caches intact)
     try:
         from . import api
         api.clear_stream_url_cache()
-        cache_base = getattr(api, 'BASE_DIR', None)
     except Exception:
-        cache_base = None
-
-    cache_dirs = []
-    if cache_base:
-        cache_dirs.append(cache_base)
-    flatpak_cache = os.path.expanduser("~/.var/app/io.github.fastrizwaan.PopcornBox/cache/popcorn-box")
-    host_cache = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "popcorn-box")
-    for c in (flatpak_cache, host_cache):
-        if c not in cache_dirs:
-            cache_dirs.append(c)
-
-    for c_dir in cache_dirs:
-        if c_dir and os.path.exists(c_dir):
-            try:
-                for item in os.listdir(c_dir):
-                    item_path = os.path.join(c_dir, item)
-                    try:
-                        if os.path.isdir(item_path):
-                            shutil.rmtree(item_path, ignore_errors=True)
-                        elif os.path.isfile(item_path) or os.path.islink(item_path):
-                            os.remove(item_path)
-                    except Exception:
-                        pass
-                os.makedirs(os.path.join(c_dir, "api"), exist_ok=True)
-                os.makedirs(os.path.join(c_dir, "images"), exist_ok=True)
-            except Exception:
-                pass
+        pass
 
     # 4. Clear temporary downloads recorded in database
     try:

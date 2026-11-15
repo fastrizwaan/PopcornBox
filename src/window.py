@@ -1713,6 +1713,37 @@ class MovieDetailsPage(Gtk.Overlay):
                 self._ignore_provider_signals = False
 
     def render_streams_list(self):
+        from . import database, api
+        if getattr(self, "_is_content_filtered", False) or (database.is_adult_content_hidden() and (api.is_adult_item(self.movie_stub) or api.is_adult_item(getattr(self, "movie_details", {})) or api.is_content_filtered(self.movie_stub) or api.is_content_filtered(getattr(self, "movie_details", {})))):
+            self._set_provider_spinner_active(False)
+            while child := self.streams_list_box.get_first_child():
+                self.streams_list_box.remove(child)
+            blocked_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            blocked_box.set_margin_top(48)
+            blocked_box.set_margin_bottom(48)
+            blocked_box.set_margin_start(24)
+            blocked_box.set_margin_end(24)
+            blocked_box.set_halign(Gtk.Align.CENTER)
+            blocked_box.set_valign(Gtk.Align.CENTER)
+
+            icon = Gtk.Image.new_from_icon_name("system-lock-screen-symbolic")
+            icon.set_pixel_size(48)
+            icon.add_css_class("dim-label")
+            blocked_box.append(icon)
+
+            b_title = Gtk.Label(label=_("Streams Blocked"))
+            b_title.add_css_class("title-3")
+            blocked_box.append(b_title)
+
+            b_desc = Gtk.Label(label=_("Playback and streams are unavailable because this title is filtered by your content preferences."))
+            b_desc.set_wrap(True)
+            b_desc.set_justify(Gtk.Justification.CENTER)
+            b_desc.add_css_class("dim-label")
+            blocked_box.append(b_desc)
+
+            self.streams_list_box.append(blocked_box)
+            return
+
         self._set_provider_spinner_active(
             getattr(self, '_fetching_streams', False)
             and not getattr(self, '_background_fetch', False)
@@ -2118,10 +2149,13 @@ class MovieDetailsPage(Gtk.Overlay):
                 print(f"[CARD CLICK Step 7] api.fetch_movie_details completed. Poster URL: {poster}")
                 def apply_details():
                     if fetch_id == self._details_fetch_id and self._is_current_details_page() and not _is_event_set(getattr(self, 'page_abort_event', None)):
+                        from . import database, api
+                        if database.is_adult_content_hidden() and (api.is_adult_item(details) or api.is_adult_item(self.movie_stub) or api.is_content_filtered(details) or api.is_content_filtered(self.movie_stub)):
+                            self._lockdown_filtered_content(badge=details.get("certification"))
+                            return False
                         # Step 1 UI build (Metadata and Images displayed)
                         self.build_ui(details, is_refresh=True)
                         # Step 2: Now resolve trailer YouTube URL & direct stream
-                        from . import api
                         tr = api.extract_trailer_id(details) or (api.extract_trailer_id(self.movie_stub) if hasattr(self, "movie_stub") else None)
                         if tr:
                             self._apply_trailer_url(tr, fetch_id)
@@ -2174,20 +2208,60 @@ class MovieDetailsPage(Gtk.Overlay):
             else:
                 print(f"[CARD CLICK Step 7 WARNING] api.fetch_movie_details returned None for '{item_id}'")
                 from . import database, api
-                is_safe_blocked = database.is_adult_content_hidden() and api.is_adult_item(self.movie_stub)
+                is_safe_blocked = database.is_adult_content_hidden() and (api.is_adult_item(self.movie_stub) or api.is_content_filtered({"id": item_id}))
                 def try_fast_trailer():
                     if fetch_id == self._details_fetch_id and self._is_current_details_page():
                         if is_safe_blocked:
-                            self.title_label.set_text(_("Content Filtered"))
-                            self.desc_label.set_text(_("This content is filtered because 'Hide 18+ / Explicit Content' is enabled in Preferences."))
-                            if hasattr(self, "meta_label"):
-                                self.meta_label.set_text(_("18+ / Explicit Content Blocked"))
+                            self._lockdown_filtered_content()
                         else:
                             self._start_fast_trailer_fetch(item_id, fetch_id, fast_abort)
                     return False
                 GLib.idle_add(try_fast_trailer)
 
         threading.Thread(target=fetch, daemon=True).start()
+
+    def _lockdown_filtered_content(self, badge=None):
+        self._is_content_filtered = True
+        if hasattr(self, 'page_abort_event') and self.page_abort_event:
+            self.page_abort_event.set()
+        if hasattr(self, '_trailer_fast_abort') and self._trailer_fast_abort:
+            self._trailer_fast_abort.set()
+        if hasattr(self, '_live_check_abort_event') and self._live_check_abort_event:
+            self._live_check_abort_event.set()
+        self._fetching_streams = False
+        self.torrents = []
+        self.current_t_list = []
+        self.selected_torrent = None
+        if hasattr(self, "continue_btn") and self.continue_btn:
+            self.continue_btn.set_visible(False)
+            self.continue_btn.set_sensitive(False)
+        if hasattr(self, "trailer_btn") and self.trailer_btn:
+            self.trailer_btn.set_visible(False)
+            self.trailer_btn.set_sensitive(False)
+        if hasattr(self, "play_next_check") and self.play_next_check:
+            self.play_next_check.set_visible(False)
+        if hasattr(self, "season_nav_box") and self.season_nav_box:
+            self.season_nav_box.set_visible(False)
+        if hasattr(self, "backdrop_pic") and self.backdrop_pic:
+            self.backdrop_pic.set_visible(False)
+        if hasattr(self, "title_label") and self.title_label:
+            self.title_label.set_text(_("Content Filtered"))
+        from . import database
+        if database.is_kids_safe_mode():
+            det = getattr(self, "movie_details", {}) or {}
+            sub_badge = badge or det.get("certification") or self.movie_stub.get("certification") or ""
+            cert_txt = f" (Rated {sub_badge})" if sub_badge else ""
+            if hasattr(self, "desc_label") and self.desc_label:
+                self.desc_label.set_text(_(f"This content{cert_txt} is filtered because 'Kids Safe Mode (Under 16)' is enabled in Preferences."))
+            if hasattr(self, "meta_label") and self.meta_label:
+                self.meta_label.set_text(_("Mature Content Filtered (Kids Safe Mode)"))
+        else:
+            if hasattr(self, "desc_label") and self.desc_label:
+                self.desc_label.set_text(_("This content is filtered because 'Hide 18+ / Explicit Content' is enabled in Preferences."))
+            if hasattr(self, "meta_label") and self.meta_label:
+                self.meta_label.set_text(_("18+ / Explicit Content Blocked"))
+        if hasattr(self, "streams_list_box") and self.streams_list_box:
+            self.render_streams_list()
 
     def _start_fast_trailer_fetch(self, item_id, fetch_id, abort_event):
         """Query trailer-capable addons for a trailer ytId after metadata is loaded."""
@@ -2284,6 +2358,11 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def update_continue_btn(self, details=None):
         from . import database, api
+        if getattr(self, "_is_content_filtered", False) or (database.is_adult_content_hidden() and (api.is_adult_item(self.movie_stub) or api.is_adult_item(details or getattr(self, "movie_details", {})) or api.is_content_filtered(self.movie_stub) or api.is_content_filtered(details or getattr(self, "movie_details", {})))):
+            if hasattr(self, "continue_btn") and self.continue_btn:
+                self.continue_btn.set_visible(False)
+                self.continue_btn.set_sensitive(False)
+            return
         ids_to_check = []
         if self.movie_stub.get("alias_ids"):
             for a_id in self.movie_stub["alias_ids"]:
@@ -2479,6 +2558,10 @@ class MovieDetailsPage(Gtk.Overlay):
     def build_ui(self, details, is_refresh=False):
         if not details: return
         self.movie_details = details
+        from . import database, api
+        if database.is_adult_content_hidden() and (api.is_adult_item(details) or api.is_adult_item(self.movie_stub) or api.is_content_filtered(details) or api.is_content_filtered(self.movie_stub)):
+            self._lockdown_filtered_content(badge=details.get("certification"))
+            return
         if details.get("type"):
             self.media_type = details["type"]
         resolved_id = details.get("id") or details.get("imdb_id")
@@ -3213,6 +3296,15 @@ class MovieDetailsPage(Gtk.Overlay):
         video_id = selected_video.get("id") if (selected_video and isinstance(selected_video, dict)) else None
         
         movie_details = getattr(self, "movie_details", {}) or {}
+        from . import database, api
+        stub_id = self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
+        det_id = movie_details.get("id") or movie_details.get("imdb_id")
+        check_id = det_id or stub_id or video_id
+        if getattr(self, "_is_content_filtered", False) or (database.is_adult_content_hidden() and (api.is_adult_item(self.movie_stub) or api.is_adult_item(movie_details) or api.is_content_filtered(self.movie_stub) or api.is_content_filtered(movie_details) or (check_id and api.is_content_filtered({"id": check_id})))):
+            print("[SAFE SEARCH] Stream extraction blocked for mature/adult content")
+            self._lockdown_filtered_content()
+            return
+
         known_tmdb_id = movie_details.get("tmdb_id")
         expected_year = movie_details.get("year")
         cloudstream_route_id = movie_details.get("cloudstream_route_id")
@@ -4005,6 +4097,11 @@ class MovieDetailsPage(Gtk.Overlay):
 
     def on_watch_clicked(self, btn=None):
         playback_trace_step("watch clicked", begin_source="watch clicked")
+        from . import database, api
+        if getattr(self, "_is_content_filtered", False) or (database.is_adult_content_hidden() and (api.is_adult_item(self.movie_stub) or api.is_adult_item(getattr(self, "movie_details", {})) or api.is_content_filtered(self.movie_stub) or api.is_content_filtered(getattr(self, "movie_details", {})))):
+            print("[SAFE SEARCH] Playback blocked for filtered content")
+            self._lockdown_filtered_content()
+            return
         # Abort trailer and live check background work, but keep stream discovery running for failover
         if hasattr(self, 'page_abort_event') and self.page_abort_event:
             self.page_abort_event.set()
@@ -11870,7 +11967,7 @@ class CineWindow(Adw.ApplicationWindow):
                             if cur_country:
                                 items = api.filter_items_by_country(items, cur_country, media_type=m_type)
                             if database.is_adult_content_hidden():
-                                items = [it for it in items if not api.is_adult_item(it)]
+                                items = api.prefilter_kids_safe_items(items or [], media_type=m_type)
                             database.hydrate_items_from_metadata(items, media_type=m_type)
                             api.hydrate_missing_catalog_items(items, media_type=m_type)
                             debug_log(f"unique query cache: '{cat_info.get('query')}' -> {len(items)} items (page {page})")
@@ -11966,7 +12063,7 @@ class CineWindow(Adw.ApplicationWindow):
                             if cur_year:
                                 items = [it for it in items if str(it.get("year") or "").startswith(cur_year)]
                             if database.is_adult_content_hidden():
-                                items = [it for it in items if not api.is_adult_item(it)]
+                                items = api.prefilter_kids_safe_items(items or [], media_type=m_type)
                             debug_log(f"unique TMDb title search '{query}' -> {raw_count} items (page {page})",
                                       f"TMDb reports {cat_info.get('tmdb_total_pages') or '?'} pages")
                             return (key, page, items, raw_count, False)
@@ -12024,7 +12121,7 @@ class CineWindow(Adw.ApplicationWindow):
                             if cur_country:
                                 items = api.filter_items_by_country(items, cur_country, media_type=m_type)
                             if database.is_adult_content_hidden():
-                                items = [it for it in items if not api.is_adult_item(it)]
+                                items = api.prefilter_kids_safe_items(items or [], media_type=m_type)
                             debug_log(f"unique genre cache: '{cat_info.get('genre') or req_country}' -> {len(items)} items (page {page})")
                             return (key, page, items, raw_count, True)
 
@@ -12076,7 +12173,7 @@ class CineWindow(Adw.ApplicationWindow):
                             if cur_country:
                                 items = api.filter_items_by_country(items, cur_country, media_type=m_type)
                             if database.is_adult_content_hidden():
-                                items = [it for it in items if not api.is_adult_item(it)]
+                                items = api.prefilter_kids_safe_items(items, media_type=m_type)
                             items = [it for it in items if not api.is_future_item(it)]
                             debug_log(f"unique tmdb: '{req_country or req_lang}' -> {len(items)} items (page {page})",
                                       f"TMDb reports {cat_info.get('tmdb_total_pages') or '?'} pages")
@@ -12726,6 +12823,10 @@ class CineWindow(Adw.ApplicationWindow):
                         cached = api.filter_items_by_country(cached, cur_country, media_type=media_type)
                     if cached and year and cat_id != "year":
                         cached = [it for it in cached if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(year))]
+                    if cached and database.is_adult_content_hidden():
+                        cached = api.prefilter_kids_safe_items(cached, media_type=media_type)
+                    if cached:
+                        cached = [it for it in cached if not api.is_future_item(it)]
                     if cached and not _is_event_set(abort_ev):
                         database.save_cached_catalog(cache_key, cached)
                     if cached and catalog.get("_source") == "tmdb_catalog":
@@ -12889,6 +12990,10 @@ class CineWindow(Adw.ApplicationWindow):
                     items = api.filter_items_by_country(items, cur_country, media_type=media_type)
                 if items and year and cat_id != "year":
                     items = [it for it in items if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(year))]
+                if items and database.is_adult_content_hidden():
+                    items = api.prefilter_kids_safe_items(items, media_type=media_type)
+                if items:
+                    items = [it for it in items if not api.is_future_item(it)]
                 if items and catalog.get("_source") == "tmdb_catalog":
                     items.sort(key=lambda it: str(it.get("release_date") or ""), reverse=True)
                 elif items and cur_sort_val == "Recent":
@@ -13944,6 +14049,9 @@ class CineWindow(Adw.ApplicationWindow):
             
         debug_log("_update_continue_watching_section START")
         cw_items = _filter_items_from_available_addons(database.get_continue_watching())
+        if database.is_adult_content_hidden():
+            from . import api
+            cw_items = [it for it in cw_items if not (api.is_adult_item(it) or api.is_content_filtered(it))]
         visible_card_count, card_width = self._discover_row_card_metrics()
         display_cw_items = cw_items[:max(DISCOVER_ROW_CARD_LIMIT, visible_card_count)]
         debug_log(f"_update_continue_watching_section DB returned {len(cw_items)} items (displaying {len(display_cw_items)})")
@@ -14488,7 +14596,7 @@ class CineWindow(Adw.ApplicationWindow):
                                     database.save_cached_catalog(tmdb_key, items)
                             row_info["tmdb_total_pages"] = total_pages
                             if database.is_adult_content_hidden():
-                                items = [it for it in (items or []) if not api.is_adult_item(it)]
+                                items = api.prefilter_kids_safe_items(items or [], media_type=m_type)
                             items = [it for it in (items or []) if not api.is_future_item(it)]
                             debug_log(
                                 f"discover TMDB catalog {c_id} -> {len(items)} items",
@@ -14528,7 +14636,7 @@ class CineWindow(Adw.ApplicationWindow):
                             if current_c:
                                 items = api.filter_items_by_country(items, current_c, media_type=m_type)
                             if database.is_adult_content_hidden():
-                                items = [it for it in items if not api.is_adult_item(it)]
+                                items = api.prefilter_kids_safe_items(items or [], media_type=m_type)
                             debug_log(f"discover genre cache: '{row_info.get('genre') or row_info.get('language') or req_country}' -> {len(items)} items")
                             return (row_info, items)
 
@@ -14559,7 +14667,7 @@ class CineWindow(Adw.ApplicationWindow):
                                     database.save_cached_catalog(tmdb_key, items)
                             row_info["tmdb_total_pages"] = total_pages
                             if database.is_adult_content_hidden():
-                                items = [it for it in (items or []) if not api.is_adult_item(it)]
+                                items = api.prefilter_kids_safe_items(items or [], media_type=m_type)
                             items = [it for it in (items or []) if not api.is_future_item(it)]
                             debug_log(
                                 f"discover TMDb network page {req_page}: {network_name} -> {len(items or [])} items",
@@ -14639,7 +14747,7 @@ class CineWindow(Adw.ApplicationWindow):
                                     if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(req_year).strip())
                                 ]
                             if database.is_adult_content_hidden():
-                                items = [it for it in items if not api.is_adult_item(it)]
+                                items = api.prefilter_kids_safe_items(items, media_type=m_type)
                             items = [it for it in items if not api.is_future_item(it)]
                             debug_log(f"discover tmdb page {req_page}: '{req_country or req_lang}' -> {len(items) if items else 0} items", f"TMDb reports {total_pages} pages")
                             return (row_info, items)
@@ -14755,6 +14863,9 @@ class CineWindow(Adw.ApplicationWindow):
                                         except Exception:
                                             pass
                                     threading.Thread(target=_bg_refresh_provider, daemon=True).start()
+                                if database.is_adult_content_hidden():
+                                    cached = api.prefilter_kids_safe_items(cached, media_type=m_type)
+                                cached = [it for it in cached if not api.is_future_item(it)]
                                 debug_log(f"discover row CACHE HIT: '{row_title}'", f"{len(cached)} items")
                                 return (row_info, cached)
                         if _is_event_set(abort_ev):
@@ -14800,7 +14911,7 @@ class CineWindow(Adw.ApplicationWindow):
                             if current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
                                 items = [it for it in items if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(current_y)]
                             if database.is_adult_content_hidden():
-                                items = [it for it in items if not api.is_adult_item(it)]
+                                items = api.prefilter_kids_safe_items(items, media_type=m_type)
                             items = [it for it in items if not api.is_future_item(it)]
                         debug_log(f"discover row FETCHED from API: '{row_title}'", f"Got {len(items) if items else 0} items")
                         if not items and row_info.get("_source") == "cloudstream":
@@ -15150,8 +15261,9 @@ class CineWindow(Adw.ApplicationWindow):
                 seen_ids = set()
                 target_box._tmdb_seen_ids = seen_ids
             seen_ids.update(str(it.get("id")) for it in display_items if it.get("id"))
+        database.hydrate_items_from_metadata(display_items, media_type=m_type)
         for it in display_items:
-            if database.is_adult_content_hidden() and api.is_adult_item(it):
+            if database.is_adult_content_hidden() and (api.is_adult_item(it) or api.is_content_filtered(it)):
                 continue
             if api.is_future_item(it):
                 continue
@@ -15720,9 +15832,13 @@ class CineWindow(Adw.ApplicationWindow):
         from . import database, api
         from .movie_widget import MovieWidget
 
+        # Local SQLite cache pass only: it is fast enough for the GTK thread.
+        # Hydrate before filtering so cached mature certifications are checked.
+        database.hydrate_items_from_metadata(items)
+
         valid_items = []
         for item in items:
-            if database.is_adult_content_hidden() and api.is_adult_item(item):
+            if database.is_adult_content_hidden() and (api.is_adult_item(item) or api.is_content_filtered(item)):
                 continue
             if api.is_future_item(item):
                 continue
@@ -15736,12 +15852,10 @@ class CineWindow(Adw.ApplicationWindow):
         if not valid_items:
             return
 
-        # Local SQLite cache pass only: it is fast enough for the GTK thread.
         # Anything still missing is hydrated per card by MovieWidget's polite
         # background queue (api.queue_metadata_hydration), which pushes results
         # back through GLib.idle_add. Never run api.hydrate_missing_catalog_items
         # here -- it blocks on network I/O while the first slice is being built.
-        database.hydrate_items_from_metadata(valid_items)
 
         SLICE_SIZE = 12
         slices = [valid_items[i:i + SLICE_SIZE] for i in range(0, len(valid_items), SLICE_SIZE)]

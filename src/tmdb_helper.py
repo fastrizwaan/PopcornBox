@@ -1068,11 +1068,13 @@ def fetch_company_details(entity_id, entity_type="company"):
         from datetime import date
         today = date.today().isoformat()
 
-        movie_url = f"https://api.themoviedb.org/3/discover/movie?api_key={api_key}&with_companies={entity_id}&with_runtime.gte={MIN_TMDB_MOVIE_RUNTIME_MINUTES}&sort_by=popularity.desc&primary_release_date.lte={today}&page=1"
+        kids_safe = database.is_kids_safe_mode()
+        kids_movie_param = "&certification_country=US&certification.lte=PG-13" if kids_safe else ""
+        movie_url = f"https://api.themoviedb.org/3/discover/movie?api_key={api_key}&with_companies={entity_id}&with_runtime.gte={MIN_TMDB_MOVIE_RUNTIME_MINUTES}&sort_by=popularity.desc&primary_release_date.lte={today}&include_adult=false{kids_movie_param}&page=1"
         if is_network:
-            tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_networks={entity_id}&sort_by=popularity.desc&first_air_date.lte={today}&page=1"
+            tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_networks={entity_id}&sort_by=popularity.desc&first_air_date.lte={today}&include_adult=false&page=1"
         else:
-            tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_companies={entity_id}&sort_by=popularity.desc&first_air_date.lte={today}&page=1"
+            tv_url = f"https://api.themoviedb.org/3/discover/tv?api_key={api_key}&with_companies={entity_id}&sort_by=popularity.desc&first_air_date.lte={today}&include_adult=false&page=1"
 
         raw_movies = {}
         raw_tv = {}
@@ -1095,6 +1097,10 @@ def fetch_company_details(entity_id, entity_type="company"):
                 continue
             if is_future_item(item, today_str=today):
                 continue
+            if database.is_adult_content_hidden():
+                from . import api
+                if item.get("adult") or api.is_content_filtered(item):
+                    continue
             title = item.get("title") or item.get("original_title") or "Unknown"
             rel_date = item.get("release_date") or ""
             if rel_date and rel_date > today:
@@ -1126,6 +1132,10 @@ def fetch_company_details(entity_id, entity_type="company"):
                 continue
             if is_future_item(item, today_str=today):
                 continue
+            if database.is_adult_content_hidden():
+                from . import api
+                if item.get("adult") or api.is_content_filtered(item):
+                    continue
             title = item.get("name") or item.get("original_name") or "Unknown"
             rel_date = item.get("first_air_date") or ""
             if rel_date and rel_date > today:
@@ -1373,6 +1383,9 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
             country_code = database.get_country_iso_code(country)
             if country_code:
                 params["with_origin_country"] = country_code
+        if database.is_kids_safe_mode() and kind == "movie":
+            params["certification_country"] = "US"
+            params["certification.lte"] = "PG-13"
         payload = _get_cached_request(
             f"https://api.themoviedb.org/3/discover/{kind}?{urllib.parse.urlencode(params)}",
             max_age_hours=24,
@@ -1386,6 +1399,10 @@ def fetch_network_catalog_page(network_name, media_type="all", page=1, limit=36,
                 continue
             if is_future_item(entry, today_str=today):
                 continue
+            if database.is_adult_content_hidden():
+                from . import api
+                if entry.get("adult") or api.is_content_filtered(entry):
+                    continue
             title = entry.get("title") or entry.get("name") or entry.get("original_title") or entry.get("original_name") or "Unknown"
             released = entry.get("release_date") or entry.get("first_air_date") or ""
             if released and released > today:
@@ -1574,6 +1591,9 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
             params["primary_release_year" if kind == "movie" else "first_air_date_year"] = str(year).strip()
         if sort_mode == "Featured":
             params["vote_count.gte"] = 100
+        if database.is_kids_safe_mode() and kind == "movie":
+            params["certification_country"] = "US"
+            params["certification.lte"] = "PG-13"
         return f"https://api.themoviedb.org/3/discover/{kind}?" + urllib.parse.urlencode(params)
 
     # Countries whose cinema spans several languages (India, Pakistan, Nigeria)
@@ -1652,6 +1672,10 @@ def fetch_country_catalog_page(country=None, media_type="all", genre=None, year=
                     continue
                 if is_future_item(entry, today_str=today):
                     continue
+                if database.is_adult_content_hidden():
+                    from . import api
+                    if entry.get("adult") or api.is_content_filtered(entry):
+                        continue
                 rel_date = entry.get("release_date") or entry.get("first_air_date") or ""
                 if rel_date and rel_date > today:
                     continue
@@ -1797,6 +1821,13 @@ def fetch_default_tmdb_catalog_page(catalog_id, media_type="movie", page=1, limi
         if kind == "movie":
             params["region"] = watch_region
             params["with_release_type"] = "4"
+    if database.is_kids_safe_mode():
+        params["certification_country"] = "US"
+        if kind == "movie":
+            params["certification.lte"] = "PG-13"
+            params["without_genres"] = "27"
+        elif kind == "tv":
+            params["certification.lte"] = "TV-14"
 
     url = f"https://api.themoviedb.org/3/discover/{kind}?" + urllib.parse.urlencode(params)
     try:
@@ -1816,6 +1847,10 @@ def fetch_default_tmdb_catalog_page(catalog_id, media_type="movie", page=1, limi
         poster_path = entry.get("poster_path")
         if not tmdb_id or not poster_path or tmdb_id in seen_ids or is_future_item(entry, today_str=today):
             continue
+        if database.is_adult_content_hidden():
+            from . import api
+            if entry.get("adult") or api.is_content_filtered(entry):
+                continue
         release_date = str(entry.get("release_date") or entry.get("first_air_date") or "")
         if release_date and release_date > today:
             continue
@@ -2130,6 +2165,54 @@ def fetch_collection_details(cid, title=None, poster=None):
     }
 
 
+def extract_tmdb_certification(details_dict, c_type="movie"):
+    """
+    Extract age rating / certification from a TMDB details response
+    (content_ratings for TV, release_dates for movies).
+    Scans worldwide ratings: if any country rates the title mature (R, NC-17, TV-MA, 15, 16, 18, etc.),
+    returns that mature rating so it can be filtered under Kids Safe Mode.
+    Otherwise returns the primary US/international rating.
+    """
+    if not isinstance(details_dict, dict):
+        return ""
+    from . import api
+
+    all_certs = []
+    us_cert = ""
+
+    if c_type in ("tv", "series", "anime"):
+        cr_results = details_dict.get("content_ratings", {}).get("results", [])
+        if isinstance(cr_results, list):
+            for r in cr_results:
+                if isinstance(r, dict) and r.get("rating"):
+                    val = str(r["rating"]).strip().upper()
+                    if val:
+                        all_certs.append(val)
+                        if r.get("iso_3166_1") == "US" and not us_cert:
+                            us_cert = val
+    else:
+        rd_results = details_dict.get("release_dates", {}).get("results", [])
+        if isinstance(rd_results, list):
+            for entry in rd_results:
+                if isinstance(entry, dict):
+                    iso = entry.get("iso_3166_1")
+                    for rd in entry.get("release_dates", []):
+                        if isinstance(rd, dict) and rd.get("certification"):
+                            val = str(rd["certification"]).strip().upper()
+                            if val:
+                                all_certs.append(val)
+                                if iso == "US" and not us_cert:
+                                    us_cert = val
+
+    # 1. If ANY country worldwide rates this title mature, return that mature certification!
+    for c in all_certs:
+        if api.is_mature_certification(c):
+            return c
+
+    # 2. Otherwise return US certification if available, or first available certification
+    return us_cert or (all_certs[0] if all_certs else "")
+
+
 def fetch_title_language_and_genres(item_id, media_type="movie", title=None, force_refresh=False):
     """
     Fetch title language (e.g. 'Hindi') and canonical genres (e.g. ['Thriller', 'Crime', 'Drama'])
@@ -2169,8 +2252,10 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None, for
                     result_item = data["tv_results"][0]
                 elif data.get("movie_results"):
                     result_item = data["movie_results"][0]
+                    c_type = "movie"
                 elif data.get("tv_results"):
                     result_item = data["tv_results"][0]
+                    c_type = "tv"
         except Exception:
             pass
 
@@ -2231,11 +2316,14 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None, for
     # (for TV) or production company (for films).
     production_companies = []
     networks = []
+    certification = ""
     tmdb_id = result_item.get("id")
     if tmdb_id:
         try:
-            details_url = f"https://api.themoviedb.org/3/{c_type}/{tmdb_id}?api_key={api_key}"
+            details_url = f"https://api.themoviedb.org/3/{c_type}/{tmdb_id}?api_key={api_key}&append_to_response=content_ratings,release_dates"
             details = _get_cached_request(details_url, max_age_hours=0 if force_refresh else 168)
+            if isinstance(details, dict) and "release_dates" not in details and "content_ratings" not in details:
+                details = _get_cached_request(details_url, max_age_hours=0)
             if isinstance(details, dict):
                 for company in details.get("production_companies", []):
                     if isinstance(company, dict) and company.get("name"):
@@ -2245,10 +2333,13 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None, for
                         networks.append({"id": network.get("id"), "name": network["name"]})
                 if details.get("production_countries"):
                     result_item["production_countries"] = details["production_countries"]
+                if details.get("adult"):
+                    result_item["adult"] = True
+                certification = extract_tmdb_certification(details, c_type)
         except Exception:
             pass
 
-    return {
+    res_dict = {
         "language_code": orig_lang,
         "language_name": lang_name,
         "genres": tmdb_genres,
@@ -2257,8 +2348,23 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None, for
         "production_companies": production_companies,
         "networks": networks,
         "adult": bool(result_item.get("adult", False)),
+        "certification": certification,
         "tmdb_id": result_item.get("id")
     }
+
+    if item_id:
+        try:
+            cached_meta = database.get_cached_metadata(str(item_id), media_type=media_type)
+            if isinstance(cached_meta, dict):
+                cached_meta["certification"] = certification
+                cached_meta["adult"] = res_dict["adult"]
+                if tmdb_genres and not cached_meta.get("genres"):
+                    cached_meta["genres"] = list(tmdb_genres)
+                database.save_cached_metadata(str(item_id), cached_meta, media_type=media_type)
+        except Exception:
+            pass
+
+    return res_dict
 
 
 def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, poster=None, year=None):
@@ -2287,6 +2393,7 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
                     return None
                 meta_id = str(meta.get("id") or "")
                 addon_tmdb_id = meta_id.split(":", 1)[1].split(":", 1)[0] if meta_id.startswith("tmdb:") else None
+                cert = meta.get("certification") or meta.get("contentRating") or meta.get("rating") or ""
                 return {
                     "id": meta.get("id") or item_id,
                     "type": media_type,
@@ -2302,6 +2409,8 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
                     "runtime": str(meta.get("runtime", "")),
                     "genre": ", ".join(meta.get("genres", [])) if isinstance(meta.get("genres"), list) else (meta.get("genre") or ""),
                     "genres": meta.get("genres", []),
+                    "certification": str(cert).strip().upper() if cert else "",
+                    "adult": bool(meta.get("adult", False)),
                     "imdbRating": str(meta.get("imdbRating", "")),
                     "trailer": meta.get("trailer"),
                     "videos": meta.get("videos", [])
@@ -2359,6 +2468,7 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
                 meta_year = str(meta.get("year") or "")[:4]
                 if expected_year and meta_year and meta_year != expected_year:
                     return None
+                cert = meta.get("certification") or meta.get("contentRating") or meta.get("rating") or ""
                 return {
                     "id": meta.get("id") or (f"tmdb:{tmdb_id}" if not str(item_id).startswith("tt") else item_id),
                     "tmdb_id": str(tmdb_id),
@@ -2373,6 +2483,8 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
                     "runtime": str(meta.get("runtime", "")),
                     "genre": ", ".join(meta.get("genres", [])) if isinstance(meta.get("genres"), list) else (meta.get("genre") or ""),
                     "genres": meta.get("genres", []),
+                    "certification": str(cert).strip().upper() if cert else "",
+                    "adult": bool(meta.get("adult", False)),
                     "imdbRating": str(meta.get("imdbRating", "")),
                     "trailer": meta.get("trailer"),
                     "videos": meta.get("videos", [])
@@ -2479,6 +2591,8 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
     orig_lang = data.get("original_language")
     lang_name = database.LANGUAGE_CODE_MAP.get(orig_lang.lower()) if orig_lang else None
 
+    certification = extract_tmdb_certification(data, c_type)
+
     return {
         "id": item_reference_id,
         "type": media_type,
@@ -2498,6 +2612,8 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
         "countries": countries,
         "language": lang_name,
         "imdbRating": rating_str,
+        "certification": certification,
+        "adult": bool(data.get("adult", False)),
         "cast": cast_list,
         "director": director_name,
         "trailer": trailer_url,

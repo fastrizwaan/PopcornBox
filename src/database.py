@@ -208,6 +208,8 @@ def _read_db():
                 data["settings"] = {}
             if "hide_adult_content" not in data["settings"]:
                 data["settings"]["hide_adult_content"] = True
+            if "kids_safe_mode" not in data["settings"]:
+                data["settings"]["kids_safe_mode"] = False
             if "addons" not in data:
                 data["addons"] = list(DEFAULT_ADDONS)
                 migrated = True
@@ -1004,6 +1006,13 @@ def get_continue_watching():
                 it.pop("medium_cover_image", None)
                 it.pop("poster", None)
 
+    if is_adult_content_hidden():
+        try:
+            from . import api
+            valid_cw = [it for it in valid_cw if not api.is_adult_item(it)]
+        except Exception:
+            pass
+
     return sorted(valid_cw, key=lambda x: x.get("last_watched", 0), reverse=True)
 
 def get_continue_watching_item(item_id):
@@ -1376,11 +1385,35 @@ def set_setting(key, value):
         _write_db(db)
     _db_trace(f"set_setting {key}", op_started, f"lock_wait={lock_wait:.3f}s")
 
+def is_kids_safe_mode():
+    return bool(get_setting("kids_safe_mode", False))
+
+def set_kids_safe_mode(enabled):
+    set_setting("kids_safe_mode", bool(enabled))
+    clear_all_cached_catalogs()
+    clear_all_cached_streams_async()
+    if enabled:
+        set_adult_content_hidden(True)
+    try:
+        from . import api
+        api.invalidate_catalogs_cache()
+    except Exception:
+        pass
+    try:
+        from . import cloudstream
+        cloudstream.clear_main_page_cache()
+        if enabled:
+            cloudstream.on_adult_content_toggled(True)
+    except Exception:
+        pass
+
 def is_adult_content_hidden():
-    return get_setting("hide_adult_content", True)
+    return bool(get_setting("hide_adult_content", True)) or is_kids_safe_mode()
 
 def set_adult_content_hidden(enabled):
     set_setting("hide_adult_content", bool(enabled))
+    if not enabled and is_kids_safe_mode():
+        set_setting("kids_safe_mode", False)
     clear_all_cached_catalogs()
     try:
         from . import api
@@ -1954,6 +1987,8 @@ def clear_all_cached_streams_async():
         with _stream_cache_clear_pending_lock:
             _stream_cache_clear_pending = max(0, _stream_cache_clear_pending - 1)
         logging.warning(f"Could not start stream cache cleanup worker: {e}")
+
+clear_cached_streams = clear_all_cached_streams_async
 
 def set_addon_enabled(addon_id, enabled, manifest_url=None):
     target_url = manifest_url
@@ -2724,7 +2759,7 @@ def hydrate_items_from_metadata(items, media_type=None):
     Takes a list of item dicts and enriches any items missing genres/year/title/cover/desc/lang.
     Returns the number of items that were updated.
     """
-    if not METADATA_HYDRATION_ENABLED or not items or not isinstance(items, list):
+    if not items or not isinstance(items, list):
         return 0
 
     to_hydrate = []
@@ -2746,8 +2781,9 @@ def hydrate_items_from_metadata(items, media_type=None):
         has_cover = bool(it.get("medium_cover_image") or it.get("poster"))
         has_title = bool(it.get("title") and it.get("title") != "Unknown")
         has_lang = bool(it.get("language"))
+        has_cert = bool(it.get("certification") or it.get("contentRating") or it.get("rating"))
 
-        if not (has_genres and has_year and has_desc and has_cover and has_title and has_lang):
+        if not (has_genres and has_year and has_desc and has_cover and has_title and has_lang and (not is_kids_safe_mode() or has_cert)):
             candidates = [str(iid)]
             if it.get("imdb_id") and str(it["imdb_id"]) not in candidates:
                 candidates.append(str(it["imdb_id"]))
@@ -2839,8 +2875,16 @@ def hydrate_items_from_metadata(items, media_type=None):
                         if not it.get("videos") and meta.get("videos"):
                             it["videos"] = meta["videos"]
                             it_updated = True
+                        cert = meta.get("certification") or meta.get("contentRating") or meta.get("rating") or meta.get("mpaa") or meta.get("ageRating")
+                        if cert and not it.get("certification"):
+                            it["certification"] = cert
+                            it_updated = True
+                        if meta.get("contentRating") and not it.get("contentRating"):
+                            it["contentRating"] = meta["contentRating"]
+                            it_updated = True
                         if meta.get("adult") or meta.get("isAdult"):
                             it["adult"] = True
+                            it_updated = True
                         if it_updated:
                             updated_items.add(id(it))
 
@@ -4631,7 +4675,7 @@ def get_cached_catalog(cache_key, max_age_hours=CATALOG_CACHE_HOURS, allow_stale
     if found_data is not None:
         if is_adult_content_hidden():
             from . import api
-            found_data = [it for it in found_data if not api.is_adult_item(it)]
+            found_data = api.prefilter_kids_safe_items(found_data)
         from .api import is_future_item
         return [it for it in found_data if not is_future_item(it)]
 
@@ -4669,7 +4713,7 @@ def get_cached_catalog(cache_key, max_age_hours=CATALOG_CACHE_HOURS, allow_stale
                 _MEM_CATALOG_CACHE[cache_key] = (data, updated_at)
             if is_adult_content_hidden():
                 from . import api
-                data = [it for it in data if not api.is_adult_item(it)]
+                data = api.prefilter_kids_safe_items(data)
             from .api import is_future_item
             return [it for it in data if not is_future_item(it)]
     except Exception as e:
@@ -4825,9 +4869,6 @@ def save_cached_catalog(cache_key, items):
                     "INSERT OR REPLACE INTO catalog_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
                     (str(cache_key), json.dumps(items), now)
                 )
-
-                if enriched_count > 0:
-                    print(f"[METADATA-HYDRATE] Enriched {enriched_count} items from metadata_cache for catalog '{cache_key}'")
             except Exception:
                 pass
             conn.commit()

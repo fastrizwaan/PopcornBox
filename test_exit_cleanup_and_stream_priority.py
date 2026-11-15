@@ -31,6 +31,8 @@ from src import database, player, window
 
 class TestExitCleanupAndStreamPriority(unittest.TestCase):
     def setUp(self):
+        database.set_kids_safe_mode(False)
+        database.set_adult_content_hidden(False)
         self.temp_dir = tempfile.mkdtemp()
         self.orig_download_base = player.DOWNLOAD_BASE
         player.DOWNLOAD_BASE = os.path.join(self.temp_dir, "torrents")
@@ -43,6 +45,8 @@ class TestExitCleanupAndStreamPriority(unittest.TestCase):
         player._cleanup_performed = False
 
     def tearDown(self):
+        database.set_kids_safe_mode(False)
+        database.set_adult_content_hidden(False)
         player.DOWNLOAD_BASE = self.orig_download_base
         shutil.rmtree(self.temp_dir, ignore_errors=True)
         player._cleanup_performed = False
@@ -72,9 +76,9 @@ class TestExitCleanupAndStreamPriority(unittest.TestCase):
         self.assertEqual(len(os.listdir(player.DOWNLOAD_BASE)), 0)
         self.assertFalse(os.path.exists(torrent_hash_dir))
 
-        # Cache folder contents must be emptied (with empty api and images dirs recreated)
-        self.assertEqual(len(os.listdir(os.path.join(self.cache_dir, "api"))), 0)
-        self.assertEqual(len(os.listdir(os.path.join(self.cache_dir, "images"))), 0)
+        # Persistent image cache and api cache must be preserved across app exits
+        self.assertTrue(os.path.exists(os.path.join(self.cache_dir, "api", "cached_resp.json")))
+        self.assertTrue(os.path.exists(os.path.join(self.cache_dir, "images", "poster.jpg")))
 
         mock_clear_dl.assert_called_once()
         mock_clear_streams.assert_called_once()
@@ -175,6 +179,8 @@ class TestExitCleanupAndStreamPriority(unittest.TestCase):
 
     def test_on_watch_clicked_prioritizes_1080p_direct_when_all_selected(self):
         page = MagicMock()
+        page._is_content_filtered = False
+        page.movie_details = {}
         page.media_type = "movie"
         page.is_channel = False
         page.source_idx = 0
@@ -200,6 +206,8 @@ class TestExitCleanupAndStreamPriority(unittest.TestCase):
 
     def test_on_watch_clicked_honors_explicit_user_selection(self):
         page = MagicMock()
+        page._is_content_filtered = False
+        page.movie_details = {}
         page.media_type = "movie"
         page.is_channel = False
         page.source_idx = 0
@@ -267,6 +275,8 @@ class TestExitCleanupAndStreamPriority(unittest.TestCase):
         """When resolution is 720p, More, or 4K, clicking play prefers direct stream first then torrent."""
         for q_label, direct_q in [("720p", "720p"), ("More", "480p"), ("4K", "4K")]:
             page = MagicMock()
+            page._is_content_filtered = False
+            page.movie_details = {}
             page.media_type = "movie"
             page.is_channel = False
             page.source_idx = 0

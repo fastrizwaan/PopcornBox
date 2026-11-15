@@ -211,6 +211,7 @@ class Preferences(Adw.Dialog):
     copy_cmd_button: Gtk.Button = Gtk.Template.Child()
     open_new_row: Adw.SwitchRow = Gtk.Template.Child()
     hide_adult_content_row: Adw.SwitchRow = Gtk.Template.Child()
+    kids_mode_row: Adw.SwitchRow = Gtk.Template.Child()
     auto_play_next_row: Adw.SwitchRow = Gtk.Template.Child()
     thumb_preview_row: Adw.SwitchRow = Gtk.Template.Child()
     hwdec_row: Adw.SwitchRow = Gtk.Template.Child()
@@ -258,6 +259,10 @@ class Preferences(Adw.Dialog):
 
         self._bind_ui()
         self._setup_mpv_updates()
+        try:
+            database.set_kids_safe_mode(settings.get_boolean("kids-safe-mode"))
+        except Exception:
+            pass
         
         self.clear_session_btn.connect("clicked", self._on_clear_session_clicked)
 
@@ -351,6 +356,7 @@ class Preferences(Adw.Dialog):
         bindings = [
             ("open-new-windows", self.open_new_row, "active"),
             ("hide-adult-content", self.hide_adult_content_row, "active"),
+            ("kids-safe-mode", self.kids_mode_row, "active"),
             ("auto-play-next", self.auto_play_next_row, "active"),
             ("thumbnail-preview", self.thumb_preview_row, "active"),
             ("normalize-volume", self.normalize_volume_row, "active"),
@@ -371,11 +377,18 @@ class Preferences(Adw.Dialog):
         ]
 
         for key, widget, property in bindings:
-            settings.bind(key, widget, property, Gio.SettingsBindFlags.DEFAULT)
+            try:
+                settings.bind(key, widget, property, Gio.SettingsBindFlags.DEFAULT)
+            except Exception as e:
+                logger.warning(f"Failed to bind setting {key}: {e}")
+                if key == "kids-safe-mode":
+                    self.kids_mode_row.set_active(database.is_kids_safe_mode())
+                    self.kids_mode_row.connect("notify::active", lambda w, *_: self._apply_kids_safe_mode(w.get_active()))
 
     def _setup_mpv_updates(self):
         handlers = {
             "hide-adult-content": self._on_hide_adult_content_changed,
+            "kids-safe-mode": self._on_kids_safe_mode_changed,
             "subtitle-color": self._on_sub_color_changed,
             "subtitle-scale": self._on_sub_scale_changed,
             "subtitle-font": self._on_sub_font_changed,
@@ -389,10 +402,13 @@ class Preferences(Adw.Dialog):
             "save-video-position": self._on_save_pos_changed,
         }
 
-        self._setting_ids = [
-            settings.connect(f"changed::{key}", callback)
-            for key, callback in handlers.items()
-        ]
+        self._setting_ids = []
+        for key, callback in handlers.items():
+            try:
+                cid = settings.connect(f"changed::{key}", callback)
+                self._setting_ids.append(cid)
+            except Exception as e:
+                logger.warning(f"Failed to connect changed::{key}: {e}")
 
     def _disconnect_settings(self, *a):
         for connection_id in self._setting_ids:
@@ -402,12 +418,24 @@ class Preferences(Adw.Dialog):
         val = settings.get_boolean(key)
         from . import database, api, cloudstream
         database.set_adult_content_hidden(val)
+        if not val and database.is_kids_safe_mode():
+            try:
+                settings.set_boolean("kids-safe-mode", False)
+            except Exception:
+                pass
+            database.set_kids_safe_mode(False)
+            if hasattr(self, "kids_mode_row"):
+                self.kids_mode_row.set_active(False)
         database.clear_all_cached_catalogs()
         api.invalidate_catalogs_cache()
         cloudstream.on_adult_content_toggled(val)
         if hasattr(self, "win") and self.win:
+            if hasattr(self.win, "_discover_catalog_list_cache") and isinstance(self.win._discover_catalog_list_cache, dict):
+                self.win._discover_catalog_list_cache.clear()
             if hasattr(self.win, "_on_addons_changed"):
                 self.win._on_addons_changed()
+            if hasattr(self.win, "_refresh_discover_page"):
+                self.win._refresh_discover_page(force_refresh=True)
             if hasattr(self.win, "_refresh_cloudstream_catalog_views"):
                 self.win._refresh_cloudstream_catalog_views()
             if hasattr(self.win, "_populate_cloudstream"):
@@ -415,6 +443,47 @@ class Preferences(Adw.Dialog):
             if hasattr(self.win, "_is_unique_mode_active") and self.win._is_unique_mode_active() is True:
                 if hasattr(self.win, "_refresh_unique_combined_view"):
                     self.win._refresh_unique_combined_view()
+            if hasattr(self.win, "_update_continue_watching_section"):
+                self.win._update_continue_watching_section()
+
+    def _on_kids_safe_mode_changed(self, settings, key):
+        try:
+            val = settings.get_boolean(key)
+        except Exception:
+            val = False
+        self._apply_kids_safe_mode(val)
+
+    def _apply_kids_safe_mode(self, val: bool):
+        from . import database, api, cloudstream
+        database.set_kids_safe_mode(val)
+        if val:
+            try:
+                settings.set_boolean("hide-adult-content", True)
+            except Exception:
+                pass
+            database.set_adult_content_hidden(True)
+            cloudstream.on_adult_content_toggled(True)
+            if hasattr(self, "hide_adult_content_row"):
+                self.hide_adult_content_row.set_active(True)
+        database.clear_all_cached_catalogs()
+        database.clear_all_cached_streams_async()
+        api.invalidate_catalogs_cache()
+        if hasattr(self, "win") and self.win:
+            if hasattr(self.win, "_discover_catalog_list_cache") and isinstance(self.win._discover_catalog_list_cache, dict):
+                self.win._discover_catalog_list_cache.clear()
+            if hasattr(self.win, "_on_addons_changed"):
+                self.win._on_addons_changed()
+            if hasattr(self.win, "_refresh_discover_page"):
+                self.win._refresh_discover_page(force_refresh=True)
+            if hasattr(self.win, "_refresh_cloudstream_catalog_views"):
+                self.win._refresh_cloudstream_catalog_views()
+            if hasattr(self.win, "_populate_cloudstream"):
+                self.win._populate_cloudstream()
+            if hasattr(self.win, "_is_unique_mode_active") and self.win._is_unique_mode_active() is True:
+                if hasattr(self.win, "_refresh_unique_combined_view"):
+                    self.win._refresh_unique_combined_view()
+            if hasattr(self.win, "_update_continue_watching_section"):
+                self.win._update_continue_watching_section()
 
     def _on_sub_color_changed(self, settings, key):
         self.mpv["sub-color"] = settings.get_string(key)

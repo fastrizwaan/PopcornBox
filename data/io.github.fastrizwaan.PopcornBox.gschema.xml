@@ -67,6 +67,9 @@
 		<key name="hide-adult-content" type="b">
 			<default>true</default>
 		</key>
+		<key name="kids-safe-mode" type="b">
+			<default>false</default>
+		</key>
 		<key name="show-movies-button" type="b">
 			<default>true</default>
 		</key>

@@ -86,6 +86,11 @@ template $Preferences: Adw.Dialog {
 					subtitle: _("Filter out adult (18+, XXX, nude, softcore, ecchi) content from search and catalogs");
 				}
 
+				Adw.SwitchRow kids_mode_row {
+					title: _("Kids Safe Mode (Under 16)");
+					subtitle: _("Filter out mature, erotic, and adult content (R, TV-MA, NC-17, 16+, 18+) using TMDB & IMDb ratings");
+				}
+
 				Adw.SwitchRow auto_play_next_row {
 					title: _("Auto Play Next Episode");
 					subtitle: _("Show prompt and automatically play the next episode when reaching the end");

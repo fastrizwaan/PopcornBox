@@ -98,6 +98,12 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                   </object>
                 </child>
                 <child>
+                  <object class="AdwSwitchRow" id="kids_mode_row">
+                    <property name="title" translatable="yes">Kids Safe Mode (Under 16)</property>
+                    <property name="subtitle" translatable="yes">Filter out mature, erotic, and adult content (R, TV-MA, NC-17, 16+, 18+) using TMDB &amp; IMDb ratings</property>
+                  </object>
+                </child>
+                <child>
                   <object class="AdwSwitchRow" id="auto_play_next_row">
                     <property name="title" translatable="yes">Auto Play Next Episode</property>
                     <property name="subtitle" translatable="yes">Show prompt and automatically play the next episode when reaching the end</property>

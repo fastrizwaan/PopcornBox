@@ -1768,6 +1768,24 @@ ADULT_RATINGS = {
     "UNRATED (ADULT)", "NOT RATED (ADULT)", "RESTRICTED 18"
 }
 
+MATURE_RATINGS = {
+    # US MPAA
+    "R", "NC-17", "NC17", "AO", "X", "XX", "XXX", "RX", "AV", "ADULT", "PORN",
+    # US TV Parental
+    "TV-MA", "TVMA",
+    # BBFC (UK)
+    "15", "15+", "MA15+", "MA 15+", "15A", "BBFC 15",
+    "16", "16+", "16A", "BBFC 16", "FSK 16", "FSK16", "C16", "K-16", "NC16", "-16",
+    # 18+ ratings
+    "18", "18+", "18A", "R18", "R-18", "R18+", "FSK 18", "FSK18", "C18", "K-18", "-18",
+    "BBFC 18", "R21", "21", "21+", "OVER 18", "RESTRICTED 18", "CAT III", "CAT 3", "M18"
+}
+
+MATURE_GENRES = {
+    "adult", "erotica", "erotic", "ecchi", "hentai", "softcore", "sexuality", "sexual",
+    "sploitation", "pinku eiga", "pink film", "porn", "porno", "pornography", "pornographic"
+}
+
 ADULT_KEYWORD_REGEX = re.compile(
     r'\b('
     r'18\+|xxx+|hentai|ecchi|erotica?|erotism|softcore|pinku\s+eiga|pink\s+film|'
@@ -1785,9 +1803,217 @@ ADULT_KEYWORD_REGEX = re.compile(
     re.IGNORECASE
 )
 
-def is_adult_item(item, check_cache=True):
+KIDS_SAFE_RATINGS = {
+    # US MPAA
+    "G", "PG", "PG-13", "PG13",
+    # US TV Parental
+    "TV-Y", "TV-Y7", "TV-Y7-FV", "TV-G", "TV-PG", "TV-14", "TV14",
+    # UK / International
+    "U", "PG", "12", "12A", "12+", "PG12", "FSK 0", "FSK 6", "FSK 12", "FSK0", "FSK6", "FSK12",
+    "6", "6+", "0", "0+", "7", "7+", "10", "10+", "14", "14+", "14A", "ALL", "FAMILY",
+    # India CBFC
+    "U", "UA", "U/A", "U/A 7+", "U/A 13+"
+}
+
+def is_kids_safe_certification(cert):
+    """
+    Returns True if certification/content rating is explicitly rated kids safe (<16 suitable).
+    """
+    if not cert:
+        return False
+    c = str(cert).strip().upper()
+    if not c or is_mature_certification(c):
+        return False
+    if c in KIDS_SAFE_RATINGS:
+        return True
+    if any(k in c for k in ("PG-13", "TV-14", "TV-PG", "TV-G", "TV-Y", "PG", "FSK 12", "FSK 6", "FSK 0", "U/A")):
+        return True
+    return False
+
+def is_mature_certification(cert):
+    """
+    Returns True if certification/content rating is intended for mature audiences (under 16 unsuitable).
+    """
+    if not cert:
+        return False
+    c = str(cert).strip().upper()
+    if not c:
+        return False
+    if c in MATURE_RATINGS or c in ADULT_RATINGS:
+        return True
+    if any(k in c for k in ("TV-MA", "TVMA", "NC-17", "NC17", "FSK 16", "FSK 18", "MA 15+", "MA15+", "R18", "R-18", "R21", "CAT III", "CAT 3", "ADULT", "MATURE")):
+        return True
+    if re.search(r'\b(R|NC-17|TV-MA|AO|R18|R21)\b', c):
+        if not re.search(r'\b(NR|PG|TV-PG|G|U)\b', c) or c == "R":
+            return True
+    # Check numeric age ratings >= 15/16 (e.g. 15, 16, 16+, 18, 18+, 21+, +16, M/16)
+    if re.search(r'(?:^|[^\d])(1[5-9]|2\d)\+?(?:$|[^\d])', c):
+        return True
+    return False
+
+def is_mature_item(item, check_cache=True):
+    """
+    Returns True if item is mature/erotic/adult and should be blocked under Kids Safe Mode (<16).
+    """
     if not item or not isinstance(item, dict):
         return False
+
+    # 1. Any adult item is mature
+    if is_adult_item(item, check_cache=False, check_kids_mode=False):
+        return True
+
+    # 2. Check certification / content rating
+    cert = str(
+        item.get("certification")
+        or item.get("contentRating")
+        or item.get("rating")
+        or item.get("mpaa")
+        or item.get("ageRating")
+        or item.get("certification_badge")
+        or ""
+    ).strip().upper()
+    if is_mature_certification(cert):
+        return True
+
+    for ac in (item.get("all_certifications") or []):
+        if is_mature_certification(ac):
+            return True
+
+    # 3. Check mature genres
+    genres = item.get("genres") or item.get("genre") or []
+    if isinstance(genres, str):
+        genre_list = [g.strip().lower() for g in genres.split(",")]
+    elif isinstance(genres, list):
+        genre_list = [str(g).strip().lower() for g in genres]
+    else:
+        genre_list = []
+    if any(g in MATURE_GENRES for g in genre_list):
+        return True
+    if any(g in ("horror", "slasher", "gore") for g in genre_list):
+        if not is_kids_safe_certification(cert):
+            return True
+
+    # 4. Check cache for resolved metadata
+    if check_cache:
+        item_id = item.get("id") or item.get("imdb_id")
+        if item_id:
+            try:
+                cached = database.get_cached_metadata(item_id)
+                if cached and isinstance(cached, dict):
+                    return is_mature_item(cached, check_cache=False)
+            except Exception:
+                pass
+
+    return False
+
+def is_content_filtered(item, check_cache=True):
+    """
+    Returns True if content should be filtered based on current user preferences:
+    - If Kids Safe Mode is active: filters mature and adult content.
+    - If Hide Adult Content is active: filters adult/18+ content.
+    """
+    if not item or not isinstance(item, dict):
+        return False
+    if database.is_kids_safe_mode():
+        return is_mature_item(item, check_cache=check_cache)
+    if database.is_adult_content_hidden():
+        return is_adult_item(item, check_cache=check_cache)
+    return False
+
+def prefilter_kids_safe_items(items, media_type="movie", max_resolve=30):
+    """
+    Ensures that when Kids Safe Mode (<16) or Hide Adult Content is enabled,
+    no mature or unverified mature items pass through into catalog rows or grids.
+    Pre-resolves missing certifications using local SQLite cache and fast TMDb batch lookups.
+    """
+    if not items or not isinstance(items, list):
+        return items
+
+    if not database.is_adult_content_hidden() and not database.is_kids_safe_mode():
+        return items
+
+    # 1. Immediate local SQLite cache pass (0ms)
+    try:
+        database.hydrate_items_from_metadata(items, media_type=media_type)
+    except Exception:
+        pass
+
+    # 2. Fast filter out any items already confirmed to be adult or mature
+    initial_clean = [it for it in items if isinstance(it, dict) and not (is_adult_item(it) or is_content_filtered(it))]
+
+    # If Kids Safe Mode is not active (only Hide 18+ is active), initial filter is sufficient
+    if not database.is_kids_safe_mode():
+        items[:] = initial_clean
+        return items
+
+    # 3. Kids Safe Mode is active: check items lacking certification
+    unresolved = [
+        it for it in initial_clean
+        if not it.get("certification") and not it.get("contentRating") and not it.get("rating")
+    ]
+
+    if unresolved:
+        def _resolve_worker(it):
+            try:
+                from . import tmdb_helper
+                iid = it.get("id") or it.get("imdb_id")
+                if not iid:
+                    return
+                mtype = it.get("type") or media_type
+                title = it.get("title") or it.get("name")
+                res = tmdb_helper.fetch_title_language_and_genres(iid, media_type=mtype, title=title)
+                if res and isinstance(res, dict):
+                    cert = res.get("certification")
+                    if cert:
+                        it["certification"] = cert
+                    if res.get("adult"):
+                        it["adult"] = True
+                    if res.get("genres") and not it.get("genres"):
+                        it["genres"] = list(res["genres"])
+            except Exception:
+                pass
+
+        to_resolve = unresolved[:max_resolve]
+        if len(to_resolve) == 1:
+            _resolve_worker(to_resolve[0])
+        elif len(to_resolve) > 1:
+            import concurrent.futures
+            workers = min(len(to_resolve), 8)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                list(executor.map(_resolve_worker, to_resolve))
+
+    # 4. Strict kids-safe filtering pass
+    final_items = []
+    for it in initial_clean:
+        if is_adult_item(it) or is_content_filtered(it):
+            continue
+
+        genres = it.get("genres") or it.get("genre") or []
+        if isinstance(genres, str):
+            g_list = [g.strip().lower() for g in genres.split(",")]
+        elif isinstance(genres, list):
+            g_list = [str(g).strip().lower() for g in genres]
+        else:
+            g_list = []
+
+        if any(g in MATURE_GENRES for g in g_list):
+            continue
+        if any(g in ("horror", "slasher", "gore") for g in g_list):
+            cert = str(it.get("certification") or it.get("contentRating") or it.get("rating") or "").strip().upper()
+            if not is_kids_safe_certification(cert):
+                continue
+
+        final_items.append(it)
+
+    items[:] = final_items
+    return items
+
+def is_adult_item(item, check_cache=True, check_kids_mode=True):
+    if not item or not isinstance(item, dict):
+        return False
+
+    if check_kids_mode and database.is_kids_safe_mode():
+        return is_mature_item(item, check_cache=check_cache)
 
     if item.get("adult") is True or item.get("isAdult") is True:
         return True
@@ -4075,11 +4301,13 @@ def _notify_hydration_listeners(item_id, item_dict):
         title = item_dict.get("title")
         year = item_dict.get("year")
         poster = item_dict.get("medium_cover_image") or item_dict.get("poster")
+        is_adult = bool(database.is_adult_content_hidden() and (is_adult_item(item_dict) or is_content_filtered(item_dict)))
+        rating = item_dict.get("imdbRating") or item_dict.get("rating") or item_dict.get("vote_average")
         for cb in listeners:
             if callable(cb):
                 try:
                     from gi.repository import GLib
-                    GLib.idle_add(cb, title, year, poster)
+                    GLib.idle_add(cb, title, year, poster, is_adult, rating)
                 except Exception:
                     pass
 
@@ -4126,7 +4354,7 @@ def queue_metadata_hydration(item_id, media_type="movie", item_dict=None, force_
     with _HYDRATION_LOCK:
         bootstrap = not _HYDRATION_BOOTSTRAP_DONE
         _HYDRATION_BOOTSTRAP_DONE = True
-    if bootstrap:
+    if bootstrap and database.METADATA_HYDRATION_ENABLED:
         try:
             for stale_id, stale_type in database.get_metadata_needing_hydration(limit=10000, min_age_days=0):
                 live_item = item_dict if str(stale_id) == str(item_id) else None
@@ -4214,6 +4442,12 @@ def _run_metadata_hydration_worker():
                             item_dict[field] = list(cached[field])
                     if not item_dict.get("videos") and cached.get("videos"):
                         item_dict["videos"] = cached["videos"]
+                    if not item_dict.get("certification") and cached.get("certification"):
+                        item_dict["certification"] = cached["certification"]
+                    if not item_dict.get("contentRating") and cached.get("contentRating"):
+                        item_dict["contentRating"] = cached["contentRating"]
+                    if cached.get("adult") or cached.get("isAdult"):
+                        item_dict["adult"] = True
                     # Covers belong here too: this branch is what lets a card that
                     # arrived with no poster URL pick one up from a metadata row some
                     # other view already fetched, without a request.
@@ -4255,6 +4489,7 @@ def _run_metadata_hydration_worker():
                     or not meta_dict.get("language")
                     or not meta_dict.get("country")
                     or not (meta_dict.get("networks") or meta_dict.get("production_companies"))
+                    or (database.is_kids_safe_mode() and not meta_dict.get("certification"))
                     or needs_network_retry
                 ):
                     try:
@@ -4264,6 +4499,10 @@ def _run_metadata_hydration_worker():
                             if not genres_list and tmdb_data.get("genres"):
                                 meta_dict["genres"] = tmdb_data["genres"]
                                 genres_list = tmdb_data["genres"]
+                            if tmdb_data.get("certification") and not meta_dict.get("certification"):
+                                meta_dict["certification"] = tmdb_data["certification"]
+                            if tmdb_data.get("adult"):
+                                meta_dict["adult"] = True
                             if tmdb_data.get("language_name"):
                                 lang_name = tmdb_data["language_name"]
                                 if not meta_dict.get("language"):
@@ -4295,7 +4534,6 @@ def _run_metadata_hydration_worker():
                 orig_id = item_dict.get("id") if item_dict else None
                 if orig_id and str(orig_id) != str(item_id):
                     database.save_cached_metadata(orig_id, m_type, meta_dict)
-                print(f"[METADATA-HYDRATE] Cinemeta fetched: '{title_str}' ({item_id}) -> Year: {clean_year_val}, Genres: {genres_list} (Saved to SQLite)")
 
                 # In-memory hydration of live card
                 if item_dict is not None and isinstance(item_dict, dict):
@@ -4310,6 +4548,10 @@ def _run_metadata_hydration_worker():
                         item_dict["language"] = meta_dict["language"]
                     if meta_dict.get("country") and not item_dict.get("country"):
                         item_dict["country"] = meta_dict["country"]
+                    if meta_dict.get("certification"):
+                        item_dict["certification"] = meta_dict["certification"]
+                    if meta_dict.get("adult"):
+                        item_dict["adult"] = True
                     clean_yr = clean_year_val or meta_dict.get("year")
                     if clean_yr and not item_dict.get("year"):
                         item_dict["year"] = str(clean_yr)
@@ -4355,20 +4597,15 @@ def _run_metadata_hydration_worker():
                 pass
 
 def hydrate_missing_catalog_items(items, media_type="movie"):
-    """Batch-hydrates any catalog items missing titles/posters/genres/year using metadata_cache and background hydrator."""
-    if not database.METADATA_HYDRATION_ENABLED or not items:
+    """Batch-hydrates catalog items from local metadata_cache only; background Cinemeta crawling has been removed."""
+    if not items or not isinstance(items, list):
         return False
 
     updated = False
-    missing_titles = []
-    missing_metadata = []
-    local_hydrated_count = 0
-    # 0. Immediate local DB cache pass (sub-millisecond SQLite WAL lookup) for ALL items
     try:
         fast_count = database.hydrate_items_from_metadata(items, media_type=media_type)
         if fast_count > 0:
             updated = True
-            local_hydrated_count += fast_count
     except Exception:
         pass
 
@@ -4380,21 +4617,11 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
             continue
         m_type = m.get("type") or media_type
 
-        # Ensure clean year is extracted from releaseInfo / released
         clean_yr = database.extract_clean_year(m)
         if clean_yr and not m.get("year"):
             m["year"] = clean_yr
-
-        raw_title = str(m.get("title") or m.get("name") or "").strip()
-        is_missing_title = not raw_title or raw_title == "Unknown"
         if not m.get("title") and m.get("name"):
             m["title"] = m["name"]
-        is_missing_genres = not m.get("genres")
-        is_missing_year = not m.get("year")
-        is_missing_cover = not m.get("medium_cover_image") and not m.get("poster")
-        is_missing_desc = not m.get("description") and not m.get("overview")
-        is_missing_language = not m.get("language")
-        is_missing_networks = m_type in ("series", "anime", "tv", "tvshow") and not m.get("networks")
 
         candidates = [str(m_id)]
         if m.get("imdb_id") and str(m["imdb_id"]) not in candidates:
@@ -4403,222 +4630,47 @@ def hydrate_missing_catalog_items(items, media_type="movie"):
             if str(aid) not in candidates:
                 candidates.append(str(aid))
 
-        has_known_key = any(str(c).startswith(("tt", "tmdb:", "kitsu:", "ctmdb.")) for c in candidates)
-        if not has_known_key:
-            continue
-
-        if is_missing_title or is_missing_genres or is_missing_year or is_missing_cover or is_missing_desc or is_missing_language or is_missing_networks:
-            c_meta = None
-            for cid in candidates:
-                c_meta = database.get_cached_metadata(cid, m_type)
-                if c_meta and isinstance(c_meta, dict):
-                    break
-            if c_meta and isinstance(c_meta, dict):
-                item_hydrated = False
-                if is_missing_title and (c_meta.get("title") or c_meta.get("name")):
-                    t_val = c_meta.get("title") or c_meta.get("name", "")
-                    if t_val and t_val != "Unknown":
-                        m["title"] = t_val
-                        is_missing_title = False
-                        updated = True
-                        item_hydrated = True
-                if is_missing_cover:
-                    cov = c_meta.get("medium_cover_image") or c_meta.get("poster")
-                    if cov:
-                        m["medium_cover_image"] = cov
-                        m["poster"] = cov
-                        updated = True
-                        item_hydrated = True
-                if is_missing_genres and c_meta.get("genres"):
-                    m["genres"] = list(c_meta["genres"])
-                    is_missing_genres = False
-                    updated = True
-                    item_hydrated = True
-                c_lang = c_meta.get("language") or c_meta.get("original_language")
-                if c_lang:
-                    norm_lang = database.normalize_imdb_genre(str(c_lang))
-                    if norm_lang:
-                        if is_missing_language:
-                            m["language"] = norm_lang
-                            is_missing_language = False
-                            updated = True
-                            item_hydrated = True
-                c_country = c_meta.get("country")
-                if c_country and not m.get("country"):
-                    m["country"] = c_country
-                    updated = True
-                    item_hydrated = True
-                c_yr = database.extract_clean_year(c_meta)
-                if is_missing_year and c_yr:
-                    m["year"] = str(c_yr)
-                    is_missing_year = False
-                    updated = True
-                    item_hydrated = True
-                desc = c_meta.get("description") or c_meta.get("overview")
-                if desc and not m.get("description"):
-                    m["description"] = desc
-                    updated = True
-                    item_hydrated = True
-                if not m.get("imdbRating") and c_meta.get("imdbRating"):
-                    m["imdbRating"] = str(c_meta["imdbRating"])
-                    updated = True
-                if not m.get("runtime") and c_meta.get("runtime"):
-                    m["runtime"] = str(c_meta["runtime"])
-                    updated = True
-                if not m.get("background") and c_meta.get("background"):
-                    m["background"] = c_meta["background"]
-                    updated = True
-                if not m.get("cast") and c_meta.get("cast"):
-                    m["cast"] = list(c_meta["cast"])
-                    updated = True
-                if not m.get("videos") and c_meta.get("videos"):
-                    m["videos"] = c_meta["videos"]
-                    updated = True
-                for field in ("networks", "production_companies"):
-                    if not m.get(field) and c_meta.get(field):
-                        m[field] = list(c_meta[field])
-                        if field == "networks":
-                            is_missing_networks = False
-                        updated = True
-                if c_meta.get("adult") or c_meta.get("isAdult"):
-                    m["adult"] = True
-                if item_hydrated:
-                    local_hydrated_count += 1
-
-        tt_id = None
+        c_meta = None
         for cid in candidates:
-            if is_imdb_id(cid):
-                tt_id = str(cid)
+            c_meta = database.get_cached_metadata(cid, m_type)
+            if c_meta and isinstance(c_meta, dict):
                 break
 
-        if is_missing_title:
-            missing_titles.append(m)
-        if (is_missing_title or is_missing_genres or is_missing_year or is_missing_desc or is_missing_cover or is_missing_language or is_missing_networks) and tt_id:
-            missing_metadata.append((m, tt_id))
-
-    if local_hydrated_count > 0:
-        print(f"[METADATA-HYDRATE] Local SQLite cache hit: hydrated {local_hydrated_count} items with genres/year (0ms, 0 network)")
-
-    # Queue any items that still lack genres or year to polite background hydrator
-    if missing_metadata:
-        print(f"[METADATA-HYDRATE] Queued {len(missing_metadata)} items for background Cinemeta hydration (queue: {_HYDRATION_QUEUE.qsize() + len(missing_metadata)})")
-        for m_item, tt_id in missing_metadata:
-            m_type = m_item.get("type") or media_type
-            queue_metadata_hydration(tt_id, m_type, item_dict=m_item)
-
-    still_missing = missing_titles
-    if not still_missing:
-        if database.is_adult_content_hidden():
-            items[:] = [m for m in items if not is_adult_item(m)]
-        return updated
-
-    import concurrent.futures
-    def _hydrate_single_item(m_item):
-        m_id = m_item.get("id")
-        m_type = m_item.get("type") or media_type
-
-        # 1. Try Cinemeta direct URL (~20-40ms, keep forever)
-        if is_imdb_id(m_id):
-            c_url = f"https://v3-cinemeta.strem.io/meta/{m_type}/{m_id}.json"
-            cm = _get_cached_request(c_url, max_age_hours=METADATA_CACHE_HOURS, timeout=1.5)
-            if not cm:
-                alt_url = f"https://cinemeta-live.strem.io/meta/{m_type}/{m_id}.json"
-                cm = _get_cached_request(alt_url, max_age_hours=METADATA_CACHE_HOURS, timeout=1.5)
-            if cm and isinstance(cm.get("meta"), dict):
-                meta_dict = cm["meta"]
-                if meta_dict.get("name"):
-                    m_item["title"] = meta_dict["name"]
-                if not m_item.get("medium_cover_image") and meta_dict.get("poster"):
-                    m_item["medium_cover_image"] = meta_dict["poster"]
-                    m_item["poster"] = meta_dict["poster"]
-                if not m_item.get("year") and meta_dict.get("year"):
-                    m_item["year"] = str(meta_dict["year"])
-                if meta_dict.get("description") and not m_item.get("description"):
-                    m_item["description"] = meta_dict["description"]
-                if meta_dict.get("imdbRating") and not m_item.get("imdbRating"):
-                    m_item["imdbRating"] = str(meta_dict["imdbRating"])
-                if meta_dict.get("runtime") and not m_item.get("runtime"):
-                    m_item["runtime"] = str(meta_dict["runtime"])
-                if meta_dict.get("background") and not m_item.get("background"):
-                    m_item["background"] = meta_dict["background"]
-                if meta_dict.get("adult") or meta_dict.get("isAdult"):
-                    m_item["adult"] = True
-                if meta_dict.get("certification"):
-                    m_item["certification"] = meta_dict["certification"]
-                if meta_dict.get("country") and not m_item.get("country"):
-                    m_item["country"] = meta_dict["country"]
-
-        # 2. If still missing, try fetch_movie_details
-        if not m_item.get("title") or m_item.get("title") == "Unknown":
-            det = fetch_movie_details(m_id, m_type, use_cache=True)
-            if det and det.get("title") and det.get("title") != "Media Item":
-                m_item["title"] = det["title"]
-                if not m_item.get("medium_cover_image") and det.get("medium_cover_image"):
-                    m_item["medium_cover_image"] = det["medium_cover_image"]
-                    m_item["poster"] = det["medium_cover_image"]
-                if not m_item.get("year") and det.get("year"):
-                    m_item["year"] = str(det["year"])
-                if det.get("description") and not m_item.get("description"):
-                    m_item["description"] = det["description"]
-                if det.get("imdbRating") and not m_item.get("imdbRating"):
-                    m_item["imdbRating"] = str(det["imdbRating"])
-                if det.get("runtime") and not m_item.get("runtime"):
-                    m_item["runtime"] = str(det["runtime"])
-                if det.get("background") and not m_item.get("background"):
-                    m_item["background"] = det["background"]
-                if det.get("adult") or det.get("isAdult"):
-                    m_item["adult"] = True
-                if det.get("certification"):
-                    m_item["certification"] = det["certification"]
-                if det.get("country") and not m_item.get("country"):
-                    m_item["country"] = det["country"]
-
-        # Fast TMDb check for adult flag if still unknown and IMDb ID
-        if database.is_adult_content_hidden() and not m_item.get("adult") and is_imdb_id(m_id):
-            try:
-                from . import tmdb_helper
-                t_info = tmdb_helper.fetch_title_language_and_genres(m_id, m_type, m_item.get("title"))
-                if t_info and t_info.get("adult"):
-                    m_item["adult"] = True
-            except Exception:
-                pass
-
-        # Save to metadata_cache so subsequent views are instant
-        if m_item.get("title") and m_item.get("title") != "Unknown":
-            try:
-                cached_rec = database.get_cached_metadata(m_id, m_type) or {}
-                cached_rec["title"] = m_item["title"]
-                if m_item.get("medium_cover_image"):
-                    cached_rec["medium_cover_image"] = m_item["medium_cover_image"]
-                    cached_rec["poster"] = m_item["medium_cover_image"]
-                if m_item.get("year"):
-                    cached_rec["year"] = m_item["year"]
-                if m_item.get("description"):
-                    cached_rec["description"] = m_item["description"]
-                if m_item.get("imdbRating"):
-                    cached_rec["imdbRating"] = m_item["imdbRating"]
-                if m_item.get("runtime"):
-                    cached_rec["runtime"] = m_item["runtime"]
-                if m_item.get("background"):
-                    cached_rec["background"] = m_item["background"]
-                if m_item.get("adult"):
-                    cached_rec["adult"] = True
-                if m_item.get("certification"):
-                    cached_rec["certification"] = m_item["certification"]
-                if m_item.get("country"):
-                    cached_rec["country"] = m_item["country"]
-                cached_rec["id"] = m_id
-                database.save_cached_metadata(m_id, m_type, cached_rec)
-            except Exception:
-                pass
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(still_missing), 12)) as ex:
-        list(ex.map(_hydrate_single_item, still_missing))
+        if c_meta and isinstance(c_meta, dict):
+            if (not m.get("title") or m.get("title") == "Unknown") and (c_meta.get("title") or c_meta.get("name")):
+                m["title"] = c_meta.get("title") or c_meta.get("name")
+                updated = True
+            if not m.get("medium_cover_image") and not m.get("poster"):
+                cov = c_meta.get("medium_cover_image") or c_meta.get("poster")
+                if cov:
+                    m["medium_cover_image"] = cov
+                    m["poster"] = cov
+                    updated = True
+            if not m.get("genres") and c_meta.get("genres"):
+                m["genres"] = list(c_meta["genres"])
+                updated = True
+            if not m.get("year"):
+                c_yr = database.extract_clean_year(c_meta)
+                if c_yr:
+                    m["year"] = str(c_yr)
+                    updated = True
+            if not m.get("description") and (c_meta.get("description") or c_meta.get("overview")):
+                m["description"] = c_meta.get("description") or c_meta.get("overview")
+                updated = True
+            if not m.get("certification") and c_meta.get("certification"):
+                m["certification"] = c_meta["certification"]
+                updated = True
+            if not m.get("country") and c_meta.get("country"):
+                m["country"] = c_meta["country"]
+                updated = True
+            if c_meta.get("adult") or c_meta.get("isAdult"):
+                m["adult"] = True
+                updated = True
 
     if database.is_adult_content_hidden():
-        items[:] = [m for m in items if not is_adult_item(m)]
+        items[:] = [m for m in items if not (is_adult_item(m) or is_content_filtered(m))]
 
-    return True
+    return updated
 
 def is_valid_meta(res):
     if not res or not isinstance(res, dict):
@@ -4763,6 +4815,8 @@ def enrich_metadata_with_language_and_genres(res, imdb_id, media_type="movie", t
         if lang_info:
             if lang_info.get("adult"):
                 res["adult"] = True
+            if lang_info.get("certification") and not res.get("certification"):
+                res["certification"] = lang_info["certification"]
             lang_name = lang_info.get("language_name")
             lang_code = lang_info.get("language_code")
             if lang_name:
@@ -4960,6 +5014,11 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
                 clean_res.pop("medium_cover_image", None)
                 clean_res.pop("poster", None)
             database.save_cached_metadata(target_id, media_type, clean_res)
+
+    if database.is_adult_content_hidden() and is_adult_item(res):
+        print(f"[SAFE SEARCH] Filtered content blocked: {res.get('title')}")
+        return None
+
     return res
 
 def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True, poster=None, prefer_tmdb=False, expected_year=None):
@@ -7023,6 +7082,12 @@ def _merge_parsed_streams(primary, secondary):
 
 
 def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None, known_tmdb_id=None, expected_year=None, cloudstream_route_id=None, catalog_title=None):
+    if database.is_adult_content_hidden():
+        check_item = {"id": imdb_id, "title": title}
+        if is_adult_item(check_item):
+            print(f"[SAFE SEARCH] get_torrents_streamed blocked for filtered content: {imdb_id} - {title}")
+            return []
+
     original_id = imdb_id
     # Callers may pass the full alias list used by metadata lookup. Addon
     # stream URLs and prefix checks require a single concrete provider ID.
