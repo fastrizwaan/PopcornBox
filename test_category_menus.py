@@ -25,7 +25,7 @@ res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
-        Gio.resources_register(res)
+        res._register()
     except Exception:
         pass
 
