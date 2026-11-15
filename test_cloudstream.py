@@ -1653,6 +1653,151 @@ class TestCloudStream(unittest.TestCase):
             self.assertEqual(call_args["installed_version"], 2)
             self.assertTrue(call_args["is_installed"])
 
+    def test_cloudstream_nsfw_tv_type(self):
+        self.assertEqual(cloudstream.CloudStreamTvType.NSFW, "NSFW")
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire(11), cloudstream.CloudStreamTvType.NSFW)
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire("11"), cloudstream.CloudStreamTvType.NSFW)
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire("NSFW"), cloudstream.CloudStreamTvType.NSFW)
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire("nsfw"), cloudstream.CloudStreamTvType.NSFW)
+        self.assertEqual(cloudstream.CloudStreamTvType.from_wire("18+"), cloudstream.CloudStreamTvType.NSFW)
+        self.assertEqual(cloudstream.CloudStreamTvType.to_popcorn_type(cloudstream.CloudStreamTvType.NSFW), "adult")
+
+    def test_is_plugin_nsfw_and_pure_nsfw(self):
+        # Mixed provider (like 9kMovies or TheMoviesFlix)
+        hybrid_plugin = {
+            "name": "9kMovies",
+            "raw_tv_types": ["Movie", "TvSeries", "NSFW"],
+            "tv_types": ["Movie", "TvSeries", "NSFW"],
+        }
+        self.assertTrue(cloudstream.is_plugin_nsfw(hybrid_plugin))
+        self.assertFalse(cloudstream.is_plugin_pure_nsfw(hybrid_plugin))
+
+        # Pure NSFW provider (like 18+ or Minioppai)
+        pure_plugin = {
+            "name": "18+",
+            "raw_tv_types": ["NSFW"],
+            "tv_types": ["NSFW"],
+        }
+        self.assertTrue(cloudstream.is_plugin_nsfw(pure_plugin))
+        self.assertTrue(cloudstream.is_plugin_pure_nsfw(pure_plugin))
+
+        # Safe regular provider
+        safe_plugin = {
+            "name": "DudeFilms",
+            "raw_tv_types": ["Movie", "TvSeries"],
+            "tv_types": ["Movie", "TvSeries"],
+        }
+        self.assertFalse(cloudstream.is_plugin_nsfw(safe_plugin))
+        self.assertFalse(cloudstream.is_plugin_pure_nsfw(safe_plugin))
+
+    def test_is_section_nsfw(self):
+        self.assertTrue(cloudstream.is_section_nsfw({"id": "18-plus", "name": "18+ Movies"}))
+        self.assertTrue(cloudstream.is_section_nsfw({"id": "nsfw_section", "name": "Erotica"}))
+        self.assertTrue(cloudstream.is_section_nsfw({"id": "adult_series", "name": "Adult"}))
+        self.assertFalse(cloudstream.is_section_nsfw({"id": "latest_movies", "name": "Latest Movies"}))
+        self.assertFalse(cloudstream.is_section_nsfw({"id": "trending", "name": "Trending Series"}))
+
+    def test_adult_content_hidden_filters_catalogs_and_items(self):
+        test_plugins = [
+            {
+                "id": "https://example.com/repo#SafeProv",
+                "name": "SafeProv",
+                "enabled": True,
+                "is_installed": True,
+                "raw_tv_types": ["Movie"],
+                "tv_types": ["Movie"],
+            },
+            {
+                "id": "https://example.com/repo#AdultProv",
+                "name": "9kMovies",
+                "enabled": True,
+                "is_installed": True,
+                "raw_tv_types": ["Movie", "NSFW"],
+                "tv_types": ["Movie", "NSFW"],
+            },
+        ]
+
+        class DummySafeProvider(cloudstream.CloudStreamProvider):
+            id = "https://example.com/repo#SafeProv"
+            name = "SafeProv"
+            catalog_sections = (
+                {"id": "safe_sec", "name": "Safe Section", "section": "Safe Section", "type": "movie"},
+                {"id": "adult_sec", "name": "18+ Movies", "section": "18+ Movies", "type": "movie"},
+            )
+
+        dummy_safe = DummySafeProvider()
+        cloudstream.register_provider(dummy_safe)
+
+        with patch.object(cloudstream, "is_cloudstream_enabled", return_value=True), \
+             patch.object(cloudstream, "get_all_plugins", return_value=test_plugins), \
+             patch.object(cloudstream, "is_provider_runnable", return_value=True), \
+             patch.object(cloudstream, "is_provider_online", return_value=True), \
+             patch.object(database, "is_adult_content_hidden", return_value=True):
+            catalogs = cloudstream.get_catalogs("all")
+            cat_ids = [c["catalog_id"] for c in catalogs]
+            # AdultProv is completely filtered out because it is NSFW
+            # SafeProv's '18+ Movies' section is filtered out because is_section_nsfw is True
+            self.assertIn("safe_sec", cat_ids)
+            self.assertNotIn("adult_sec", cat_ids)
+
+    def test_toggle_and_bulk_install_respect_hide_adult_content(self):
+        nsfw_plugin = {
+            "id": "https://example.com/repo#NSFWTest",
+            "name": "9kMovies",
+            "enabled": False,
+            "is_installed": True,
+            "raw_tv_types": ["Movie", "NSFW"],
+            "tv_types": ["Movie", "NSFW"],
+        }
+        safe_plugin = {
+            "id": "https://example.com/repo#SafeTest",
+            "name": "SafeTest",
+            "enabled": False,
+            "is_installed": True,
+            "raw_tv_types": ["Movie"],
+            "tv_types": ["Movie"],
+        }
+
+        def mock_get_plugin(pid):
+            if "NSFW" in pid:
+                return nsfw_plugin
+            return safe_plugin
+
+        with patch.object(database, "is_adult_content_hidden", return_value=True), \
+             patch.object(cloudstream, "get_plugin", side_effect=mock_get_plugin), \
+             patch.object(database, "toggle_cloudstream_plugin") as mock_db_toggle:
+            # toggle_plugin refuses to enable NSFW plugin when adult hidden
+            ok = cloudstream.toggle_plugin("https://example.com/repo#NSFWTest", True)
+            self.assertFalse(ok)
+            mock_db_toggle.assert_called_with("https://example.com/repo#NSFWTest", False)
+
+            # toggle_plugin allows enabling safe plugin
+            ok_safe = cloudstream.toggle_plugin("https://example.com/repo#SafeTest", True)
+            self.assertTrue(ok_safe)
+            mock_db_toggle.assert_called_with("https://example.com/repo#SafeTest", True)
+
+        # Bulk install skips NSFW plugins when hide_adult is True
+        with patch.object(database, "is_adult_content_hidden", return_value=True), \
+             patch.object(cloudstream, "get_plugin", side_effect=mock_get_plugin), \
+             patch.object(cloudstream, "is_provider_runnable", return_value=True), \
+             patch.object(cloudstream, "toggle_plugin", return_value=True):
+            res = cloudstream.bulk_install_and_enable(
+                ["https://example.com/repo#NSFWTest", "https://example.com/repo#SafeTest"],
+                only_compatible=True
+            )
+            # Only SafeTest is enabled, NSFWTest skipped
+            self.assertEqual(res["enabled"], 1)
+
+    def test_on_adult_content_toggled_disables_nsfw_plugins(self):
+        sample_plugins = [
+            {"id": "p1", "name": "9kMovies", "enabled": True, "raw_tv_types": ["Movie", "NSFW"]},
+            {"id": "p2", "name": "SafeOne", "enabled": True, "raw_tv_types": ["Movie"]},
+        ]
+        with patch.object(cloudstream, "get_all_plugins", return_value=sample_plugins), \
+             patch.object(database, "toggle_cloudstream_plugin") as mock_toggle:
+            cloudstream.on_adult_content_toggled(True)
+            mock_toggle.assert_called_once_with("p1", False)
+
 
 if __name__ == "__main__":
     unittest.main()

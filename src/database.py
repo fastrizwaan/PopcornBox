@@ -1387,6 +1387,11 @@ def set_adult_content_hidden(enabled):
         api.invalidate_catalogs_cache()
     except Exception:
         pass
+    try:
+        from . import cloudstream
+        cloudstream.on_adult_content_toggled(bool(enabled))
+    except Exception:
+        pass
 
 def get_addon_health():
     """Return dictionary of {manifest_url: {'online': bool, 'last_checked': float, 'latency_ms': int, 'error': str}}"""
@@ -2129,8 +2134,18 @@ def toggle_cloudstream_plugin(plugin_id, enabled):
         return
     with _db_lock:
         db = _read_db()
+        hide_adult = is_adult_content_hidden()
         for p in db.setdefault("cloudstream_plugins", []):
             if p.get("id") == plugin_id:
+                if enabled and hide_adult:
+                    raw_types = [str(t).strip().lower() for t in (p.get("raw_tv_types") or [])]
+                    parsed_types = [str(t).strip().lower() for t in (p.get("tv_types") or [])]
+                    all_types = set(raw_types + parsed_types)
+                    nsfw_kw = ("nsfw", "11", "adult", "18+", "hentai", "xxx", "erotica", "porn", "ecchi")
+                    name = str(p.get("name") or p.get("internal_name") or "").lower()
+                    if any(t in nsfw_kw or any(k in t for k in nsfw_kw) for t in all_types) or any(k in name for k in ("18+", "hentai", "porn", "xxx", "minioppai", "nekopoi")):
+                        p["enabled"] = False
+                        break
                 p["enabled"] = bool(enabled)
                 break
         _write_db(db)

@@ -366,6 +366,7 @@ class CloudStreamTvType:
     AsianDrama = "AsianDrama"
     Music = "Music"
     Torrent = "Torrent"
+    NSFW = "NSFW"
     Other = "Other"
 
     # Reference mapping from cloudstream/library/.../MainAPI.kt enum class TvType(value: Int?)
@@ -380,6 +381,7 @@ class CloudStreamTvType:
         8: Documentary,
         9: AsianDrama,
         10: Live,
+        11: NSFW,
         13: Music,
     }
 
@@ -415,6 +417,8 @@ class CloudStreamTvType:
                 return cls.Music
             if v == "torrent":
                 return cls.Torrent
+            if v in ("nsfw", "18+", "adult", "hentai", "xxx", "erotica"):
+                return cls.NSFW
         return cls.Other
 
     @classmethod
@@ -425,7 +429,74 @@ class CloudStreamTvType:
             return "series"
         if tv_type in (cls.Live, cls.Music):
             return "tv"
+        if tv_type == cls.NSFW:
+            return "adult"
         return "movie"
+
+
+def is_plugin_nsfw(plugin_or_provider):
+    """
+    Returns True if the plugin or provider contains NSFW / adult content.
+    Aligns with CloudStream reference logic (PluginManager.kt line 395).
+    """
+    if not plugin_or_provider:
+        return False
+
+    nsfw_kw = ("nsfw", "11", "adult", "18+", "hentai", "xxx", "erotica", "porn", "ecchi")
+
+    if isinstance(plugin_or_provider, dict):
+        raw_types = [str(t).strip().lower() for t in (plugin_or_provider.get("raw_tv_types") or [])]
+        parsed_types = [str(t).strip().lower() for t in (plugin_or_provider.get("tv_types") or [])]
+        all_types = set(raw_types + parsed_types)
+        if any(t in nsfw_kw or any(k in t for k in nsfw_kw) for t in all_types):
+            return True
+        name = str(plugin_or_provider.get("name") or plugin_or_provider.get("internal_name") or "").lower()
+        if any(k in name for k in ("18+", "hentai", "porn", "xxx", "minioppai", "nekopoi")):
+            return True
+        desc = str(plugin_or_provider.get("description") or "").lower()
+        if any(k in desc for k in ("18+ only", "adult content", "hentai anime", "xxx videos", "porn videos")):
+            return True
+        return False
+
+    # Check CloudStreamProvider instance
+    if hasattr(plugin_or_provider, "supported_types"):
+        st = [str(t).lower() for t in (plugin_or_provider.supported_types or [])]
+        if any(t in nsfw_kw or any(k in t for k in nsfw_kw) for t in st):
+            return True
+    name = getattr(plugin_or_provider, "name", "").lower()
+    if any(k in name for k in ("18+", "hentai", "porn", "xxx", "minioppai", "nekopoi")):
+        return True
+    return False
+
+
+def is_plugin_pure_nsfw(plugin_or_provider):
+    """
+    Returns True if the plugin/provider is strictly adult-only (no non-adult types).
+    """
+    if not is_plugin_nsfw(plugin_or_provider):
+        return False
+    if isinstance(plugin_or_provider, dict):
+        raw_types = [str(t).strip().lower() for t in (plugin_or_provider.get("raw_tv_types") or [])]
+        parsed_types = [str(t).strip().lower() for t in (plugin_or_provider.get("tv_types") or [])]
+        all_types = set(raw_types + parsed_types)
+        non_nsfw = [
+            t for t in all_types
+            if t not in ("nsfw", "11", "adult", "18+", "hentai", "xxx", "erotica", "porn", "ecchi", "other", "others")
+        ]
+        return len(non_nsfw) == 0
+    return False
+
+
+def is_section_nsfw(section):
+    """
+    Returns True if catalog section is adult/18+ content.
+    """
+    if not section or not isinstance(section, dict):
+        return False
+    sec_id = str(section.get("id") or "").lower()
+    sec_name = str(section.get("name") or section.get("section") or "").lower()
+    keywords = ("18+", "nsfw", "adult", "erotica", "xxx", "hentai", "porn", "ecchi", "softcore")
+    return any(k in sec_id or k in sec_name for k in keywords)
 
 
 def cloudstream_plugin_id(repo_url, internal_name):
@@ -7756,10 +7827,18 @@ def get_catalogs(media_type="all"):
     if not is_cloudstream_enabled():
         return []
 
+    hide_adult = False
+    try:
+        hide_adult = database.is_adult_content_hidden()
+    except Exception:
+        pass
+
     catalogs = []
     seen = set()
     for plugin in get_all_plugins():
         if not plugin.get("enabled") or not is_provider_runnable(plugin):
+            continue
+        if hide_adult and is_plugin_nsfw(plugin):
             continue
         plugin_id = str(plugin.get("id") or "").strip()
         provider = get_provider(plugin_id)
@@ -7769,6 +7848,8 @@ def get_catalogs(media_type="all"):
             continue
         for section in getattr(provider, "catalog_sections", ()) or ():
             if not isinstance(section, dict):
+                continue
+            if hide_adult and is_section_nsfw(section):
                 continue
             catalog_id = str(section.get("id") or "").strip()
             catalog_name = str(section.get("name") or section.get("section") or catalog_id).strip()
@@ -7800,6 +7881,25 @@ def get_catalogs(media_type="all"):
                 "cloudstream_section": section_name,
             })
     return catalogs
+
+
+def clear_main_page_cache():
+    """Clear cached provider main pages and catalog sections."""
+    with _MAIN_PAGE_CACHE_LOCK:
+        _MAIN_PAGE_CACHE.clear()
+
+
+def on_adult_content_toggled(is_hidden):
+    """
+    Handle preference toggle for 'Hide 18+ / Explicit Content'.
+    Purges main page caches and disables any enabled NSFW plugins.
+    """
+    clear_main_page_cache()
+    if is_hidden:
+        for p in get_all_plugins():
+            if p.get("enabled") and is_plugin_nsfw(p):
+                logger.info(f"Disabling NSFW CloudStream provider '{p.get('name')}' because Hide 18+ is enabled")
+                database.toggle_cloudstream_plugin(p["id"], False)
 
 
 def _get_provider_main_page(provider, page):
@@ -7850,12 +7950,23 @@ def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=
     plugin = get_plugin(provider_id)
     if not is_cloudstream_enabled() or not plugin or not plugin.get("enabled") or not is_provider_runnable(plugin):
         return []
+
+    hide_adult = False
+    try:
+        hide_adult = database.is_adult_content_hidden()
+    except Exception:
+        pass
+    if hide_adult and is_plugin_nsfw(plugin):
+        return []
+
     provider = get_provider(provider_id)
     section = next((
         item for item in (getattr(provider, "catalog_sections", ()) or [])
         if isinstance(item, dict) and str(item.get("id") or "") == str(catalog_id)
     ), None)
     if not section:
+        return []
+    if hide_adult and is_section_nsfw(section):
         return []
 
     wanted_section = str(section.get("section") or section.get("name") or "").strip().casefold()
@@ -7892,6 +8003,14 @@ def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=
         normalized["name"] = item_title
         normalized["type"] = raw_type
         card = search_item_to_card_dict(normalized)
+
+        if hide_adult:
+            try:
+                from . import api
+                if api.is_adult_item(card) or api.is_adult_item(normalized):
+                    continue
+            except Exception:
+                pass
         if raw_type == CloudStreamTvType.TvSeries:
             card["type"] = "series"
         elif raw_type == CloudStreamTvType.Other:
@@ -8089,7 +8208,18 @@ def uninstall_plugin(plugin_id):
 
 
 def toggle_plugin(plugin_id, enabled):
+    if enabled:
+        try:
+            if database.is_adult_content_hidden():
+                p = get_plugin(plugin_id)
+                if is_plugin_nsfw(p):
+                    logger.info(f"Refusing to enable NSFW CloudStream plugin '{plugin_id}': Hide 18+ is active")
+                    database.toggle_cloudstream_plugin(plugin_id, False)
+                    return False
+        except Exception:
+            pass
     database.toggle_cloudstream_plugin(plugin_id, bool(enabled))
+    return True
 
 
 def bulk_install_and_enable(plugin_ids, only_compatible=True):
@@ -8097,11 +8227,20 @@ def bulk_install_and_enable(plugin_ids, only_compatible=True):
     installed = 0
     enabled = 0
     errors = []
+    hide_adult = False
+    try:
+        hide_adult = database.is_adult_content_hidden()
+    except Exception:
+        pass
+
     for pid in plugin_ids:
         plugin = get_plugin(pid)
         if not plugin:
             continue
         if only_compatible and not is_provider_runnable(plugin):
+            continue
+        if hide_adult and is_plugin_nsfw(plugin):
+            logger.debug(f"Skipping NSFW plugin {plugin.get('name')} during bulk install (Hide 18+ active)")
             continue
         if not plugin.get("is_installed") or plugin.get("version", 0) > (plugin.get("installed_version") or 0):
             ok, msg = install_plugin(pid)
@@ -8110,8 +8249,8 @@ def bulk_install_and_enable(plugin_ids, only_compatible=True):
             else:
                 errors.append(f"{plugin.get('name')}: {msg}")
                 continue
-        toggle_plugin(pid, True)
-        enabled += 1
+        if toggle_plugin(pid, True):
+            enabled += 1
     return {
         "installed": installed,
         "enabled": enabled,
@@ -8182,6 +8321,12 @@ def search_item_to_card_dict(item):
     if media_type != "series" and is_cloudstream_series(raw_name, item.get("data", ""), media_type):
         media_type = "series"
 
+    is_adult = (
+        raw_type == CloudStreamTvType.NSFW
+        or media_type == "adult"
+        or any(k in str(raw_name).lower() for k in ("18+", "nsfw", "xxx", "porn", "hentai", "erotica"))
+    )
+
     card = {
         "id": route_id,
         "imdb_id": route_id,
@@ -8198,6 +8343,8 @@ def search_item_to_card_dict(item):
         "description": item.get("description") or "",
         "is_cloudstream": True,
         "cloudstream_provider_id": item["provider_id"],
+        "adult": is_adult,
+        "isAdult": is_adult,
     }
     imdb_code = str(item.get("imdb_code") or item.get("imdb_id") or "").strip()
     card["alias_ids"] = [imdb_code, route_id] if re.fullmatch(r"tt\d{7,8}", imdb_code) else [route_id]
@@ -8215,6 +8362,12 @@ def load_item_to_details_dict(loaded):
 
     is_series = bool(episodes) or raw_type == CloudStreamTvType.TvSeries or is_cloudstream_series(raw_name, loaded.get("data", ""), CloudStreamTvType.to_popcorn_type(raw_type))
     media_type = "series" if is_series else CloudStreamTvType.to_popcorn_type(raw_type)
+
+    is_adult = (
+        raw_type == CloudStreamTvType.NSFW
+        or media_type == "adult"
+        or any(k in str(raw_name).lower() for k in ("18+", "nsfw", "xxx", "porn", "hentai", "erotica"))
+    )
 
     videos = []
     if not episodes:
@@ -8269,6 +8422,8 @@ def load_item_to_details_dict(loaded):
         "videos": videos,
         "is_cloudstream": True,
         "cloudstream_provider_id": loaded["provider_id"],
+        "adult": is_adult,
+        "isAdult": is_adult,
     }
 
 
@@ -8460,9 +8615,15 @@ def search_all_enabled_providers(query, timeout=10.0):
     if not is_cloudstream_enabled() or not query or not query.strip():
         return []
 
+    hide_adult = False
+    try:
+        hide_adult = database.is_adult_content_hidden()
+    except Exception:
+        pass
+
     enabled_plugins = [
         p for p in get_all_plugins()
-        if p.get("enabled") and is_provider_runnable(p)
+        if p.get("enabled") and is_provider_runnable(p) and not (hide_adult and is_plugin_nsfw(p))
     ]
     if not enabled_plugins:
         return []
@@ -8487,7 +8648,14 @@ def search_all_enabled_providers(query, timeout=10.0):
             return []
         try:
             items = provider.search(query.strip())
-            return [search_item_to_card_dict(it) for it in items]
+            cards = [search_item_to_card_dict(it) for it in items]
+            if hide_adult:
+                try:
+                    from . import api
+                    cards = [c for c in cards if not api.is_adult_item(c)]
+                except Exception:
+                    pass
+            return cards
         except Exception as e:
             logger.debug(f"CloudStream search on {provider.name} failed: {e}")
             return []
@@ -8522,9 +8690,22 @@ def fetch_cloudstream_streams_for_media(
     if not is_cloudstream_enabled() or not title or not title.strip():
         return []
 
+    hide_adult = False
+    try:
+        hide_adult = database.is_adult_content_hidden()
+    except Exception:
+        pass
+    if hide_adult:
+        try:
+            from . import api
+            if api.is_adult_item({"name": title, "title": title, "genres": []}):
+                return []
+        except Exception:
+            pass
+
     enabled_plugins = [
         p for p in get_all_plugins()
-        if p.get("enabled") and is_provider_runnable(p)
+        if p.get("enabled") and is_provider_runnable(p) and not (hide_adult and is_plugin_nsfw(p))
     ]
     if not enabled_plugins:
         return []

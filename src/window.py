@@ -20248,16 +20248,29 @@ class CineWindow(Adw.ApplicationWindow):
 
         # One-time auto-enable for already installed plugins that were locked by the insensitive switch
         from . import database
+        hide_adult = database.is_adult_content_hidden()
+        has_changes = False
+
+        # If Hide 18+ is active, ensure no NSFW providers remain enabled
+        if hide_adult:
+            for p in plugins_list:
+                if p.get("enabled") and cloudstream.is_plugin_nsfw(p):
+                    cloudstream.toggle_plugin(p["id"], False)
+                    p["enabled"] = False
+                    has_changes = True
+
         if not database.get_setting("cloudstream_plugins_auto_enabled_v1", False):
-            has_changes = False
             for p in plugins_list:
                 if p.get("is_installed") and not p.get("enabled"):
+                    if hide_adult and cloudstream.is_plugin_nsfw(p):
+                        continue
                     cloudstream.toggle_plugin(p["id"], True)
                     p["enabled"] = True
                     has_changes = True
             database.set_setting("cloudstream_plugins_auto_enabled_v1", True)
-            if has_changes:
-                plugins_list = cloudstream.get_all_plugins()
+
+        if has_changes:
+            plugins_list = cloudstream.get_all_plugins()
 
         repo_count = len(repos)
         installed_count = len([p for p in plugins_list if p.get("is_installed")])
@@ -20386,6 +20399,11 @@ class CineWindow(Adw.ApplicationWindow):
             is_installed = bool(p.get("is_installed", False))
             is_runnable = cloudstream.is_provider_runnable(p)
 
+            from . import database
+            hide_adult = database.is_adult_content_hidden()
+            is_nsfw = cloudstream.is_plugin_nsfw(p)
+            is_nsfw_blocked = hide_adult and is_nsfw
+
             escaped_name = GLib.markup_escape_text(p_name)
             escaped_desc = GLib.markup_escape_text(p_desc)
 
@@ -20401,7 +20419,9 @@ class CineWindow(Adw.ApplicationWindow):
             row._plugin_types = [t.lower() for t in raw_types]
             row._is_runnable = is_runnable
             row._is_installed = is_installed
-            row._is_enabled = bool(p.get("enabled", False))
+            row._is_enabled = bool(p.get("enabled", False)) and not is_nsfw_blocked
+            row._is_nsfw = is_nsfw
+            row._is_nsfw_blocked = is_nsfw_blocked
 
             pfx = Gtk.Image.new_from_icon_name("network-wireless-symbolic")
             pfx.set_pixel_size(18)
@@ -20420,6 +20440,13 @@ class CineWindow(Adw.ApplicationWindow):
                 type_badge.add_css_class("plugin-tag-label")
                 sfx.append(type_badge)
 
+            if is_nsfw_blocked:
+                nsfw_badge = Gtk.Label(label=_("18+ Blocked"), valign=Gtk.Align.CENTER)
+                nsfw_badge.add_css_class("plugin-tag-label")
+                nsfw_badge.add_css_class("destructive-action")
+                nsfw_badge.set_tooltip_text(_("This provider offers adult/NSFW content and is disabled because 'Hide 18+ / Explicit Content' is enabled in Preferences."))
+                sfx.append(nsfw_badge)
+
             ver_text = f"v{version}" if inst_ver is None else f"v{inst_ver} (repo v{version})"
             ver_badge = Gtk.Label(label=ver_text, valign=Gtk.Align.CENTER)
             ver_badge.add_css_class("dim-label")
@@ -20427,7 +20454,7 @@ class CineWindow(Adw.ApplicationWindow):
             sfx.append(ver_badge)
 
             # Test button (for runnable providers)
-            if is_runnable:
+            if is_runnable and not is_nsfw_blocked:
                 test_btn = Gtk.Button(label=_("Test"), valign=Gtk.Align.CENTER)
                 test_btn.add_css_class("flat")
                 test_btn.add_css_class("pill")
@@ -20463,9 +20490,11 @@ class CineWindow(Adw.ApplicationWindow):
                 sfx.append(badge)
 
             sw = Gtk.Switch(valign=Gtk.Align.CENTER)
-            sw.set_active(bool(p.get("enabled", False)) and is_runnable)
-            sw.set_sensitive(is_installed and is_runnable)
-            if not is_runnable:
+            sw.set_active(bool(p.get("enabled", False)) and is_runnable and not is_nsfw_blocked)
+            sw.set_sensitive(is_installed and is_runnable and not is_nsfw_blocked)
+            if is_nsfw_blocked:
+                sw.set_tooltip_text(_("Disabled because 'Hide 18+ / Explicit Content' is enabled in Preferences"))
+            elif not is_runnable:
                 sw.set_tooltip_text(_("No Python scraper available for this plugin (Android DEX bytecode)"))
             else:
                 sw.set_tooltip_text(_("Enable or disable this provider"))
@@ -20496,6 +20525,10 @@ class CineWindow(Adw.ApplicationWindow):
         if text in ("enabled", "active") and (is_enb and is_run):
             return True
         if text in ("no scraper", "unsupported", "dex") and not is_run:
+            return True
+        if text in ("blocked", "18+ blocked", "nsfw blocked") and getattr(row, "_is_nsfw_blocked", False):
+            return True
+        if text in ("nsfw", "18+", "adult") and getattr(row, "_is_nsfw", False):
             return True
         if text in p_name or text in p_desc or text == p_lang or any(text in t for t in p_types):
             return True
@@ -20584,20 +20617,25 @@ class CineWindow(Adw.ApplicationWindow):
         btn.set_label(_("Installing..."))
 
         def worker():
-            from . import cloudstream
+            from . import cloudstream, database
             ok, msg = cloudstream.install_plugin(plugin_id)
             if ok:
-                cloudstream.toggle_plugin(plugin_id, True)
                 plugin = cloudstream.get_plugin(plugin_id)
-                if plugin and not cloudstream.is_provider_runnable(plugin):
-                    msg = _("%s installed (Note: Android DEX bytecode only - no Python scraper adapter yet)") % plugin_name
-                elif "megaprovider" in plugin_id.lower():
-                    provider = cloudstream.get_provider(plugin_id)
-                    if provider and hasattr(provider, "sync_repositories"):
-                        added, total, _repo_names = provider.sync_repositories()
-                        msg = _("MegaProvider installed: synced %d/%d repositories!") % (added, total)
+                hide_adult = database.is_adult_content_hidden()
+                if hide_adult and cloudstream.is_plugin_nsfw(plugin):
+                    cloudstream.toggle_plugin(plugin_id, False)
+                    msg = _("%s installed (disabled because 'Hide 18+ / Explicit Content' is enabled)") % plugin_name
                 else:
-                    msg = _("Installed and enabled %s") % plugin_name
+                    cloudstream.toggle_plugin(plugin_id, True)
+                    if plugin and not cloudstream.is_provider_runnable(plugin):
+                        msg = _("%s installed (Note: Android DEX bytecode only - no Python scraper adapter yet)") % plugin_name
+                    elif "megaprovider" in plugin_id.lower():
+                        provider = cloudstream.get_provider(plugin_id)
+                        if provider and hasattr(provider, "sync_repositories"):
+                            added, total, _repo_names = provider.sync_repositories()
+                            msg = _("MegaProvider installed: synced %d/%d repositories!") % (added, total)
+                    else:
+                        msg = _("Installed and enabled %s") % plugin_name
 
             def apply_result():
                 self._populate_cloudstream()
@@ -20653,7 +20691,12 @@ class CineWindow(Adw.ApplicationWindow):
             )
 
     def _on_cloudstream_switch_toggled(self, switch, plugin_id):
-        from . import cloudstream
+        from . import cloudstream, database
+        plugin = cloudstream.get_plugin(plugin_id)
+        if switch.get_active() and database.is_adult_content_hidden() and cloudstream.is_plugin_nsfw(plugin):
+            switch.set_active(False)
+            self._show_toast(_("Cannot enable provider with 18+/NSFW content: 'Hide 18+ / Explicit Content' is enabled in Preferences"))
+            return
         cloudstream.toggle_plugin(plugin_id, switch.get_active())
         self._refresh_cloudstream_catalog_views()
 
@@ -20684,9 +20727,13 @@ class CineWindow(Adw.ApplicationWindow):
         self._show_toast(_("Installing compatible CloudStream plugins..."))
 
         def worker():
-            from . import cloudstream
+            from . import cloudstream, database
             plugins_list = cloudstream.get_all_plugins()
-            p_ids = [p["id"] for p in plugins_list if cloudstream.is_provider_runnable(p)]
+            hide_adult = database.is_adult_content_hidden()
+            p_ids = [
+                p["id"] for p in plugins_list
+                if cloudstream.is_provider_runnable(p) and not (hide_adult and cloudstream.is_plugin_nsfw(p))
+            ]
             res = cloudstream.bulk_install_and_enable(p_ids, only_compatible=True)
 
             def apply_result():

@@ -1792,6 +1792,10 @@ def is_adult_item(item, check_cache=True):
     if item.get("adult") is True or item.get("isAdult") is True:
         return True
 
+    item_type = str(item.get("type") or "").strip().lower()
+    if item_type in ("adult", "nsfw", "18+"):
+        return True
+
     rating = str(item.get("certification") or item.get("contentRating") or item.get("rating") or item.get("mpaa") or "").strip().upper()
     if rating in ADULT_RATINGS or any(r in rating for r in ["R18", "NC-17", "XXX", "18+", "ADULT", "PORN"]):
         return True
