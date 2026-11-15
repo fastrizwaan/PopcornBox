@@ -269,6 +269,19 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                     </child>
                   </object>
                 </child>
+                <child>
+                  <object class="AdwActionRow" id="prefs_custom_plugins_row">
+                    <property name="title" translatable="yes">Custom Plugins</property>
+                    <property name="subtitle" translatable="yes">Manage local drop-in Python scrapers and plugins</property>
+                    <property name="activatable">true</property>
+                    <child type="suffix">
+                      <object class="GtkImage">
+                        <property name="icon-name">go-next-symbolic</property>
+                        <property name="valign">3</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
               </object>
             </child>
             <child>

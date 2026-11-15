@@ -4955,6 +4955,14 @@ class CineWindow(Adw.ApplicationWindow):
     cloudstream_provider_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
     cloudstream_bulk_install_btn: Gtk.Button = Gtk.Template.Child()
     cloudstream_plugins_listbox: Gtk.ListBox = Gtk.Template.Child()
+    custom_plugin_badge_installed: Gtk.Label = Gtk.Template.Child()
+    custom_plugin_badge_active: Gtk.Label = Gtk.Template.Child()
+    custom_plugin_badge_status: Gtk.Label = Gtk.Template.Child()
+    custom_plugin_enable_globally_row: Adw.SwitchRow = Gtk.Template.Child()
+    custom_plugin_open_folder_row: Adw.ActionRow = Gtk.Template.Child()
+    custom_plugin_import_row: Adw.ActionRow = Gtk.Template.Child()
+    custom_plugin_refresh_btn: Gtk.Button = Gtk.Template.Child()
+    custom_plugin_listbox: Gtk.ListBox = Gtk.Template.Child()
     video_overlay: Gtk.Overlay = Gtk.Template.Child()
     start_page: Adw.StatusPage = Gtk.Template.Child()
     revealer_icon_indicator: Gtk.Revealer = Gtk.Template.Child()
@@ -10415,6 +10423,23 @@ class CineWindow(Adw.ApplicationWindow):
                 "_source": "cloudstream",
             })
 
+        # Custom plugins can also declare catalog sections.
+        from . import custom_plugins
+        for cat in custom_plugins.get_catalogs(chosen_type):
+            m_url = cat.get("manifest_url") or ""
+            if not m_url or m_url in seen_urls:
+                continue
+            seen_urls.add(m_url)
+            name = cat.get("addon_name") or "Custom Plugin"
+            display_name = f"{name} (Plugin)"
+            items.append({
+                "display_name": display_name,
+                "addon": None,
+                "manifest_url": m_url,
+                "addon_name": display_name,
+                "_source": "custom_plugin",
+            })
+
         self._discover_catalog_items = items
         if hasattr(self, "catalog_dropdown") and self.catalog_dropdown:
             self.catalog_dropdown.set_model(Gtk.StringList.new([it["display_name"] for it in items]))
@@ -10452,6 +10477,25 @@ class CineWindow(Adw.ApplicationWindow):
             m_url = catalog_item.get("manifest_url")
             matching_cats = [
                 c for c in cloudstream.get_catalogs(chosen_type)
+                if str(c.get("manifest_url") or "") == str(m_url)
+            ]
+            seen_ids = set()
+            for c in matching_cats:
+                cid = c.get("catalog_id") or ""
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                name = c.get("catalog_name") or cid.title()
+                items.append({
+                    "display_name": name,
+                    "cat": c,
+                    "catalog_id": cid
+                })
+        elif catalog_item and (catalog_item.get("_source") == "custom_plugin" or str(catalog_item.get("manifest_url") or "").startswith("custom://")):
+            from . import custom_plugins
+            m_url = catalog_item.get("manifest_url")
+            matching_cats = [
+                c for c in custom_plugins.get_catalogs(chosen_type)
                 if str(c.get("manifest_url") or "") == str(m_url)
             ]
             seen_ids = set()
@@ -13446,17 +13490,22 @@ class CineWindow(Adw.ApplicationWindow):
         cur_network = getattr(self, "current_network", None)
         if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "Network", _("Network"), "All"):
             cur_network = None
-        from . import cloudstream
+        from . import cloudstream, custom_plugins
         if filter_addon_url:
             cloudstream_catalogs = [
                 cat for cat in cloudstream.get_catalogs(filter_media_type or "all")
                 if str(cat.get("manifest_url") or "") == str(filter_addon_url)
             ]
+            custom_catalogs = [
+                cat for cat in custom_plugins.get_catalogs(filter_media_type or "all")
+                if str(cat.get("manifest_url") or "") == str(filter_addon_url)
+            ]
         else:
             cloudstream_catalogs = []
+            custom_catalogs = []
         cloudstream_signature = tuple(sorted(
             (str(c.get("manifest_url") or ""), str(c.get("catalog_id") or ""), str(c.get("type") or ""))
-            for c in cloudstream_catalogs
+            for c in (cloudstream_catalogs + custom_catalogs)
         ))
         cache_key = (
             ("home", filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "", cloudstream_signature)
@@ -13701,6 +13750,30 @@ class CineWindow(Adw.ApplicationWindow):
                     "extraSupported": list(cat.get("extraSupported") or []),
                     "supports_pagination": bool(cat.get("supports_pagination")),
                     "title": f"{addon_name} - {cat.get('catalog_name') or cat.get('catalog_id')}",
+                })
+
+        # Custom plugins expose their own catalog sections. List them on selection.
+        if filter_addon_url and custom_catalogs:
+            for cat in custom_catalogs:
+                c_type = str(cat.get("type") or "movie").strip().lower()
+                row_key = (cat.get("manifest_url"), cat.get("catalog_id"), c_type)
+                if row_key in seen_row_keys:
+                    continue
+                seen_row_keys.add(row_key)
+                name = cat.get("addon_name") or "Custom Plugin"
+                rows.append({
+                    "_source": "custom_plugin",
+                    "addon_name": name,
+                    "media_type": c_type,
+                    "raw_type": c_type,
+                    "catalog_id": cat.get("catalog_id"),
+                    "catalog_name": cat.get("catalog_name") or cat.get("catalog_id"),
+                    "manifest_url": cat.get("manifest_url"),
+                    "genres": list(cat.get("genres") or []),
+                    "extra": list(cat.get("extra") or []),
+                    "extraSupported": list(cat.get("extraSupported") or []),
+                    "supports_pagination": bool(cat.get("supports_pagination", True)),
+                    "title": f"{name} - {cat.get('catalog_name') or cat.get('catalog_id')}",
                 })
 
         # If no provider can filter this genre/language/country, use matching items indexed in
@@ -20024,6 +20097,7 @@ class CineWindow(Adw.ApplicationWindow):
 
         self.plugin_providers_listbox.set_filter_func(self._plugin_provider_filter_func)
         self._setup_cloudstream_page()
+        self._setup_custom_plugins_page()
 
     def _populate_plugins(self):
         from . import plugins
@@ -20911,9 +20985,213 @@ class CineWindow(Adw.ApplicationWindow):
         self._push_current_nav_state()
         self._populate_plugins()
         self._populate_cloudstream()
+        self._populate_custom_plugins()
         if hasattr(self, "plugins_sub_stack") and self.plugins_sub_stack:
             self.plugins_sub_stack.set_visible_child_name("cloudstream")
         self.main_stack.set_visible_child_name("plugins")
+
+    # --- Custom Drop-in Plugins UI Support ---
+
+    def _setup_custom_plugins_page(self):
+        if not hasattr(self, "custom_plugin_listbox") or not self.custom_plugin_listbox:
+            return
+
+        from . import custom_plugins
+
+        self._syncing_custom_plugin_switches = True
+        try:
+            self.custom_plugin_enable_globally_row.set_active(custom_plugins.is_custom_plugins_enabled())
+        finally:
+            self._syncing_custom_plugin_switches = False
+
+        self.custom_plugin_enable_globally_row.connect("notify::active", self._on_custom_plugin_enable_globally_toggled)
+        self.custom_plugin_open_folder_row.connect("activated", lambda *a: custom_plugins.open_plugins_directory(self))
+        self.custom_plugin_import_row.connect("activated", self._on_custom_plugin_import_clicked)
+        self.custom_plugin_refresh_btn.connect("clicked", self._on_custom_plugin_refresh_clicked)
+
+    def _populate_custom_plugins(self):
+        if not hasattr(self, "custom_plugin_listbox") or not self.custom_plugin_listbox:
+            return
+
+        from . import custom_plugins
+
+        scrapers = custom_plugins.get_all_custom_scrapers()
+        installed_count = len(scrapers)
+        active_count = len([s for s in scrapers if s.get("enabled")])
+
+        self.custom_plugin_badge_installed.set_label(f"{installed_count} installed")
+        self.custom_plugin_badge_active.set_label(f"{active_count} active")
+
+        enabled = custom_plugins.is_custom_plugins_enabled()
+        if enabled:
+            self.custom_plugin_badge_status.set_label(_("Custom plugins enabled"))
+            self.custom_plugin_badge_status.remove_css_class("plugin-disabled")
+            self.custom_plugin_badge_status.add_css_class("plugin-enabled")
+        else:
+            self.custom_plugin_badge_status.set_label(_("Custom plugins disabled"))
+            self.custom_plugin_badge_status.remove_css_class("plugin-enabled")
+            self.custom_plugin_badge_status.add_css_class("plugin-disabled")
+
+        self._syncing_custom_plugin_switches = True
+        try:
+            self.custom_plugin_enable_globally_row.set_active(enabled)
+        finally:
+            self._syncing_custom_plugin_switches = False
+
+        while self.custom_plugin_listbox.get_first_child() is not None:
+            self.custom_plugin_listbox.remove(self.custom_plugin_listbox.get_first_child())
+
+        if not scrapers:
+            empty_row = Adw.ActionRow(
+                title=_("No custom plugins installed"),
+                subtitle=_("Click 'Open Plugins Folder' above to add .py scrapers, or click 'Import Plugin File'.")
+            )
+            empty_row.set_sensitive(False)
+            self.custom_plugin_listbox.append(empty_row)
+            return
+
+        for scraper in scrapers:
+            s_id = scraper.get("id")
+            s_name = scraper.get("name") or s_id
+            s_desc = scraper.get("description") or ""
+            filename = scraper.get("filename") or ""
+            version = scraper.get("version", "1.0.0")
+            media_types = scraper.get("media_types") or ["movie"]
+            types_str = " | ".join(media_types)
+
+            escaped_name = GLib.markup_escape_text(s_name)
+            escaped_desc = GLib.markup_escape_text(f"{s_desc} ({filename})" if s_desc else filename)
+
+            row = Adw.ActionRow()
+            row.set_use_markup(True)
+            row.set_title(f"<b>{escaped_name}</b>")
+            if escaped_desc:
+                row.set_subtitle(escaped_desc)
+
+            pfx = Gtk.Image.new_from_icon_name("text-x-script-symbolic")
+            pfx.set_pixel_size(18)
+            pfx.add_css_class("accent")
+            row.add_prefix(pfx)
+
+            sfx = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, valign=Gtk.Align.CENTER)
+
+            if types_str:
+                type_badge = Gtk.Label(label=types_str, valign=Gtk.Align.CENTER)
+                type_badge.add_css_class("plugin-tag-label")
+                sfx.append(type_badge)
+
+            ver_badge = Gtk.Label(label=f"v{version}", valign=Gtk.Align.CENTER)
+            ver_badge.add_css_class("dim-label")
+            ver_badge.add_css_class("caption")
+            sfx.append(ver_badge)
+
+            test_btn = Gtk.Button(label=_("Test"), valign=Gtk.Align.CENTER)
+            test_btn.add_css_class("flat")
+            test_btn.add_css_class("pill")
+            test_btn.connect("clicked", lambda b, sid=s_id, sn=s_name: self._on_test_custom_scraper_clicked(sid, sn, b))
+            sfx.append(test_btn)
+
+            del_btn = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER)
+            del_btn.add_css_class("flat")
+            del_btn.add_css_class("circular")
+            del_btn.set_tooltip_text(_("Delete plugin"))
+            del_btn.connect("clicked", lambda b, fn=filename, sid=s_id: self._on_delete_custom_scraper_clicked(fn or sid))
+            sfx.append(del_btn)
+
+            sw = Gtk.Switch(valign=Gtk.Align.CENTER)
+            sw.set_active(bool(scraper.get("enabled", True)))
+            sw.connect("notify::active", lambda s, p, sid=s_id: self._on_custom_scraper_switch_toggled(s, sid))
+            sfx.append(sw)
+
+            row.add_suffix(sfx)
+            self.custom_plugin_listbox.append(row)
+
+    def _on_custom_plugin_enable_globally_toggled(self, row, _pspec):
+        if getattr(self, "_syncing_custom_plugin_switches", False):
+            return
+        active = row.get_active()
+        from . import custom_plugins
+        custom_plugins.set_custom_plugins_enabled(active)
+        if active:
+            self.custom_plugin_badge_status.set_label(_("Custom plugins enabled"))
+            self.custom_plugin_badge_status.remove_css_class("plugin-disabled")
+            self.custom_plugin_badge_status.add_css_class("plugin-enabled")
+        else:
+            self.custom_plugin_badge_status.set_label(_("Custom plugins disabled"))
+            self.custom_plugin_badge_status.remove_css_class("plugin-enabled")
+            self.custom_plugin_badge_status.add_css_class("plugin-disabled")
+
+    def _on_custom_plugin_refresh_clicked(self, *args):
+        from . import custom_plugins
+        custom_plugins.load_all_custom_scrapers(force_reload=True)
+        self._populate_custom_plugins()
+        self._show_toast(_("Custom plugins reloaded"))
+
+    def _on_custom_plugin_import_clicked(self, *args):
+        dialog = Gtk.FileDialog(title=_("Import Python Plugin"))
+        filter_py = Gtk.FileFilter()
+        filter_py.set_name(_("Python Files (*.py)"))
+        filter_py.add_pattern("*.py")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(filter_py)
+        dialog.set_filters(filters)
+
+        def on_open_response(d, result):
+            try:
+                file = d.open_finish(result)
+                if not file:
+                    return
+                path = file.get_path()
+                if not path:
+                    return
+
+                from . import custom_plugins
+                ok, msg = custom_plugins.import_plugin_file(path)
+                self._populate_custom_plugins()
+                self._show_toast(msg)
+            except Exception as e:
+                logger.error(f"Failed to import plugin: {e}")
+
+        dialog.open(self, None, on_open_response)
+
+    def _on_custom_scraper_switch_toggled(self, switch, scraper_id):
+        from . import custom_plugins
+        custom_plugins.toggle_scraper(scraper_id, switch.get_active())
+        scrapers = custom_plugins.get_all_custom_scrapers()
+        active_count = len([s for s in scrapers if s.get("enabled")])
+        self.custom_plugin_badge_active.set_label(f"{active_count} active")
+
+    def _on_delete_custom_scraper_clicked(self, filename_or_id):
+        from . import custom_plugins
+        ok, msg = custom_plugins.delete_plugin_file(filename_or_id)
+        self._populate_custom_plugins()
+        self._show_toast(msg)
+
+    def _on_test_custom_scraper_clicked(self, scraper_id, scraper_name, btn):
+        btn.set_sensitive(False)
+        btn.set_label(_("Testing..."))
+
+        def worker():
+            from . import custom_plugins
+            started = time.time()
+            success, count, msg = custom_plugins.test_custom_scraper(scraper_id)
+            elapsed_ms = int((time.time() - started) * 1000)
+
+            def apply_result():
+                btn.set_sensitive(True)
+                btn.set_label(_("Test"))
+                if success:
+                    if count > 0:
+                        self._show_toast(_(f"✓ {scraper_name}: {count} stream(s) found ({elapsed_ms}ms)"))
+                    else:
+                        self._show_toast(_(f"⚠ {scraper_name}: 0 streams found ({elapsed_ms}ms)"))
+                else:
+                    self._show_toast(_(f"✗ {scraper_name} test failed: {msg}"))
+                return False
+
+            GLib.idle_add(apply_result)
+
+        threading.Thread(target=worker, daemon=True, name="CustomScraperTest").start()
 
 
     def _is_same_movie(self, movie_a, movie_b):
@@ -21176,6 +21454,7 @@ class CineWindow(Adw.ApplicationWindow):
         self._push_current_nav_state()
         self._populate_plugins()
         self._populate_cloudstream()
+        self._populate_custom_plugins()
         if hasattr(self, "plugins_sub_stack") and self.plugins_sub_stack:
             self.plugins_sub_stack.set_visible_child_name(initial_tab or "nuvio")
         self.main_stack.set_visible_child_name("plugins")

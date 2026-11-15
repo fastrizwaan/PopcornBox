@@ -3768,6 +3768,26 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             on_item_found(items)
         return items
 
+    if isinstance(catalog_url, str) and catalog_url.startswith("custom://catalog/"):
+        if cache_only:
+            return []
+        from . import custom_plugins
+        plugin_id = custom_plugins.plugin_id_from_catalog_url(catalog_url)
+        if not plugin_id:
+            return []
+        items = custom_plugins.fetch_catalog_items(
+            plugin_id,
+            target_catalog_id or catalog_id,
+            genre=genre,
+            page=page,
+            limit=page_limit,
+            query=query,
+            is_cancelled=is_cancelled,
+        )
+        if items and on_item_found and not (is_cancelled and is_cancelled()):
+            on_item_found(items)
+        return items
+
     if query:
         import concurrent.futures
         items = []
@@ -6341,6 +6361,8 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
             "plugin_scraper_tmdb_id": s.get("plugin_scraper_tmdb_id"),
             "is_cloudstream": bool(s.get("is_cloudstream")),
             "cloudstream_provider_id": s.get("cloudstream_provider_id"),
+            "is_custom_plugin": bool(s.get("is_custom_plugin")),
+            "custom_plugin_id": s.get("custom_plugin_id"),
             "stream_type": "torrent" if is_torrent else (s.get("stream_type") or ("direct" if is_http else "")),
             "headers": s.get("headers"),
             "subtitles": s.get("subtitles") or [],
@@ -7447,6 +7469,19 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     plugin_scrapers_before_dedup = len(plugin_scrapers)
     plugin_scrapers = plugins.deduplicate_scrapers(plugin_scrapers)
 
+    from . import custom_plugins
+    enabled_custom_scrapers = (
+        custom_plugins.get_enabled_scrapers_for_type(actual_media)
+        if custom_plugins.is_custom_plugins_enabled()
+        else []
+    )
+    if provider_scope:
+        enabled_custom_scrapers = [
+            s for s in enabled_custom_scrapers
+            if getattr(s, "name", "").strip().casefold() == provider_scope.casefold()
+            or getattr(s, "id", "").strip().casefold() == provider_scope.casefold()
+        ]
+
     from . import cloudstream
     enabled_cloudstream_plugins = [
         p for p in cloudstream.get_all_plugins() if p.get("enabled")
@@ -7458,14 +7493,21 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     has_cached_plugins = any(s.get("is_nuvio_plugin") for s in (cache_candidates or []))
     has_cached_addons = any(
-        not s.get("is_nuvio_plugin") and not s.get("is_cloudstream")
+        not s.get("is_nuvio_plugin") and not s.get("is_cloudstream") and not s.get("is_custom_plugin")
         for s in (cache_candidates or [])
     )
     has_cached_cloudstream = any(s.get("is_cloudstream") for s in (cache_candidates or []))
+    has_cached_custom = any(s.get("is_custom_plugin") for s in (cache_candidates or []))
     missing_plugin_streams = bool(
         plugins.is_plugins_enabled()
         and plugin_scrapers
         and not has_cached_plugins
+        and not provider_scope
+    )
+    missing_custom_streams = bool(
+        custom_plugins.is_custom_plugins_enabled()
+        and enabled_custom_scrapers
+        and not has_cached_custom
         and not provider_scope
     )
     missing_addon_streams = bool(
@@ -7483,6 +7525,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         cache_candidates and len(usable_cache_candidates) == len(cache_candidates)
         and not force_refresh
         and not missing_plugin_streams
+        and not missing_custom_streams
         and not missing_addon_streams
         and not missing_cloudstream_streams
         and cache_age is not None
@@ -7501,14 +7544,15 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     print(
         f"[STREAM DEBUG] stream-capable addons={len(all_stream_addons)} "
         f"plugins={len(plugin_scrapers)} unique/{plugin_scrapers_before_dedup} enabled "
+        f"custom_plugins={len(enabled_custom_scrapers)} "
         f"cloudstream={int(has_active_cloudstream)} "
         f"cloudstream_providers={[p.get('name') or p.get('id') for p in runnable_cloudstream_plugins]!r} "
         f"cloudstream_unrunnable={[p.get('name') or p.get('id') for p in enabled_cloudstream_plugins if p not in runnable_cloudstream_plugins]!r} "
         f"provider_scope={provider_scope!r} "
         f"names={[a.get('name', 'Unknown') for a in all_stream_addons]}"
     )
-    if not all_stream_addons and not plugin_scrapers and not has_active_cloudstream:
-        print(f"[STREAM DEBUG] no stream-capable addons, plugins or cloudstream providers; returning cached cards={len(cached or [])}")
+    if not all_stream_addons and not plugin_scrapers and not has_active_cloudstream and not enabled_custom_scrapers:
+        print(f"[STREAM DEBUG] no stream-capable addons, plugins, custom scrapers or cloudstream providers; returning cached cards={len(cached or [])}")
         if callback: callback(usable_cached, is_cached=False, is_complete=True)
         return usable_cached
 
@@ -7663,6 +7707,29 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             print(f"[STREAM DEBUG] cloudstream stream fetch failed: {e}")
             return "CloudStream", []
 
+    def fetch_from_custom_plugin(scraper_obj):
+        if abort_event and abort_event.is_set():
+            return getattr(scraper_obj, "name", "Custom Plugin"), []
+        from . import custom_plugins
+        scraper_name = getattr(scraper_obj, "name", "Custom Plugin")
+        try:
+            streams = custom_plugins.execute_custom_scraper(
+                scraper_obj,
+                imdb_id=imdb_id,
+                media_type=actual_media,
+                season=season,
+                episode=episode,
+                title=title,
+                year=expected_year,
+                tmdb_id=initial_tmdb_id,
+                timeout=provider_timeout
+            )
+            print(f"[STREAM DEBUG] custom scraper done scraper={scraper_name!r} raw_cards={len(streams or [])}")
+            return scraper_name, streams
+        except Exception as e:
+            print(f"[STREAM DEBUG] custom scraper failed scraper={scraper_name!r}: {e}")
+            return scraper_name, []
+
     all_raw_streams = list(initial_cs_streams)
     if cached and not force_refresh:
         cache_seed_streams = usable_cache_candidates if source_scope else usable_cached
@@ -7690,6 +7757,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 "is_nuvio_plugin": bool(c.get("is_nuvio_plugin")),
                 "plugin_scraper_id": c.get("plugin_scraper_id"),
                 "plugin_scraper_tmdb_id": c.get("plugin_scraper_tmdb_id"),
+                "is_custom_plugin": bool(c.get("is_custom_plugin")),
+                "custom_plugin_id": c.get("custom_plugin_id"),
             }
             all_raw_streams.append(raw)
 
@@ -7701,7 +7770,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     alias_cache_ids = []
 
     import concurrent.futures
-    total_providers = len(all_stream_addons) + len(plugin_scrapers) + (1 if has_active_cloudstream else 0)
+    total_providers = len(all_stream_addons) + len(plugin_scrapers) + (1 if has_active_cloudstream else 0) + len(enabled_custom_scrapers)
     max_workers_limit = 24
     num_workers = min(max(total_providers, 4), max_workers_limit) if total_providers > 0 else 1
     if num_workers > 0 and total_providers > 0:
@@ -7781,6 +7850,17 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     futures.add(p_fut)
                     queried_plugin_ids.add(scraper.get("id"))
 
+            # 1b. Custom drop-in Python scrapers
+            if enabled_custom_scrapers:
+                for c_scraper in enabled_custom_scrapers:
+                    if abort_event and abort_event.is_set():
+                        return []
+                    c_name = getattr(c_scraper, "name", "Custom Plugin")
+                    print(f"[STREAM DEBUG] submitting custom scraper={c_name!r} id={imdb_id!r}")
+                    c_fut = executor.submit(fetch_from_custom_plugin, c_scraper)
+                    future_to_addon[c_fut] = ({"name": c_name, "is_custom_plugin": True}, imdb_id)
+                    futures.add(c_fut)
+
             # 2. CloudStream
             from . import cloudstream
             can_run_cs = (
@@ -7845,7 +7925,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                 futures.add(fut)
                                 break
 
-            has_direct_providers = bool(plugin_scrapers or can_run_cs or direct_stream_addons)
+            has_direct_providers = bool(plugin_scrapers or can_run_cs or direct_stream_addons or enabled_custom_scrapers)
             if not has_direct_providers:
                 _submit_torrent_addons()
 

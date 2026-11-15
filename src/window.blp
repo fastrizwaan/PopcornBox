@@ -1375,6 +1375,103 @@ template $CineWindow: Adw.ApplicationWindow {
                   };
                 };
               }
+              Adw.ViewStackPage page_custom_sub {
+                name: "custom";
+                title: _("Custom");
+                icon-name: "text-x-script-symbolic";
+                child: ScrolledWindow {
+                  vexpand: true;
+                  hexpand: true;
+                  child: Adw.Clamp {
+                    maximum-size: 860;
+                    tightening-threshold: 600;
+                    margin-top: 18;
+                    margin-bottom: 32;
+                    margin-start: 16;
+                    margin-end: 16;
+                    child: Box {
+                      orientation: vertical;
+                      spacing: 24;
+
+                      Box {
+                        orientation: vertical;
+                        spacing: 8;
+                        Box {
+                          spacing: 8;
+                          Label {
+                            label: _("OVERVIEW");
+                            xalign: 0;
+                            hexpand: true;
+                            styles ["heading", "dim-label"]
+                          }
+                          Label custom_plugin_badge_installed {
+                            label: "0 installed";
+                            styles ["plugin-pill-badge"]
+                          }
+                          Label custom_plugin_badge_active {
+                            label: "0 active";
+                            styles ["plugin-pill-badge"]
+                          }
+                          Label custom_plugin_badge_status {
+                            label: "Custom plugins enabled";
+                            styles ["plugin-pill-badge", "plugin-enabled"]
+                          }
+                        }
+                        Adw.PreferencesGroup {
+                          Adw.SwitchRow custom_plugin_enable_globally_row {
+                            title: _("Enable custom scrapers globally");
+                            subtitle: _("Execute local Python scrapers during stream discovery.");
+                            active: true;
+                          }
+                          Adw.ActionRow custom_plugin_open_folder_row {
+                            title: _("Open Plugins Folder");
+                            subtitle: _("Drop Python (.py) scraper scripts into this folder");
+                            activatable: true;
+                            [suffix]
+                            Image {
+                              icon-name: "folder-open-symbolic";
+                              valign: center;
+                            }
+                          }
+                          Adw.ActionRow custom_plugin_import_row {
+                            title: _("Import Plugin File");
+                            subtitle: _("Copy a .py scraper file into your plugins folder");
+                            activatable: true;
+                            [suffix]
+                            Image {
+                              icon-name: "document-open-symbolic";
+                              valign: center;
+                            }
+                          }
+                        }
+                      }
+
+                      Box {
+                        orientation: vertical;
+                        spacing: 8;
+                        Box {
+                          spacing: 8;
+                          Label {
+                            label: _("LOCAL SCRAPERS");
+                            xalign: 0;
+                            hexpand: true;
+                            styles ["heading", "dim-label"]
+                          }
+                          Button custom_plugin_refresh_btn {
+                            icon-name: "view-refresh-symbolic";
+                            tooltip-text: _("Refresh Plugins");
+                            styles ["flat", "circular"]
+                          }
+                        }
+                        ListBox custom_plugin_listbox {
+                          selection-mode: none;
+                          styles ["boxed-list"]
+                        }
+                      }
+                    };
+                  };
+                };
+              }
             }
           };
         }

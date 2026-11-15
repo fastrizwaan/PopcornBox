@@ -239,6 +239,7 @@ class Preferences(Adw.Dialog):
     stream_provider_retries_row: Adw.SpinRow = Gtk.Template.Child()
     prefs_nuvio_plugins_row: Adw.ActionRow = Gtk.Template.Child()
     prefs_cloudstream_plugins_row: Adw.ActionRow = Gtk.Template.Child()
+    prefs_custom_plugins_row: Adw.ActionRow = Gtk.Template.Child()
     stremio_account_row: Adw.ActionRow = Gtk.Template.Child()
     stremio_login_btn: Gtk.Button = Gtk.Template.Child()
     stremio_logout_btn: Gtk.Button = Gtk.Template.Child()
@@ -321,6 +322,9 @@ class Preferences(Adw.Dialog):
         if hasattr(self, "prefs_cloudstream_plugins_row") and self.prefs_cloudstream_plugins_row:
             self.prefs_cloudstream_plugins_row.connect("activated", self._on_cloudstream_plugins_activated)
 
+        if hasattr(self, "prefs_custom_plugins_row") and self.prefs_custom_plugins_row:
+            self.prefs_custom_plugins_row.connect("activated", self._on_custom_plugins_activated)
+
         if hasattr(self, "doh_switch_row") and self.doh_switch_row:
             doh_active = bool(database.get_setting("doh_enabled", True))
             self.doh_switch_row.set_active(doh_active)
@@ -351,6 +355,11 @@ class Preferences(Adw.Dialog):
             self.win._open_cloudstream_plugins()
         elif hasattr(self.win, "_open_plugins"):
             self.win._open_plugins(initial_tab="cloudstream")
+
+    def _on_custom_plugins_activated(self, _row):
+        self.close()
+        if hasattr(self.win, "_open_plugins"):
+            self.win._open_plugins(initial_tab="custom")
 
     def _bind_ui(self):
         bindings = [

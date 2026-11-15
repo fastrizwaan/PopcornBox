@@ -240,6 +240,18 @@ template $Preferences: Adw.Dialog {
 						valign: center;
 					}
 				}
+
+				Adw.ActionRow prefs_custom_plugins_row {
+					title: _("Custom Plugins");
+					subtitle: _("Manage local drop-in Python scrapers and plugins");
+					activatable: true;
+
+					[suffix]
+					Image {
+						icon-name: "go-next-symbolic";
+						valign: center;
+					}
+				}
 			}
 
 			Adw.PreferencesGroup {

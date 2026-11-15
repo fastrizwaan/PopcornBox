@@ -2458,6 +2458,159 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 </property>
                               </object>
                             </child>
+                            <child>
+                              <object class="AdwViewStackPage" id="page_custom_sub">
+                                <property name="name">custom</property>
+                                <property name="title" translatable="yes">Custom</property>
+                                <property name="icon-name">text-x-script-symbolic</property>
+                                <property name="child">
+                                  <object class="GtkScrolledWindow">
+                                    <property name="vexpand">true</property>
+                                    <property name="hexpand">true</property>
+                                    <property name="child">
+                                      <object class="AdwClamp">
+                                        <property name="maximum-size">860</property>
+                                        <property name="tightening-threshold">600</property>
+                                        <property name="margin-top">18</property>
+                                        <property name="margin-bottom">32</property>
+                                        <property name="margin-start">16</property>
+                                        <property name="margin-end">16</property>
+                                        <property name="child">
+                                          <object class="GtkBox">
+                                            <property name="orientation">1</property>
+                                            <property name="spacing">24</property>
+                                            <child>
+                                              <object class="GtkBox">
+                                                <property name="orientation">1</property>
+                                                <property name="spacing">8</property>
+                                                <child>
+                                                  <object class="GtkBox">
+                                                    <property name="spacing">8</property>
+                                                    <child>
+                                                      <object class="GtkLabel">
+                                                        <property name="label" translatable="yes">OVERVIEW</property>
+                                                        <property name="xalign">0</property>
+                                                        <property name="hexpand">true</property>
+                                                        <style>
+                                                          <class name="heading"/>
+                                                          <class name="dim-label"/>
+                                                        </style>
+                                                      </object>
+                                                    </child>
+                                                    <child>
+                                                      <object class="GtkLabel" id="custom_plugin_badge_installed">
+                                                        <property name="label">0 installed</property>
+                                                        <style>
+                                                          <class name="plugin-pill-badge"/>
+                                                        </style>
+                                                      </object>
+                                                    </child>
+                                                    <child>
+                                                      <object class="GtkLabel" id="custom_plugin_badge_active">
+                                                        <property name="label">0 active</property>
+                                                        <style>
+                                                          <class name="plugin-pill-badge"/>
+                                                        </style>
+                                                      </object>
+                                                    </child>
+                                                    <child>
+                                                      <object class="GtkLabel" id="custom_plugin_badge_status">
+                                                        <property name="label">Custom plugins enabled</property>
+                                                        <style>
+                                                          <class name="plugin-pill-badge"/>
+                                                          <class name="plugin-enabled"/>
+                                                        </style>
+                                                      </object>
+                                                    </child>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="AdwPreferencesGroup">
+                                                    <child>
+                                                      <object class="AdwSwitchRow" id="custom_plugin_enable_globally_row">
+                                                        <property name="title" translatable="yes">Enable custom scrapers globally</property>
+                                                        <property name="subtitle" translatable="yes">Execute local Python scrapers during stream discovery.</property>
+                                                        <property name="active">true</property>
+                                                      </object>
+                                                    </child>
+                                                    <child>
+                                                      <object class="AdwActionRow" id="custom_plugin_open_folder_row">
+                                                        <property name="title" translatable="yes">Open Plugins Folder</property>
+                                                        <property name="subtitle" translatable="yes">Drop Python (.py) scraper scripts into this folder</property>
+                                                        <property name="activatable">true</property>
+                                                        <child type="suffix">
+                                                          <object class="GtkImage">
+                                                            <property name="icon-name">folder-open-symbolic</property>
+                                                            <property name="valign">3</property>
+                                                          </object>
+                                                        </child>
+                                                      </object>
+                                                    </child>
+                                                    <child>
+                                                      <object class="AdwActionRow" id="custom_plugin_import_row">
+                                                        <property name="title" translatable="yes">Import Plugin File</property>
+                                                        <property name="subtitle" translatable="yes">Copy a .py scraper file into your plugins folder</property>
+                                                        <property name="activatable">true</property>
+                                                        <child type="suffix">
+                                                          <object class="GtkImage">
+                                                            <property name="icon-name">document-open-symbolic</property>
+                                                            <property name="valign">3</property>
+                                                          </object>
+                                                        </child>
+                                                      </object>
+                                                    </child>
+                                                  </object>
+                                                </child>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkBox">
+                                                <property name="orientation">1</property>
+                                                <property name="spacing">8</property>
+                                                <child>
+                                                  <object class="GtkBox">
+                                                    <property name="spacing">8</property>
+                                                    <child>
+                                                      <object class="GtkLabel">
+                                                        <property name="label" translatable="yes">LOCAL SCRAPERS</property>
+                                                        <property name="xalign">0</property>
+                                                        <property name="hexpand">true</property>
+                                                        <style>
+                                                          <class name="heading"/>
+                                                          <class name="dim-label"/>
+                                                        </style>
+                                                      </object>
+                                                    </child>
+                                                    <child>
+                                                      <object class="GtkButton" id="custom_plugin_refresh_btn">
+                                                        <property name="icon-name">view-refresh-symbolic</property>
+                                                        <property name="tooltip-text" translatable="yes">Refresh Plugins</property>
+                                                        <style>
+                                                          <class name="flat"/>
+                                                          <class name="circular"/>
+                                                        </style>
+                                                      </object>
+                                                    </child>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkListBox" id="custom_plugin_listbox">
+                                                    <property name="selection-mode">0</property>
+                                                    <style>
+                                                      <class name="boxed-list"/>
+                                                    </style>
+                                                  </object>
+                                                </child>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </property>
+                                      </object>
+                                    </property>
+                                  </object>
+                                </property>
+                              </object>
+                            </child>
                           </object>
                         </child>
                       </object>
