@@ -3814,7 +3814,8 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
             # The page theme sometimes embeds server URLs in onclick/data
             # values rather than a visible anchor href.
             known_url_re = re.compile(
-                r"https?://[^\s\"'<>]+(?:hubcdn|hubdrive|hubcloud|playdrive|nexdrive|fastdl|vcloud|gdflix|greenmotors|hblinks|greenmountmotors)[^\s\"'<>]*",
+                r"https?://[^\s\"'<>]+(?:hubcdn|hubdrive|hubcloud|playdrive|nexdrive|fastdl|vcloud|gdflix|hblinks)[^\s\"'<>]*"
+                r"|https?://[^\s\"'<>]*?(?:greenmotors|greenmountmotors|hblinks|hubcloud|hubdrive)[^\s\"'<>]*",
                 re.IGNORECASE,
             )
             links.extend((match.group(0), "") for match in known_url_re.finditer(html))
@@ -3933,6 +3934,310 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
         except Exception as e:
             logger.debug(f"HDhub4u load_links failed: {e}")
 
+        return []
+
+
+class FourKHDHubCloudStreamProvider(CloudStreamProvider):
+    id = "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#FourKHDHub"
+    name = "FourKHDHub"
+    supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+        {"id": "fourk-hdr", "name": "4K HDR", "section": "4K HDR", "type": "movie", "supports_pagination": True},
+        {"id": "hindi-movies", "name": "Hindi Movies", "section": "Hindi Movies", "type": "movie", "supports_pagination": True},
+        {"id": "english-movies", "name": "English Movies", "section": "English Movies", "type": "movie", "supports_pagination": True},
+    )
+
+    DEFAULT_BASE = "https://4khdhub.one"
+
+    def _get_base_url(self):
+        return get_dynamic_domain("4khdhub", get_dynamic_domain("fourkhdhub", self.DEFAULT_BASE))
+
+    def _parse_movie_cards(self, html, base):
+        items = []
+        seen_hrefs = set()
+        cards = re.findall(
+            r"<a\b[^>]*href=[\x27\x22](/[^\x27\x22]+)[\x27\x22][^>]*class=[\x27\x22][^\x27\x22]*movie-card[^\x27\x22]*[\x27\x22][^>]*>(.*?)</a>",
+            html,
+            re.DOTALL | re.IGNORECASE,
+        )
+        for rel_href, inner in cards:
+            full_href = urllib.parse.urljoin(f"{base.rstrip('/')}/", rel_href.lstrip("/"))
+            if full_href in seen_hrefs:
+                continue
+            seen_hrefs.add(full_href)
+
+            t_m = (
+                re.search(r"<h3\b[^>]*class=[\x27\x22][^\x27\x22]*movie-card-title[^\x27\x22]*[\x27\x22][^>]*>(.*?)</h3>", inner, re.DOTALL | re.IGNORECASE)
+                or re.search(r"<[^>]*class=[\x27\x22][^\x27\x22]*(?:movie-)?card-title[^\x27\x22]*[\x27\x22][^>]*>(.*?)</[^>]+>", inner, re.DOTALL | re.IGNORECASE)
+            )
+            title = html_lib.unescape(re.sub(r"<[^>]+>", "", t_m.group(1))).strip() if t_m else ""
+            if not title:
+                al_m = re.search(r"aria-label=[\x27\x22]([^\x27\x22]+)[\x27\x22]", inner, re.IGNORECASE)
+                if al_m:
+                    title = al_m.group(1).replace(" details", "").strip()
+                if not title:
+                    img_alt = re.search(r"<img\b[^>]*alt=[\x27\x22]([^\x27\x22]+)[\x27\x22]", inner, re.IGNORECASE)
+                    if img_alt:
+                        title = img_alt.group(1).strip()
+            if not title:
+                continue
+
+            img_m = re.search(r"<img\b[^>]*src=[\x27\x22]([^\x27\x22]+)[\x27\x22]", inner, re.IGNORECASE)
+            poster = urllib.parse.urljoin(base + "/", img_m.group(1).strip()) if img_m else None
+
+            y_m = (
+                re.search(r"<p\b[^>]*class=[\x27\x22][^\x27\x22]*movie-card-meta[^\x27\x22]*[\x27\x22][^>]*>(.*?)</p>", inner, re.DOTALL | re.IGNORECASE)
+                or re.search(r"<[^>]*class=[\x27\x22][^\x27\x22]*(?:movie-)?card-year[^\x27\x22]*[\x27\x22][^>]*>(.*?)</[^>]+>", inner, re.DOTALL | re.IGNORECASE)
+            )
+            year_text = re.sub(r"<[^>]+>", "", y_m.group(1)).strip() if y_m else ""
+            year_match = re.search(r"\b((?:18|19|20)\d{2})\b", year_text or title)
+            year = int(year_match.group(1)) if year_match else None
+
+            is_series = bool(
+                re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.IGNORECASE)
+                or "/series/" in full_href
+            )
+
+            items.append({
+                "provider_id": self.id,
+                "data": f"fourkhdhub:{full_href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            })
+        return items
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        sections = []
+        p = int(page or 1)
+
+        # 1. Latest Movies
+        movies_url = f"{base}/category/movies/" if p <= 1 else f"{base}/category/movies/?pagex={p}"
+        try:
+            m_html = _http_get_text(movies_url, timeout=8.0)
+            movies = self._parse_movie_cards(m_html, base)
+            if movies:
+                sections.append(("Latest Movies", movies))
+        except Exception as e:
+            logger.debug(f"FourKHDHub Latest Movies failed: {e}")
+
+        # 2. Latest Series
+        series_url = f"{base}/category/series/" if p <= 1 else f"{base}/category/series/?pagex={p}"
+        try:
+            s_html = _http_get_text(series_url, timeout=8.0)
+            series = self._parse_movie_cards(s_html, base)
+            if series:
+                sections.append(("Latest Series", series))
+        except Exception as e:
+            logger.debug(f"FourKHDHub Latest Series failed: {e}")
+
+        # 3. 4K HDR
+        fourk_url = f"{base}/category/2160p-HDR/" if p <= 1 else f"{base}/category/2160p-HDR/?pagex={p}"
+        try:
+            f_html = _http_get_text(fourk_url, timeout=8.0)
+            fourk_items = self._parse_movie_cards(f_html, base)
+            if fourk_items:
+                sections.append(("4K HDR", fourk_items))
+        except Exception as e:
+            logger.debug(f"FourKHDHub 4K HDR failed: {e}")
+
+        return sections
+
+    def search(self, query):
+        if not query or not str(query).strip():
+            return []
+        base = self._get_base_url().rstrip("/")
+        clean_q = re.sub(r"[^\w\s-]", " ", str(query)).strip()
+        encoded = urllib.parse.quote(clean_q)
+        url = f"{base}/?s={encoded}"
+        try:
+            html = _http_get_text(url, timeout=8.0)
+            return self._parse_movie_cards(html, base)
+        except Exception as e:
+            logger.debug(f"FourKHDHub search failed for {clean_q}: {e}")
+            return []
+
+    def load(self, data_str):
+        href = data_str.split("fourkhdhub:")[-1].split("#")[0].strip()
+        base = self._get_base_url()
+        try:
+            html = _http_get_text(href, timeout=8.0)
+            t_match = (
+                re.search(r"<h1[^>]*class=[\x27\x22][^\x27\x22]*movie-title[^\x27\x22]*[\x27\x22][^>]*>(.*?)</h1>", html, re.DOTALL | re.IGNORECASE)
+                or re.search(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL | re.IGNORECASE)
+                or re.search(r"<title[^>]*>(.*?)</title>", html, re.DOTALL | re.IGNORECASE)
+                or re.search(r"<meta\b[^>]*property=[\x27\x22]og:title[\x27\x22][^>]*content=[\x27\x22]([^\x27\x22]+)[\x27\x22]", html, re.IGNORECASE)
+            )
+            title = html_lib.unescape(re.sub(r"<[^>]+>", " ", t_match.group(1))).strip() if t_match else "4KHDHub Video"
+            title = re.sub(r"\s*[-|–]\s*4[kK]HDHub.*$", "", title, flags=re.IGNORECASE).strip()
+
+            img_match = (
+                re.search(r"<div class=[\x27\x22][^\x27\x22]*movie-poster[^\x27\x22]*[\x27\x22][^>]*>.*?<img[^>]+src=[\x27\x22]([^\x27\x22]+)[\x27\x22]", html, re.DOTALL | re.IGNORECASE)
+                or re.search(r"<meta\b[^>]*property=[\x27\x22]og:image[\x27\x22][^>]*content=[\x27\x22]([^\x27\x22]+)[\x27\x22]", html, re.IGNORECASE)
+                or re.search(r"<img[^>]+class=[\x27\x22][^\x27\x22]*aligncenter[^\x27\x22]*[\x27\x22][^>]+src=[\x27\x22]([^\x27\x22]+)[\x27\x22]", html, re.IGNORECASE)
+                or re.search(r"<img[^>]+src=[\x27\x22]([^\x27\x22]+)[\x27\x22]", html, re.IGNORECASE)
+            )
+            poster = urllib.parse.urljoin(base + "/", html_lib.unescape(img_match.group(1))) if img_match else None
+
+            # Episodes for series
+            episodes = []
+            ep_items = re.findall(r"<div class=[\x27\x22]episode-download-item[\x27\x22]>(.*?)</div>\s*</div>", html, re.DOTALL | re.IGNORECASE)
+            seen_eps = set()
+            for it in ep_items:
+                m_ep = re.search(r"Episode-(\d+)", it, re.IGNORECASE)
+                ep_num = int(m_ep.group(1)) if m_ep else None
+                m_s = re.search(r"\bS(\d{1,2})\b", it, re.IGNORECASE)
+                s_num = int(m_s.group(1)) if m_s else 1
+                if ep_num is None:
+                    m_se = re.search(r"\bS(\d{1,2})E(\d{1,2})\b", it, re.IGNORECASE)
+                    if m_se:
+                        s_num, ep_num = int(m_se.group(1)), int(m_se.group(2))
+                if ep_num is not None:
+                    ep_key = (s_num, ep_num)
+                    if ep_key not in seen_eps:
+                        seen_eps.add(ep_key)
+                        m_title = re.search(r"<div class=[\x27\x22]episode-file-title[\x27\x22]>(.*?)</div>", it, re.DOTALL | re.IGNORECASE)
+                        ep_name = re.sub(r"<[^>]+>", "", m_title.group(1)).strip() if m_title else f"S{s_num:02d}E{ep_num:02d}"
+                        episodes.append({
+                            "name": ep_name,
+                            "season": s_num,
+                            "episode": ep_num,
+                            "data": f"fourkhdhub:{href}#S{s_num}E{ep_num}",
+                            "poster_url": poster,
+                        })
+
+            is_series = bool(episodes or "/series/" in href or re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.IGNORECASE))
+            y_match = re.search(r"\b((?:18|19|20)\d{2})\b", title)
+            year = int(y_match.group(1)) if y_match else None
+
+            return {
+                "provider_id": self.id,
+                "data": data_str,
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+                "rating_percent": None,
+                "tags": ["FourKHDHub", "4K"],
+                "episodes": episodes,
+            }
+        except Exception as e:
+            logger.debug(f"FourKHDHub load error for {href}: {e}")
+            return {
+                "provider_id": self.id,
+                "data": data_str,
+                "name": "4KHDHub Video",
+                "type": CloudStreamTvType.Movie,
+                "poster_url": None,
+                "background_url": None,
+                "description": "4KHDHub Video",
+                "year": None,
+                "rating_percent": None,
+                "tags": ["FourKHDHub"],
+                "episodes": [],
+            }
+
+    def load_links(self, data_str, season=None, episode=None):
+        parts = data_str.split("fourkhdhub:")[-1].split("#")
+        href = parts[0].strip()
+        ep_tag = parts[1].strip() if len(parts) > 1 else ""
+
+        # Extract season and episode if present
+        target_s = season
+        target_e = episode
+        if ep_tag and (target_s is None or target_e is None):
+            m_se = re.search(r"S(\d+)E(\d+)", ep_tag, re.IGNORECASE)
+            if m_se:
+                target_s = int(m_se.group(1)) if target_s is None else target_s
+                target_e = int(m_se.group(2)) if target_e is None else target_e
+
+        base = self._get_base_url()
+        sources = []
+        try:
+            html = _http_get_text(href, headers={
+                "Referer": f"{base.rstrip('/')}/",
+                "Accept-Language": "en-US,en;q=0.9",
+            }, timeout=10.0)
+
+            mediator_links = []
+            if target_e is not None:
+                # Find the specific episode container
+                ep_items = re.findall(r"<div class=[\x27\x22]episode-download-item[\x27\x22]>(.*?)</div>\s*</div>", html, re.DOTALL | re.IGNORECASE)
+                for it in ep_items:
+                    m_ep = re.search(r"Episode-(\d+)", it, re.IGNORECASE)
+                    ep_n = int(m_ep.group(1)) if m_ep else None
+                    if ep_n == target_e:
+                        mediator_links.extend(re.findall(r"href=[\x27\x22](https?://[^\x27\x22]+)[\x27\x22]", it))
+            if not mediator_links:
+                # All download links on the page (movies or fallback)
+                mediator_links = re.findall(
+                    r"https?://[^\s\x27\x22<>]*(?:greenmotors|greenmountmotors|hblinks|hubcloud|hubdrive|fastdl|pixeldrain|hubcdn)[^\s\x27\x22<>]*",
+                    html,
+                    re.IGNORECASE,
+                )
+
+            seen_links = set()
+            for raw_u in mediator_links:
+                u = html_lib.unescape(raw_u).strip()
+                if not u.startswith("http") or u in seen_links:
+                    continue
+                seen_links.add(u)
+
+                dest = u
+                if any(m in u.lower() for m in ("greenmotors.", "greenmountmotors.")):
+                    dest = _resolve_hdhub4u_short_link(u)
+                    if not dest:
+                        continue
+
+                # Extract playable sources
+                if any(k in dest.lower() for k in ("hblinks", "hubcloud", "hubdrive", "fastdl", "pixeldrain", "hubcdn", ".m3u8", ".mp4")):
+                    if "hblinks" in dest.lower():
+                        ext_sources = _extract_hblinks_sources(dest, referer=href)
+                    else:
+                        ext_sources = extract_video_streams(dest, referer=href)
+                    if ext_sources:
+                        for s in ext_sources:
+                            s_name = s.get("name") or "Direct"
+                            if not s_name.startswith("4KHDHub"):
+                                s["name"] = f"4KHDHub {s_name}"
+                            sources.append(s)
+
+        except Exception as e:
+            logger.debug(f"FourKHDHub load_links failed for {href}: {e}")
+        return sources
+
+    def get_streams_for_media(self, title, media_type="movie", year=None, season=None, episode=None, imdb_id=None):
+        if not title or not str(title).strip():
+            return []
+        items = self.search(title)
+        if not items:
+            return []
+
+        # Find best matching item
+        best_item = None
+        target_clean = re.sub(r"[^\w\s]", "", (title or "").lower()).strip()
+        for it in items:
+            it_name = re.sub(r"[^\w\s]", "", (it.get("name") or "").lower()).strip()
+            if target_clean and (target_clean in it_name or it_name in target_clean):
+                if year and it.get("year"):
+                    if str(year) == str(it.get("year")):
+                        best_item = it
+                        break
+                elif not best_item:
+                    best_item = it
+        if not best_item and items:
+            best_item = items[0]
+
+        if best_item:
+            return self.load_links(best_item["data"], season=season, episode=episode)
         return []
 
 
@@ -6394,7 +6699,7 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
     def get_main_page(self, page=1):
         sections_map = {"Latest Movies": [], "Latest Series": []}
         seen_titles = set()
-        for prov in (HDhub4uCloudStreamProvider(), BollyflixCloudStreamProvider(), MoviesDriveCloudStreamProvider(), VegaMoviesCloudStreamProvider()):
+        for prov in (HDhub4uCloudStreamProvider(), FourKHDHubCloudStreamProvider(), BollyflixCloudStreamProvider(), MoviesDriveCloudStreamProvider(), VegaMoviesCloudStreamProvider()):
             try:
                 for sec_title, items in prov.get_main_page(page=page):
                     target_list = sections_map.get(sec_title)
@@ -6417,7 +6722,7 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
 
     def get_streams_for_media(self, title, media_type="movie", year=None, season=None, episode=None, imdb_id=None):
         streams = []
-        for p in [YTSCloudStreamProvider(), TorrentioCloudStreamProvider(), CNCVerseCloudStreamProvider(), HDhub4uCloudStreamProvider(), DudeFilmsCloudStreamProvider(), ZinkmoviesCloudStreamProvider(), VegaMoviesCloudStreamProvider(), MoviesDriveCloudStreamProvider()]:
+        for p in [YTSCloudStreamProvider(), TorrentioCloudStreamProvider(), CNCVerseCloudStreamProvider(), HDhub4uCloudStreamProvider(), FourKHDHubCloudStreamProvider(), DudeFilmsCloudStreamProvider(), ZinkmoviesCloudStreamProvider(), VegaMoviesCloudStreamProvider(), MoviesDriveCloudStreamProvider()]:
             if hasattr(p, "get_streams_for_media"):
                 try:
                     res = p.get_streams_for_media(
@@ -6431,7 +6736,7 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
 
     def search(self, query):
         results = []
-        for p in [HDhub4uCloudStreamProvider(), BollyflixCloudStreamProvider(), MoviesDriveCloudStreamProvider(), NineKMoviesCloudStreamProvider(), DudeFilmsCloudStreamProvider(), ZinkmoviesCloudStreamProvider(), VegaMoviesCloudStreamProvider()]:
+        for p in [HDhub4uCloudStreamProvider(), FourKHDHubCloudStreamProvider(), BollyflixCloudStreamProvider(), MoviesDriveCloudStreamProvider(), NineKMoviesCloudStreamProvider(), DudeFilmsCloudStreamProvider(), ZinkmoviesCloudStreamProvider(), VegaMoviesCloudStreamProvider()]:
             try:
                 res = p.search(query)
                 if res:
@@ -6443,6 +6748,8 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
     def load(self, data_str):
         if "hdhub4u:" in data_str:
             return HDhub4uCloudStreamProvider().load(data_str)
+        if "fourkhdhub:" in data_str:
+            return FourKHDHubCloudStreamProvider().load(data_str)
         if "bollyflix:" in data_str:
             return BollyflixCloudStreamProvider().load(data_str)
         if "moviesdrive:" in data_str:
@@ -6468,6 +6775,8 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
     def load_links(self, data_str, season=None, episode=None):
         if "hdhub4u:" in data_str:
             return HDhub4uCloudStreamProvider().load_links(data_str, season=season, episode=episode)
+        if "fourkhdhub:" in data_str:
+            return FourKHDHubCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if "bollyflix:" in data_str:
             return BollyflixCloudStreamProvider().load_links(data_str, season=season, episode=episode)
         if "moviesdrive:" in data_str:
@@ -7020,6 +7329,45 @@ class GenericCloudStreamProvider(CloudStreamProvider):
     def get_main_page(self, page=1):
         return []
 
+    def _parse_cards(self, page_html, base):
+        items = []
+        if not page_html:
+            return items
+        seen_hrefs = set()
+        blocks = re.findall(r"<(?:article|figure|li|div\b[^>]*class=[\x27\x22][^\x27\x22]*(?:card|post|item)[^\x27\x22]*[\x27\x22])>(.*?)</(?:article|figure|li|div)>", page_html, re.I | re.DOTALL)
+        for block in blocks:
+            l_m = re.search(r"<a\b[^>]*href=[\x27\x22]([^\x27\x22]+)[\x27\x22][^>]*>", block, re.I)
+            if not l_m:
+                continue
+            href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(l_m.group(1)).strip())
+            if href in seen_hrefs or not href.startswith("http"):
+                continue
+            seen_hrefs.add(href)
+            t_m = re.search(r"<h[1-6]\b[^>]*>(.*?)</h[1-6]>", block, re.I | re.DOTALL)
+            if not t_m:
+                t_m = re.search(r"<a\b[^>]*title=[\x27\x22]([^\x27\x22]+)[\x27\x22]", block, re.I)
+            if not t_m:
+                t_m = re.search(r"<img\b[^>]*alt=[\x27\x22]([^\x27\x22]+)[\x27\x22]", block, re.I)
+            title = html_lib.unescape(re.sub(r"<[^>]+>", " ", t_m.group(1))).strip() if t_m else ""
+            if not title or len(title) < 2:
+                continue
+            img_m = re.search(r"<img\b[^>]*src=[\x27\x22]([^\x27\x22]+)[\x27\x22]", block, re.I)
+            poster = urllib.parse.urljoin(f"{base}/", img_m.group(1).strip()) if img_m else None
+            y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+            year = int(y_m.group(1)) if y_m else None
+            is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}\b", title, re.I))
+            items.append({
+                "provider_id": self.id,
+                "data": f"generic:{href}",
+                "name": title,
+                "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                "poster_url": poster,
+                "background_url": poster,
+                "description": title,
+                "year": year,
+            })
+        return items
+
     def search(self, query):
         if not query or not query.strip():
             return []
@@ -7137,21 +7485,29 @@ def get_provider(provider_id):
         return _PROVIDERS[provider_id]
     
     clean_id = str(provider_id).strip().lower()
-    for p in _PROVIDERS.values():
-        if p.id.lower() == clean_id:
+    for k, p in _PROVIDERS.items():
+        if k.lower() == clean_id or (hasattr(p, "id") and p.id.lower() == clean_id):
             return p
 
     target_name = clean_id.split("#", 1)[-1] if "#" in clean_id else clean_id
-    for p in _PROVIDERS.values():
-        p_name = p.name.strip().lower()
-        if p_name == target_name or p_name == clean_id:
-            return p
-        if p.id.lower().endswith(f"#{target_name}"):
+    norm_target = target_name.replace("fourk", "4k")
+    norm_target2 = target_name.replace("4k", "fourk")
+
+    for k, p in _PROVIDERS.items():
+        k_lower = k.lower()
+        p_name = p.name.strip().lower() if hasattr(p, "name") else ""
+        if (
+            k_lower in (target_name, clean_id, norm_target, norm_target2)
+            or p_name in (target_name, clean_id, norm_target, norm_target2)
+            or (hasattr(p, "id") and p.id.lower().endswith(f"#{target_name}"))
+            or (hasattr(p, "id") and p.id.lower().endswith(f"#{norm_target}"))
+            or (hasattr(p, "id") and p.id.lower().endswith(f"#{norm_target2}"))
+        ):
             return p
 
     for p in _PROVIDERS.values():
-        p_name = p.name.strip().lower()
-        if p_name in target_name or target_name in p_name:
+        p_name = p.name.strip().lower() if hasattr(p, "name") else ""
+        if p_name and (p_name in target_name or target_name in p_name):
             return p
 
     # Fallback to Generic provider so every provider has an active instance
@@ -7184,12 +7540,39 @@ register_provider(youtube_prov)
 _PROVIDERS["YoutubeProvider"] = youtube_prov
 _PROVIDERS["YouTube"] = youtube_prov
 _PROVIDERS["https://raw.githubusercontent.com/recloudstream/extensions/master/repo.json#YoutubeProvider"] = youtube_prov
-register_provider(BollyflixCloudStreamProvider())
-register_provider(HDhub4uCloudStreamProvider())
+bolly_prov = BollyflixCloudStreamProvider()
+register_provider(bolly_prov)
+_PROVIDERS["Bollyflix"] = bolly_prov
+_PROVIDERS["bollyflix"] = bolly_prov
+_PROVIDERS["https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#Bollyflix"] = bolly_prov
+
+hdhub_prov = HDhub4uCloudStreamProvider()
+register_provider(hdhub_prov)
+_PROVIDERS["HDhub4u"] = hdhub_prov
+_PROVIDERS["hdhub4u"] = hdhub_prov
+_PROVIDERS["https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#HDhub4u"] = hdhub_prov
+
+fourk_prov = FourKHDHubCloudStreamProvider()
+register_provider(fourk_prov)
+_PROVIDERS["FourKHDHub"] = fourk_prov
+_PROVIDERS["4KHDHub"] = fourk_prov
+_PROVIDERS["4khdhub"] = fourk_prov
+_PROVIDERS["fourkhdhub"] = fourk_prov
+_PROVIDERS["4K HDHUB"] = fourk_prov
+_PROVIDERS["https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#FourKHDHub"] = fourk_prov
+
+moviesmod_prov = MoviesmodCloudStreamProvider()
+register_provider(moviesmod_prov)
+_PROVIDERS["Moviesmod"] = moviesmod_prov
+_PROVIDERS["moviesmod"] = moviesmod_prov
+
 register_provider(MoviesDriveCloudStreamProvider())
-register_provider(MoviesmodCloudStreamProvider())
 register_provider(VegaMoviesCloudStreamProvider())
-register_provider(YTSCloudStreamProvider())
+
+yts_prov = YTSCloudStreamProvider()
+register_provider(yts_prov)
+_PROVIDERS["YTS"] = yts_prov
+_PROVIDERS["yts"] = yts_prov
 
 torrentio_prov = TorrentioCloudStreamProvider()
 register_provider(torrentio_prov)
@@ -7709,7 +8092,7 @@ def toggle_plugin(plugin_id, enabled):
     database.toggle_cloudstream_plugin(plugin_id, bool(enabled))
 
 
-def bulk_install_and_enable(plugin_ids):
+def bulk_install_and_enable(plugin_ids, only_compatible=True):
     """Install and enable multiple plugins in parallel."""
     installed = 0
     enabled = 0
@@ -7717,6 +8100,8 @@ def bulk_install_and_enable(plugin_ids):
     for pid in plugin_ids:
         plugin = get_plugin(pid)
         if not plugin:
+            continue
+        if only_compatible and not is_provider_runnable(plugin):
             continue
         if not plugin.get("is_installed") or plugin.get("version", 0) > (plugin.get("installed_version") or 0):
             ok, msg = install_plugin(pid)

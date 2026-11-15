@@ -730,7 +730,7 @@ class MovieDetailsPage(Gtk.Overlay):
         title_str = self.movie_stub.get("title", "")
         if self.movie_stub.get("is_cloudstream") or str(self.movie_stub.get("id", "")).startswith("cloudstream:"):
             from .cloudstream import clean_cloudstream_title
-            title_str, _ = clean_cloudstream_title(title_str)
+            title_str, _year = clean_cloudstream_title(title_str)
         self.title_label = Gtk.Label(label=title_str if title_str else "Loading...")
         self.title_label.add_css_class("title-1")
         self.title_label.set_halign(Gtk.Align.START)
@@ -2528,7 +2528,7 @@ class MovieDetailsPage(Gtk.Overlay):
         d_title = details.get("title", "")
         if self.movie_stub.get("is_cloudstream") or details.get("is_cloudstream") or str(details.get("id", "")).startswith("cloudstream:"):
             from .cloudstream import clean_cloudstream_title
-            d_title, _ = clean_cloudstream_title(d_title)
+            d_title, _year = clean_cloudstream_title(d_title)
         self.title_label.set_text(d_title)
 
         # Disconnect any previously connected signal handlers before reconnecting
@@ -17358,7 +17358,7 @@ class CineWindow(Adw.ApplicationWindow):
         title_text = self.stream_queue_title or "Stream"
         if getattr(self, "stream_queue_item_id", "") and str(self.stream_queue_item_id).startswith("cloudstream:"):
             from .cloudstream import clean_cloudstream_title
-            title_text, _ = clean_cloudstream_title(title_text)
+            title_text, _year = clean_cloudstream_title(title_text)
         stream_name = torrent.get("filename") or torrent.get("name") or torrent.get("stream_title") or "" if isinstance(torrent, dict) else ""
         if stream_name:
             display_title = f"{title_text} ({stream_name})"
@@ -19186,9 +19186,6 @@ class CineWindow(Adw.ApplicationWindow):
             if not manifest_url:
                 is_on = False
                 reason = _("Offline")
-            elif api.is_provider_in_cooldown(manifest_url):
-                is_on = False
-                reason = _("Temporarily unavailable")
             elif force_network:
                 # The explicit check always probes live: a cached verdict is
                 # exactly what the user is asking us to look past.
@@ -19197,6 +19194,7 @@ class CineWindow(Adw.ApplicationWindow):
                 api.set_addon_online_status(manifest_url, is_on)
                 if is_on:
                     api.reset_addon_session_status(manifest_url)
+                    api.clear_provider_cooldown(manifest_url)
                 try:
                     from . import database
                     database.update_addon_health(
@@ -19208,6 +19206,20 @@ class CineWindow(Adw.ApplicationWindow):
                 except Exception:
                     pass
                 reason = _("Online") if is_on else _("Offline — manifest unreachable")
+            elif api.is_provider_in_cooldown(manifest_url):
+                rem = api.get_provider_cooldown_remaining(manifest_url)
+                reason_detail = api.get_provider_cooldown_reason(manifest_url)
+                manifest_alive = api.check_addon_manifest_online(manifest_url)
+                if manifest_alive:
+                    is_on = "cooldown"
+                    reason = _("Online — cooling down (%ds remaining%s)") % (
+                        rem, f": {reason_detail}" if reason_detail else ""
+                    )
+                else:
+                    is_on = False
+                    reason = _("Temporarily unavailable (%ds cooldown%s)") % (
+                        rem, f": {reason_detail}" if reason_detail else ""
+                    )
             elif not api.is_addon_online(manifest_url):
                 is_on = False
                 reason = _("Offline")
@@ -19228,7 +19240,12 @@ class CineWindow(Adw.ApplicationWindow):
 
     def _apply_addon_status(self, status_label, is_on, reason):
         try:
-            status_label.set_label("🟢" if is_on else "🔴")
+            if is_on in ("cooldown", "cooling"):
+                status_label.set_label("🟡")
+            elif is_on:
+                status_label.set_label("🟢")
+            else:
+                status_label.set_label("🔴")
             status_label.set_tooltip_text(reason)
         except Exception:
             pass
@@ -20341,7 +20358,23 @@ class CineWindow(Adw.ApplicationWindow):
             self.cloudstream_plugins_listbox.append(empty_row)
             return
 
-        for p in plugins_list:
+        def _plugin_sort_key(item):
+            is_inst = bool(item.get("is_installed", False))
+            is_run = cloudstream.is_provider_runnable(item)
+            name = (item.get("name") or item.get("internal_name") or "").lower()
+            if is_inst and is_run:
+                prio = 0
+            elif is_run:
+                prio = 1
+            elif is_inst:
+                prio = 2
+            else:
+                prio = 3
+            return (prio, name)
+
+        sorted_plugins = sorted(plugins_list, key=_plugin_sort_key)
+
+        for p in sorted_plugins:
             p_id = p.get("id")
             p_name = p.get("name") or p.get("internal_name") or "Plugin"
             p_desc = p.get("description") or ""
@@ -20366,6 +20399,9 @@ class CineWindow(Adw.ApplicationWindow):
             row._plugin_desc = p_desc.lower()
             row._plugin_lang = lang.lower()
             row._plugin_types = [t.lower() for t in raw_types]
+            row._is_runnable = is_runnable
+            row._is_installed = is_installed
+            row._is_enabled = bool(p.get("enabled", False))
 
             pfx = Gtk.Image.new_from_icon_name("network-wireless-symbolic")
             pfx.set_pixel_size(18)
@@ -20449,6 +20485,18 @@ class CineWindow(Adw.ApplicationWindow):
         p_desc = getattr(row, "_plugin_desc", "")
         p_lang = getattr(row, "_plugin_lang", "")
         p_types = getattr(row, "_plugin_types", [])
+        is_run = getattr(row, "_is_runnable", False)
+        is_inst = getattr(row, "_is_installed", False)
+        is_enb = getattr(row, "_is_enabled", False)
+
+        if text in ("runnable", "compatible", "supported", "scraper", "python") and is_run:
+            return True
+        if text in ("installed",) and is_inst:
+            return True
+        if text in ("enabled", "active") and (is_enb and is_run):
+            return True
+        if text in ("no scraper", "unsupported", "dex") and not is_run:
+            return True
         if text in p_name or text in p_desc or text == p_lang or any(text in t for t in p_types):
             return True
         return False
@@ -20540,11 +20588,16 @@ class CineWindow(Adw.ApplicationWindow):
             ok, msg = cloudstream.install_plugin(plugin_id)
             if ok:
                 cloudstream.toggle_plugin(plugin_id, True)
-                if "megaprovider" in plugin_id.lower():
+                plugin = cloudstream.get_plugin(plugin_id)
+                if plugin and not cloudstream.is_provider_runnable(plugin):
+                    msg = _("%s installed (Note: Android DEX bytecode only - no Python scraper adapter yet)") % plugin_name
+                elif "megaprovider" in plugin_id.lower():
                     provider = cloudstream.get_provider(plugin_id)
                     if provider and hasattr(provider, "sync_repositories"):
-                        added, total, _ = provider.sync_repositories()
-                        msg = f"MegaProvider installed: synced {added}/{total} repositories!"
+                        added, total, _repo_names = provider.sync_repositories()
+                        msg = _("MegaProvider installed: synced %d/%d repositories!") % (added, total)
+                else:
+                    msg = _("Installed and enabled %s") % plugin_name
 
             def apply_result():
                 self._populate_cloudstream()
@@ -20633,15 +20686,15 @@ class CineWindow(Adw.ApplicationWindow):
         def worker():
             from . import cloudstream
             plugins_list = cloudstream.get_all_plugins()
-            p_ids = [p["id"] for p in plugins_list]
-            res = cloudstream.bulk_install_and_enable(p_ids)
+            p_ids = [p["id"] for p in plugins_list if cloudstream.is_provider_runnable(p)]
+            res = cloudstream.bulk_install_and_enable(p_ids, only_compatible=True)
 
             def apply_result():
                 self._populate_cloudstream()
                 self._refresh_cloudstream_catalog_views()
                 inst = res.get("installed", 0)
                 enb = res.get("enabled", 0)
-                self._show_toast(_(f"Installed {inst}, enabled {enb} CloudStream providers"))
+                self._show_toast(_("Installed %d, enabled %d CloudStream providers") % (inst, enb))
                 return False
 
             GLib.idle_add(apply_result)

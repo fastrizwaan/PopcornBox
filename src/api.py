@@ -567,6 +567,13 @@ def get_provider_cooldown_remaining(url_or_manifest):
         exp = _PROVIDER_COOLDOWNS.get(host, 0)
         return max(0, int(exp - time.time()))
 
+def get_provider_cooldown_reason(url_or_manifest):
+    host = _get_provider_host(url_or_manifest)
+    if not host:
+        return ""
+    with _PROVIDER_PROTECTION_LOCK:
+        return _PROVIDER_COOLDOWN_REASONS.get(host, "")
+
 def set_provider_cooldown(url_or_manifest, duration_seconds=300, reason="Rate limit"):
     host = _get_provider_host(url_or_manifest)
     if not host:
@@ -1233,8 +1240,8 @@ def _request_addon_streams(addon, url, timeout=None, abort_event=None, retries=N
             print(f"[STREAM DEBUG] timeout addon={addon_name!r} timeout={timeout}s")
             logging.debug(f"Timeout fetching from addon {addon.get('name')}")
             # Do NOT immediately retry after a long timeout - server is already unresponsive
-            set_provider_cooldown(host, duration_seconds=120, reason="Request Timeout (Unresponsive)")
             if not (abort_event and abort_event.is_set()):
+                set_provider_cooldown(host, duration_seconds=60, reason="Request Timeout (Unresponsive)")
                 _record_addon_failure(manifest_url)
         except Exception as e:
             print(f"[STREAM DEBUG] request error addon={addon_name!r}: {type(e).__name__}: {e}")
@@ -1244,6 +1251,8 @@ def _request_addon_streams(addon, url, timeout=None, abort_event=None, retries=N
             if transient_error and _attempt < retries and _wait_before_provider_retry(_attempt, abort_event):
                 retry_requested = True
             elif not (abort_event and abort_event.is_set()) and transient_error:
+                if any(kw in err_str for kw in ["timed out", "timeout"]):
+                    set_provider_cooldown(host, duration_seconds=60, reason="Request Timeout (Unresponsive)")
                 _record_addon_failure(manifest_url)
 
     # Retry after releasing the host slot: the slot lock is not reentrant, so a

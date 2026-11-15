@@ -478,6 +478,74 @@ class TestCloudStream(unittest.TestCase):
             sources = provider.load_links("hdhub4u:https://new12.hdhub4u.cl/inception-2010/")
             self.assertTrue(any("inception.mkv" in s.get("url", "") for s in sources))
 
+    def test_fourkhdhub_provider(self):
+        provider = cloudstream.get_provider("https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#FourKHDHub")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "FourKHDHub")
+        self.assertTrue(cloudstream.is_provider_runnable({"id": provider.id}))
+        self.assertEqual(cloudstream.get_provider("4KHDHub"), provider)
+        self.assertEqual(cloudstream.get_provider("FourKHDHub"), provider)
+
+        # Mock HTML catalog / search cards
+        mock_html = """
+        <html>
+            <a href="/the-beast-movie-8578/" class="movie-card">
+                <img src="https://img.4khdhub.one/posters/the-beast.jpg" alt="The Beast 2024">
+                <div class="card-title">The Beast (2024) 4K UHD</div>
+                <span class="card-year">2024</span>
+            </a>
+            <a href="/stranger-things-season-1-9999/" class="movie-card">
+                <img src="https://img.4khdhub.one/posters/st.jpg" alt="Stranger Things">
+                <div class="card-title">Stranger Things S01 (2016) Season 1</div>
+            </a>
+        </html>
+        """
+        with patch("src.cloudstream._http_get_text", return_value=mock_html):
+            items = provider.search("Beast")
+            self.assertEqual(len(items), 2)
+            self.assertEqual(items[0]["name"], "The Beast (2024) 4K UHD")
+            self.assertEqual(items[0]["year"], 2024)
+            self.assertEqual(items[0]["type"], cloudstream.CloudStreamTvType.Movie)
+            self.assertEqual(items[1]["type"], cloudstream.CloudStreamTvType.TvSeries)
+
+        # Mock detail page loading
+        mock_detail_html = """
+        <html>
+            <title>The Beast (2024) - 4KHDHub</title>
+            <div class="entry-content">
+                <img class="aligncenter" src="https://img.4khdhub.one/the-beast.jpg">
+                <p>A gripping 4K sci-fi drama directed by Bertrand Bonello.</p>
+                <a href="https://greenmotors.club/?id=beast4k123">4K UHD HDR [18GB]</a>
+            </div>
+        </html>
+        """
+        with patch("src.cloudstream._http_get_text", return_value=mock_detail_html):
+            load_res = provider.load("fourkhdhub:https://4khdhub.dad/the-beast-movie-8578/")
+            self.assertIsNotNone(load_res)
+            self.assertEqual(load_res["name"], "The Beast (2024)")
+            self.assertEqual(load_res["poster_url"], "https://img.4khdhub.one/the-beast.jpg")
+
+        # Mock link extraction with mediator greenmotors.club -> hblinks -> hubcloud
+        with patch("src.cloudstream._http_get_text", return_value=mock_detail_html), \
+             patch("src.cloudstream._resolve_hdhub4u_short_link", return_value="https://hblinks.pro/archives/12345"), \
+             patch("src.cloudstream._extract_hblinks_sources", return_value=[{"url": "https://cf.4khdhub.stream/thebeast4k.mp4", "name": "HubCloud [Cloudflare 4K]"}]):
+            sources = provider.load_links("fourkhdhub:https://4khdhub.dad/the-beast-movie-8578/")
+            self.assertTrue(len(sources) >= 1)
+            self.assertTrue(any("thebeast4k.mp4" in s.get("url", "") for s in sources))
+
+    def test_bulk_install_compatible_filtering(self):
+        mock_plugins = [
+            {"id": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#FourKHDHub", "name": "FourKHDHub", "is_installed": False},
+            {"id": "https://example.com/repo.json#UnknownPlugin", "name": "UnknownPlugin", "is_installed": False},
+        ]
+        with patch("src.cloudstream.get_plugin", side_effect=lambda pid: next((p for p in mock_plugins if p["id"] == pid), None)), \
+             patch("src.cloudstream.install_plugin", return_value=(True, "Installed")), \
+             patch("src.cloudstream.toggle_plugin") as mock_toggle:
+            res = cloudstream.bulk_install_and_enable([p["id"] for p in mock_plugins], only_compatible=True)
+            self.assertEqual(res["installed"], 1)
+            self.assertEqual(res["enabled"], 1)
+            mock_toggle.assert_called_once_with("https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#FourKHDHub", True)
+
     def test_moviesdrive_and_cinestream_providers(self):
         md = cloudstream.get_provider("https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#MoviesDrive")
         self.assertIsNotNone(md)
@@ -1033,6 +1101,7 @@ class TestCloudStream(unittest.TestCase):
             cloudstream.ZinkmoviesCloudStreamProvider(),
             cloudstream.CineStreamCloudStreamProvider(),
             cloudstream.HDhub4uCloudStreamProvider(),
+            cloudstream.FourKHDHubCloudStreamProvider(),
             cloudstream.YTSCloudStreamProvider(),
         ]
         for p in providers:

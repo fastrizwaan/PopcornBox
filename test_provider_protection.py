@@ -143,10 +143,12 @@ class TestProviderProtection(unittest.TestCase):
         api.set_provider_cooldown(host, duration_seconds=300, reason="Test 5 min ban")
         self.assertTrue(api.is_provider_in_cooldown(host))
         self.assertGreater(api.get_provider_cooldown_remaining(host), 250)
+        self.assertEqual(api.get_provider_cooldown_reason(host), "Test 5 min ban")
 
         # Extraction from full URL
         full_url = f"https://{host}/manifest.json"
         self.assertTrue(api.is_provider_in_cooldown(full_url))
+        self.assertEqual(api.get_provider_cooldown_reason(full_url), "Test 5 min ban")
 
         api.clear_provider_cooldown(host)
         self.assertFalse(api.is_provider_in_cooldown(host))
