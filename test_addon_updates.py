@@ -23,7 +23,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -32,7 +32,7 @@ if res_file.exists():
         pass
 
 from src import database, api
-from src.window import CineWindow, _filter_items_from_available_addons
+from src.window import PopcornBoxWindow, _filter_items_from_available_addons
 
 
 class TestAddonUpdates(unittest.TestCase):
@@ -59,24 +59,24 @@ class TestAddonUpdates(unittest.TestCase):
 
     def test_normalize_addon_url(self):
         # 1. stremio:// protocol conversion
-        url = CineWindow._normalize_addon_url(None, "stremio://v3-cinemeta.strem.io/manifest.json")
+        url = PopcornBoxWindow._normalize_addon_url(None, "stremio://v3-cinemeta.strem.io/manifest.json")
         self.assertEqual(url, "https://v3-cinemeta.strem.io/manifest.json")
 
         # 2. stremio:// without /manifest.json
-        url = CineWindow._normalize_addon_url(None, "stremio://v3-cinemeta.strem.io")
+        url = PopcornBoxWindow._normalize_addon_url(None, "stremio://v3-cinemeta.strem.io")
         self.assertEqual(url, "https://v3-cinemeta.strem.io/manifest.json")
 
         # 3. Missing scheme defaults to https:// and appends manifest.json
-        url = CineWindow._normalize_addon_url(None, "torrentio.strem.fun")
+        url = PopcornBoxWindow._normalize_addon_url(None, "torrentio.strem.fun")
         self.assertEqual(url, "https://torrentio.strem.fun/manifest.json")
 
         # 4. http:// URL preserved
-        url = CineWindow._normalize_addon_url(None, "http://localhost:7000/manifest.json")
+        url = PopcornBoxWindow._normalize_addon_url(None, "http://localhost:7000/manifest.json")
         self.assertEqual(url, "http://localhost:7000/manifest.json")
 
         # 5. Empty or whitespace
-        self.assertEqual(CineWindow._normalize_addon_url(None, ""), "")
-        self.assertEqual(CineWindow._normalize_addon_url(None, "   "), "")
+        self.assertEqual(PopcornBoxWindow._normalize_addon_url(None, ""), "")
+        self.assertEqual(PopcornBoxWindow._normalize_addon_url(None, "   "), "")
 
     def test_add_and_remove_addon_database(self):
         # Add a custom addon
@@ -248,7 +248,7 @@ class TestAddonUpdates(unittest.TestCase):
                 self._on_addons_changed = MagicMock()
                 self._show_toast = MagicMock()
 
-            _remove_addon = CineWindow._remove_addon
+            _remove_addon = PopcornBoxWindow._remove_addon
 
         win = MockWindow()
         win._remove_addon(addon)
@@ -263,13 +263,13 @@ class TestAddonUpdates(unittest.TestCase):
     def test_apply_addon_status_labels_online_and_offline(self):
         status_label = MagicMock()
 
-        CineWindow._apply_addon_status(None, status_label, False, "Temporarily unavailable")
+        PopcornBoxWindow._apply_addon_status(None, status_label, False, "Temporarily unavailable")
         status_label.set_label.assert_called_with("🔴")
         status_label.set_tooltip_text.assert_called_with("Temporarily unavailable")
 
         status_label.reset_mock()
 
-        CineWindow._apply_addon_status(None, status_label, True, "Online")
+        PopcornBoxWindow._apply_addon_status(None, status_label, True, "Online")
         status_label.set_label.assert_called_with("🟢")
         status_label.set_tooltip_text.assert_called_with("Online")
 
@@ -279,16 +279,16 @@ class TestAddonUpdates(unittest.TestCase):
         win = MagicMock()
         win._addon_status_widgets = {url: status_label}
 
-        CineWindow._apply_addon_health_results(win, {url: {"online": True}})
+        PopcornBoxWindow._apply_addon_health_results(win, {url: {"online": True}})
         win._apply_addon_status.assert_called_once_with(status_label, True, "Online")
 
         win._apply_addon_status.reset_mock()
-        CineWindow._apply_addon_health_results(win, {url: {"online": False}})
+        PopcornBoxWindow._apply_addon_health_results(win, {url: {"online": False}})
         win._apply_addon_status.assert_called_once_with(status_label, False, "Offline")
 
         # Rows that are no longer on the page are ignored.
         win._apply_addon_status.reset_mock()
-        CineWindow._apply_addon_health_results(win, {"https://gone.example/manifest.json": {"online": True}})
+        PopcornBoxWindow._apply_addon_health_results(win, {"https://gone.example/manifest.json": {"online": True}})
         win._apply_addon_status.assert_not_called()
 
     def test_filter_items_from_available_addons(self):
@@ -366,7 +366,7 @@ class TestAddonUpdates(unittest.TestCase):
                 self.media_type_keys = ["all", "movie_series", "movie", "series"]
                 self.anime_supported = False
 
-            _refresh_active_library_view = CineWindow._refresh_active_library_view
+            _refresh_active_library_view = PopcornBoxWindow._refresh_active_library_view
 
         win = MockWindow("discover")
         win._refresh_active_library_view()
@@ -417,11 +417,11 @@ class TestAddonUpdates(unittest.TestCase):
             def _get_current_discover_type(self):
                 return "all"
 
-            _on_addons_changed = CineWindow._on_addons_changed
+            _on_addons_changed = PopcornBoxWindow._on_addons_changed
 
         for prior in (False, True):
             win = MockWindow(prior)
-            CineWindow._on_addons_changed(win)
+            PopcornBoxWindow._on_addons_changed(win)
 
             # Dropdown model rebuilds must not emit reload signals that switch
             # the hidden library to the Unique view while the user is elsewhere.
@@ -494,11 +494,11 @@ class TestAddonUpdates(unittest.TestCase):
 
         with patch("src.movie_widget.ContinueWatchingWidget", FakeCard):
             win, target_box = build_window()
-            CineWindow._update_continue_watching_section(win)
+            PopcornBoxWindow._update_continue_watching_section(win)
             self.assertEqual(count_cards(target_box), 2)
 
             database.set_addon_enabled("probe.cw", False)
-            CineWindow._update_continue_watching_section(win)
+            PopcornBoxWindow._update_continue_watching_section(win)
             self.assertEqual(count_cards(target_box), 1)
 
     def test_local_continue_watching_page_filters_disabled_addons(self):
@@ -537,7 +537,7 @@ class TestAddonUpdates(unittest.TestCase):
         win.cw_search_entry = None
 
         with patch("src.movie_widget.ContinueWatchingWidget", FakeCard):
-            CineWindow._populate_local_db_page(win, "continue_watching")
+            PopcornBoxWindow._populate_local_db_page(win, "continue_watching")
 
         flowbox = None
         child = container.get_first_child()
@@ -578,11 +578,11 @@ class TestAddonUpdates(unittest.TestCase):
                 self.catalog_dropdown = MagicMock()
                 self.catalog_dropdown.get_selected.return_value = 0
 
-            _update_supported_media_types = CineWindow._update_supported_media_types
-            _update_search_catalog_dropdown = CineWindow._update_search_catalog_dropdown
-            _update_catalog_dropdown = CineWindow._update_catalog_dropdown
-            _refresh_active_library_view = CineWindow._refresh_active_library_view
-            _on_addons_changed = CineWindow._on_addons_changed
+            _update_supported_media_types = PopcornBoxWindow._update_supported_media_types
+            _update_search_catalog_dropdown = PopcornBoxWindow._update_search_catalog_dropdown
+            _update_catalog_dropdown = PopcornBoxWindow._update_catalog_dropdown
+            _refresh_active_library_view = PopcornBoxWindow._refresh_active_library_view
+            _on_addons_changed = PopcornBoxWindow._on_addons_changed
             _ensure_all_menus_built = MagicMock()
             _prewarm_discover_views = MagicMock()
             _refresh_discover_page = MagicMock()

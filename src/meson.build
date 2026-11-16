@@ -1,5 +1,5 @@
 pkgdatadir = get_option('prefix') / get_option('datadir') / meson.project_name()
-moduledir = pkgdatadir / 'cine'
+moduledir = pkgdatadir / 'popcornbox'
 gnome = import('gnome')
 
 blueprints = custom_target('blueprints',
@@ -15,8 +15,8 @@ blueprints = custom_target('blueprints',
   command: [find_program('blueprint-compiler'), 'batch-compile', '@OUTPUT@', '@CURRENT_SOURCE_DIR@', '@INPUT@'],
 )
 
-gnome.compile_resources('cine',
-  'cine.gresource.xml',
+gnome.compile_resources('popcornbox',
+  'popcornbox.gresource.xml',
   gresource_bundle: true,
   install: true,
   install_dir: pkgdatadir,
@@ -32,15 +32,15 @@ conf.set('localedir', get_option('prefix') / get_option('localedir'))
 conf.set('pkgdatadir', pkgdatadir)
 
 configure_file(
-  input: 'cine.in',
-  output: 'cine',
+  input: 'popcornbox.in',
+  output: 'popcornbox',
   configuration: conf,
   install: true,
   install_dir: get_option('bindir'),
   install_mode: 'rwxr-xr-x'
 )
 
-cine_sources = [
+popcornbox_sources = [
   '__init__.py',
   'api.py',
   'backup.py',
@@ -73,4 +73,4 @@ cine_sources = [
   'nuvio_runner.bundle.js',
 ]
 
-install_data(cine_sources, install_dir: moduledir)
+install_data(popcornbox_sources, install_dir: moduledir)

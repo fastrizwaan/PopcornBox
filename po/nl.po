@@ -1,14 +1,14 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
-# This file is distributed under the same license as the io.github.diegopvlk.Cine package.
+# This file is distributed under the same license as the io.github.fastrizwaan.PopcornBox package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
 #
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: io.github.diegopvlk.Cine\n"
+"Project-Id-Version: io.github.fastrizwaan.PopcornBox\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-16 18:07-0300\n"
+"POT-Creation-Date: 2026-11-16 16:30+0530\n"
 "PO-Revision-Date: 2026-02-28 11:40-0300\n"
 "Last-Translator: Heimen Stoffels <vistausss@fastmail.com>\n"
 "Language-Team: \n"
@@ -18,177 +18,289 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "X-Generator: Poedit 3.8\n"
 
-#: data/io.github.diegopvlk.Cine.desktop.in:2 src/main.py:230 src/mpris.py:140
-#: src/mpris.py:358 src/window.py:208 src/window.py:2096 src/window.blp:6
-#: src/window.blp:81 src/window.blp:438
-msgid "Cine"
-msgstr "Cine"
+#: data/io.github.fastrizwaan.PopcornBox.desktop.in:2 src/mpris.py:146
+#: src/mpris.py:366 src/window.py:5227 src/window.py:8236 src/window.blp:6
+#: src/window.blp:232 src/window.blp:610 src/window.blp:680 src/window.blp:750
+#: src/window.blp:820 src/window.blp:881 src/window.blp:923 src/window.blp:1576
+#: src/window.blp:1949
+msgid "PopcornBox"
+msgstr "PopcornBox"
 
-#: data/io.github.diegopvlk.Cine.desktop.in:3
-#: data/io.github.diegopvlk.Cine.metainfo.xml.in:23
+#: data/io.github.fastrizwaan.PopcornBox.desktop.in:3
 msgid "Play your videos"
 msgstr "Bekijk video's"
 
 #. TRANSLATORS: Search terms to find this application. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
-#: data/io.github.diegopvlk.Cine.desktop.in:10
-msgid "Audio;Video;Movie;TV;Film;Clip;Player;Cine;mpv;"
+#: data/io.github.fastrizwaan.PopcornBox.desktop.in:10
+msgid "Audio;Video;Movie;TV;Film;Clip;Player;PopcornBox;mpv;"
 msgstr "Audio;Video;Film;TV;Clip;Player;Speler;Cine;mpv;"
 
-#: data/io.github.diegopvlk.Cine.desktop.in:18 src/shortcuts-dialog.blp:11
-#: src/window.blp:122
+#: data/io.github.fastrizwaan.PopcornBox.desktop.in:18
+#: src/shortcuts-dialog.blp:11 src/window.blp:1632
 msgid "New Window"
 msgstr "Nieuw venster"
 
-#: data/io.github.diegopvlk.Cine.metainfo.xml.in:25
-msgid ""
-"Cine combines a clean interface with a high-performance engine to deliver a "
-"seamless viewing experience."
+#: data/io.github.fastrizwaan.PopcornBox.metainfo.xml.in:20
+msgid "Discover and play movies, series, and more"
 msgstr ""
-"Cine brengt twee concepten samen: goede prestaties en een overzichtelijke "
-"vormgeving."
 
-#: data/io.github.diegopvlk.Cine.metainfo.xml.in:27
-msgid "Simple Design: A refined, distraction-free interface"
-msgstr "Eenvoudig ontwerp: geraffineerd en afleidingsvrij"
-
-#: data/io.github.diegopvlk.Cine.metainfo.xml.in:28
+#: data/io.github.fastrizwaan.PopcornBox.metainfo.xml.in:22
 msgid ""
-"MPV-Based: Leverages the robust power of MPV for great playback and format "
-"support"
+"PopcornBox is a Linux media client that brings compatible addon catalogs, "
+"your personal library, and video playback together in one application."
 msgstr ""
-"Gebaseerd op MPV: alle functies van MPV, voor de beste afspeelervaring en "
-"ondersteuning van formaten"
 
-#: data/io.github.diegopvlk.Cine.metainfo.xml.in:29
+#: data/io.github.fastrizwaan.PopcornBox.metainfo.xml.in:24
 msgid ""
-"Audio and Subtitles: Control track selection and synchronization for both"
+"Browse movies, series, anime, and other media from installed Stremio-"
+"compatible addons"
 msgstr ""
-"Audio en ondertiteling: kies audio- en ondertitelsporen, en stem ze op "
-"elkaar af"
 
-#: data/io.github.diegopvlk.Cine.metainfo.xml.in:30
+#: data/io.github.fastrizwaan.PopcornBox.metainfo.xml.in:25
 msgid ""
-"Video Controls: Easily adjust brightness, contrast, zoom, aspect ratio, etc."
+"Search catalog titles and filter by type, catalog, genre, year, language, "
+"and country"
 msgstr ""
-"Videoregeling: pas de helderheid, het contrast, zoomniveau, de "
-"beeldverhouding, etc. aan."
 
-#: data/io.github.diegopvlk.Cine.metainfo.xml.in:42
+#: data/io.github.fastrizwaan.PopcornBox.metainfo.xml.in:26
+msgid ""
+"Keep favorites, watch history, watched items, and continue-watching progress "
+"in your library"
+msgstr ""
+
+#: data/io.github.fastrizwaan.PopcornBox.metainfo.xml.in:27
+msgid ""
+"Play addon streams, local videos, and torrent-backed streams with the "
+"integrated MPV player"
+msgstr ""
+
+#: data/io.github.fastrizwaan.PopcornBox.metainfo.xml.in:28
+msgid ""
+"Manage audio tracks, subtitles, chapters, playback speed, and video display "
+"options"
+msgstr ""
+
+#: data/io.github.fastrizwaan.PopcornBox.metainfo.xml.in:40
 msgid "Video Playing"
 msgstr "Afspelen"
 
-#: data/io.github.diegopvlk.Cine.metainfo.xml.in:46
+#: data/io.github.fastrizwaan.PopcornBox.metainfo.xml.in:44
 msgid "Video Options"
 msgstr "Video-opties"
 
-#: data/io.github.diegopvlk.Cine.metainfo.xml.in:50 src/preferences.blp:5
-#: src/preferences.blp:77 src/window.blp:123 src/window.blp:554
+#: data/io.github.fastrizwaan.PopcornBox.metainfo.xml.in:48
+#: src/preferences.blp:5 src/preferences.blp:77 src/window.blp:1633
+#: src/window.blp:2148
 msgid "Preferences"
 msgstr "Voorkeuren"
 
-#: data/io.github.diegopvlk.Cine.metainfo.xml.in:54
+#: data/io.github.fastrizwaan.PopcornBox.metainfo.xml.in:52
 msgid "Main Window"
 msgstr "Hoofdvenster"
 
-#: src/history.py:54 src/history.py:58
+#: src/history.py:55 src/history.py:59 src/history.py:201
 msgid "Load All"
 msgstr "Alles laden"
 
-#: src/history.py:136
+#: src/history.py:150
 msgid "Remove from History"
 msgstr "Verwijderen uit geschiedenis"
 
-#: src/history.py:206 src/playlist.py:421
+#: src/history.py:229
+msgid "Stream URL copied to clipboard"
+msgstr ""
+
+#: src/history.py:229
+msgid "File path copied to clipboard"
+msgstr ""
+
+#: src/history.py:236
+msgid "Copy Stream URL"
+msgstr ""
+
+#: src/history.py:236
+#, fuzzy
+#| msgid "Loop File"
+msgid "Copy File Path"
+msgstr "Bestand herhalen"
+
+#: src/history.py:240 src/playlist.py:440
 msgid "Open Item Location"
 msgstr "Locatie van item openen"
 
-#: src/history.py:295
+#: src/history.py:242
+msgid "Open Stream in Browser"
+msgstr ""
+
+#: src/history.py:370
 msgid "Clear Watch History?"
 msgstr "Kijkgeschiedenis wissen?"
 
-#: src/history.py:296
+#: src/history.py:371 src/preferences.py:88 src/window.py:19984
 msgid "Cancel"
 msgstr "Annuleren"
 
-#: src/history.py:297 src/history.blp:16
+#: src/history.py:372 src/history.blp:16
 msgid "Clear All"
 msgstr "Alles wissen"
 
-#. Translators: Replace "translator-credits" with your name/username, and optionally an email or URL.
-#: src/main.py:240
-msgid "translator-credits"
-msgstr "Heimen Stoffels <vistausss@fastmail.com>"
+#: src/main.py:280
+msgid ""
+"This product uses the TMDB API but is not endorsed or certified by TMDB. "
+"Streaming availability data is provided by JustWatch through TMDB."
+msgstr ""
 
-#: src/playlist.py:118 src/playlist.blp:45
+#: src/playlist.py:119 src/playlist.blp:45 src/window.blp:259
+#: src/window.blp:624 src/window.blp:694 src/window.blp:764 src/window.blp:834
 msgid "Search"
 msgstr "Zoeken"
 
-#: src/playlist.py:181 src/playlist.py:189 src/playlist.py:461
-#: src/preferences.py:331 src/playlist.blp:52
+#: src/playlist.py:182 src/playlist.py:190 src/playlist.py:480
+#: src/preferences.py:750 src/playlist.blp:52
 msgid "Save Playlist"
 msgstr "Afspeellijst opslaan"
 
-#: src/playlist.py:184 src/preferences.blp:115 src/preferences.blp:150
+#: src/playlist.py:185 src/preferences.blp:130 src/preferences.blp:178
 msgid ""
 "Requires flatpak permission to read the folder where the video is stored"
 msgstr ""
 "Hiervoor is vereist dat Flatpak toegang heeft tot de map waarin de video is "
 "opgeslagen"
 
-#: src/playlist.py:316 src/window.py:1369 src/window.py:1903
+#: src/playlist.py:325 src/window.py:7257 src/window.py:8002
 msgid "File Error"
 msgstr "Bestandsfout"
 
-#: src/playlist.py:422
+#: src/playlist.py:441
 msgid "Remove from Playlist"
 msgstr "Uit afspeellijst verwijderen"
 
-#: src/playlist.py:462 src/playlist.blp:16 src/window.blp:343
-#: src/window.blp:556
+#: src/playlist.py:481 src/playlist.blp:16 src/window.blp:1854
+#: src/window.blp:2150
 msgid "Playlist"
 msgstr "Afspeellijst"
 
-#: src/playlist.py:482
+#: src/playlist.py:501
 #, python-brace-format
 msgid "{n} item"
 msgid_plural "{n} items"
 msgstr[0] "{n} item"
 msgstr[1] "{n} items"
 
-#: src/preferences.py:113 src/preferences.blp:170
+#: src/preferences.py:80
+msgid "Log In to Stremio"
+msgstr ""
+
+#: src/preferences.py:92 src/preferences.blp:283
+msgid "Log In"
+msgstr ""
+
+#: src/preferences.py:103 src/preferences.blp:274
+msgid "Stremio Account"
+msgstr ""
+
+#: src/preferences.py:105
+msgid ""
+"Log in to sync your library, watchlist, and continue watching with Stremio "
+"and Nuvio."
+msgstr ""
+
+#: src/preferences.py:109
+msgid "Email"
+msgstr ""
+
+#: src/preferences.py:114
+msgid "Password"
+msgstr ""
+
+#: src/preferences.py:121
+msgid "Or Log In with AuthKey"
+msgstr ""
+
+#: src/preferences.py:122
+msgid "Useful for Google, Facebook or web logins"
+msgstr ""
+
+#: src/preferences.py:125
+msgid "Stremio AuthKey"
+msgstr ""
+
+#: src/preferences.py:168
+msgid "Please enter your email and password, or provide an AuthKey."
+msgstr ""
+
+#: src/preferences.py:200
+msgid "Login failed"
+msgstr ""
+
+#: src/preferences.py:281 src/preferences.blp:337
 msgid "Subtitle Color"
 msgstr "Ondertitelkleur"
 
-#: src/preferences.py:127 src/preferences.blp:250
+#: src/preferences.py:306 src/preferences.blp:417
 msgid "Subtitle Background"
 msgstr "Ondertitelachtergrond"
 
-#: src/preferences.py:328
+#: src/preferences.py:562 src/window.py:6159
+#, fuzzy
+#| msgid "Save Session"
+msgid "Saved session cleared"
+msgstr "Sessie opslaan"
+
+#: src/preferences.py:651 src/window.py:21536 src/preferences.blp:487
+#: src/window.blp:1626
+msgid "Backup Configuration"
+msgstr ""
+
+#: src/preferences.py:665 src/preferences.py:675 src/window.py:21547
+#: src/window.py:21553
+msgid "Backup failed"
+msgstr ""
+
+#: src/preferences.py:682 src/window.py:21558 src/preferences.blp:500
+#: src/window.blp:1627
+#, fuzzy
+#| msgid "Reset Saturation"
+msgid "Restore Configuration"
+msgstr "Standaard verzadigingsniveau"
+
+#: src/preferences.py:685 src/window.py:21561
+msgid "PopcornBox Backups (*.zip, *.json)"
+msgstr ""
+
+#: src/preferences.py:702 src/preferences.py:725 src/window.py:21577
+#: src/window.py:21598
+#, fuzzy
+#| msgid "Restore Saved Session"
+msgid "Restore failed"
+msgstr "Opgeslagen sessie herstellen"
+
+#: src/preferences.py:747
 msgid "Some features require extra permission to work properly:"
 msgstr "Sommige functies vereisen extra machtigingen om correct te werken:"
 
-#: src/preferences.py:329
+#: src/preferences.py:748
 msgid "Auto load subtitle file"
 msgstr "Ondertitelbestand automatisch laden"
 
-#: src/preferences.py:330
+#: src/preferences.py:749
 msgid "Auto add files from the same folder to playlist"
 msgstr "Bestanden uit dezelfde map automatisch toevoegen aan afspeellijst"
 
-#: src/preferences.py:332 src/preferences.blp:98
+#: src/preferences.py:751 src/preferences.blp:113
 msgid "Restore Saved Session"
 msgstr "Opgeslagen sessie herstellen"
 
-#: src/preferences.py:333 src/preferences.blp:133
+#: src/preferences.py:752 src/preferences.blp:161
 msgid "Save Video Position on Close"
 msgstr "Videopositie onthouden na sluiten"
 
-#: src/preferences.py:334 src/history.blp:5 src/shortcuts-dialog.blp:61
-#: src/window.blp:108 src/window.blp:470 src/window.blp:555
+#: src/preferences.py:753 src/history.blp:5 src/shortcuts-dialog.blp:61
+#: src/window.blp:1631 src/window.blp:1981 src/window.blp:2149
 msgid "Watch History"
 msgstr "Kijkgeschiedenis"
 
-#: src/preferences.py:338
+#: src/preferences.py:757
 msgid ""
 "If you wish to use those features, install Flatseal for granular folder "
 "control, or run this command to grant access to all folders in the system:"
@@ -197,24 +309,64 @@ msgstr ""
 "gedetailleerd mapbeheer, of voer deze opdracht uit om toegang te verlenen "
 "tot alle mappen in het systeem:"
 
-#: src/preferences.py:344
+#: src/preferences.py:763
 msgid "Extra permission enabled."
 msgstr "Extra toestemming ingeschakeld."
 
-#: src/preferences.py:360
+#: src/preferences.py:779
 msgid "Copied"
 msgstr "Kopieerd"
 
-#: src/preferences.py:366 src/preferences.blp:58
+#: src/preferences.py:785 src/preferences.blp:58
 msgid "Copy"
 msgstr "Kopiëren"
 
-#: src/save_session.py:66
+#: src/preferences.py:795
+msgid "Connected"
+msgstr ""
+
+#: src/preferences.py:796
+#, python-brace-format
+msgid "Logged in as {email}"
+msgstr ""
+
+#: src/preferences.py:812
+msgid "Just now"
+msgstr ""
+
+#: src/preferences.py:815
+#, python-brace-format
+msgid "{mins}m ago"
+msgstr ""
+
+#: src/preferences.py:818
+#, python-brace-format
+msgid "{hours}h ago"
+msgstr ""
+
+#: src/preferences.py:821
+msgid "Last synced"
+msgstr ""
+
+#: src/preferences.py:823 src/preferences.py:837 src/preferences.blp:317
+msgid "Last synced: Never"
+msgstr ""
+
+#: src/preferences.py:825 src/preferences.blp:279
+msgid "Not connected"
+msgstr ""
+
+#: src/preferences.py:846 src/preferences.py:864 src/preferences.py:877
+#: src/preferences.py:884
+msgid "Syncing with Stremio..."
+msgstr ""
+
+#: src/save_session.py:75
 msgid "Restoring Session…"
 msgstr "Sessie herstellen…"
 
 #: src/shortcuts.py:31 src/shortcuts.py:32 src/shortcuts.py:33
-#: src/shortcuts.py:34 src/window.py:2028 src/window.blp:201
+#: src/shortcuts.py:34 src/window.py:8154 src/window.blp:1712
 msgid "Volume"
 msgstr "Volumeniveau"
 
@@ -227,8 +379,8 @@ msgid "Volume Decrease"
 msgstr "Volumeniveau verlagen"
 
 #: src/shortcuts.py:35 src/shortcuts.py:36 src/shortcuts.py:37
-#: src/preferences.blp:273 src/preferences.blp:285 src/window.blp:180
-#: src/window.blp:542
+#: src/preferences.blp:440 src/preferences.blp:452 src/window.blp:1691
+#: src/window.blp:2136
 msgid "Play/Pause"
 msgstr "Afspelen/Pauzeren"
 
@@ -237,7 +389,8 @@ msgid "Show/Hide Subtitles"
 msgstr "Ondertiteling tonen/verbergen"
 
 #: src/shortcuts.py:39 src/shortcuts.py:40 src/shortcuts.py:169
-#: src/shortcuts.py:233 src/window.py:779 src/window.blp:244
+#: src/shortcuts.py:233 src/window.py:5966 src/window.py:19273
+#: src/window.blp:1755
 msgid "Subtitles"
 msgstr "Ondertiteling"
 
@@ -261,7 +414,8 @@ msgstr "Volgende secundaire ondertitelspoor"
 msgid "Previous Secondary Subtitle Track"
 msgstr "Vorige secundaire ondertitelspoor"
 
-#: src/shortcuts.py:43 src/shortcuts.py:44 src/window.py:784 src/window.blp:259
+#: src/shortcuts.py:43 src/shortcuts.py:44 src/window.py:5971
+#: src/window.blp:1770
 msgid "Audio"
 msgstr "Audio"
 
@@ -289,12 +443,12 @@ msgstr "5 sec. terugspoelen"
 msgid "Seek 5s Forward"
 msgstr "5 sec. vooruitspoelen"
 
-#: src/shortcuts.py:49 src/shortcuts.py:50 src/window.py:1972
-#: src/window.blp:359
+#: src/shortcuts.py:49 src/shortcuts.py:50 src/window.py:8080
+#: src/window.blp:1870
 msgid "Fullscreen"
 msgstr "Schermvullende weergave"
 
-#: src/shortcuts.py:51 src/window.py:1972
+#: src/shortcuts.py:51 src/window.py:8080
 msgid "Exit Fullscreen"
 msgstr "Schermvullende weergave verlaten"
 
@@ -336,7 +490,7 @@ msgstr "Ondertiteling omhoog verplaatsen"
 msgid "Move Subtitles Down"
 msgstr "Ondertiteling omlaag verplaatsen"
 
-#: src/shortcuts.py:70 src/shortcuts.py:71 src/preferences.blp:239
+#: src/shortcuts.py:70 src/shortcuts.py:71 src/preferences.blp:406
 msgid "Subtitle Scale"
 msgstr "Grootte van ondertiteling"
 
@@ -348,7 +502,7 @@ msgstr "Ondertiteling vergroten"
 msgid "Decrease Subtitle Scale"
 msgstr "Ondertiteling verkleinen"
 
-#: src/shortcuts.py:72 src/window.blp:212
+#: src/shortcuts.py:72 src/window.blp:1723
 msgid "Mute/Unmute"
 msgstr "Dempen/Ontdempen"
 
@@ -405,7 +559,7 @@ msgstr "A-B-luspunten instellen/wissen"
 msgid "Loop"
 msgstr "Herhalen"
 
-#: src/shortcuts.py:85 src/window.blp:331
+#: src/shortcuts.py:85 src/window.blp:1842
 msgid "Loop File"
 msgstr "Bestand herhalen"
 
@@ -498,88 +652,807 @@ msgstr "Afspelen"
 msgid "Miscellaneous"
 msgstr "Overig"
 
-#: src/window.py:635 src/window.py:1361 src/window.blp:104
+#: src/window.py:1734
+msgid "Streams Blocked"
+msgstr ""
+
+#: src/window.py:1738
+msgid ""
+"Playback and streams are unavailable because this title is filtered by your "
+"content preferences."
+msgstr ""
+
+#: src/window.py:1790 src/window.py:3456
+msgid "Searching streams..."
+msgstr ""
+
+#: src/window.py:1797
+msgid "No streams available"
+msgstr ""
+
+#: src/window.py:2248
+msgid "Content Filtered"
+msgstr ""
+
+#: src/window.py:2257
+msgid "Mature Content Filtered (Kids Safe Mode)"
+msgstr ""
+
+#: src/window.py:2260
+msgid ""
+"This content is filtered because 'Hide 18+ / Explicit Content' is enabled in "
+"Preferences."
+msgstr ""
+
+#: src/window.py:2262
+msgid "18+ / Explicit Content Blocked"
+msgstr ""
+
+#: src/window.py:2525
+msgid "Watch"
+msgstr ""
+
+#: src/window.py:2526
+msgid "Watch Live TV"
+msgstr ""
+
+#: src/window.py:3816
+msgid "No streams available for selected episode"
+msgstr ""
+
+#: src/window.py:4057 src/window.py:16440 src/window.py:16612
+msgid "Loading trailer..."
+msgstr ""
+
+#: src/window.py:4340 src/window.py:4716 src/window.py:13365
+#: src/window.py:16379
+msgid "Web page streams cannot be played."
+msgstr ""
+
+#: src/window.py:4504
+msgid "Web page streams cannot be downloaded."
+msgstr ""
+
+#: src/window.py:5719 src/window.py:7249 src/window.blp:1610
 msgid "Add Subtitle Track"
 msgstr "Ondertitelspoor toevoegen"
 
-#: src/window.py:637 src/window.py:646
+#: src/window.py:5720
+#, fuzzy
+#| msgid "Secondary Subtitles"
+msgid "Search Subtitle"
+msgstr "Tweede ondertiteling"
+
+#: src/window.py:5722 src/window.py:5731
 msgid "None"
 msgstr "Geen"
 
-#: src/window.py:644 src/window.blp:105
+#: src/window.py:5729 src/window.blp:1611
 msgid "Add Audio Track"
 msgstr "Audiospoor toevoegen"
 
-#: src/window.py:683
+#: src/window.py:5783
 msgid "Track"
 msgstr "Spoor"
 
-#: src/window.py:726 src/playlist.blp:31 src/window.blp:102
+#: src/window.py:5826 src/playlist.blp:31 src/window.blp:1608
 msgid "Add Folder"
 msgstr "Map toevoegen"
 
-#: src/window.py:726 src/shortcuts-dialog.blp:21 src/window.blp:99
-#: src/window.blp:483 src/window.blp:549
+#: src/window.py:5826 src/shortcuts-dialog.blp:21 src/window.blp:1605
+#: src/window.blp:1995 src/window.blp:2143
 msgid "Open Folder"
 msgstr "Map openen"
 
-#: src/window.py:753 src/shortcuts-dialog.blp:16 src/window.blp:98
-#: src/window.blp:548
+#: src/window.py:5854 src/shortcuts-dialog.blp:16 src/window.blp:1604
+#: src/window.blp:2142
 msgid "Open Files"
 msgstr "Bestanden openen"
 
-#: src/window.py:756 src/playlist.blp:26 src/window.blp:101
+#: src/window.py:5857 src/playlist.blp:26 src/window.blp:1607
 msgid "Add Files"
 msgstr "Bestanden toevoegen"
 
-#: src/window.py:760
+#: src/window.py:5861
 msgid "Add Subtitle"
 msgstr "Ondertiteling toevoegen"
 
-#: src/window.py:763
+#: src/window.py:5950
 msgid "Add Audio"
 msgstr "Audio toevoegen"
 
-#: src/window.py:788
+#: src/window.py:5975 src/window.py:19620
 msgid "Media"
 msgstr "Media"
 
-#: src/window.py:847
+#: src/window.py:6149
 msgid "Session Saved"
 msgstr "Sessie opgeslagen"
 
-#: src/window.py:853 src/playlist.blp:36 src/window.blp:103
+#: src/window.py:6169 src/playlist.blp:36 src/window.blp:1609
 msgid "Add URL"
 msgstr "URL toevoegen"
 
-#: src/window.py:853 src/shortcuts-dialog.blp:26 src/window.blp:100
-#: src/window.blp:492 src/window.blp:550
+#: src/window.py:6169 src/shortcuts-dialog.blp:26 src/window.blp:1606
+#: src/window.blp:2004 src/window.blp:2144
 msgid "Open URL"
 msgstr "URL openen"
 
-#: src/window.py:866
+#: src/window.py:6182
 msgid "URL"
 msgstr "URL"
 
-#: src/window.py:874 src/playlist.blp:22
+#: src/window.py:6190 src/playlist.blp:22
 msgid "Add"
 msgstr "Toevoegen"
 
-#: src/window.py:874 src/window.blp:93
+#: src/window.py:6190
 msgid "Open"
 msgstr "Openen"
 
-#: src/window.py:1067 src/window.py:1191
+#: src/window.py:6386 src/window.py:6609
 msgid "Chapter"
 msgstr "Hoofdstuk"
 
-#: src/window.py:1246 src/window.py:1365
+#: src/window.py:7101 src/window.py:7253
 msgid "Play"
 msgstr "Afspelen"
 
-#: src/window.py:1246
+#: src/window.py:7101
 msgid "Pause"
 msgstr "Pauzeren"
+
+#: src/window.py:8112
+msgid "Buffering..."
+msgstr ""
+
+#: src/window.py:9361 src/window.py:9365 src/window.py:9403 src/window.py:9405
+#: src/window.py:9406 src/window.py:9411 src/window.py:9412 src/window.py:9805
+#: src/window.py:9810 src/window.py:10180 src/window.py:10965
+#: src/window.py:11522 src/window.py:11875 src/window.py:13482
+#: src/window.py:14309 src/window.py:14370 src/window.py:14829
+msgid "All Genres"
+msgstr ""
+
+#: src/window.py:9365 src/window.py:9792 src/window.py:9798 src/window.py:9805
+#: src/window.py:9810 src/window.py:19269 src/window.blp:602 src/window.blp:672
+#: src/window.blp:742 src/window.blp:812
+msgid "All"
+msgstr ""
+
+#: src/window.py:9390 src/window.py:9391 src/window.py:9792 src/window.py:10969
+#: src/window.py:11878 src/window.py:12659 src/window.py:12760
+#: src/window.py:12908 src/window.py:13479 src/window.py:13612
+#: src/window.py:14312 src/window.py:14832
+msgid "All Years"
+msgstr ""
+
+#: src/window.py:9792 src/window.py:10969 src/window.py:11878
+#: src/window.py:12659 src/window.py:12760 src/window.py:12908
+#: src/window.py:13479 src/window.py:13612 src/window.py:14312
+#: src/window.py:14832 src/window.blp:352
+msgid "Year"
+msgstr ""
+
+#: src/window.py:9798 src/window.py:10973 src/window.py:11384
+#: src/window.py:11526 src/window.py:11881 src/window.py:12650
+#: src/window.py:13485 src/window.py:14300 src/window.py:14361
+#: src/window.py:14682 src/window.py:14835 src/window.py:15110
+msgid "All Languages"
+msgstr ""
+
+#: src/window.py:9798 src/window.py:10973 src/window.py:11384
+#: src/window.py:11526 src/window.py:11881 src/window.py:12650
+#: src/window.py:13485 src/window.py:14300 src/window.py:14361
+#: src/window.py:14682 src/window.py:14835 src/window.py:15110
+#: src/window.blp:358
+msgid "Language"
+msgstr ""
+
+#: src/window.py:9805 src/window.py:9810 src/window.py:10180
+#: src/window.py:10965 src/window.py:11522 src/window.py:11875
+#: src/window.py:13482 src/window.py:14309 src/window.py:14370
+#: src/window.py:14829 src/window.blp:346
+msgid "Genre"
+msgstr ""
+
+#: src/window.py:9953
+msgid "Unique View: On (Showing deduplicated media)"
+msgstr ""
+
+#: src/window.py:9955
+msgid ""
+"Unique View: Off (Deduplicate media across multiple provider streams/"
+"catalogs)"
+msgstr ""
+
+#: src/window.py:10131
+#, fuzzy
+#| msgid "Clear Watch History?"
+msgid "Clear Search Filter"
+msgstr "Kijkgeschiedenis wissen?"
+
+#: src/window.py:10143
+#, fuzzy
+#| msgid "Reset Flip"
+msgid "Reset Filters"
+msgstr "Spiegelen herstellen"
+
+#: src/window.py:10187 src/window.py:14502 src/window.py:15191
+msgid "No items found for this language."
+msgstr ""
+
+#: src/window.py:10189 src/window.py:14504 src/window.py:15193
+msgid "No items found for this country."
+msgstr ""
+
+#: src/window.py:10191 src/window.py:12833 src/window.py:14506
+#: src/window.py:15197
+msgid "No items found for this genre."
+msgstr ""
+
+#: src/window.py:10193 src/window.py:14508 src/window.py:15195
+msgid "No items found for this year."
+msgstr ""
+
+#: src/window.py:10195 src/window.py:14512
+msgid "No items found for this filter."
+msgstr ""
+
+#: src/window.py:10960
+msgid "All Sections"
+msgstr ""
+
+#: src/window.py:10960 src/window.blp:340
+msgid "Section"
+msgstr ""
+
+#: src/window.py:10977 src/window.py:11390 src/window.py:11530
+#: src/window.py:11884 src/window.py:12653 src/window.py:13488
+#: src/window.py:14303 src/window.py:14364 src/window.py:14685
+#: src/window.py:14838 src/window.py:15113
+msgid "All Countries"
+msgstr ""
+
+#: src/window.py:10977 src/window.py:11390 src/window.py:11530
+#: src/window.py:11884 src/window.py:12653 src/window.py:13488
+#: src/window.py:14303 src/window.py:14364 src/window.py:14685
+#: src/window.py:14838 src/window.py:15113 src/window.blp:364
+msgid "Country"
+msgstr ""
+
+#: src/window.py:10981 src/window.py:11887 src/window.py:13491
+#: src/window.py:14306 src/window.py:14367 src/window.py:14611
+msgid "All Networks"
+msgstr ""
+
+#: src/window.py:10981 src/window.py:11887 src/window.py:13491
+#: src/window.py:14306 src/window.py:14367 src/window.py:14611
+#: src/window.blp:370
+msgid "Network"
+msgstr ""
+
+#: src/window.py:13214
+msgid "Connecting to stream..."
+msgstr ""
+
+#: src/window.py:14001 src/window.py:14189 src/window.blp:267
+#: src/window.blp:631 src/window.blp:701 src/window.blp:771 src/window.blp:841
+#: src/window.blp:894 src/window.blp:936 src/window.blp:1047
+#: src/window.blp:1615
+msgid "Continue Watching"
+msgstr ""
+
+#: src/window.py:14193 src/window.py:15287
+#, fuzzy
+#| msgid "Reset All"
+msgid "See All"
+msgstr "Standaardwaarden terugzetten"
+
+#: src/window.py:14485
+msgid "Loading catalogs…"
+msgstr ""
+
+#: src/window.py:14510
+msgid "No catalogs available for this addon."
+msgstr ""
+
+#: src/window.py:14517 src/window.py:15204
+msgid "Show All Catalogs"
+msgstr ""
+
+#: src/window.py:15199
+#, fuzzy
+#| msgid "No Results Found"
+msgid "No items found."
+msgstr "Geen resultaten gevonden"
+
+#. 1. All Types (default)
+#: src/window.py:15674
+msgid "All Types"
+msgstr ""
+
+#: src/window.py:15687
+msgid "★ All Catalogs"
+msgstr ""
+
+#: src/window.py:15691 src/window.py:19611 src/window.blp:334
+msgid "Catalog"
+msgstr ""
+
+#: src/window.py:15710
+msgid "★ Home"
+msgstr ""
+
+#: src/window.py:15713
+msgid "Unique View"
+msgstr ""
+
+#: src/window.py:16166
+#, python-brace-format
+msgid "Stream timed out after {seconds}s. Trying next stream..."
+msgstr ""
+
+#: src/window.py:16213
+msgid "Trailer timed out after 30s"
+msgstr ""
+
+#: src/window.py:16614
+msgid "Loading video..."
+msgstr ""
+
+#: src/window.py:16859
+msgid "Retrying trailer in safe mode..."
+msgstr ""
+
+#: src/window.py:16859
+msgid "Retrying in safe mode..."
+msgstr ""
+
+#: src/window.py:16900
+msgid "Failed to play trailer"
+msgstr ""
+
+#: src/window.py:16900
+msgid "Failed to play video"
+msgstr ""
+
+#: src/window.py:17517 src/window.py:17694 src/window.py:17848
+msgid "Finding more streams..."
+msgstr ""
+
+#: src/window.py:17623
+msgid "Stream engine failed. Trying next stream..."
+msgstr ""
+
+#: src/window.py:17743
+msgid "Refreshing stream link..."
+msgstr ""
+
+#: src/window.py:17855
+msgid "All available streams failed to play."
+msgstr ""
+
+#: src/window.py:18550
+msgid "No streams found for next episode."
+msgstr ""
+
+#: src/window.py:19270 src/window.py:21987 src/window.blp:61 src/window.blp:93
+#: src/window.blp:95 src/window.blp:126 src/window.blp:160 src/window.blp:194
+#: src/window.blp:511 src/window.blp:603 src/window.blp:673 src/window.blp:743
+#: src/window.blp:813
+msgid "Movies"
+msgstr ""
+
+#: src/window.py:19271 src/window.py:21990 src/window.blp:66 src/window.blp:100
+#: src/window.blp:132 src/window.blp:134 src/window.blp:165 src/window.blp:199
+#: src/window.blp:530 src/window.blp:604 src/window.blp:674 src/window.blp:744
+#: src/window.blp:814
+msgid "Series"
+msgstr ""
+
+#: src/window.py:19272 src/window.py:21993 src/window.blp:71 src/window.blp:105
+#: src/window.blp:139 src/window.blp:171 src/window.blp:173 src/window.blp:204
+#: src/window.blp:548 src/window.blp:605 src/window.blp:675 src/window.blp:745
+#: src/window.blp:815
+msgid "Anime"
+msgstr ""
+
+#: src/window.py:19274
+msgid "Other"
+msgstr ""
+
+#: src/window.py:19367
+msgid "Built in"
+msgstr ""
+
+#: src/window.py:19376 src/window.py:19413 src/window.py:19423
+#: src/window.py:19455 src/window.py:19529
+msgid "Offline"
+msgstr ""
+
+#: src/window.py:19396 src/window.py:19455
+msgid "Online"
+msgstr ""
+
+#: src/window.py:19396
+msgid "Offline — manifest unreachable"
+msgstr ""
+
+#: src/window.py:19403
+#, python-format
+msgid "Online — cooling down (%ds remaining%s)"
+msgstr ""
+
+#: src/window.py:19408
+#, python-format
+msgid "Temporarily unavailable (%ds cooldown%s)"
+msgstr ""
+
+#: src/window.py:19423
+msgid "Online (cached)"
+msgstr ""
+
+#: src/window.py:19503 src/window.py:19550
+msgid "Catalogs disabled"
+msgstr ""
+
+#: src/window.py:19505 src/window.py:19552
+#, fuzzy
+#| msgid "Disabled"
+msgid "Media disabled"
+msgstr "Uitgeschakeld"
+
+#: src/window.py:19518
+msgid "Checking status…"
+msgstr ""
+
+#: src/window.py:19613
+msgid "Enable/disable catalogs from this addon"
+msgstr ""
+
+#: src/window.py:19622
+msgid "Enable/disable media streams from this addon"
+msgstr ""
+
+#: src/window.py:19642
+msgid "Addon Features"
+msgstr ""
+
+#: src/window.py:19649
+msgid "Enable Catalogs"
+msgstr ""
+
+#: src/window.py:19656
+msgid "Enable Media / Streams"
+msgstr ""
+
+#: src/window.py:19669 src/window.py:19865 src/window.py:19884
+msgid "Configure"
+msgstr ""
+
+#: src/window.py:19679
+msgid "Check Status"
+msgstr ""
+
+#: src/window.py:19687
+#, fuzzy
+#| msgid "Copy"
+msgid "Copy URL"
+msgstr "Kopiëren"
+
+#: src/window.py:19692
+msgid "Copied URL to clipboard"
+msgstr ""
+
+#: src/window.py:19696
+msgid "Delete"
+msgstr ""
+
+#: src/window.py:19742
+msgid "No addons found."
+msgstr ""
+
+#: src/window.py:19873
+msgid "Uninstall"
+msgstr ""
+
+#: src/window.py:19878 src/window.py:20655 src/window.blp:971
+msgid "Install"
+msgstr ""
+
+#: src/window.py:19892
+msgid "Share addon"
+msgstr ""
+
+#: src/window.py:19896
+msgid "Copied addon URL to clipboard"
+msgstr ""
+
+#: src/window.py:19944
+msgid "Installing addon..."
+msgstr ""
+
+#: src/window.py:19980
+msgid "Addon is Offline"
+msgstr ""
+
+#: src/window.py:19981
+msgid ""
+"Failed to connect to the addon or invalid manifest. Do you want to force add "
+"it anyway?"
+msgstr ""
+
+#: src/window.py:19985
+msgid "Force Add"
+msgstr ""
+
+#: src/window.py:20116 src/window.py:20383
+#, fuzzy
+#| msgid "Disabled"
+msgid "Plugins enabled"
+msgstr "Uitgeschakeld"
+
+#: src/window.py:20120 src/window.py:20387
+msgid "Plugins disabled"
+msgstr ""
+
+#: src/window.py:20136
+msgid "No repositories installed"
+msgstr ""
+
+#: src/window.py:20137
+msgid "Add a repository manifest URL above to install plugin providers."
+msgstr ""
+
+#: src/window.py:20164 src/window.py:20525
+msgid "Refresh repository"
+msgstr ""
+
+#: src/window.py:20170 src/window.py:20531
+#, fuzzy
+#| msgid "Remove from History"
+msgid "Remove repository"
+msgstr "Verwijderen uit geschiedenis"
+
+#: src/window.py:20192
+msgid "No providers available"
+msgstr ""
+
+#: src/window.py:20193
+msgid "Install a plugin repository above to load providers."
+msgstr ""
+
+#: src/window.py:20242 src/window.py:20358 src/window.py:20647
+#: src/window.py:20971 src/window.py:21089 src/window.py:21183
+msgid "Test"
+msgstr ""
+
+#: src/window.py:20273 src/window.py:20729
+msgid "Please enter a repository URL"
+msgstr ""
+
+#: src/window.py:20276
+msgid "Installing plugin repository..."
+msgstr ""
+
+#: src/window.py:20302 src/window.py:20758
+msgid "Refreshing repository..."
+msgstr ""
+
+#: src/window.py:20318
+msgid "Refreshing all plugin repositories..."
+msgstr ""
+
+#: src/window.py:20333 src/window.py:20791
+#, python-format
+msgid "Refreshed %s repository(s)"
+msgstr ""
+
+#: src/window.py:20344 src/window.py:20802
+#, python-format
+msgid "Removed '%s'"
+msgstr ""
+
+#: src/window.py:20348 src/window.py:20942 src/window.py:21173
+msgid "Testing..."
+msgstr ""
+
+#: src/window.py:20474 src/window.py:20900
+msgid "CloudStream enabled"
+msgstr ""
+
+#: src/window.py:20478 src/window.py:20904
+msgid "CloudStream disabled"
+msgstr ""
+
+#: src/window.py:20497
+msgid "No CloudStream repositories installed"
+msgstr ""
+
+#: src/window.py:20498
+msgid ""
+"Enter a repository URL above (e.g. Kraptor or English cs-repos) to install "
+"plugins."
+msgstr ""
+
+#: src/window.py:20556
+msgid "No CloudStream plugins available"
+msgstr ""
+
+#: src/window.py:20557
+msgid ""
+"Install a CloudStream repository above to browse extensions and providers."
+msgstr ""
+
+#: src/window.py:20633
+msgid "18+ Blocked"
+msgstr ""
+
+#: src/window.py:20636
+msgid ""
+"This provider offers adult/NSFW content and is disabled because 'Hide 18+ / "
+"Explicit Content' is enabled in Preferences."
+msgstr ""
+
+#: src/window.py:20662
+msgid "Update"
+msgstr ""
+
+#: src/window.py:20668
+msgid "Uninstall plugin"
+msgstr ""
+
+#: src/window.py:20675
+msgid "No Scraper"
+msgstr ""
+
+#: src/window.py:20678
+msgid ""
+"This CloudStream plugin contains Android DEX bytecode without an active "
+"Python scraper."
+msgstr ""
+
+#: src/window.py:20685
+msgid ""
+"Disabled because 'Hide 18+ / Explicit Content' is enabled in Preferences"
+msgstr ""
+
+#: src/window.py:20687
+msgid "No Python scraper available for this plugin (Android DEX bytecode)"
+msgstr ""
+
+#: src/window.py:20689
+msgid "Enable or disable this provider"
+msgstr ""
+
+#: src/window.py:20732
+msgid "Installing CloudStream repository..."
+msgstr ""
+
+#: src/window.py:20776
+msgid "Refreshing all CloudStream repositories..."
+msgstr ""
+
+#: src/window.py:20806
+msgid "Installing..."
+msgstr ""
+
+#: src/window.py:20816
+#, python-format
+msgid ""
+"%s installed (disabled because 'Hide 18+ / Explicit Content' is enabled)"
+msgstr ""
+
+#: src/window.py:20820
+#, python-format
+msgid ""
+"%s installed (Note: Android DEX bytecode only - no Python scraper adapter "
+"yet)"
+msgstr ""
+
+#: src/window.py:20825
+#, python-format
+msgid "MegaProvider installed: synced %d/%d repositories!"
+msgstr ""
+
+#: src/window.py:20827
+#, python-format
+msgid "Installed and enabled %s"
+msgstr ""
+
+#: src/window.py:20887
+msgid ""
+"Cannot enable provider with 18+/NSFW content: 'Hide 18+ / Explicit Content' "
+"is enabled in Preferences"
+msgstr ""
+
+#: src/window.py:20913
+msgid "CloudStream security notice accepted"
+msgstr ""
+
+#: src/window.py:20916
+msgid "Installing compatible CloudStream plugins..."
+msgstr ""
+
+#: src/window.py:20933
+#, python-format
+msgid "Installed %d, enabled %d CloudStream providers"
+msgstr ""
+
+#: src/window.py:21028 src/window.py:21117
+msgid "Custom plugins enabled"
+msgstr ""
+
+#: src/window.py:21032 src/window.py:21121
+msgid "Custom plugins disabled"
+msgstr ""
+
+#: src/window.py:21047
+msgid "No custom plugins installed"
+msgstr ""
+
+#: src/window.py:21048
+msgid ""
+"Click 'Open Plugins Folder' above to add .py scrapers, or click 'Import "
+"Plugin File'."
+msgstr ""
+
+#: src/window.py:21098
+msgid "Delete plugin"
+msgstr ""
+
+#: src/window.py:21129
+msgid "Custom plugins reloaded"
+msgstr ""
+
+#: src/window.py:21132
+msgid "Import Python Plugin"
+msgstr ""
+
+#: src/window.py:21134
+msgid "Python Files (*.py)"
+msgstr ""
+
+#: src/window.py:21467
+msgid "Import Addons"
+msgstr ""
+
+#: src/window.py:21488 src/window.py:21502
+msgid "Failed to import addons"
+msgstr ""
+
+#: src/window.py:21506
+msgid "Export Addons"
+msgstr ""
+
+#: src/window.py:21522
+msgid "Exported addons successfully"
+msgstr ""
+
+#: src/window.py:21525 src/window.py:21530
+msgid "Failed to export addons"
+msgstr ""
+
+#: src/window.py:21951 src/window.py:22000
+msgid "No in-progress items to continue watching."
+msgstr ""
+
+#: src/window.py:21951 src/window.py:22000
+msgid "No watched items yet."
+msgstr ""
+
+#: src/window.py:21951 src/window.py:22000
+msgid "No favorites yet."
+msgstr ""
+
+#: src/window.py:21951 src/window.py:22000
+msgid "No history yet."
+msgstr ""
+
+#: src/window.py:21996 src/window.blp:566
+msgid "TV Channels"
+msgstr ""
 
 #: src/options.blp:14
 msgid "Options"
@@ -699,75 +1572,253 @@ msgid "Open New Window for New Files"
 msgstr "Nieuwe bestanden in nieuwe vensters openen"
 
 #: src/preferences.blp:85
+msgid "Hide 18+ / Explicit Content"
+msgstr ""
+
+#: src/preferences.blp:86
+msgid ""
+"Filter out adult (18+, XXX, nude, softcore, ecchi) content from search and "
+"catalogs"
+msgstr ""
+
+#: src/preferences.blp:90
+msgid "Kids Safe Mode (Under 16)"
+msgstr ""
+
+#: src/preferences.blp:91
+msgid ""
+"Filter out mature, erotic, and adult content (R, TV-MA, NC-17, 16+, 18+) "
+"using TMDB & IMDb ratings"
+msgstr ""
+
+#: src/preferences.blp:95
+msgid "Auto Play Next Episode"
+msgstr ""
+
+#: src/preferences.blp:96
+msgid ""
+"Show prompt and automatically play the next episode when reaching the end"
+msgstr ""
+
+#: src/preferences.blp:100
 msgid "Progress Bar Thumbnail"
 msgstr "Voorvertoning voortgangsbalk"
 
-#: src/preferences.blp:89
+#: src/preferences.blp:104
 msgid "Normalize Volume"
 msgstr "Volumeniveau normaliseren"
 
-#: src/preferences.blp:93
+#: src/preferences.blp:108
 msgid "Hardware Acceleration"
 msgstr "Hardwareversnelling"
 
-#: src/preferences.blp:94
+#: src/preferences.blp:109
 msgid "Use GPU for video decoding when available"
 msgstr "Gebruik GPU voor videodecodering indien beschikbaar"
 
-#: src/preferences.blp:99
+#: src/preferences.blp:114
 msgid "Pick up where you left off after saving from the menu"
 msgstr "Ga verder waar u gebleven bent na het opslaan vanuit het menu"
 
-#: src/preferences.blp:134
+#: src/preferences.blp:150
+#, fuzzy
+#| msgid "Restore Saved Session"
+msgid "Clear Saved Session"
+msgstr "Opgeslagen sessie herstellen"
+
+#: src/preferences.blp:162
 msgid "Also save options like brightness, subtitle delay, etc."
 msgstr ""
 "Aanvullende opties eveneens onthouden, zoals helderheid, ondertiteling, etc."
 
-#: src/preferences.blp:183 src/preferences.blp:229
+#: src/preferences.blp:197
+msgid "Stream Providers"
+msgstr ""
+
+#: src/preferences.blp:198
+msgid ""
+"Control how long stream providers can take to respond and how often "
+"transient failures are retried"
+msgstr ""
+
+#: src/preferences.blp:201
+msgid "Provider Request Timeout"
+msgstr ""
+
+#: src/preferences.blp:202
+msgid "Seconds to wait for each provider response"
+msgstr ""
+
+#: src/preferences.blp:211
+msgid "Retry Transient Failures"
+msgstr ""
+
+#: src/preferences.blp:212
+msgid "Retries per provider for timeouts and temporary server errors"
+msgstr ""
+
+#: src/preferences.blp:221
+msgid "Nuvio Plugins"
+msgstr ""
+
+#: src/preferences.blp:222
+msgid "Manage plugin repositories and stream providers"
+msgstr ""
+
+#: src/preferences.blp:233
+msgid "CloudStream Plugins"
+msgstr ""
+
+#: src/preferences.blp:234
+msgid "Manage CloudStream repositories and providers"
+msgstr ""
+
+#: src/preferences.blp:245
+msgid "Custom Plugins"
+msgstr ""
+
+#: src/preferences.blp:246
+msgid "Manage local drop-in Python scrapers and plugins"
+msgstr ""
+
+#: src/preferences.blp:258
+#, fuzzy
+#| msgid "Navigation"
+msgid "Navigation Buttons"
+msgstr "Navigatie"
+
+#: src/preferences.blp:261
+msgid "Show Movies Button"
+msgstr ""
+
+#: src/preferences.blp:265
+msgid "Show Series Button"
+msgstr ""
+
+#: src/preferences.blp:269
+msgid "Show Anime Button"
+msgstr ""
+
+#: src/preferences.blp:275
+msgid "Sync library, watchlist, and continue watching with Stremio and Nuvio"
+msgstr ""
+
+#: src/preferences.blp:278
+msgid "Account"
+msgstr ""
+
+#: src/preferences.blp:293
+#, fuzzy
+#| msgid "Zoom Out"
+msgid "Log Out"
+msgstr "Uitzoomen"
+
+#: src/preferences.blp:304
+msgid "Sync Library & Continue Watching"
+msgstr ""
+
+#: src/preferences.blp:305
+msgid "Automatically keep playback progress and favorites in sync"
+msgstr ""
+
+#: src/preferences.blp:310
+msgid "Sync Installed Addons"
+msgstr ""
+
+#: src/preferences.blp:311
+msgid "Synchronize installed addons with Stremio and Nuvio"
+msgstr ""
+
+#: src/preferences.blp:316 src/preferences.blp:325
+msgid "Sync Now"
+msgstr ""
+
+#: src/preferences.blp:350 src/preferences.blp:396
 msgid "Reset"
 msgstr "Standaardwaarde"
 
-#: src/preferences.blp:193
+#: src/preferences.blp:360
 msgid "Subtitle Font"
 msgstr "Lettertype van ondertiteling"
 
-#: src/preferences.blp:206
+#: src/preferences.blp:373
 msgid "Some fonts may not work"
 msgstr "Let op: sommige lettertypen werken mogelijk niet"
 
-#: src/preferences.blp:269
+#: src/preferences.blp:436
 msgid "Primary Click"
 msgstr "Primaire klik"
 
-#: src/preferences.blp:274
+#: src/preferences.blp:441
 msgid "Focus/Play/Pause"
 msgstr "Focus/Afspelen/Pauzeren"
 
-#: src/preferences.blp:275 src/preferences.blp:287
+#: src/preferences.blp:442 src/preferences.blp:454
 msgid "Bypass"
 msgstr "Negeren"
 
-#: src/preferences.blp:281
+#: src/preferences.blp:448
 msgid "Secondary Click"
 msgstr "Secundaire klik"
 
-#: src/preferences.blp:286
+#: src/preferences.blp:453
 msgid "Context Menu"
 msgstr "Contextmenu"
 
-#: src/preferences.blp:295
+#: src/preferences.blp:462
 msgid "Preferred Subtitle Languages"
 msgstr "Voorkeurstalen voor ondertiteling"
 
-#: src/preferences.blp:296 src/preferences.blp:301
+#: src/preferences.blp:463 src/preferences.blp:468
 msgid "Example: en,es,pt"
 msgstr "Voorbeeld: nl-NL,nl,en,de"
 
-#: src/preferences.blp:300
+#: src/preferences.blp:467
 msgid "Preferred Audio Languages"
 msgstr "Voorkeurstalen voor audio"
 
-#: src/preferences.blp:307
+#: src/preferences.blp:473
+msgid "Network & DNS"
+msgstr ""
+
+#: src/preferences.blp:476
+msgid "DNS-over-HTTPS (DoH)"
+msgstr ""
+
+#: src/preferences.blp:477
+msgid ""
+"Resolve domains securely via Cloudflare and Google to bypass ISP censorship "
+"and DNS poisoning"
+msgstr ""
+
+#: src/preferences.blp:483
+msgid "Backup & Restore"
+msgstr ""
+
+#: src/preferences.blp:484
+msgid "Backup or restore all addons, plugins, and CloudStream repositories"
+msgstr ""
+
+#: src/preferences.blp:488
+msgid "Save all addons, plugins, and CloudStream repositories to a backup file"
+msgstr ""
+
+#: src/preferences.blp:493
+msgid "Backup…"
+msgstr ""
+
+#: src/preferences.blp:501
+msgid ""
+"Restore addons, plugins, and CloudStream repositories from a backup file"
+msgstr ""
+
+#: src/preferences.blp:506
+#, fuzzy
+#| msgid "Restoring Session…"
+msgid "Restore…"
+msgstr "Sessie herstellen…"
+
+#: src/preferences.blp:515
 msgid "Open Config Folder"
 msgstr "Configuratiemap openen"
 
@@ -807,11 +1858,11 @@ msgstr "Sneltoetsen tonen"
 msgid "Close Window"
 msgstr "Venster sluiten"
 
-#: src/shortcuts-dialog.blp:76 src/window.blp:129
+#: src/shortcuts-dialog.blp:76 src/window.blp:1639
 msgid "Save Session"
 msgstr "Sessie opslaan"
 
-#: src/shortcuts-dialog.blp:81 src/window.blp:130
+#: src/shortcuts-dialog.blp:81 src/window.blp:1640
 msgid "Save Session and Close"
 msgstr "Sessie opslaan en sluiten"
 
@@ -819,59 +1870,423 @@ msgstr "Sessie opslaan en sluiten"
 msgid "Quit"
 msgstr "Afsluiten"
 
-#: src/window.blp:118
+#: src/window.blp:54 src/window.blp:56 src/window.blp:87 src/window.blp:121
+#: src/window.blp:155 src/window.blp:189
+msgid "Home"
+msgstr ""
+
+#: src/window.blp:76 src/window.blp:110 src/window.blp:144 src/window.blp:178
+#: src/window.blp:210 src/window.blp:212 src/window.blp:425
+msgid "Discover"
+msgstr ""
+
+#: src/window.blp:221
+msgid "Filter"
+msgstr ""
+
+#: src/window.blp:237
+msgid "Filter Catalogs & Genres"
+msgstr ""
+
+#: src/window.blp:240
+msgid "Catalogs & Filters"
+msgstr ""
+
+#: src/window.blp:251 src/window.blp:617 src/window.blp:687 src/window.blp:757
+#: src/window.blp:827 src/window.blp:888 src/window.blp:930 src/window.blp:1041
+#: src/window.blp:1598
 msgid "Main Menu"
 msgstr "Hoofdmenu"
 
-#: src/window.blp:124
+#: src/window.blp:268 src/window.blp:632 src/window.blp:702 src/window.blp:772
+#: src/window.blp:842 src/window.blp:895 src/window.blp:937 src/window.blp:1048
+#: src/window.blp:1619
+msgid "Favorites"
+msgstr ""
+
+#: src/window.blp:269 src/window.blp:633 src/window.blp:703 src/window.blp:773
+#: src/window.blp:843 src/window.blp:896 src/window.blp:938 src/window.blp:1049
+#: src/window.blp:1616
+#, fuzzy
+#| msgid "Watch History"
+msgid "History"
+msgstr "Kijkgeschiedenis"
+
+#: src/window.blp:280 src/window.blp:1589
+msgid "Back"
+msgstr ""
+
+#: src/window.blp:288
+#, fuzzy
+#| msgid "PopcornBox"
+msgid "Search PopcornBox..."
+msgstr "PopcornBox"
+
+#: src/window.blp:321
+msgid "Reset all Discover filters"
+msgstr ""
+
+#: src/window.blp:328
+msgid "Type"
+msgstr ""
+
+#: src/window.blp:376
+msgid ""
+"Unique View (Deduplicate media across multiple provider streams/catalogs)"
+msgstr ""
+
+#: src/window.blp:383
+msgid "Filter loaded results"
+msgstr ""
+
+#: src/window.blp:392
+msgid "Loading..."
+msgstr ""
+
+#: src/window.blp:410
+msgid "Filter loaded results..."
+msgstr ""
+
+#: src/window.blp:414
+msgid "Title Only"
+msgstr ""
+
+#: src/window.blp:416
+msgid "Filter by title only instead of genres or description"
+msgstr ""
+
+#: src/window.blp:438
+#, fuzzy
+#| msgid "Contrast"
+msgid "Content"
+msgstr "Contrast"
+
+#: src/window.blp:451
+msgid "Back to Discover"
+msgstr ""
+
+#: src/window.blp:480
+msgid "Unique"
+msgstr ""
+
+#: src/window.blp:596 src/window.blp:666 src/window.blp:736 src/window.blp:806
+#: src/window.blp:876 src/window.blp:918 src/window.blp:1028
+msgid "Library"
+msgstr ""
+
+#: src/window.blp:606 src/window.blp:676 src/window.blp:746 src/window.blp:816
+msgid "TV"
+msgstr ""
+
+#: src/window.blp:644
+msgid "Search Favorites..."
+msgstr ""
+
+#: src/window.blp:714
+#, fuzzy
+#| msgid "Watch History"
+msgid "Search History..."
+msgstr "Kijkgeschiedenis"
+
+#: src/window.blp:784
+msgid "Search Watched..."
+msgstr ""
+
+#: src/window.blp:854
+msgid "Search Continue Watching..."
+msgstr ""
+
+#: src/window.blp:960
+msgid "Search addons..."
+msgstr ""
+
+#: src/window.blp:967
+msgid "Paste Stremio addon manifest URL to install..."
+msgstr ""
+
+#: src/window.blp:976
+msgid "Import"
+msgstr ""
+
+#: src/window.blp:980
+msgid "Export"
+msgstr ""
+
+#: src/window.blp:1057
+msgid "Nuvio"
+msgstr ""
+
+#: src/window.blp:1079 src/window.blp:1224 src/window.blp:1402
+msgid "OVERVIEW"
+msgstr ""
+
+#: src/window.blp:1099
+msgid "Enable plugin providers globally"
+msgstr ""
+
+#: src/window.blp:1100
+msgid "Use plugin providers during stream discovery."
+msgstr ""
+
+#: src/window.blp:1104
+msgid "Group plugin providers by repository"
+msgstr ""
+
+#: src/window.blp:1105
+msgid "In Streams, show one provider per repository instead of one per source."
+msgstr ""
+
+#: src/window.blp:1115
+msgid "ADD REPOSITORY"
+msgstr ""
+
+#: src/window.blp:1132
+msgid "Plugin manifest URL"
+msgstr ""
+
+#: src/window.blp:1136
+msgid "Install Plugin Repository"
+msgstr ""
+
+#: src/window.blp:1157 src/window.blp:1330
+msgid "INSTALLED REPOSITORIES"
+msgstr ""
+
+#: src/window.blp:1164 src/window.blp:1337
+msgid "Refresh all repositories"
+msgstr ""
+
+#: src/window.blp:1181
+msgid "PROVIDERS"
+msgstr ""
+
+#: src/window.blp:1187 src/window.blp:1359
+msgid "Filter providers..."
+msgstr ""
+
+#: src/window.blp:1202
+msgid "CloudStream"
+msgstr ""
+
+#: src/window.blp:1248
+msgid "Enable CloudStream plugins globally"
+msgstr ""
+
+#: src/window.blp:1249
+msgid "Use CloudStream providers during search and stream discovery."
+msgstr ""
+
+#: src/window.blp:1266
+msgid "Security Notice"
+msgstr ""
+
+#: src/window.blp:1271
+msgid ""
+"CloudStream plugins are maintained by third-party community developers. Only "
+"install repositories that you trust."
+msgstr ""
+
+#: src/window.blp:1277
+msgid "I Understand and Accept"
+msgstr ""
+
+#: src/window.blp:1289
+msgid "ADD CLOUDSTREAM REPOSITORY"
+msgstr ""
+
+#: src/window.blp:1306
+msgid "CloudStream repository URL (GitHub repo, short link, or repo.json)"
+msgstr ""
+
+#: src/window.blp:1310
+msgid "Install CloudStream Repository"
+msgstr ""
+
+#: src/window.blp:1353
+msgid "PROVIDERS & EXTENSIONS"
+msgstr ""
+
+#: src/window.blp:1363
+msgid "Install & Enable All"
+msgstr ""
+
+#: src/window.blp:1366
+msgid "Install and enable all compatible providers"
+msgstr ""
+
+#: src/window.blp:1380
+msgid "Custom"
+msgstr ""
+
+#: src/window.blp:1422
+msgid "Enable custom scrapers globally"
+msgstr ""
+
+#: src/window.blp:1423
+msgid "Execute local Python scrapers during stream discovery."
+msgstr ""
+
+#: src/window.blp:1427
+#, fuzzy
+#| msgid "Open Folder"
+msgid "Open Plugins Folder"
+msgstr "Map openen"
+
+#: src/window.blp:1428
+msgid "Drop Python (.py) scraper scripts into this folder"
+msgstr ""
+
+#: src/window.blp:1437
+msgid "Import Plugin File"
+msgstr ""
+
+#: src/window.blp:1438
+msgid "Copy a .py scraper file into your plugins folder"
+msgstr ""
+
+#: src/window.blp:1455
+msgid "LOCAL SCRAPERS"
+msgstr ""
+
+#: src/window.blp:1462
+msgid "Refresh Plugins"
+msgstr ""
+
+#: src/window.blp:1548
+msgid "Fetching metadata..."
+msgstr ""
+
+#: src/window.blp:1603
+#, fuzzy
+#| msgid "Media"
+msgid "Open Media"
+msgstr "Media"
+
+#: src/window.blp:1617
+msgid "Downloads"
+msgstr ""
+
+#: src/window.blp:1618
+msgid "Watched"
+msgstr ""
+
+#: src/window.blp:1620
+#, fuzzy
+#| msgid "Play"
+msgid "Player"
+msgstr "Afspelen"
+
+#: src/window.blp:1621
+msgid "Addons"
+msgstr ""
+
+#: src/window.blp:1622
+msgid "Plugins"
+msgstr ""
+
+#: src/window.blp:1634
 msgid "Keyboard Shortcuts"
 msgstr "Sneltoetsen"
 
-#: src/window.blp:125
-msgid "About Cine"
+#: src/window.blp:1635
+msgid "About PopcornBox"
 msgstr "Over Cine"
 
-#: src/window.blp:169 src/window.blp:543
+#: src/window.blp:1641
+#, fuzzy
+#| msgid "Save Session"
+msgid "Clear Session"
+msgstr "Sessie opslaan"
+
+#: src/window.blp:1680 src/window.blp:2137
 msgid "Previous"
 msgstr "Vorige"
 
-#: src/window.blp:192 src/window.blp:544
+#: src/window.blp:1703 src/window.blp:2138
 msgid "Next"
 msgstr "Volgende"
 
-#: src/window.blp:273
+#: src/window.blp:1784
 msgid "Video"
 msgstr "Video"
 
-#: src/window.blp:288
+#: src/window.blp:1799
 msgid "Chapters"
 msgstr "Hoofdstukken"
 
-#: src/window.blp:305
+#: src/window.blp:1816
 msgid "Shuffle Playlist"
 msgstr "Afspeellijst willekeurig afspelen"
 
-#: src/window.blp:318
+#: src/window.blp:1829
 msgid "Loop Playlist"
 msgstr "Afspeellijst herhalen"
 
-#: src/window.blp:392
+#: src/window.blp:1903
 msgid "Toggle Elapsed/Remaining"
 msgstr "Verstreken/Resterend omschakelen"
 
-#: src/window.blp:439
+#: src/window.blp:1950
 msgid "Drag and drop files here"
 msgstr "Sleep bestanden hierheen"
 
-#: src/window.blp:459
+#: src/window.blp:1970
 msgid "Open…"
 msgstr "Openen…"
 
+#: src/window.blp:2040
+msgid "Next Episode"
+msgstr ""
+
+#: src/window.blp:2050
+msgid "Next episode in 30s"
+msgstr ""
+
+#: src/window.blp:2076
+#, fuzzy
+#| msgid "Play"
+msgid "Play Next"
+msgstr "Afspelen"
+
+#: src/window.blp:2090
+msgid "Dismiss"
+msgstr ""
+
+#~ msgid ""
+#~ "Cine combines a clean interface with a high-performance engine to deliver "
+#~ "a seamless viewing experience."
+#~ msgstr ""
+#~ "Cine brengt twee concepten samen: goede prestaties en een overzichtelijke "
+#~ "vormgeving."
+
+#~ msgid "Simple Design: A refined, distraction-free interface"
+#~ msgstr "Eenvoudig ontwerp: geraffineerd en afleidingsvrij"
+
+#~ msgid ""
+#~ "MPV-Based: Leverages the robust power of MPV for great playback and "
+#~ "format support"
+#~ msgstr ""
+#~ "Gebaseerd op MPV: alle functies van MPV, voor de beste afspeelervaring en "
+#~ "ondersteuning van formaten"
+
+#~ msgid ""
+#~ "Audio and Subtitles: Control track selection and synchronization for both"
+#~ msgstr ""
+#~ "Audio en ondertiteling: kies audio- en ondertitelsporen, en stem ze op "
+#~ "elkaar af"
+
+#~ msgid ""
+#~ "Video Controls: Easily adjust brightness, contrast, zoom, aspect ratio, "
+#~ "etc."
+#~ msgstr ""
+#~ "Videoregeling: pas de helderheid, het contrast, zoomniveau, de "
+#~ "beeldverhouding, etc. aan."
+
+#~ msgid "translator-credits"
+#~ msgstr "Heimen Stoffels <vistausss@fastmail.com>"
+
 #~ msgid "Left Click"
 #~ msgstr "Linksklik"
-
-#~ msgid "Disabled"
-#~ msgstr "Uitgeschakeld"
 
 #~ msgid "Right Click"
 #~ msgstr "Rechtsklik"

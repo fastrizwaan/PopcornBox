@@ -21,7 +21,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -186,7 +186,7 @@ class TestContinueWatching(unittest.TestCase):
 
     def test_update_continue_watching_section_shows_more_cards(self):
         from src import database
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         import gi
         gi.require_version("Gtk", "4.0")
         from gi.repository import Gtk
@@ -212,7 +212,7 @@ class TestContinueWatching(unittest.TestCase):
         win._start_background_continue_watching_refresh = MagicMock()
         win._cw_initial_layout_check_scheduled = True
 
-        CineWindow._update_continue_watching_section(win)
+        PopcornBoxWindow._update_continue_watching_section(win)
 
         cw_scroll = None
         c = target_box.get_first_child()

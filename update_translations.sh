@@ -1,21 +1,21 @@
 #!/bin/bash
-OUTPUT="po/io.github.diegopvlk.Cine.pot"
-PACKAGE_NAME="io.github.diegopvlk.Cine"
+OUTPUT="po/io.github.fastrizwaan.PopcornBox.pot"
+PACKAGE_NAME="io.github.fastrizwaan.PopcornBox"
 ENCODING="UTF-8"
 LANGUAGE_BLP="--language=JavaScript"
 LINGUAS_FILE="po/LINGUAS"
 
-grep -v '\.blp$' po/POTFILES.in > /tmp/POTFILES_CINE
-grep '\.blp$' po/POTFILES.in > /tmp/POTFILES_CINE.blp
+grep -v '\.blp$' po/POTFILES.in > /tmp/POTFILES_POPCORNBOX
+grep '\.blp$' po/POTFILES.in > /tmp/POTFILES_POPCORNBOX.blp
 
 # create pot
-xgettext --files-from=/tmp/POTFILES_CINE \
+xgettext --files-from=/tmp/POTFILES_POPCORNBOX \
          --output="$OUTPUT" --package-name="$PACKAGE_NAME" \
          --from-code="$ENCODING" --add-comments \
          --keyword=_ --keyword=C_:1c,2
 
 # join pot
-xgettext --files-from=/tmp/POTFILES_CINE.blp \
+xgettext --files-from=/tmp/POTFILES_POPCORNBOX.blp \
          --output="$OUTPUT" --package-name="$PACKAGE_NAME" \
          --from-code="$ENCODING" --add-comments \
          --keyword=_ --keyword=C_:1c,2 \
@@ -23,7 +23,7 @@ xgettext --files-from=/tmp/POTFILES_CINE.blp \
          --join-existing
 
 
-rm /tmp/POTFILES_CINE /tmp/POTFILES_CINE.blp
+rm /tmp/POTFILES_POPCORNBOX /tmp/POTFILES_POPCORNBOX.blp
 
 sed -i 's/charset=CHARSET/charset=UTF-8/g' $OUTPUT
 

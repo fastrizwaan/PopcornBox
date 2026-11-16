@@ -62,9 +62,9 @@ class TestTorrentStreamingProgress(unittest.TestCase):
             subprocess.run(["glib-compile-schemas", cls.schema_temp_dir.name], check=True)
             os.environ["GSETTINGS_SCHEMA_DIR"] = cls.schema_temp_dir.name
 
-        res_file = Path("cine.gresource")
+        res_file = Path("popcornbox.gresource")
         if not res_file.exists():
-            res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+            res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
         if res_file.exists():
             try:
                 res = Gio.Resource.load(str(res_file))
@@ -77,8 +77,8 @@ class TestTorrentStreamingProgress(unittest.TestCase):
         cls.schema_temp_dir.cleanup()
 
     def setUp(self):
-        from src.window import CineWindow
-        self.win = CineWindow.__new__(CineWindow)
+        from src.window import PopcornBoxWindow
+        self.win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         self.win.main_stack = MockStack("details")
         self.win.library_stack = MockStack("content")
         self.win.category_btn_stack = MockStack("movies")

@@ -26,7 +26,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -969,8 +969,8 @@ class TestCloudStream(unittest.TestCase):
         self.assertIsNone(stream_dict)
 
     def test_cloudstream_catalogs_list_on_selection_only(self):
-        from src.window import CineWindow
-        win = MagicMock(spec=CineWindow)
+        from src.window import PopcornBoxWindow
+        win = MagicMock(spec=PopcornBoxWindow)
         win.current_sort = 'Recent'
         win.current_genre = None
         win.current_year = None
@@ -981,7 +981,7 @@ class TestCloudStream(unittest.TestCase):
         win._discover_catalog_list_cache_timestamps = {}
 
         # 1. Do not list CloudStream catalogs with "all"
-        rows_all = CineWindow._get_discover_catalog_list(win, filter_media_type='all', filter_addon_url=None)
+        rows_all = PopcornBoxWindow._get_discover_catalog_list(win, filter_media_type='all', filter_addon_url=None)
         cs_rows_all = [r for r in rows_all if r.get('_source') == 'cloudstream' or str(r.get('manifest_url', '')).startswith('cloudstream://')]
         self.assertEqual(len(cs_rows_all), 0, "CloudStream catalogs must not be listed with all")
 
@@ -989,7 +989,7 @@ class TestCloudStream(unittest.TestCase):
         cats = cloudstream.get_catalogs('all')
         if cats:
             target_url = cats[0]['manifest_url']
-            rows_sel = CineWindow._get_discover_catalog_list(win, filter_media_type='all', filter_addon_url=target_url)
+            rows_sel = PopcornBoxWindow._get_discover_catalog_list(win, filter_media_type='all', filter_addon_url=target_url)
             cs_rows_sel = [r for r in rows_sel if r.get('_source') == 'cloudstream' or str(r.get('manifest_url', '')).startswith('cloudstream://')]
             self.assertGreater(len(cs_rows_sel), 0, "CloudStream catalogs must be listed when provider is selected")
             for r in cs_rows_sel:

@@ -6,13 +6,14 @@
 @define-color dialog_bg_color @window_bg_color;
 
 window {
-  --cine-grey: #e5e5e5;
+  --popcornbox-grey: #e5e5e5;
+  --cine-grey: var(--popcornbox-grey);
   --window-bg-color: rgb(5, 5, 6);
-  --window-fg-color: var(--cine-grey);
+  --window-fg-color: var(--popcornbox-grey);
   --headerbar-bg-color: var(--window-bg-color);
   --card-bg-color: rgba(60, 60, 62, 0.66);
   --popover-bg-color: rgba(25, 25, 27, 0.975);
-  --popover-fg-color: var(--cine-grey);
+  --popover-fg-color: var(--popcornbox-grey);
   --dialog-bg-color: var(--window-bg-color);
 }
 
@@ -72,7 +73,7 @@ window:backdrop scale {
 
 button.pill.suggested-action,
 button.circular.suggested-action {
-  background: var(--cine-grey);
+  background: var(--popcornbox-grey);
   color: black;
 }
 
@@ -89,6 +90,7 @@ button.pill:active,
 dialog:not(#playlist),
 #playlist headerbar,
 #playlist searchbar,
+popcornbox-list-view,
 cine-list-view,
 .start-page button {
   --accent-color: var(--window-fg-color);
@@ -99,7 +101,7 @@ cine-list-view,
 }
 
 .start-page {
-  color: var(--cine-grey);
+  color: var(--popcornbox-grey);
   background: linear-gradient(180deg, transparent 0%, #0c0c0e 100%);
 }
 
@@ -206,6 +208,7 @@ popover>arrow {
   box-shadow: 0px 1px 4px rgba(0, 0, 0, 0.33);
 }
 
+.popcornbox-spinner,
 .cine-spinner {
   background: rgba(0, 0, 0, 0.5);
   color: white;
@@ -501,6 +504,7 @@ button.continue-play-btn:active {
   color: #ffffff;
 }
 
+popcornbox-spinbutton,
 cine-spinbutton {
   background: none;
   outline: none;
@@ -536,6 +540,7 @@ time-popover label {
 }
 
 #options popover button,
+#options popover popcornbox-spinbutton,
 #options popover cine-spinbutton {
   min-height: 22px;
 }
@@ -552,12 +557,14 @@ time-popover label {
   margin-left: -10px;
 }
 
+popcornbox-list-view,
 cine-list-view {
   background-color: transparent;
   padding-top: 1px;
   padding-bottom: 22px;
 }
 
+popcornbox-list-view row,
 cine-list-view row {
   background-color: transparent;
   margin-right: 12px;
@@ -565,6 +572,7 @@ cine-list-view row {
   padding: 0;
 }
 
+popcornbox-list-view row>box,
 cine-list-view row>box {
   transition: background-color 200ms ease-in-out;
   color: var(--card-fg-color);
@@ -573,24 +581,30 @@ cine-list-view row>box {
   border: 1px solid rgba(0, 0, 0, 0.5);
 }
 
+popcornbox-list-view row>box:hover,
 cine-list-view row>box:hover {
   background-color: color-mix(in srgb,
       var(--card-bg-color) 95%,
       rgb(from currentColor r g b / calc(alpha * 1)));
 }
 
+popcornbox-list-view row>box:active,
 cine-list-view row>box:active {
   background-color: color-mix(in srgb,
       var(--card-bg-color) 90%,
       rgb(from currentColor r g b / calc(alpha * 1)));
 }
 
+popcornbox-list-view row:first-child,
+popcornbox-list-view row:first-child>box,
 cine-list-view row:first-child,
 cine-list-view row:first-child>box {
   border-top-left-radius: 12px;
   border-top-right-radius: 12px;
 }
 
+popcornbox-list-view row:last-child,
+popcornbox-list-view row:last-child>box,
 cine-list-view row:last-child,
 cine-list-view row:last-child>box {
   border-bottom-left-radius: 12px;
@@ -646,6 +660,7 @@ cine-list-view row:last-child>box {
   }
 
   time-popover label,
+  popcornbox-list-view row>box,
   cine-list-view row>box {
     border: 1px solid var(--border-color);
   }
@@ -664,6 +679,7 @@ cine-list-view row:last-child>box {
         rgba(0, 0, 0, 0.8) 100%);
   }
 
+  popcornbox-list-view row>box,
   cine-list-view row>box {
     border: 1px solid var(--border-color);
   }

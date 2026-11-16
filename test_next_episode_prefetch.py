@@ -23,7 +23,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gio
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -32,7 +32,7 @@ if res_file.exists():
         pass
 
 from src import database
-from src.window import CineWindow
+from src.window import PopcornBoxWindow
 
 
 VIDEOS = [
@@ -143,7 +143,7 @@ class RolloverPage(FakeSeriesPage):
 
 class TestNextEpisodePrefetch(unittest.TestCase):
     def setUp(self):
-        self.win = CineWindow.__new__(CineWindow)
+        self.win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         self.win.details_box = FakeBox()
         self.win.main_stack = FakeStack("player")
         self.win.mpv = MagicMock()
@@ -367,7 +367,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
     def test_play_stream_triggers_next_episode_prefetch(self):
         win = MagicMock()
         win._is_playing_trailer.return_value = False
-        CineWindow._play_stream(win, url="https://cdn.example/e1.mp4", title="Test Show")
+        PopcornBoxWindow._play_stream(win, url="https://cdn.example/e1.mp4", title="Test Show")
         win._prefetch_next_episode_streams.assert_called_once()
 
     def test_rank_direct_streams_prioritizes_preferred_provider(self):
@@ -418,7 +418,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
         queue = [{"url": "https://cdn.example/new.mp4", "is_http": True, "quality": "1080p"}]
         with patch.object(database, "get_cached_metadata", return_value={}), \
              patch.object(database, "save_continue_watching"):
-            CineWindow.play_stream_with_failover(
+            PopcornBoxWindow.play_stream_with_failover(
                 win,
                 queue=queue,
                 title=title,
@@ -484,7 +484,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
         }
         win._pending_seek_position = 1200.0
         with patch.object(database, "save_continue_watching"):
-            CineWindow._play_stream(
+            PopcornBoxWindow._play_stream(
                 win,
                 url="https://cdn.example/e4.mp4",
                 title="Test Show S01E04",
@@ -519,14 +519,14 @@ class TestNextEpisodePrefetch(unittest.TestCase):
         self.assertIsNone(win._request_seek_position)
 
         with patch.object(database, "save_continue_watching_async"):
-            CineWindow._play_stream(
+            PopcornBoxWindow._play_stream(
                 win, url="https://cdn.example/new.mp4", title="Test Show S01E01"
             )
         win.mpv.loadfile.assert_called_once_with("https://cdn.example/new.mp4", "replace")
         win.mpv.command.assert_not_called()
 
     def test_previous_media_position_does_not_seek_new_request(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win._is_playing_trailer.return_value = False
         win.stream_request_id = 1
@@ -544,14 +544,14 @@ class TestNextEpisodePrefetch(unittest.TestCase):
             "is_trailer": False,
         }
         with patch.object(database, "save_continue_watching_async"):
-            CineWindow._play_stream(
+            PopcornBoxWindow._play_stream(
                 win, url="https://cdn.example/movie.mp4", preserve_queue=True
             )
         win.mpv.loadfile.assert_called_once_with("https://cdn.example/movie.mp4", "replace")
         win.mpv.command.assert_not_called()
 
     def test_failover_uses_live_position_after_media_started(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win._is_playing_trailer.return_value = False
         win.stream_request_id = 1
@@ -567,7 +567,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
             "is_trailer": False,
         }
         with patch.object(database, "save_continue_watching_async"):
-            CineWindow._play_stream(
+            PopcornBoxWindow._play_stream(
                 win, url="https://cdn.example/failover.mp4", preserve_queue=True
             )
         # The first stream already played to 640s, so its failover replacement
@@ -577,7 +577,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
         )
 
     def test_request_seek_applies_when_first_stream_never_started(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win._is_playing_trailer.return_value = False
         win.stream_request_id = 1
@@ -593,7 +593,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
             "is_trailer": False,
         }
         with patch.object(database, "save_continue_watching_async"):
-            CineWindow._play_stream(
+            PopcornBoxWindow._play_stream(
                 win, url="https://cdn.example/retry.mp4", preserve_queue=True
             )
         win.mpv.command.assert_called_once_with(
@@ -722,7 +722,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
             "season": 1,
             "episode": 1,
         }
-        self.win._get_videos_for_current_page = CineWindow._get_videos_for_current_page.__get__(self.win, CineWindow)
+        self.win._get_videos_for_current_page = PopcornBoxWindow._get_videos_for_current_page.__get__(self.win, PopcornBoxWindow)
         with patch.object(database, "get_cached_metadata", return_value={"videos": VIDEOS}), \
              patch("src.window.settings.get_boolean", return_value=True):
             self.assertTrue(self.win._has_next_episode())
@@ -743,7 +743,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
             "season": 1,
             "episode": 1,
         }
-        self.win._get_videos_for_current_page = CineWindow._get_videos_for_current_page.__get__(self.win, CineWindow)
+        self.win._get_videos_for_current_page = PopcornBoxWindow._get_videos_for_current_page.__get__(self.win, PopcornBoxWindow)
         with patch.object(database, "get_cached_metadata", return_value={"videos": VIDEOS}), \
              patch("src.window.settings.get_boolean", return_value=True):
             self.assertFalse(self.win._is_page_for_current_item(unrelated_page))
@@ -761,7 +761,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
             "season": 1,
             "episode": 1,
         }
-        self.win._get_videos_for_current_page = CineWindow._get_videos_for_current_page.__get__(self.win, CineWindow)
+        self.win._get_videos_for_current_page = PopcornBoxWindow._get_videos_for_current_page.__get__(self.win, PopcornBoxWindow)
         direct = self._direct_card()
         with patch.object(database, "get_cached_metadata", return_value={"videos": VIDEOS}), \
              patch("src.window.settings.get_boolean", return_value=True), \
@@ -785,7 +785,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
             "season": 1,
             "episode": 1,
         }
-        self.win._get_videos_for_current_page = CineWindow._get_videos_for_current_page.__get__(self.win, CineWindow)
+        self.win._get_videos_for_current_page = PopcornBoxWindow._get_videos_for_current_page.__get__(self.win, PopcornBoxWindow)
         direct = self._direct_card()
         self.win._next_ep_prefetched = {
             "key": "tt1234567:S1:E2",
@@ -808,7 +808,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
         database.save_continue_watching.assert_called()
 
     def test_handle_eof_triggers_auto_play_next_when_playing_from_continue_watching(self):
-        self.win._handle_eof = CineWindow._handle_eof.__get__(self.win, CineWindow)
+        self.win._handle_eof = PopcornBoxWindow._handle_eof.__get__(self.win, PopcornBoxWindow)
         self.win._is_auto_play_next_enabled = MagicMock(return_value=True)
         self.win._is_playing_trailer = MagicMock(return_value=False)
         self.win._try_play_next_episode = MagicMock(return_value=True)
@@ -832,7 +832,7 @@ class TestNextEpisodePrefetch(unittest.TestCase):
         self.assertEqual(processed[0]["url"], "https://cdn.example.com/movie.mp4")
 
     def test_stream_queue_skips_external_streams_without_opening_browser(self):
-        self.win._play_current_stream_from_queue = CineWindow._play_current_stream_from_queue.__get__(self.win, CineWindow)
+        self.win._play_current_stream_from_queue = PopcornBoxWindow._play_current_stream_from_queue.__get__(self.win, PopcornBoxWindow)
         self.win.show_player_loading = MagicMock()
         self.win._start_stream_loading_watchdog = MagicMock()
         self.win._try_next_stream_in_queue = MagicMock()

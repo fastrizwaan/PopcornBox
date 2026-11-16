@@ -18,7 +18,7 @@ if _schema_path.exists():
     os.environ["GSETTINGS_SCHEMA_DIR"] = _schema_dir.name
 
 from gi.repository import Gio
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -189,11 +189,11 @@ class TestResumeAudioSubtitle(unittest.TestCase):
         ]
         win.mpv.track_list = track_list
 
-        # Bind the real method from CineWindow
-        win._playback_preference_keys = window.CineWindow._playback_preference_keys.__get__(win, window.CineWindow)
-        win._get_saved_audio_preference = window.CineWindow._get_saved_audio_preference.__get__(win, window.CineWindow)
-        win._get_saved_subtitle_preference = window.CineWindow._get_saved_subtitle_preference.__get__(win, window.CineWindow)
-        win._restore_audio_and_subtitle_preferences = window.CineWindow._restore_audio_and_subtitle_preferences.__get__(win, window.CineWindow)
+        # Bind the real method from PopcornBoxWindow
+        win._playback_preference_keys = window.PopcornBoxWindow._playback_preference_keys.__get__(win, window.PopcornBoxWindow)
+        win._get_saved_audio_preference = window.PopcornBoxWindow._get_saved_audio_preference.__get__(win, window.PopcornBoxWindow)
+        win._get_saved_subtitle_preference = window.PopcornBoxWindow._get_saved_subtitle_preference.__get__(win, window.PopcornBoxWindow)
+        win._restore_audio_and_subtitle_preferences = window.PopcornBoxWindow._restore_audio_and_subtitle_preferences.__get__(win, window.PopcornBoxWindow)
 
         win._restore_audio_and_subtitle_preferences(track_list)
 
@@ -219,10 +219,10 @@ class TestResumeAudioSubtitle(unittest.TestCase):
         ]
         win.mpv.track_list = track_list
 
-        win._playback_preference_keys = window.CineWindow._playback_preference_keys.__get__(win, window.CineWindow)
+        win._playback_preference_keys = window.PopcornBoxWindow._playback_preference_keys.__get__(win, window.PopcornBoxWindow)
         win._get_saved_audio_preference = lambda item: None
-        win._get_saved_subtitle_preference = window.CineWindow._get_saved_subtitle_preference.__get__(win, window.CineWindow)
-        win._restore_audio_and_subtitle_preferences = window.CineWindow._restore_audio_and_subtitle_preferences.__get__(win, window.CineWindow)
+        win._get_saved_subtitle_preference = window.PopcornBoxWindow._get_saved_subtitle_preference.__get__(win, window.PopcornBoxWindow)
+        win._restore_audio_and_subtitle_preferences = window.PopcornBoxWindow._restore_audio_and_subtitle_preferences.__get__(win, window.PopcornBoxWindow)
 
         win._restore_audio_and_subtitle_preferences(track_list)
 
@@ -233,9 +233,9 @@ class TestResumeAudioSubtitle(unittest.TestCase):
     def test_clear_saved_external_subtitle_accepts_item_context(self):
         """_clear_saved_external_subtitle supports both item and item_context kwargs."""
         win = MagicMock()
-        win._playback_preference_keys = window.CineWindow._playback_preference_keys.__get__(win, window.CineWindow)
-        win._external_subtitle_setting_keys = window.CineWindow._external_subtitle_setting_keys.__get__(win, window.CineWindow)
-        win._clear_saved_external_subtitle = window.CineWindow._clear_saved_external_subtitle.__get__(win, window.CineWindow)
+        win._playback_preference_keys = window.PopcornBoxWindow._playback_preference_keys.__get__(win, window.PopcornBoxWindow)
+        win._external_subtitle_setting_keys = window.PopcornBoxWindow._external_subtitle_setting_keys.__get__(win, window.PopcornBoxWindow)
+        win._clear_saved_external_subtitle = window.PopcornBoxWindow._clear_saved_external_subtitle.__get__(win, window.PopcornBoxWindow)
 
         item = {"id": "tt55555", "season": 1, "episode": 2}
         # Calling with item_context should not raise TypeError

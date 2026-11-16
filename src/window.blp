@@ -1,7 +1,7 @@
 using Gtk 4.0;
 using Adw 1;
 
-template $CineWindow: Adw.ApplicationWindow {
+template $PopcornBoxWindow: Adw.ApplicationWindow {
   name: "io-github-fastrizwaan-PopcornBox";
   title: _("PopcornBox");
   default-width: 800;
@@ -1503,7 +1503,7 @@ template $CineWindow: Adw.ApplicationWindow {
 
         [overlay]
         Image audio_only_icon {
-          icon-name: "cine-audio-x-generic-symbolic";
+          icon-name: "popcornbox-audio-x-generic-symbolic";
           visible: false;
           pixel-size: 128;
           opacity: 0.33;
@@ -1540,7 +1540,7 @@ template $CineWindow: Adw.ApplicationWindow {
             height-request: 72;
 
             styles [
-              "cine-spinner",
+              "popcornbox-spinner",
             ]
           }
 
@@ -1676,7 +1676,7 @@ template $CineWindow: Adw.ApplicationWindow {
                     "flat",
                   ]
 
-                  icon-name: "cine-skip-backward-symbolic";
+                  icon-name: "popcornbox-skip-backward-symbolic";
                   tooltip-text: _("Previous");
                   clicked => $_on_previous_clicked();
                 }
@@ -1687,7 +1687,7 @@ template $CineWindow: Adw.ApplicationWindow {
                     "flat",
                   ]
 
-                  icon-name: "cine-playback-start-symbolic";
+                  icon-name: "popcornbox-playback-start-symbolic";
                   tooltip-text: _("Play/Pause");
                   halign: center;
                   clicked => $_on_play_pause_clicked();
@@ -1699,7 +1699,7 @@ template $CineWindow: Adw.ApplicationWindow {
                     "flat",
                   ]
 
-                  icon-name: "cine-skip-forward-symbolic";
+                  icon-name: "popcornbox-skip-forward-symbolic";
                   tooltip-text: _("Next");
                   halign: center;
                   clicked => $_on_next_clicked();
@@ -1707,7 +1707,7 @@ template $CineWindow: Adw.ApplicationWindow {
 
                 MenuButton volume_menu_btn {
                   halign: center;
-                  icon-name: "cine-volume-max-symbolic";
+                  icon-name: "popcornbox-volume-max-symbolic";
                   direction: up;
                   tooltip-text: _("Volume");
 
@@ -1719,7 +1719,7 @@ template $CineWindow: Adw.ApplicationWindow {
                   popover: Popover {
                     Box volume_box {
                       ToggleButton mute_toggle_btn {
-                        icon-name: "cine-volume-mute-symbolic";
+                        icon-name: "popcornbox-volume-mute-symbolic";
                         tooltip-text: _("Mute/Unmute");
 
                         styles [
@@ -1751,7 +1751,7 @@ template $CineWindow: Adw.ApplicationWindow {
 
                   direction: up;
                   halign: center;
-                  icon-name: "cine-subtitles-symbolic";
+                  icon-name: "popcornbox-subtitles-symbolic";
                   tooltip-text: _("Subtitles");
 
                   menu-model: menu subtitles_menu {};
@@ -1766,7 +1766,7 @@ template $CineWindow: Adw.ApplicationWindow {
 
                   direction: up;
                   halign: center;
-                  icon-name: "cine-audio-symbolic";
+                  icon-name: "popcornbox-audio-symbolic";
                   tooltip-text: _("Audio");
 
                   menu-model: menu audio_tracks_menu {};
@@ -1780,7 +1780,7 @@ template $CineWindow: Adw.ApplicationWindow {
 
                   direction: up;
                   halign: center;
-                  icon-name: "cine-video-symbolic";
+                  icon-name: "popcornbox-video-symbolic";
                   tooltip-text: _("Video");
 
                   menu-model: menu video_tracks_menu {};
@@ -1795,7 +1795,7 @@ template $CineWindow: Adw.ApplicationWindow {
                   notify::active => $_sync_chapter_menu_selected();
                   direction: up;
                   halign: center;
-                  icon-name: "cine-chapters-symbolic";
+                  icon-name: "popcornbox-chapters-symbolic";
                   tooltip-text: _("Chapters");
 
                   menu-model: menu chapters_menu {};
@@ -1812,7 +1812,7 @@ template $CineWindow: Adw.ApplicationWindow {
                     "flat",
                   ]
 
-                  icon-name: "cine-playlist-shuffle-symbolic";
+                  icon-name: "popcornbox-playlist-shuffle-symbolic";
                   tooltip-text: _("Shuffle Playlist");
                   valign: end;
                   halign: center;
@@ -1825,7 +1825,7 @@ template $CineWindow: Adw.ApplicationWindow {
                     "flat",
                   ]
 
-                  icon-name: "cine-playlist-repeat-symbolic";
+                  icon-name: "popcornbox-playlist-repeat-symbolic";
                   tooltip-text: _("Loop Playlist");
                   valign: end;
                   halign: center;
@@ -1838,7 +1838,7 @@ template $CineWindow: Adw.ApplicationWindow {
                     "flat",
                   ]
 
-                  icon-name: "cine-repeat-file-symbolic";
+                  icon-name: "popcornbox-repeat-file-symbolic";
                   tooltip-text: _("Loop File");
                   valign: end;
                   halign: center;
@@ -1852,7 +1852,7 @@ template $CineWindow: Adw.ApplicationWindow {
                   ]
 
                   tooltip-text: _("Playlist");
-                  icon-name: "cine-playlist-symbolic";
+                  icon-name: "popcornbox-playlist-symbolic";
                   valign: end;
                   halign: center;
                   action-name: "win.open-playlist-dialog";
@@ -1866,7 +1866,7 @@ template $CineWindow: Adw.ApplicationWindow {
                     "flat",
                   ]
 
-                  icon-name: "cine-view-fullscreen-symbolic";
+                  icon-name: "popcornbox-view-fullscreen-symbolic";
                   tooltip-text: _("Fullscreen");
                   valign: end;
                   halign: center;
@@ -2069,7 +2069,7 @@ template $CineWindow: Adw.ApplicationWindow {
                 valign: center;
 
                 Image {
-                  icon-name: "cine-skip-forward-symbolic";
+                  icon-name: "popcornbox-skip-forward-symbolic";
                 }
 
                 Label {

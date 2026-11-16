@@ -23,7 +23,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -32,7 +32,7 @@ if res_file.exists():
         pass
 
 from src import database, api
-from src.window import CineWindow
+from src.window import PopcornBoxWindow
 
 
 class TestMediaTypeGenreSeparation(unittest.TestCase):
@@ -183,7 +183,7 @@ class TestMediaTypeGenreSeparation(unittest.TestCase):
 
     def test_window_unique_item_filtering_by_media_type(self):
         """Window _is_unique_item rejects series when in movie unique mode and vice versa."""
-        win = CineWindow.__new__(CineWindow)
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win.unique_seen_ids = set()
         win.unique_seen_keys = set()
 

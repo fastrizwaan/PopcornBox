@@ -22,7 +22,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -30,7 +30,7 @@ if res_file.exists():
     except Exception:
         pass
 
-from src.window import CineWindow
+from src.window import PopcornBoxWindow
 from src import tmdb_helper, api, database
 
 
@@ -76,9 +76,9 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         self.win._refresh_content = MagicMock()
         self.win._refresh_unique_combined_view = MagicMock()
         self.win._refresh_discover_page = MagicMock()
-        self.win._get_discover_view_key = lambda: CineWindow._get_discover_view_key(self.win)
-        self.win._update_genre_dropdown = lambda media_type=None: CineWindow._update_genre_dropdown(self.win, media_type)
-        self.win._apply_sort_to_current_catalog = lambda: CineWindow._apply_sort_to_current_catalog(self.win)
+        self.win._get_discover_view_key = lambda: PopcornBoxWindow._get_discover_view_key(self.win)
+        self.win._update_genre_dropdown = lambda media_type=None: PopcornBoxWindow._update_genre_dropdown(self.win, media_type)
+        self.win._apply_sort_to_current_catalog = lambda: PopcornBoxWindow._apply_sort_to_current_catalog(self.win)
 
     def tearDown(self):
         # Background fetchers hold _cache_db_lock while running statements;
@@ -100,7 +100,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
 
     def test_dropdown_1_options_contain_primary_filters(self):
         """Dropdown 1 should contain Popular, Recent, Featured, Trending, Year, Language, Genre."""
-        CineWindow._update_sort_dropdown(self.win, "movie")
+        PopcornBoxWindow._update_sort_dropdown(self.win, "movie")
         model = self.win.library_sort_dropdown.get_model()
         items = [model.get_string(i) for i in range(model.get_n_items())]
         
@@ -116,7 +116,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         """When Dropdown 1 is Year, Dropdown 2 shows years list."""
         self.win.current_sort = "Year"
         self.win.current_year = "2024"
-        CineWindow._update_genre_dropdown(self.win, "movie")
+        PopcornBoxWindow._update_genre_dropdown(self.win, "movie")
         
         model = self.win.library_genre_dropdown.get_model()
         items = [model.get_string(i) for i in range(model.get_n_items())]
@@ -136,7 +136,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         """When Dropdown 1 is Language, Dropdown 2 shows languages list."""
         self.win.current_sort = "Language"
         self.win.current_language = "Spanish"
-        CineWindow._update_genre_dropdown(self.win, "movie")
+        PopcornBoxWindow._update_genre_dropdown(self.win, "movie")
         
         model = self.win.library_genre_dropdown.get_model()
         items = [model.get_string(i) for i in range(model.get_n_items())]
@@ -155,7 +155,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         """When Dropdown 1 is Popular, Dropdown 2 shows genres with All Genres."""
         self.win.current_sort = "Popular"
         self.win.current_genre = "Action"
-        CineWindow._update_genre_dropdown(self.win, "movie")
+        PopcornBoxWindow._update_genre_dropdown(self.win, "movie")
         
         model = self.win.library_genre_dropdown.get_model()
         items = [model.get_string(i) for i in range(model.get_n_items())]
@@ -174,7 +174,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         dropdown = Gtk.DropDown.new_from_strings(["All Years", "2026", "2025", "2024"])
         dropdown.set_selected(0)  # "All Years"
         
-        CineWindow._on_library_genre_changed(self.win, dropdown, None)
+        PopcornBoxWindow._on_library_genre_changed(self.win, dropdown, None)
         
         self.assertIsNone(self.win.current_year)
         self.assertEqual(self.win.current_catalog["catalog_id"], "year")
@@ -187,7 +187,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         dropdown = Gtk.DropDown.new_from_strings(["All Years", "2026", "2025", "2024"])
         dropdown.set_selected(3)  # "2024"
         
-        CineWindow._on_library_genre_changed(self.win, dropdown, None)
+        PopcornBoxWindow._on_library_genre_changed(self.win, dropdown, None)
         
         self.assertEqual(self.win.current_year, "2024")
         self.assertEqual(self.win.current_catalog["catalog_id"], "year")
@@ -200,7 +200,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         dropdown = Gtk.DropDown.new_from_strings(["English", "Hindi", "French"])
         dropdown.set_selected(1)  # "Hindi"
         
-        CineWindow._on_library_genre_changed(self.win, dropdown, None)
+        PopcornBoxWindow._on_library_genre_changed(self.win, dropdown, None)
         
         self.assertEqual(self.win.current_language, "Hindi")
         self.assertEqual(self.win.current_genre, "Hindi")
@@ -212,7 +212,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         dropdown = Gtk.DropDown.new_from_strings(["Popular", "Recent", "Featured", "Trending", "Year", "Language"])
         dropdown.set_selected(4)  # "Year"
         
-        CineWindow._on_library_sort_changed(self.win, dropdown, None)
+        PopcornBoxWindow._on_library_sort_changed(self.win, dropdown, None)
         
         self.assertEqual(self.win.current_sort, "Year")
         # Verify Dropdown 2 now contains All Years and descending years
@@ -230,13 +230,13 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         self.win.current_sort = "Recent"
         self.win.current_genre = None
         self.win.current_media_type = "movie"
-        CineWindow._apply_sort_to_current_catalog(self.win)
+        PopcornBoxWindow._apply_sort_to_current_catalog(self.win)
         self.assertEqual(self.win.current_catalog["catalog_id"], "year")
         self.assertIn("Recent Movies", self.win.current_catalog["display_name"])
 
         # 2. Recent with genre
         self.win.current_genre = "Action"
-        CineWindow._apply_sort_to_current_catalog(self.win)
+        PopcornBoxWindow._apply_sort_to_current_catalog(self.win)
         self.assertEqual(self.win.current_catalog["catalog_id"], "top")
         self.assertIn("Recent Movies", self.win.current_catalog["display_name"])
 
@@ -250,7 +250,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         self.win._schedule_deferred_menu_build = MagicMock()
         self.win._build_discover_menu = MagicMock(return_value=Gio.Menu.new())
 
-        CineWindow._init_default_category_menus(self.win)
+        PopcornBoxWindow._init_default_category_menus(self.win)
         model = self.win.home_active_btn.get_menu_model()
         self.assertIsNotNone(model)
         
@@ -300,7 +300,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         adj.get_page_size.return_value = 1100  # large window viewport height
         adj.get_upper.return_value = 800       # cards only take 800px (no scrollbar)
 
-        CineWindow._on_content_scroll(self.win, adj)
+        PopcornBoxWindow._on_content_scroll(self.win, adj)
         self.win._fetch_content_page.assert_called_once()
 
     def test_content_scroll_triggers_fetch_when_near_bottom(self):
@@ -316,7 +316,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         adj.get_page_size.return_value = 1000
         adj.get_upper.return_value = 2400  # val + page_size (2200) >= upper - 500 (1900)
 
-        CineWindow._on_content_scroll(self.win, adj)
+        PopcornBoxWindow._on_content_scroll(self.win, adj)
         self.win._fetch_content_page.assert_called_once()
 
     def test_content_scroll_does_not_trigger_when_viewport_filled_and_not_near_bottom(self):
@@ -332,7 +332,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         adj.get_page_size.return_value = 1000
         adj.get_upper.return_value = 2500  # upper > page_size + 50, val + page_size (1000) < 2000
 
-        CineWindow._on_content_scroll(self.win, adj)
+        PopcornBoxWindow._on_content_scroll(self.win, adj)
         self.win._fetch_content_page.assert_not_called()
 
     def test_database_get_cached_items_by_genre(self):
@@ -413,7 +413,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         self.win.category_btn_stack = MagicMock()
         self.win.category_btn_stack.get_visible_child_name.return_value = "discover"
 
-        CineWindow._apply_sort_to_current_catalog(self.win)
+        PopcornBoxWindow._apply_sort_to_current_catalog(self.win)
         self.assertEqual(self.win.current_catalog["catalog_id"], "year")
         self.assertEqual(self.win.current_catalog["display_name"], "Discover — 2025")
 
@@ -421,7 +421,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         self.win._current_discover_type = "movie"
         self.win.category_btn_stack.get_visible_child_name.return_value = "movies"
 
-        CineWindow._apply_sort_to_current_catalog(self.win)
+        PopcornBoxWindow._apply_sort_to_current_catalog(self.win)
         self.assertEqual(self.win.current_catalog["catalog_id"], "year")
         self.assertEqual(self.win.current_catalog["display_name"], "Movies — 2025")
 
@@ -439,23 +439,23 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         adj.get_value.return_value = 0.0
         adj.get_page_size.return_value = 600.0
         adj.get_upper.return_value = 600.0
-        CineWindow._on_discover_scroll(self.win, adj)
+        PopcornBoxWindow._on_discover_scroll(self.win, adj)
         self.win._load_next_discover_batch.assert_not_called()
 
         # Case 2: val=0, upper=2000 (at top of tall page)
         adj.get_upper.return_value = 2000.0
-        CineWindow._on_discover_scroll(self.win, adj)
+        PopcornBoxWindow._on_discover_scroll(self.win, adj)
         self.win._load_next_discover_batch.assert_not_called()
 
         # Case 3: val=1500, page_size=600, upper=2000 (scrolled near bottom: 1500+600=2100 >= 2000-600)
         adj.get_value.return_value = 1500.0
-        CineWindow._on_discover_scroll(self.win, adj)
+        PopcornBoxWindow._on_discover_scroll(self.win, adj)
         self.win._load_next_discover_batch.assert_called_once()
 
     def test_discover_cache_hit_does_not_fetch_rows(self):
         """Test that switching back to a cached discover view does not trigger network fetches."""
         self.win._discover_views = {}
-        view_key = CineWindow._get_discover_view_key(self.win)
+        view_key = PopcornBoxWindow._get_discover_view_key(self.win)
         cached_box = MagicMock()
         self.win._discover_views[view_key] = {
             "box": cached_box,
@@ -468,7 +468,7 @@ class TestHomeAndDiscoverDropdowns(unittest.TestCase):
         self.win._load_next_discover_batch = MagicMock()
         self.win._update_continue_watching_section = MagicMock()
 
-        CineWindow._refresh_discover_page(self.win, filter_media_type="all", filter_addon_url=None, force_refresh=False)
+        PopcornBoxWindow._refresh_discover_page(self.win, filter_media_type="all", filter_addon_url=None, force_refresh=False)
 
         self.win.discover_scrolled.set_child.assert_called_once_with(cached_box)
         self.win._load_next_discover_batch.assert_not_called()

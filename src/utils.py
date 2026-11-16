@@ -38,7 +38,7 @@ from gi.repository import (
     GdkWayland,  # pyright: ignore[reportAttributeAccessIssue]
 )
 
-logger = logging.getLogger("cine")
+logger = logging.getLogger("popcornbox")
 logging.basicConfig(format="%(levelname)s: [%(filename)s:%(lineno)d] %(message)s")
 
 import time
@@ -156,7 +156,7 @@ try:
     join = os.path.join
 
     XDG_PICTURES = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES)
-    SCREENSHOT_DIR = join(XDG_PICTURES, "Cine Screenshots") if XDG_PICTURES else ""
+    SCREENSHOT_DIR = join(XDG_PICTURES, "PopcornBox Screenshots") if XDG_PICTURES else ""
 
     BASE_CONFIG = GLib.get_user_config_dir()
 

@@ -24,7 +24,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -33,7 +33,7 @@ if res_file.exists():
         pass
 
 from src import database, api
-from src.window import CineWindow
+from src.window import PopcornBoxWindow
 
 
 class TestAddonCatalogs(unittest.TestCase):
@@ -63,7 +63,7 @@ class TestAddonCatalogs(unittest.TestCase):
         self.assertFalse(api.has_meta_resource(stremio_addons_manifest))
 
         # Test _update_supported_media_types ignores this addon
-        win = CineWindow.__new__(CineWindow)
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win.media_type_keys = []
         win.media_type_labels = []
 
@@ -126,7 +126,7 @@ class TestAddonCatalogs(unittest.TestCase):
 
     def test_addon_filter_func_matching(self):
         """_addon_filter_func correctly filters catalog rows by search text and media type."""
-        win = CineWindow.__new__(CineWindow)
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win._addon_types_list = [
             ("all", "All"),
             ("movie", "Movies"),

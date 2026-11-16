@@ -26,9 +26,9 @@ class TestPersonPage(unittest.TestCase):
             os.environ["GSETTINGS_SCHEMA_DIR"] = cls.schema_temp_dir.name
 
         from gi.repository import Gio
-        res_file = Path("cine.gresource")
+        res_file = Path("popcornbox.gresource")
         if not res_file.exists():
-            res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+            res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
         if res_file.exists():
             try:
                 res = Gio.Resource.load(str(res_file))
@@ -202,8 +202,8 @@ class TestPersonPage(unittest.TestCase):
                 if child in self.children:
                     self.children.remove(child)
 
-        from src.window import CineWindow
-        win = CineWindow.__new__(CineWindow)
+        from src.window import PopcornBoxWindow
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win.nav_stack = []
         win.main_stack = MagicMock()
         win.library_stack = MagicMock()
@@ -268,8 +268,8 @@ class TestPersonPage(unittest.TestCase):
                 if child in self.children:
                     self.children.remove(child)
 
-        from src.window import CineWindow
-        win = CineWindow.__new__(CineWindow)
+        from src.window import PopcornBoxWindow
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win.nav_stack = []
         win.main_stack = MagicMock()
         win.library_stack = MagicMock()

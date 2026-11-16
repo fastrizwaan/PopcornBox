@@ -66,7 +66,7 @@ def sync_mpv_with_settings(window):
         mpv["hwdec"] = "no"
 
     if norm_enabled:
-        mpv.command("af", "add", "@cine_loudnorm:lavfi=[loudnorm=I=-20]")
+        mpv.command("af", "add", "@popcornbox_loudnorm:lavfi=[loudnorm=I=-20]")
 
 
 class StremioLoginDialog(Adw.Dialog):
@@ -566,9 +566,9 @@ class Preferences(Adw.Dialog):
     def _on_norm_volume_changed(self, settings, key):
         norm_enabled = settings.get_boolean(key)
         if norm_enabled:
-            self.mpv.command("af", "add", "@cine_loudnorm:lavfi=[loudnorm=I=-20]")
+            self.mpv.command("af", "add", "@popcornbox_loudnorm:lavfi=[loudnorm=I=-20]")
         else:
-            self.mpv.command("af", "remove", "@cine_loudnorm")
+            self.mpv.command("af", "remove", "@popcornbox_loudnorm")
 
     def _on_sub_color_selected(self, color_btn, *arg):
         rgba = color_btn.get_rgba()

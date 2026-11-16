@@ -114,7 +114,7 @@ class MPRIS:
                 logger.error(f"MPRIS Bus Error: {e}", exc_info=True)
 
         # Without idle_add some gnome mpris extensions can freeze the
-        # whole shell for about a minute. Not unique to cine, it can also
+        # whole shell for about a minute. Not unique to popcornbox, it can also
         # happen with other players that uses mpris.
         idle_add_once(register)
 
@@ -143,7 +143,7 @@ class MPRIS:
 
         self._emit_props_changed(
             {
-                "Identity": GLib.Variant("s", _("Cine")),
+                "Identity": GLib.Variant("s", _("PopcornBox")),
                 "DesktopEntry": GLib.Variant("s", APP_ID),
             },
         )
@@ -363,7 +363,7 @@ class MPRIS:
 
             elif interface == "org.mpris.MediaPlayer2":
                 if prop == "Identity":
-                    return GLib.Variant("s", _("Cine"))
+                    return GLib.Variant("s", _("PopcornBox"))
                 elif prop == "DesktopEntry":
                     return GLib.Variant("s", APP_ID)
                 elif prop in ["CanQuit", "CanRaise"]:

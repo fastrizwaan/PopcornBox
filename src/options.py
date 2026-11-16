@@ -80,9 +80,9 @@ class OptionsMenuButton(Gtk.MenuButton):
         self.connect("notify::active", self._on_active_changed)
 
     def _on_realize(self, *arg):
-        from .window import CineWindow
+        from .window import PopcornBoxWindow
 
-        self.win = cast(CineWindow, self.get_root())
+        self.win = cast(PopcornBoxWindow, self.get_root())
 
         for spin in [
             self.zoom_spin,
@@ -192,7 +192,7 @@ class OptionsMenuButton(Gtk.MenuButton):
 
             self.crop_reset_btn.set_sensitive(True)
 
-            # Crop from cine: 1900x958
+            # Crop from popcornbox: 1900x958
             # from autocrop: 1900x958+0+60
             parts = crop_str.split("x")
             w = int(parts[0])

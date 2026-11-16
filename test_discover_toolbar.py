@@ -21,7 +21,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path(__file__).resolve().parent / "build-dir/files/share/popcorn-box/cine.gresource"
+res_file = Path(__file__).resolve().parent / "build-dir/files/share/popcorn-box/popcornbox.gresource"
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -29,7 +29,7 @@ if res_file.exists():
     except Exception:
         pass
 
-from src.window import CineWindow, DISCOVER_ROW_CARD_LIMIT
+from src.window import PopcornBoxWindow, DISCOVER_ROW_CARD_LIMIT
 from src import api, database
 
 
@@ -91,7 +91,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.unique_check = Gtk.CheckButton()
         self.win.library_unique_check = Gtk.CheckButton()
         self.win.discover_title_only_check = Gtk.CheckButton()
-        self.win._is_discover_search_title_only = lambda: CineWindow._is_discover_search_title_only(self.win)
+        self.win._is_discover_search_title_only = lambda: PopcornBoxWindow._is_discover_search_title_only(self.win)
         self.win.filter_toggle_btn = Gtk.ToggleButton()
 
         self.win._syncing_discover_toolbar = False
@@ -114,33 +114,33 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._refresh_discover_page = MagicMock()
 
         # Attach methods under test
-        self.win._init_discover_toolbar = lambda: CineWindow._init_discover_toolbar(self.win)
-        self.win._create_discover_dropdown_factory = lambda: CineWindow._create_discover_dropdown_factory(self.win)
-        self.win._create_discover_dropdown_list_factory = lambda: CineWindow._create_discover_dropdown_list_factory(self.win)
-        self.win._update_unique_btn_icon = lambda b=None: CineWindow._update_unique_btn_icon(self.win, b)
-        self.win._get_current_discover_type = lambda: CineWindow._get_current_discover_type(self.win)
-        self.win._populate_discover_type_dropdown = lambda: CineWindow._populate_discover_type_dropdown(self.win)
-        self.win._populate_discover_catalog_dropdown = lambda ct: CineWindow._populate_discover_catalog_dropdown(self.win, ct)
-        self.win._populate_discover_section_dropdown = lambda a, ct, ac=None: CineWindow._populate_discover_section_dropdown(self.win, a, ct, ac)
-        self.win._populate_discover_genre_dropdown = lambda a, ct, ac=None: CineWindow._populate_discover_genre_dropdown(self.win, a, ct, ac)
-        self.win._populate_discover_year_dropdown = lambda a, ct, ac=None: CineWindow._populate_discover_year_dropdown(self.win, a, ct, ac)
-        self.win._populate_discover_language_dropdown = lambda a, ct, ac=None: CineWindow._populate_discover_language_dropdown(self.win, a, ct, ac)
-        self.win._restore_dropdown_selection = lambda dd, it, ts: CineWindow._restore_dropdown_selection(self.win, dd, it, ts)
-        self.win._on_discover_type_changed = lambda dd, p: CineWindow._on_discover_type_changed(self.win, dd, p)
-        self.win._on_discover_catalog_changed = lambda dd, p: CineWindow._on_discover_catalog_changed(self.win, dd, p)
-        self.win._on_discover_section_changed = lambda dd, p: CineWindow._on_discover_section_changed(self.win, dd, p)
-        self.win._on_discover_genre_changed = lambda dd, p: CineWindow._on_discover_genre_changed(self.win, dd, p)
-        self.win._on_discover_year_changed = lambda dd, p: CineWindow._on_discover_year_changed(self.win, dd, p)
-        self.win._on_discover_language_changed = lambda dd, p: CineWindow._on_discover_language_changed(self.win, dd, p)
-        self.win._on_discover_unique_toggled = lambda b: CineWindow._on_discover_unique_toggled(self.win, b)
-        self.win._on_unique_toggled = lambda b: CineWindow._on_unique_toggled(self.win, b)
-        self.win._get_current_discover_filter_dict = lambda: CineWindow._get_current_discover_filter_dict(self.win)
-        self.win._on_discover_filter_changed = lambda: CineWindow._on_discover_filter_changed(self.win)
-        self.win._is_unique_mode_active = lambda: CineWindow._is_unique_mode_active(self.win)
-        self.win._is_audio_or_live_tv_discover_context = lambda a, ct, ac=None: CineWindow._is_audio_or_live_tv_discover_context(self.win, a, ct, ac)
-        self.win._set_discover_filter_dropdowns_visible = lambda v: CineWindow._set_discover_filter_dropdowns_visible(self.win, v)
-        self.win.reload_catalog_grid = lambda f=None: CineWindow.reload_catalog_grid(self.win, f)
-        self.win._load_next_discover_batch = lambda req_id, batch_size=4: CineWindow._load_next_discover_batch(self.win, req_id, batch_size)
+        self.win._init_discover_toolbar = lambda: PopcornBoxWindow._init_discover_toolbar(self.win)
+        self.win._create_discover_dropdown_factory = lambda: PopcornBoxWindow._create_discover_dropdown_factory(self.win)
+        self.win._create_discover_dropdown_list_factory = lambda: PopcornBoxWindow._create_discover_dropdown_list_factory(self.win)
+        self.win._update_unique_btn_icon = lambda b=None: PopcornBoxWindow._update_unique_btn_icon(self.win, b)
+        self.win._get_current_discover_type = lambda: PopcornBoxWindow._get_current_discover_type(self.win)
+        self.win._populate_discover_type_dropdown = lambda: PopcornBoxWindow._populate_discover_type_dropdown(self.win)
+        self.win._populate_discover_catalog_dropdown = lambda ct: PopcornBoxWindow._populate_discover_catalog_dropdown(self.win, ct)
+        self.win._populate_discover_section_dropdown = lambda a, ct, ac=None: PopcornBoxWindow._populate_discover_section_dropdown(self.win, a, ct, ac)
+        self.win._populate_discover_genre_dropdown = lambda a, ct, ac=None: PopcornBoxWindow._populate_discover_genre_dropdown(self.win, a, ct, ac)
+        self.win._populate_discover_year_dropdown = lambda a, ct, ac=None: PopcornBoxWindow._populate_discover_year_dropdown(self.win, a, ct, ac)
+        self.win._populate_discover_language_dropdown = lambda a, ct, ac=None: PopcornBoxWindow._populate_discover_language_dropdown(self.win, a, ct, ac)
+        self.win._restore_dropdown_selection = lambda dd, it, ts: PopcornBoxWindow._restore_dropdown_selection(self.win, dd, it, ts)
+        self.win._on_discover_type_changed = lambda dd, p: PopcornBoxWindow._on_discover_type_changed(self.win, dd, p)
+        self.win._on_discover_catalog_changed = lambda dd, p: PopcornBoxWindow._on_discover_catalog_changed(self.win, dd, p)
+        self.win._on_discover_section_changed = lambda dd, p: PopcornBoxWindow._on_discover_section_changed(self.win, dd, p)
+        self.win._on_discover_genre_changed = lambda dd, p: PopcornBoxWindow._on_discover_genre_changed(self.win, dd, p)
+        self.win._on_discover_year_changed = lambda dd, p: PopcornBoxWindow._on_discover_year_changed(self.win, dd, p)
+        self.win._on_discover_language_changed = lambda dd, p: PopcornBoxWindow._on_discover_language_changed(self.win, dd, p)
+        self.win._on_discover_unique_toggled = lambda b: PopcornBoxWindow._on_discover_unique_toggled(self.win, b)
+        self.win._on_unique_toggled = lambda b: PopcornBoxWindow._on_unique_toggled(self.win, b)
+        self.win._get_current_discover_filter_dict = lambda: PopcornBoxWindow._get_current_discover_filter_dict(self.win)
+        self.win._on_discover_filter_changed = lambda: PopcornBoxWindow._on_discover_filter_changed(self.win)
+        self.win._is_unique_mode_active = lambda: PopcornBoxWindow._is_unique_mode_active(self.win)
+        self.win._is_audio_or_live_tv_discover_context = lambda a, ct, ac=None: PopcornBoxWindow._is_audio_or_live_tv_discover_context(self.win, a, ct, ac)
+        self.win._set_discover_filter_dropdowns_visible = lambda v: PopcornBoxWindow._set_discover_filter_dropdowns_visible(self.win, v)
+        self.win.reload_catalog_grid = lambda f=None: PopcornBoxWindow.reload_catalog_grid(self.win, f)
+        self.win._load_next_discover_batch = lambda req_id, batch_size=4: PopcornBoxWindow._load_next_discover_batch(self.win, req_id, batch_size)
 
     def tearDown(self):
         if hasattr(self.win, "_content_abort_event") and self.win._content_abort_event:
@@ -465,7 +465,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.api.is_catalog_provider", return_value=True), \
              patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+            rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
 
         # 'top' catalog supports Horror, so it must be included (not dropped due to year check)
         self.assertEqual(len(rows), 1)
@@ -503,7 +503,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.api.is_addon_online", return_value=True), \
              patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+            rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
 
         self.assertTrue(rows)
         self.assertEqual(rows[0].get("_source"), "genre_cache")
@@ -536,7 +536,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.api.is_addon_online", return_value=True), \
              patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+            rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
 
         ids = {r.get("catalog_id") for r in rows}
         self.assertIn("watchstars-hi", ids)
@@ -584,7 +584,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.database.get_cached_catalog", return_value=None), \
              patch("src.database.save_cached_catalog"), \
              patch("src.api.is_addon_online", return_value=True):
-            CineWindow._load_next_discover_batch(self.win, req_id=12, batch_size=1)
+            PopcornBoxWindow._load_next_discover_batch(self.win, req_id=12, batch_size=1)
             import time
             for _ in range(50):
                 time.sleep(0.01)
@@ -610,7 +610,7 @@ class TestDiscoverToolbar(unittest.TestCase):
 
         with patch("src.database.get_addons", return_value=[]), \
              patch("src.api.is_addon_online", return_value=True):
-            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+            rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
 
         sources = [r.get("_source") for r in rows]
         self.assertIn("tmdb_country", sources)
@@ -622,7 +622,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         # Addon-scoped Discover must not inject the global country row.
         with patch("src.database.get_addons", return_value=[]), \
              patch("src.api.is_addon_online", return_value=True):
-            scoped_rows = CineWindow._get_discover_catalog_list(
+            scoped_rows = PopcornBoxWindow._get_discover_catalog_list(
                 self.win, filter_media_type="all", filter_addon_url="https://addon.test/manifest.json"
             )
         self.assertNotIn("tmdb_country", [r.get("_source") for r in scoped_rows])
@@ -649,7 +649,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.api.is_addon_online", return_value=True), \
              patch("src.api.get_addon_catalogs", return_value=catalogs), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+            rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
 
         provider_ids = [r.get("catalog_id") for r in rows if r.get("manifest_url")]
         self.assertEqual(provider_ids[0], "regional-hi")
@@ -671,7 +671,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         # The scroll path extends the view through this method, so the fixture
         # runs the real one instead of the mock's always-truthy return.
         self.win._queue_next_discover_tmdb_page = (
-            lambda **kw: CineWindow._queue_next_discover_tmdb_page(self.win, **kw)
+            lambda **kw: PopcornBoxWindow._queue_next_discover_tmdb_page(self.win, **kw)
         )
         return self.win
 
@@ -681,12 +681,12 @@ class TestDiscoverToolbar(unittest.TestCase):
         win._discover_scroll_parked_rows = 6
         win._discover_scroll_parked_upper = 4000.0
 
-        CineWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
+        PopcornBoxWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
         win._load_next_discover_batch.assert_not_called()
         win._set_discover_spinner_active.assert_called_once_with(False)
 
         # A taller viewport means something did appear, so the park lifts.
-        CineWindow._on_discover_scroll(win, self._scroll_adj(4600.0, upper=5200.0))
+        PopcornBoxWindow._on_discover_scroll(win, self._scroll_adj(4600.0, upper=5200.0))
         win._load_next_discover_batch.assert_called_once()
         self.assertIsNone(win._discover_scroll_parked_rows)
 
@@ -696,18 +696,18 @@ class TestDiscoverToolbar(unittest.TestCase):
         win._discover_scroll_parked_rows = 6
         win._discover_scroll_parked_upper = 4000.0
 
-        CineWindow._on_discover_scroll(win, self._scroll_adj(500.0))
+        PopcornBoxWindow._on_discover_scroll(win, self._scroll_adj(500.0))
         self.assertIsNone(win._discover_scroll_parked_rows)
         win._load_next_discover_batch.assert_not_called()
 
-        CineWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
+        PopcornBoxWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
         win._load_next_discover_batch.assert_called_once()
 
     def test_discover_empty_batch_hands_its_slot_to_a_tmdb_page(self):
         """Rows that answer nothing do not dead-end the view — the network row takes the slot."""
         win = self._scroll_fixture()
         win._load_next_discover_batch = (
-            lambda req_id, batch_size=4: CineWindow._load_next_discover_batch(win, req_id, batch_size)
+            lambda req_id, batch_size=4: PopcornBoxWindow._load_next_discover_batch(win, req_id, batch_size)
         )
         win.discover_request_id = 10
         win._discover_is_loading_rows = False
@@ -747,7 +747,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.database.get_cached_catalog", return_value=None), \
              patch("src.database.save_cached_catalog"), \
              patch("src.tmdb_helper.fetch_country_catalog_page", return_value=(cards, 3)) as tmdb_fetch:
-            CineWindow._load_next_discover_batch(win, 10, batch_size=1)
+            PopcornBoxWindow._load_next_discover_batch(win, 10, batch_size=1)
             for _ in range(120):
                 time.sleep(0.01)
                 context = GLib.MainContext.default()
@@ -783,7 +783,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         win._discover_catalog_list = [tmdb_row]
         win._discover_next_row_index = 1
 
-        CineWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
+        PopcornBoxWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
 
         win._load_next_discover_batch.assert_called_once()
         queued = win._discover_catalog_list[1]
@@ -803,7 +803,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         }]
         win._discover_next_row_index = 1
 
-        CineWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
+        PopcornBoxWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
 
         self.assertEqual(len(win._discover_catalog_list), 1)
         win._load_next_discover_batch.assert_not_called()
@@ -822,7 +822,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         }]
         win._discover_next_row_index = 1
 
-        CineWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
+        PopcornBoxWindow._on_discover_scroll(win, self._scroll_adj(3400.0))
 
         self.assertEqual(len(win._discover_catalog_list), 1)
         win._load_next_discover_batch.assert_not_called()
@@ -859,7 +859,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.api.is_catalog_provider", return_value=True), \
              patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+            rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
 
         self.assertEqual(len(rows), 2)
         # Year catalog must be prioritized first
@@ -887,7 +887,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         }
         items = [{"id": "tt12345", "name": "Horror Movie 2026", "year": "2026"}]
 
-        CineWindow._populate_discover_row_slot(self.win, slot, row_info, items, target_box)
+        PopcornBoxWindow._populate_discover_row_slot(self.win, slot, row_info, items, target_box)
 
         # Slot should contain the section header and scroll
         header = slot.get_first_child()
@@ -926,7 +926,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.api.is_addon_online", return_value=True), \
              patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            rows = CineWindow._get_discover_catalog_list(
+            rows = PopcornBoxWindow._get_discover_catalog_list(
                 self.win,
                 filter_media_type="movie",
                 filter_addon_url=mock_addon["manifest_url"]
@@ -984,7 +984,7 @@ class TestDiscoverToolbar(unittest.TestCase):
 
         with patch("src.api.fetch_items") as mock_fetch, \
              patch("src.database.get_cached_catalog", return_value=None):
-            CineWindow._load_next_discover_batch(self.win, req_id=1, batch_size=1)
+            PopcornBoxWindow._load_next_discover_batch(self.win, req_id=1, batch_size=1)
             import time
             time.sleep(0.15)
             mock_fetch.assert_not_called()
@@ -1004,7 +1004,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._get_discover_view_key = MagicMock(return_value="test_empty_key")
         self.win._get_discover_catalog_list = MagicMock(return_value=[])
 
-        CineWindow._refresh_discover_page(self.win, filter_media_type="all", filter_addon_url="https://v3-cinemeta.strem.io/manifest.json")
+        PopcornBoxWindow._refresh_discover_page(self.win, filter_media_type="all", filter_addon_url="https://v3-cinemeta.strem.io/manifest.json")
         box = self.win.discover_box
         self.assertIsNotNone(box)
         empty_box = box.get_first_child()
@@ -1040,7 +1040,7 @@ class TestDiscoverToolbar(unittest.TestCase):
 
         with patch("src.api.fetch_items", side_effect=fake_fetch_items), \
              patch("src.database.get_cached_catalog", return_value=None):
-            CineWindow._fetch_content_page(self.win)
+            PopcornBoxWindow._fetch_content_page(self.win)
             # Give background worker thread a moment to finish
             import time
             time.sleep(0.1)
@@ -1063,19 +1063,19 @@ class TestDiscoverToolbar(unittest.TestCase):
         adj.get_upper.return_value = 800  # unfilled
 
         # Call 1 -> count becomes 1, fetch called
-        CineWindow._on_content_scroll(self.win, adj)
+        PopcornBoxWindow._on_content_scroll(self.win, adj)
         self.assertEqual(self.win._fetch_content_page.call_count, 1)
 
         # Call 2 -> count becomes 2, fetch called
-        CineWindow._on_content_scroll(self.win, adj)
+        PopcornBoxWindow._on_content_scroll(self.win, adj)
         self.assertEqual(self.win._fetch_content_page.call_count, 2)
 
         # Call 3 -> count becomes 3, fetch called
-        CineWindow._on_content_scroll(self.win, adj)
+        PopcornBoxWindow._on_content_scroll(self.win, adj)
         self.assertEqual(self.win._fetch_content_page.call_count, 3)
 
         # Call 4 -> capped, fetch NOT called
-        CineWindow._on_content_scroll(self.win, adj)
+        PopcornBoxWindow._on_content_scroll(self.win, adj)
         self.assertEqual(self.win._fetch_content_page.call_count, 3)
 
     def test_genre_dropdown_excludes_years_for_year_catalog(self):
@@ -1093,7 +1093,7 @@ class TestDiscoverToolbar(unittest.TestCase):
                 }
             ]
         }
-        CineWindow._populate_discover_genre_dropdown(self.win, addon, "all", "year")
+        PopcornBoxWindow._populate_discover_genre_dropdown(self.win, addon, "all", "year")
         model = self.win.genre_dropdown.get_model()
         items = [model.get_string(i) for i in range(model.get_n_items())]
         self.assertIn("Genre", items)
@@ -1127,7 +1127,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.library_unique_check.set_active(False)
         self.win._persisted_unique_enabled = False
 
-        CineWindow._reset_discover_filters(self.win)
+        PopcornBoxWindow._reset_discover_filters(self.win)
 
         self.assertTrue(self.win.unique_check.get_active())
         self.assertTrue(self.win.library_unique_check.get_active())
@@ -1164,7 +1164,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.library_stack.set_visible_child_name("discover")
         self.win.discover_title_only_check.set_active(True)
 
-        CineWindow._on_discover_title_only_toggled(self.win, self.win.discover_title_only_check)
+        PopcornBoxWindow._on_discover_title_only_toggled(self.win, self.win.discover_title_only_check)
         self.assertEqual(self.win.library_stack.get_visible_child_name(), "unique")
         self.win._refresh_unique_combined_view.assert_called_once()
 
@@ -1180,23 +1180,23 @@ class TestDiscoverToolbar(unittest.TestCase):
         item_desc_match = {"title": "Some Movie", "description": "The final battle", "id": "tt02", "manifest_url": "url1"}
         item_no_match = {"title": "Unrelated Movie", "description": "Nothing here", "id": "tt03", "manifest_url": "url1"}
 
-        self.assertTrue(CineWindow._discover_result_matches_item(self.win, item_title_match))
-        self.assertTrue(CineWindow._discover_result_matches_item(self.win, item_desc_match))
-        self.assertFalse(CineWindow._discover_result_matches_item(self.win, item_no_match))
+        self.assertTrue(PopcornBoxWindow._discover_result_matches_item(self.win, item_title_match))
+        self.assertTrue(PopcornBoxWindow._discover_result_matches_item(self.win, item_desc_match))
+        self.assertFalse(PopcornBoxWindow._discover_result_matches_item(self.win, item_no_match))
 
         # Title only enabled: matches title only
         self.win.discover_title_only_check.set_active(True)
-        self.assertTrue(CineWindow._discover_result_matches_item(self.win, item_title_match))
-        self.assertFalse(CineWindow._discover_result_matches_item(self.win, item_desc_match))
-        self.assertFalse(CineWindow._discover_result_matches_item(self.win, item_no_match))
+        self.assertTrue(PopcornBoxWindow._discover_result_matches_item(self.win, item_title_match))
+        self.assertFalse(PopcornBoxWindow._discover_result_matches_item(self.win, item_desc_match))
+        self.assertFalse(PopcornBoxWindow._discover_result_matches_item(self.win, item_no_match))
 
         # Unique disabled allows same movie from different addons
         self.win.unique_seen_ids = set()
         self.win.unique_seen_keys = set()
         item_addon1 = {"title": "Final Destination", "id": "tt01", "manifest_url": "url1"}
         item_addon2 = {"title": "Final Destination", "id": "tt01", "manifest_url": "url2"}
-        self.assertTrue(CineWindow._is_unique_item(self.win, item_addon1))
-        self.assertTrue(CineWindow._is_unique_item(self.win, item_addon2))
+        self.assertTrue(PopcornBoxWindow._is_unique_item(self.win, item_addon1))
+        self.assertTrue(PopcornBoxWindow._is_unique_item(self.win, item_addon2))
 
     def test_window_ui_headerbar_has_filter_toggle_and_no_dropdowns(self):
         """window.ui must contain filter_toggle_btn with filter-symbolic and remove library dropdowns."""
@@ -1276,7 +1276,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertEqual(self.win._get_current_discover_type(), "all")
 
         # 2. Simulate addon reload / media types update
-        CineWindow._update_supported_media_types(self.win)
+        PopcornBoxWindow._update_supported_media_types(self.win)
         t_model = self.win.type_dropdown.get_model()
         self.assertEqual(t_model.get_string(0), "Type")
         self.assertEqual(t_model.get_string(1), "Movies+Series")
@@ -1296,7 +1296,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertEqual(self.win._get_current_discover_type(), "movie")
 
         # 5. Trigger another update and verify 'movie' selection is preserved
-        CineWindow._update_supported_media_types(self.win)
+        PopcornBoxWindow._update_supported_media_types(self.win)
         self.assertEqual(self.win.type_dropdown.get_selected(), 2)
         self.assertEqual(self.win._get_current_discover_type(), "movie")
 
@@ -1363,7 +1363,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.api.is_catalog_provider", return_value=True), \
              patch("src.api.get_addon_catalogs", side_effect=mock_get_addon_cats), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+            rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
 
         # Only cinemeta 'top' supports Family. 'year' and PlavioHD TV channels must be excluded.
         self.assertEqual(len(rows), 1)
@@ -1392,7 +1392,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.api.is_catalog_provider", return_value=True), \
              patch("src.api.get_addon_catalogs", side_effect=lambda a, cache_only=False: a.get("catalogs", [])), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+            rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
 
         # The cache entry containing the offline addon must have been evicted and regenerated without offline addon
         self.assertEqual(len(rows), 1)
@@ -1425,7 +1425,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.api.is_catalog_provider", return_value=True), \
              patch("src.api.get_addon_catalogs", side_effect=lambda a, cache_only=False: a.get("catalogs", [])), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="movie_series", filter_addon_url=None)
+            rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="movie_series", filter_addon_url=None)
 
         # Must include only movies and series catalogs
         self.assertEqual(len(rows), 2)
@@ -1475,7 +1475,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.database.get_cached_catalog", return_value=None), \
              patch("src.database.save_cached_catalog"), \
              patch("src.api.is_addon_online", return_value=True):
-            CineWindow._load_next_discover_batch(self.win, req_id=10, batch_size=2)
+            PopcornBoxWindow._load_next_discover_batch(self.win, req_id=10, batch_size=2)
             import time
             for _ in range(50):
                 time.sleep(0.01)
@@ -1527,7 +1527,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.database.get_cached_catalog", return_value=None), \
              patch("src.database.save_cached_catalog"), \
              patch("src.api.is_addon_online", return_value=True):
-            CineWindow._load_next_discover_batch(self.win, req_id=10, batch_size=1)
+            PopcornBoxWindow._load_next_discover_batch(self.win, req_id=10, batch_size=1)
             import time
             for _ in range(80):
                 time.sleep(0.01)
@@ -1572,7 +1572,7 @@ class TestDiscoverToolbar(unittest.TestCase):
              patch("src.api.is_catalog_provider", return_value=True), \
              patch("src.api.get_addon_catalogs", side_effect=mock_cats), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
+            rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", filter_addon_url=None)
 
         # Cinemeta movie catalog should be included, PlavioHD TV channel must be excluded
         self.assertEqual(len(rows), 1)
@@ -1586,7 +1586,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         items = [{"id": f"tt{i:07d}", "title": f"Movie {i}", "type": "movie", "medium_cover_image": "http://example.com/poster.jpg"} for i in range(100)]
 
         with patch("src.movie_widget.load_image_into_picture"):
-            CineWindow._populate_discover_row_slot(self.win, slot, row_info, items, Gtk.Box())
+            PopcornBoxWindow._populate_discover_row_slot(self.win, slot, row_info, items, Gtk.Box())
 
         # slot has 2 children: header box and scrolled window
         sec_scroll = slot.get_first_child().get_next_sibling()
@@ -1611,7 +1611,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._discover_search_debounce_timer = None
 
         # Simulate typing "maid"
-        CineWindow._on_discover_search_changed(self.win, None)
+        PopcornBoxWindow._on_discover_search_changed(self.win, None)
 
         # Immediate local UI filtering
         self.win._on_discover_results_search_changed.assert_called_once()
@@ -1622,7 +1622,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._on_discover_results_search_changed = MagicMock()
         self.win.reload_catalog_grid = MagicMock()
 
-        CineWindow._on_discover_search_activated(self.win, None)
+        PopcornBoxWindow._on_discover_search_activated(self.win, None)
         self.win._on_discover_results_search_changed.assert_called_once()
         self.win.reload_catalog_grid.assert_not_called()
 
@@ -1638,7 +1638,7 @@ class TestDiscoverToolbar(unittest.TestCase):
 
         btn = Gtk.ToggleButton()
         btn.set_active(False)
-        CineWindow._on_discover_search_mode_toggled(self.win, btn)
+        PopcornBoxWindow._on_discover_search_mode_toggled(self.win, btn)
 
         self.assertEqual(self.win.discover_search_entry.get_text(), "")
         self.assertEqual(self.win.current_discover_search_query, "")
@@ -1669,7 +1669,7 @@ class TestDiscoverToolbar(unittest.TestCase):
 
         scheduled = []
         with patch("src.window.GLib.idle_add", side_effect=lambda cb, *a: scheduled.append(cb)):
-            CineWindow._on_discover_filter_popover_closed(self.win, Gtk.Popover())
+            PopcornBoxWindow._on_discover_filter_popover_closed(self.win, Gtk.Popover())
 
         self.assertEqual(len(scheduled), 1)
         self.assertFalse(scheduled[0]())
@@ -1698,7 +1698,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.get_display.return_value.get_default_seat.return_value.get_pointer.return_value = pointer
 
         with patch("src.window.GLib.idle_add") as idle_add:
-            CineWindow._on_discover_filter_popover_closed(self.win, Gtk.Popover())
+            PopcornBoxWindow._on_discover_filter_popover_closed(self.win, Gtk.Popover())
 
         idle_add.assert_not_called()
         entry.grab_focus.assert_not_called()
@@ -1713,7 +1713,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.get_display = MagicMock()
 
         with patch("src.window.GLib.idle_add") as idle_add:
-            CineWindow._on_discover_filter_popover_closed(self.win, Gtk.Popover())
+            PopcornBoxWindow._on_discover_filter_popover_closed(self.win, Gtk.Popover())
 
         idle_add.assert_not_called()
         self.win.get_display.assert_not_called()
@@ -1731,8 +1731,8 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.assertIsNotNone(popover)
 
         with patch.object(popover, "connect", wraps=popover.connect) as connect_mock:
-            CineWindow._watch_discover_filter_popover(self.win, dd)
-            CineWindow._watch_discover_filter_popover(self.win, dd)
+            PopcornBoxWindow._watch_discover_filter_popover(self.win, dd)
+            PopcornBoxWindow._watch_discover_filter_popover(self.win, dd)
 
         connect_mock.assert_called_once()
         self.assertEqual(connect_mock.call_args.args[0], "closed")
@@ -1751,16 +1751,16 @@ class TestDiscoverToolbar(unittest.TestCase):
         # 1. When Title Only is OFF, matches because 'action' is in genres and description
         self.win.discover_title_only_check = MagicMock()
         self.win.discover_title_only_check.get_active.return_value = False
-        self.assertTrue(CineWindow._discover_result_matches_item(self.win, item))
+        self.assertTrue(PopcornBoxWindow._discover_result_matches_item(self.win, item))
 
         # 2. When Title Only is ON, does NOT match because 'action' is not in title
         self.win.discover_title_only_check.get_active.return_value = True
-        self.assertFalse(CineWindow._discover_result_matches_item(self.win, item))
+        self.assertFalse(PopcornBoxWindow._discover_result_matches_item(self.win, item))
 
         # 3. When Title Only is ON and query is 'knight', DOES match
         self.win._discover_result_search_query = MagicMock(return_value="knight")
         self.win.current_discover_search_query = "knight"
-        self.assertTrue(CineWindow._discover_result_matches_item(self.win, item))
+        self.assertTrue(PopcornBoxWindow._discover_result_matches_item(self.win, item))
 
     def test_get_cached_items_by_search_title_only(self):
         """database.get_cached_items_by_search filters by title only when title_only=True."""
@@ -1806,7 +1806,7 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win.current_year = None
         self.win._discover_catalog_list_cache = {}
 
-        rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="movie", force_refresh=True)
+        rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="movie", force_refresh=True)
         self.assertTrue(len(rows) > 0)
         cached_row = next((r for r in rows if r.get("_source") == "genre_cache"), None)
         self.assertIsNotNone(cached_row)

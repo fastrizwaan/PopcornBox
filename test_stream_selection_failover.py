@@ -29,7 +29,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gio
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -85,7 +85,7 @@ class TestStreamSelectionAndFailover(unittest.TestCase):
         ]
 
         # Call the actual method
-        window.CineWindow._extend_stream_queue(mock_win, incoming)
+        window.PopcornBoxWindow._extend_stream_queue(mock_win, incoming)
 
         # Only direct stream 2 should have been appended; Torrent 1 must be rejected
         self.assertEqual(len(mock_win.stream_queue), 2)
@@ -111,7 +111,7 @@ class TestStreamSelectionAndFailover(unittest.TestCase):
             {"magnet": "magnet:?xt=urn:btih:3333333333333333333333333333333333333333", "name": "Torrent 2", "seeders": 20},
         ]
 
-        window.CineWindow._extend_stream_queue(mock_win, incoming)
+        window.PopcornBoxWindow._extend_stream_queue(mock_win, incoming)
 
         self.assertEqual(len(mock_win.stream_queue), 2)
         self.assertIn("magnet", mock_win.stream_queue[1])
@@ -182,8 +182,8 @@ class TestStreamSelectionAndFailover(unittest.TestCase):
 
         with patch("src.database.get_continue_watching_item", return_value=None), \
              patch("src.database.save_continue_watching_async"), \
-             patch.object(window.CineWindow, "_play_current_stream_from_queue"):
-            window.CineWindow.play_stream_with_failover(mock_win, mixed_queue, initial_index=0, title="Ep 2")
+             patch.object(window.PopcornBoxWindow, "_play_current_stream_from_queue"):
+            window.PopcornBoxWindow.play_stream_with_failover(mock_win, mixed_queue, initial_index=0, title="Ep 2")
 
         # The resulting stream_queue MUST only contain direct_1 and direct_2
         self.assertEqual(len(mock_win.stream_queue), 2)
@@ -210,8 +210,8 @@ class TestStreamSelectionAndFailover(unittest.TestCase):
 
         with patch("src.database.get_continue_watching_item", return_value=None), \
              patch("src.database.save_continue_watching_async"), \
-             patch.object(window.CineWindow, "_play_current_stream_from_queue"):
-            window.CineWindow.play_stream_with_failover(mock_win, mixed_queue, initial_index=0, title="Ep 2")
+             patch.object(window.PopcornBoxWindow, "_play_current_stream_from_queue"):
+            window.PopcornBoxWindow.play_stream_with_failover(mock_win, mixed_queue, initial_index=0, title="Ep 2")
 
         self.assertEqual(len(mock_win.stream_queue), 2)
         self.assertEqual(mock_win.stream_queue[0], torrent_1)

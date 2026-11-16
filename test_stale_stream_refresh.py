@@ -22,7 +22,7 @@ class TestStaleStreamRefresh(unittest.TestCase):
             os.environ["GSETTINGS_SCHEMA_DIR"] = cls.schema_temp_dir.name
 
         from gi.repository import Gio
-        res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+        res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
         if res_file.exists():
             try:
                 res = Gio.Resource.load(str(res_file))
@@ -260,8 +260,8 @@ class TestStaleStreamRefresh(unittest.TestCase):
         win.stream_queue = [s0_torbox, s1_other, s2_torbox, s3_third]
 
         # Import the method and call it on mock window
-        from src.window import CineWindow
-        CineWindow._advance_to_next_stream_in_queue(win, request_id=1, failed_st=s0_torbox)
+        from src.window import PopcornBoxWindow
+        PopcornBoxWindow._advance_to_next_stream_in_queue(win, request_id=1, failed_st=s0_torbox)
 
         # After s0 failed, s2 (also from Torbox) should be moved before s1 and s3!
         self.assertEqual(win.stream_queue_index, 1)
@@ -283,9 +283,9 @@ class TestStaleStreamRefresh(unittest.TestCase):
             "addon_names": ["Torbox"]
         }]
 
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         # Call play_stream_with_failover directly; verify no NameError occurs
-        CineWindow.play_stream_with_failover(
+        PopcornBoxWindow.play_stream_with_failover(
             win,
             queue=queue,
             initial_index=0,
@@ -319,7 +319,7 @@ class TestStaleStreamRefresh(unittest.TestCase):
             "addon_names": ["Torbox"]
         }
 
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         with patch("src.api.refresh_stream", return_value=(refreshed_st, [refreshed_st])), \
              patch("gi.repository.GLib.idle_add", side_effect=lambda cb, *a: cb(*a) if callable(cb) else None), \
              patch("threading.Thread") as mock_thread:
@@ -328,7 +328,7 @@ class TestStaleStreamRefresh(unittest.TestCase):
                 mock_thread.call_args[1]["target"]()
             mock_thread.return_value.start = fake_start
 
-            CineWindow._try_next_stream_in_queue(win)
+            PopcornBoxWindow._try_next_stream_in_queue(win)
 
         self.assertEqual(win.stream_queue[0], refreshed_st)
         self.assertEqual(win._current_playing_item["stream_url"], "http://provider.com/fresh.mp4")

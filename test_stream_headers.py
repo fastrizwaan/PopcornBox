@@ -23,7 +23,7 @@ class TestStreamHeaders(unittest.TestCase):
             os.environ["GSETTINGS_SCHEMA_DIR"] = cls.schema_temp_dir.name
 
         from gi.repository import Gio
-        res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+        res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
         if res_file.exists():
             try:
                 res = Gio.Resource.load(str(res_file))
@@ -78,7 +78,7 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertEqual(api.extract_stream_headers({}), {})
 
     def test_play_stream_configures_mpv_headers(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.main_stack = MagicMock()
         mpv_props = {}
@@ -91,7 +91,7 @@ class TestStreamHeaders(unittest.TestCase):
             "User-Agent": "Mozilla/5.0 Chrome/126",
             "Origin": "https://abyssplayer.com"
         }
-        CineWindow._play_stream(
+        PopcornBoxWindow._play_stream(
             win,
             url="https://wal5as0it0.sssrr.org/sora/123/abc",
             title="Headline",
@@ -107,7 +107,7 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertTrue(any("Origin: https://abyssplayer.com" in f for f in http_fields))
 
     def test_play_stream_without_user_agent_leaves_mpv_user_agent_empty(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.main_stack = MagicMock()
         mpv_props = {}
@@ -116,7 +116,7 @@ class TestStreamHeaders(unittest.TestCase):
         win._is_playing_trailer.return_value = False
 
         # When no User-Agent is explicitly requested, MPV should not be forced with Chrome UA
-        CineWindow._play_stream(
+        PopcornBoxWindow._play_stream(
             win,
             url="https://hcdn3.hakunaymatata.com/resource/test.mp4",
             title="Direct Stream",
@@ -141,7 +141,7 @@ class TestStreamHeaders(unittest.TestCase):
             self.assertNotIn("Mozilla", cmd_str)
 
     def test_play_stream_does_not_leak_previous_stream_headers(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.main_stack = MagicMock()
         mpv_props = {}
@@ -165,7 +165,7 @@ class TestStreamHeaders(unittest.TestCase):
         }
 
         # Playing a new stream with empty headers
-        CineWindow._play_stream(
+        PopcornBoxWindow._play_stream(
             win,
             url="https://bcdn.hakunaymatata.com/resource/f4452e26cf89de5e091c20c4108d6cbb.mp4?sign=test",
             title="Now Apocalypse",
@@ -175,7 +175,7 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertEqual(mpv_props.get("referrer"), "")
 
     def test_hakunaymatata_strips_mozilla_user_agent(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.main_stack = MagicMock()
         mpv_props = {}
@@ -183,7 +183,7 @@ class TestStreamHeaders(unittest.TestCase):
         win.mpv.__getitem__.side_effect = lambda k: mpv_props.get(k)
         win._is_playing_trailer.return_value = False
 
-        CineWindow._play_stream(
+        PopcornBoxWindow._play_stream(
             win,
             url="https://bcdn.hakunaymatata.com/resource/test.mp4",
             title="Hakuna Stream",
@@ -209,7 +209,7 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertFalse(api.streams_match(s1, s2))
 
     def test_play_stream_configures_30s_timeout_and_probe_size(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.main_stack = MagicMock()
         mpv_props = {}
@@ -217,7 +217,7 @@ class TestStreamHeaders(unittest.TestCase):
         win.mpv.__getitem__.side_effect = lambda k: mpv_props.get(k)
         win._is_playing_trailer.return_value = False
 
-        CineWindow._play_stream(
+        PopcornBoxWindow._play_stream(
             win,
             url="https://bcdn.hakunaymatata.com/resource/test.mp4",
             title="Hakuna Stream",
@@ -227,7 +227,7 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertEqual(mpv_props.get("demuxer-lavf-o"), "")
 
     def test_play_stream_sets_vod_buffer_headroom(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.main_stack = MagicMock()
         mpv_props = {}
@@ -236,7 +236,7 @@ class TestStreamHeaders(unittest.TestCase):
         win._is_playing_trailer.return_value = False
         win._current_playing_item = None
 
-        CineWindow._play_stream(
+        PopcornBoxWindow._play_stream(
             win,
             url="https://bcdn.hakunaymatata.com/resource/test.mp4",
             title="Slow Host",
@@ -252,7 +252,7 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertEqual(mpv_props.get("cache"), "yes")
 
     def test_live_channel_playback_resets_vod_buffer_gate(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from src import hls_proxy
         win = MagicMock()
         win.main_stack = MagicMock()
@@ -267,7 +267,7 @@ class TestStreamHeaders(unittest.TestCase):
             callback(False, None, url, 0.0, 0.0)
 
         with patch.object(hls_proxy, "prepare_hls_stream_async", side_effect=mock_prepare_async):
-            CineWindow._play_stream(
+            PopcornBoxWindow._play_stream(
                 win,
                 url="https://iptv.example.com/live/channel.m3u8",
                 title="Live Channel",
@@ -281,7 +281,7 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertEqual(mpv_props.get("cache-pause-initial"), "no")
 
     def test_progress_adjusted_debounced_seek(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from gi.repository import GLib
         win = MagicMock()
         win._seek_debounce_id = None
@@ -296,14 +296,14 @@ class TestStreamHeaders(unittest.TestCase):
             return 888
 
         with patch.object(GLib, "timeout_add", side_effect=mock_timeout):
-            CineWindow._on_progress_adjusted(win, adj)
+            PopcornBoxWindow._on_progress_adjusted(win, adj)
             self.assertEqual(win._seek_debounce_id, 888)
             self.assertIsNotNone(seek_cb)
             seek_cb()
             win.mpv.command_async.assert_called_once_with("seek", 120.0, "absolute+keyframes")
 
     def test_progress_adjusted_hls_proxy_seek(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from gi.repository import GLib
         win = MagicMock()
         win._seek_debounce_id = None
@@ -319,7 +319,7 @@ class TestStreamHeaders(unittest.TestCase):
             return 777
 
         with patch.object(GLib, "timeout_add", side_effect=mock_timeout):
-            CineWindow._on_progress_adjusted(win, adj)
+            PopcornBoxWindow._on_progress_adjusted(win, adj)
             self.assertEqual(win._seek_debounce_id, 777)
             self.assertIsNotNone(seek_cb)
             with patch.object(win, "_seek_hls_proxy") as mock_seek_hls:
@@ -327,7 +327,7 @@ class TestStreamHeaders(unittest.TestCase):
                 mock_seek_hls.assert_called_once_with(350.0)
 
     def test_stream_loading_watchdog_lifecycle(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from gi.repository import GLib
         win = MagicMock()
         win._stream_loading_watchdog_id = None
@@ -337,18 +337,18 @@ class TestStreamHeaders(unittest.TestCase):
 
         # Start watchdog
         with patch.object(GLib, "timeout_add_seconds", return_value=999) as mock_timeout:
-            CineWindow._start_stream_loading_watchdog(win, 42)
+            PopcornBoxWindow._start_stream_loading_watchdog(win, 42)
             mock_timeout.assert_called_once_with(30, win._on_stream_loading_timeout, 42, 30)
             self.assertEqual(win._stream_loading_watchdog_id, 999)
 
         # Cancel watchdog
         with patch.object(GLib, "source_remove") as mock_remove:
-            CineWindow._cancel_stream_loading_watchdog(win)
+            PopcornBoxWindow._cancel_stream_loading_watchdog(win)
             mock_remove.assert_called_once_with(999)
             self.assertIsNone(win._stream_loading_watchdog_id)
 
     def test_stream_loading_watchdog_uses_longer_timeout_for_torrents(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from gi.repository import GLib
         win = MagicMock()
         win._stream_loading_watchdog_id = None
@@ -357,12 +357,12 @@ class TestStreamHeaders(unittest.TestCase):
         win.stream_queue_index = 0
 
         with patch.object(GLib, "timeout_add_seconds", return_value=999) as mock_timeout:
-            CineWindow._start_stream_loading_watchdog(win, 7)
+            PopcornBoxWindow._start_stream_loading_watchdog(win, 7)
             mock_timeout.assert_called_once_with(180, win._on_stream_loading_timeout, 7, 180)
 
     @patch("src.player.play_magnet")
     def test_torrent_progress_extends_loading_watchdog(self, mock_play_magnet):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.stream_request_id = 0
         win.stream_queue = [{"url": "magnet:?xt=urn:btih:deadbeef"}]
@@ -370,7 +370,7 @@ class TestStreamHeaders(unittest.TestCase):
         win.stream_queue_title = "Some Movie"
         win._start_stream_loading_watchdog = MagicMock()
 
-        CineWindow._play_current_stream_from_queue(win, 0)
+        PopcornBoxWindow._play_current_stream_from_queue(win, 0)
         self.assertEqual(win._start_stream_loading_watchdog.call_count, 1)
         cb = mock_play_magnet.call_args.kwargs["progress_callback"]
 
@@ -385,7 +385,7 @@ class TestStreamHeaders(unittest.TestCase):
         win._start_stream_loading_watchdog.assert_called_with(0)
 
     def test_stream_loading_watchdog_timeout_triggers_failover(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from gi.repository import GLib
         win = MagicMock()
         win.stream_request_id = 5
@@ -393,29 +393,29 @@ class TestStreamHeaders(unittest.TestCase):
         win.stream_queue = [{"url": "http://example.com/1"}, {"url": "http://example.com/2"}]
         win.stream_queue_index = 0
 
-        res = CineWindow._on_stream_loading_timeout(win, 5)
+        res = PopcornBoxWindow._on_stream_loading_timeout(win, 5)
         self.assertEqual(res, GLib.SOURCE_REMOVE)
         win._try_next_stream_in_queue.assert_called_once()
 
     def test_trailer_loading_watchdog_lifecycle(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from gi.repository import GLib
         win = MagicMock()
         win._trailer_loading_watchdog_id = None
         win.stream_request_id = 42
 
         with patch.object(GLib, "timeout_add_seconds", return_value=999) as mock_timeout:
-            CineWindow._start_trailer_loading_watchdog(win, 42)
+            PopcornBoxWindow._start_trailer_loading_watchdog(win, 42)
             mock_timeout.assert_called_once_with(30, win._on_trailer_loading_timeout, 42)
             self.assertEqual(win._trailer_loading_watchdog_id, 999)
 
         with patch.object(GLib, "source_remove") as mock_remove:
-            CineWindow._cancel_trailer_loading_watchdog(win)
+            PopcornBoxWindow._cancel_trailer_loading_watchdog(win)
             mock_remove.assert_called_once_with(999)
             self.assertIsNone(win._trailer_loading_watchdog_id)
 
     def test_trailer_loading_watchdog_retries_safe_mode_once(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from gi.repository import GLib
         win = MagicMock()
         win.stream_request_id = 5
@@ -427,14 +427,14 @@ class TestStreamHeaders(unittest.TestCase):
         }
         win._try_youtube_safe_mode.return_value = True
 
-        res = CineWindow._on_trailer_loading_timeout(win, 5)
+        res = PopcornBoxWindow._on_trailer_loading_timeout(win, 5)
         self.assertEqual(res, GLib.SOURCE_REMOVE)
         win._try_youtube_safe_mode.assert_called_once()
         win._start_trailer_loading_watchdog.assert_called_once_with(5)
         win._handle_youtube_failure.assert_not_called()
 
     def test_trailer_loading_watchdog_fails_after_safe_mode_timeout(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from gi.repository import GLib
         win = MagicMock()
         win.stream_request_id = 5
@@ -445,7 +445,7 @@ class TestStreamHeaders(unittest.TestCase):
             "stream_url": "https://www.youtube.com/watch?v=l91Km49W9qI",
         }
 
-        res = CineWindow._on_trailer_loading_timeout(win, 5)
+        res = PopcornBoxWindow._on_trailer_loading_timeout(win, 5)
         self.assertEqual(res, GLib.SOURCE_REMOVE)
         win._try_youtube_safe_mode.assert_not_called()
         win._start_trailer_loading_watchdog.assert_not_called()
@@ -454,7 +454,7 @@ class TestStreamHeaders(unittest.TestCase):
         self.assertIn("timed out", win._handle_youtube_failure.call_args.kwargs["message"].lower())
 
     def test_trailer_loading_watchdog_ignores_started_playback(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from gi.repository import GLib
         win = MagicMock()
         win.stream_request_id = 5
@@ -464,13 +464,13 @@ class TestStreamHeaders(unittest.TestCase):
             "stream_url": "https://www.youtube.com/watch?v=l91Km49W9qI",
         }
 
-        res = CineWindow._on_trailer_loading_timeout(win, 5)
+        res = PopcornBoxWindow._on_trailer_loading_timeout(win, 5)
         self.assertEqual(res, GLib.SOURCE_REMOVE)
         win._try_youtube_safe_mode.assert_not_called()
         win._handle_youtube_failure.assert_not_called()
 
     def test_play_stream_arms_trailer_watchdog(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.main_stack = MagicMock()
         page = MagicMock()
@@ -480,7 +480,7 @@ class TestStreamHeaders(unittest.TestCase):
         win._is_playing_trailer.return_value = True
         win.stream_request_id = 7
 
-        CineWindow._play_stream(
+        PopcornBoxWindow._play_stream(
             win,
             url="https://www.youtube.com/watch?v=l91Km49W9qI",
             title="Some Movie (Trailer)",
@@ -491,7 +491,7 @@ class TestStreamHeaders(unittest.TestCase):
 
 
     def test_hls_stream_loads_without_start_offset(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from src import hls_proxy
         win = MagicMock()
         win.main_stack = MagicMock()
@@ -506,7 +506,7 @@ class TestStreamHeaders(unittest.TestCase):
             callback(True, "sess123", mock_prepared_url, 7200.0, 96.0)
 
         with patch.object(hls_proxy, "prepare_hls_stream_async", side_effect=mock_prepare_async) as mock_prep:
-            CineWindow._play_stream(
+            PopcornBoxWindow._play_stream(
                 win,
                 url=hls_url,
                 title="Project Hail Mary",
@@ -520,13 +520,13 @@ class TestStreamHeaders(unittest.TestCase):
             self.assertEqual(win._hls_total_duration, 7200.0)
 
     def test_mp4_stream_loads_with_start_offset(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.main_stack = MagicMock()
         win._is_playing_trailer.return_value = False
 
         mp4_url = "https://bcdn.hakunaymatata.com/resource/video.mp4"
-        CineWindow._play_stream(
+        PopcornBoxWindow._play_stream(
             win,
             url=mp4_url,
             title="Project Hail Mary",

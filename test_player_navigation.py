@@ -46,9 +46,9 @@ class TestPlayerNavigation(unittest.TestCase):
             subprocess.run(["glib-compile-schemas", cls.schema_temp_dir.name], check=True)
             os.environ["GSETTINGS_SCHEMA_DIR"] = cls.schema_temp_dir.name
 
-        res_file = Path("cine.gresource")
+        res_file = Path("popcornbox.gresource")
         if not res_file.exists():
-            res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+            res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
         if res_file.exists():
             try:
                 res = Gio.Resource.load(str(res_file))
@@ -61,8 +61,8 @@ class TestPlayerNavigation(unittest.TestCase):
         cls.schema_temp_dir.cleanup()
 
     def setUp(self):
-        from src.window import CineWindow
-        self.win = CineWindow.__new__(CineWindow)
+        from src.window import PopcornBoxWindow
+        self.win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         self.win.nav_stack = []
         self.win.previous_page_before_player = None
         self.win.is_loading_stream = False

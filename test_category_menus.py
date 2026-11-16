@@ -21,7 +21,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -78,15 +78,15 @@ class DummyWindow:
         self.media_type_keys = ["movie_series", "movie", "series"]
         self.media_type_labels = ["Movies+Series", "Movies", "Series"]
 
-    from src.window import CineWindow
-    _clean_cat_name = CineWindow._clean_cat_name
-    _prepare_menu_data = CineWindow._prepare_menu_data
-    _prepare_discover_catalog_data = CineWindow._prepare_discover_catalog_data
-    _build_discover_menu = CineWindow._build_discover_menu
-    _build_addon_submenu = CineWindow._build_addon_submenu
-    _build_full_menu_model = CineWindow._build_full_menu_model
-    _init_default_category_menus = CineWindow._init_default_category_menus
-    _get_discover_catalog_list = CineWindow._get_discover_catalog_list
+    from src.window import PopcornBoxWindow
+    _clean_cat_name = PopcornBoxWindow._clean_cat_name
+    _prepare_menu_data = PopcornBoxWindow._prepare_menu_data
+    _prepare_discover_catalog_data = PopcornBoxWindow._prepare_discover_catalog_data
+    _build_discover_menu = PopcornBoxWindow._build_discover_menu
+    _build_addon_submenu = PopcornBoxWindow._build_addon_submenu
+    _build_full_menu_model = PopcornBoxWindow._build_full_menu_model
+    _init_default_category_menus = PopcornBoxWindow._init_default_category_menus
+    _get_discover_catalog_list = PopcornBoxWindow._get_discover_catalog_list
 
 
 class TestCategoryMenus(unittest.TestCase):
@@ -184,9 +184,9 @@ class TestCategoryMenus(unittest.TestCase):
         tmdb_cat = {"catalog_id": "tmdb.top", "manifest_url": "https://tmdb/manifest.json", "display_name": "TMDB - Popular"}
         available = [cinemeta_cat, tmdb_cat]
 
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         with patch("src.api.get_available_catalogs", return_value=available):
-            CineWindow._open_catalog_grid(win, "movie", tmdb_cat, "TMDB - Popular")
+            PopcornBoxWindow._open_catalog_grid(win, "movie", tmdb_cat, "TMDB - Popular")
 
         # Must be TMDB, not Cinemeta
         self.assertEqual(win.current_catalog["catalog_id"], "tmdb.top")
@@ -352,8 +352,8 @@ class TestCategoryMenus(unittest.TestCase):
 
     def test_anime_button_hidden_when_anime_not_supported(self):
         """When anime_supported is False, all anime buttons (including home inactive) must be hidden."""
-        from src.window import CineWindow
-        win = CineWindow.__new__(CineWindow)
+        from src.window import PopcornBoxWindow
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win.anime_supported = False
         
         # Create mock buttons
@@ -370,15 +370,15 @@ class TestCategoryMenus(unittest.TestCase):
         win.category_btn_stack = MagicMock()
         win.category_btn_stack.get_visible_child_name.return_value = "home"
         
-        CineWindow.update_category_buttons_visibility(win)
+        PopcornBoxWindow.update_category_buttons_visibility(win)
         
         for name, btn in anime_buttons.items():
             btn.set_visible.assert_called_with(False)
 
     def test_anime_button_active_stack_resets_to_home_when_unsupported(self):
         """If user is on anime category stack and anime becomes unsupported, stack resets to home."""
-        from src.window import CineWindow
-        win = CineWindow.__new__(CineWindow)
+        from src.window import PopcornBoxWindow
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win.anime_supported = False
         win.category_btn_stack = MagicMock()
         win.category_btn_stack.get_visible_child_name.return_value = "anime"
@@ -386,7 +386,7 @@ class TestCategoryMenus(unittest.TestCase):
         win.discover_back_box = MagicMock()
         win._refresh_discover_page = MagicMock()
 
-        CineWindow.update_category_buttons_visibility(win)
+        PopcornBoxWindow.update_category_buttons_visibility(win)
 
         win.category_btn_stack.set_visible_child_name.assert_called_with("home")
         win.library_stack.set_visible_child_name.assert_called_with("discover")
@@ -394,7 +394,7 @@ class TestCategoryMenus(unittest.TestCase):
 
     def test_addon_catalogs_disabled_updates_supported_types(self):
         """Disabling an addon's catalogs removes anime from supported types and hides anime button."""
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         from src import api
 
         anime_addon = {
@@ -409,7 +409,7 @@ class TestCategoryMenus(unittest.TestCase):
             ]
         }
 
-        win = CineWindow.__new__(CineWindow)
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win.update_category_buttons_visibility = MagicMock()
         win.type_dropdown = MagicMock()
         win.media_type_dropdown = MagicMock()
@@ -418,7 +418,7 @@ class TestCategoryMenus(unittest.TestCase):
         with patch("src.database.get_addons", return_value=[anime_addon]), \
              patch("src.api.get_addon_catalogs", return_value=anime_addon["catalogs"]), \
              patch("src.api.is_addon_online", return_value=True):
-            CineWindow._update_supported_media_types(win)
+            PopcornBoxWindow._update_supported_media_types(win)
             self.assertTrue(win.anime_supported)
             self.assertIn("anime", win.media_type_keys)
 
@@ -427,7 +427,7 @@ class TestCategoryMenus(unittest.TestCase):
         with patch("src.database.get_addons", return_value=[anime_addon]), \
              patch("src.api.get_addon_catalogs", return_value=[]), \
              patch("src.api.is_addon_online", return_value=True):
-            CineWindow._update_supported_media_types(win)
+            PopcornBoxWindow._update_supported_media_types(win)
             self.assertFalse(win.anime_supported)
             self.assertNotIn("anime", win.media_type_keys)
 

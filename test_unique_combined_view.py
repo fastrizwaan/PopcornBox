@@ -22,7 +22,7 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, Gio
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -30,7 +30,7 @@ if res_file.exists():
     except Exception:
         pass
 
-from src.window import CineWindow
+from src.window import PopcornBoxWindow
 
 
 class TestUniqueCombinedView(unittest.TestCase):
@@ -42,38 +42,38 @@ class TestUniqueCombinedView(unittest.TestCase):
 
         # 1. First IMDb movie
         m1 = {"id": "tt0111161", "title": "The Shawshank Redemption", "year": "1994"}
-        self.assertTrue(CineWindow._is_unique_item(win, m1))
+        self.assertTrue(PopcornBoxWindow._is_unique_item(win, m1))
         self.assertIn("tt0111161", win.unique_seen_ids)
 
         # 2. Duplicate with same IMDb ID
         m2 = {"id": "tt0111161", "title": "The Shawshank Redemption", "year": "1994"}
-        self.assertFalse(CineWindow._is_unique_item(win, m2))
+        self.assertFalse(PopcornBoxWindow._is_unique_item(win, m2))
 
         # 3. Duplicate with episode / stream suffix on ID
         m3 = {"id": "tt0111161:1:1", "imdb_id": "tt0111161", "title": "The Shawshank Redemption", "year": "1994"}
-        self.assertFalse(CineWindow._is_unique_item(win, m3))
+        self.assertFalse(PopcornBoxWindow._is_unique_item(win, m3))
 
         # 4. Cross-addon duplicate: different ID (e.g. tmdb:278) but same IMDb ID
         m4 = {"id": "tmdb:278", "imdb_id": "tt0111161", "title": "The Shawshank Redemption", "year": "1994"}
-        self.assertFalse(CineWindow._is_unique_item(win, m4))
+        self.assertFalse(PopcornBoxWindow._is_unique_item(win, m4))
 
         # 5. Cross-addon duplicate: different ID and no IMDb ID, but exact same Title and Year
         m5 = {"id": "custom:999", "title": "The Shawshank Redemption", "year": "1994"}
-        self.assertFalse(CineWindow._is_unique_item(win, m5))
+        self.assertFalse(PopcornBoxWindow._is_unique_item(win, m5))
 
         # 6. Different movie with different Title and Year
         m6 = {"id": "tt0068646", "title": "The Godfather", "year": "1972"}
-        self.assertTrue(CineWindow._is_unique_item(win, m6))
+        self.assertTrue(PopcornBoxWindow._is_unique_item(win, m6))
 
         # 7. Same title but different release year (e.g. remake)
         m7 = {"id": "tt0077651", "title": "Halloween", "year": "1978"}
         m8 = {"id": "tt1502407", "title": "Halloween", "year": "2018"}
-        self.assertTrue(CineWindow._is_unique_item(win, m7))
-        self.assertTrue(CineWindow._is_unique_item(win, m8))
+        self.assertTrue(PopcornBoxWindow._is_unique_item(win, m7))
+        self.assertTrue(PopcornBoxWindow._is_unique_item(win, m8))
 
         # 8. Invalid non-dict item
-        self.assertFalse(CineWindow._is_unique_item(win, None))
-        self.assertFalse(CineWindow._is_unique_item(win, "invalid"))
+        self.assertFalse(PopcornBoxWindow._is_unique_item(win, None))
+        self.assertFalse(PopcornBoxWindow._is_unique_item(win, "invalid"))
 
     def test_on_unique_toggled_active_and_inactive(self):
         win = MagicMock()
@@ -83,7 +83,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         btn.get_active.return_value = True
 
         # Toggle ON
-        CineWindow._on_unique_toggled(win, btn)
+        PopcornBoxWindow._on_unique_toggled(win, btn)
         win.library_stack.set_visible_child_name.assert_called_with("unique")
         win._refresh_unique_combined_view.assert_called_once()
         win.discover_back_box.set_visible.assert_called_with(False)
@@ -91,7 +91,7 @@ class TestUniqueCombinedView(unittest.TestCase):
 
         # Toggle OFF (reverts to discover)
         btn.get_active.return_value = False
-        CineWindow._on_unique_toggled(win, btn)
+        PopcornBoxWindow._on_unique_toggled(win, btn)
         win.library_stack.set_visible_child_name.assert_called_with("discover")
         win._refresh_discover_page.assert_called_once()
 
@@ -104,13 +104,13 @@ class TestUniqueCombinedView(unittest.TestCase):
         btn.get_active.return_value = True
 
         # Toggle ON from content page
-        CineWindow._on_unique_toggled(win, btn)
+        PopcornBoxWindow._on_unique_toggled(win, btn)
         self.assertTrue(getattr(win, "_unique_was_content_page", False))
         win.library_stack.set_visible_child_name.assert_called_with("unique")
 
         # Toggle OFF reverts to content page
         btn.get_active.return_value = False
-        CineWindow._on_unique_toggled(win, btn)
+        PopcornBoxWindow._on_unique_toggled(win, btn)
         win.library_stack.set_visible_child_name.assert_called_with("content")
         win.discover_back_box.set_visible.assert_called_with(True)
         win._refresh_content.assert_called_once()
@@ -134,7 +134,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         win.current_catalog = {"catalog_id": "cat2", "manifest_url": "https://url2/manifest.json", "media_type": "movie"}
 
         with patch("src.window.cancel_pending_image_downloads", create=True):
-            CineWindow._refresh_unique_combined_view(win)
+            PopcornBoxWindow._refresh_unique_combined_view(win)
 
         self.assertEqual(len(win.unique_catalogs), 2)
         # Prioritized current_catalog at index 0
@@ -153,14 +153,14 @@ class TestUniqueCombinedView(unittest.TestCase):
         # Genre changed
         dropdown = Gtk.DropDown.new_from_strings(["All Genres", "Hindi", "Comedy"])
         dropdown.set_selected(1)
-        CineWindow._on_library_genre_changed(win, dropdown, None)
+        PopcornBoxWindow._on_library_genre_changed(win, dropdown, None)
         self.assertEqual(win.current_genre, "Hindi")
         win._refresh_unique_combined_view.assert_called_once()
 
         # Sort changed
         sort_dropdown = Gtk.DropDown.new_from_strings(["Popular", "Recent", "2024"])
         sort_dropdown.set_selected(2)
-        CineWindow._on_library_sort_changed(win, sort_dropdown, None)
+        PopcornBoxWindow._on_library_sort_changed(win, sort_dropdown, None)
         self.assertEqual(win.current_sort, "2024")
         self.assertEqual(win.current_year, "2024")
         self.assertEqual(win._refresh_unique_combined_view.call_count, 2)
@@ -177,7 +177,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         idle_callbacks = []
         with patch("gi.repository.GLib.idle_add", side_effect=lambda fn, *args: idle_callbacks.append((fn, args))) as mock_idle, \
              patch("src.movie_widget.MovieWidget", side_effect=lambda it, cb: MagicMock()) as mock_mw:
-            CineWindow._deliver_unique_slices_to_ui(win, items, req_id=1, has_more=True)
+            PopcornBoxWindow._deliver_unique_slices_to_ui(win, items, req_id=1, has_more=True)
             self.assertTrue(len(idle_callbacks) >= 1)
 
             # Execute slices sequentially
@@ -200,19 +200,19 @@ class TestUniqueCombinedView(unittest.TestCase):
         adj.get_value.return_value = 0
         adj.get_page_size.return_value = 800
         adj.get_upper.return_value = 600
-        CineWindow._on_unique_scroll(win, adj)
+        PopcornBoxWindow._on_unique_scroll(win, adj)
         win._load_next_unique_batch.assert_called_once()
         win._load_next_unique_batch.reset_mock()
 
         # Case 2: scrolled near top (far from bottom) -> should NOT trigger
         adj.get_upper.return_value = 4000
         adj.get_value.return_value = 500
-        CineWindow._on_unique_scroll(win, adj)
+        PopcornBoxWindow._on_unique_scroll(win, adj)
         win._load_next_unique_batch.assert_not_called()
 
         # Case 3: scrolled near bottom (val + page_size >= upper - 800) -> SHOULD trigger
         adj.get_value.return_value = 3500
-        CineWindow._on_unique_scroll(win, adj)
+        PopcornBoxWindow._on_unique_scroll(win, adj)
         win._load_next_unique_batch.assert_called_once()
 
     def test_on_unique_scroll_fetches_more_when_catalogs_exhausted(self):
@@ -237,7 +237,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         adj.get_upper.return_value = 4000
         adj.get_value.return_value = 3500  # near bottom
 
-        CineWindow._on_unique_scroll(win, adj)
+        PopcornBoxWindow._on_unique_scroll(win, adj)
 
         # cat1 was soft-exhausted, so it should be discarded from exhausted set and allow fetching more pages
         self.assertNotIn(cat1_key, win.unique_exhausted_catalogs)
@@ -253,7 +253,7 @@ class TestUniqueCombinedView(unittest.TestCase):
 
         timeout_callbacks = []
         with patch("gi.repository.GLib.timeout_add", side_effect=lambda ms, fn, *args: timeout_callbacks.append((ms, fn, args))) as mock_timeout:
-            CineWindow._deliver_unique_slices_to_ui(win, [], req_id=1, has_more=True)
+            PopcornBoxWindow._deliver_unique_slices_to_ui(win, [], req_id=1, has_more=True)
             self.assertFalse(win.is_fetching_unique)
             self.assertEqual(len(timeout_callbacks), 1)
             self.assertEqual(timeout_callbacks[0][0], 100)
@@ -310,7 +310,7 @@ class TestUniqueCombinedView(unittest.TestCase):
 
         timeout_callbacks = []
         with patch("gi.repository.GLib.timeout_add", side_effect=lambda ms, fn, *args: timeout_callbacks.append((ms, fn, args))):
-            CineWindow._deliver_unique_slices_to_ui(win, [], req_id=5, has_more=True)
+            PopcornBoxWindow._deliver_unique_slices_to_ui(win, [], req_id=5, has_more=True)
 
         # Execute timeout callback
         self.assertEqual(len(timeout_callbacks), 1)
@@ -336,7 +336,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         win.discover_back_box = MagicMock()
         win._get_discover_catalog_list.return_value = []
 
-        CineWindow._refresh_unique_combined_view(win)
+        PopcornBoxWindow._refresh_unique_combined_view(win)
 
         win.library_stack.set_visible_child_name.assert_called_with("unique")
         win.discover_back_box.set_visible.assert_called_with(False)
@@ -383,7 +383,7 @@ class TestUniqueCombinedView(unittest.TestCase):
             {"id": "tt2", "title": "Movie 2", "type": "movie"}
         ]
 
-        CineWindow._populate_discover_row_slot(win, slot, row_info, items, target_box)
+        PopcornBoxWindow._populate_discover_row_slot(win, slot, row_info, items, target_box)
 
         # Slot should now contain header box and scrolled window
         header = slot.get_first_child()
@@ -406,7 +406,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         win.inhibit_cookie = 0
 
         # Should not raise AttributeError when _search_pool is None
-        ret = CineWindow.do_close_request(win)
+        ret = PopcornBoxWindow.do_close_request(win)
         self.assertFalse(ret)
         self.assertTrue(win._unique_abort_event.is_set())
         self.assertTrue(win._discover_abort_event.is_set())
@@ -425,7 +425,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         win.mpv.playlist = []
         win.inhibit_cookie = 0
 
-        ret = CineWindow.do_close_request(win)
+        ret = PopcornBoxWindow.do_close_request(win)
         self.assertFalse(ret)
         search_pool.shutdown.assert_called_with(wait=False, cancel_futures=True)
         unique_pool.shutdown.assert_called_with(wait=False, cancel_futures=True)
@@ -459,7 +459,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         idle_callbacks = []
         with patch("gi.repository.GLib.idle_add", side_effect=lambda fn, *args: idle_callbacks.append((fn, args))), \
              patch("src.movie_widget.MovieWidget", side_effect=lambda it, cb: MagicMock()):
-            CineWindow._deliver_unique_slices_to_ui(win, items, req_id=1, has_more=True)
+            PopcornBoxWindow._deliver_unique_slices_to_ui(win, items, req_id=1, has_more=True)
             while idle_callbacks:
                 fn, args = idle_callbacks.pop(0)
                 fn(*args)
@@ -474,7 +474,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         win.current_language = "Hindi"
         win.unique_flowbox = Gtk.FlowBox()
 
-        CineWindow._deliver_unique_slices_to_ui(win, [], req_id=1, has_more=False)
+        PopcornBoxWindow._deliver_unique_slices_to_ui(win, [], req_id=1, has_more=False)
         self.assertFalse(win.has_more_unique)
         self.assertFalse(win.is_fetching_unique)
         first_child = win.unique_flowbox.get_first_child()
@@ -520,7 +520,7 @@ class TestUniqueCombinedView(unittest.TestCase):
 
         with patch("src.api.fetch_items") as mock_fetch, \
              patch("src.database.get_cached_catalog", return_value=None):
-            CineWindow._load_next_unique_batch(win)
+            PopcornBoxWindow._load_next_unique_batch(win)
             import time
             time.sleep(0.15)
 
@@ -550,7 +550,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         }
         with patch("src.window.cancel_pending_image_downloads", create=True), \
              patch("src.api.get_available_search_catalogs", return_value=[search_cat]):
-            CineWindow._refresh_unique_combined_view(win)
+            PopcornBoxWindow._refresh_unique_combined_view(win)
 
         sources = [c.get("_source") for c in win.unique_catalogs]
         self.assertEqual(sources[0], "query_cache")
@@ -592,7 +592,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         win = MagicMock()
         win.current_discover_search_query = "virgin"
         win.discover_search_entry = MagicMock()
-        empty_box = CineWindow._create_empty_filter_box(win, "No Animation items matching 'virgin'.")
+        empty_box = PopcornBoxWindow._create_empty_filter_box(win, "No Animation items matching 'virgin'.")
         self.assertIsNotNone(empty_box)
         self.assertTrue(getattr(empty_box, "_is_empty_box", False))
         
@@ -617,7 +617,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         win.unique_flowbox = fb
 
         # With 0 cards in flowbox, empty box is added
-        CineWindow._update_flowbox_empty_state(win, fb)
+        PopcornBoxWindow._update_flowbox_empty_state(win, fb)
         first_ch = fb.get_first_child()
         self.assertIsNotNone(first_ch)
         widget = first_ch.get_child() if hasattr(first_ch, "get_child") else first_ch
@@ -626,7 +626,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         # With visible card added, empty box is removed
         card = Gtk.Box()
         fb.append(card)
-        CineWindow._update_flowbox_empty_state(win, fb)
+        PopcornBoxWindow._update_flowbox_empty_state(win, fb)
         has_empty = False
         ch = fb.get_first_child()
         while ch:
@@ -653,7 +653,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         win._get_discover_catalog_list.return_value = []
 
         with patch("src.window.cancel_pending_image_downloads", create=True):
-            CineWindow._refresh_unique_combined_view(win)
+            PopcornBoxWindow._refresh_unique_combined_view(win)
 
         sources = [c.get("_source") for c in win.unique_catalogs]
         self.assertIn("tmdb_country", sources)
@@ -685,7 +685,7 @@ class TestUniqueCombinedView(unittest.TestCase):
         win._get_discover_catalog_list.return_value = []
 
         with patch("src.window.cancel_pending_image_downloads", create=True):
-            CineWindow._refresh_unique_combined_view(win)
+            PopcornBoxWindow._refresh_unique_combined_view(win)
 
         tmdb_cats = [c for c in win.unique_catalogs if c.get("_source") == "tmdb_country"]
         self.assertEqual(len(tmdb_cats), 1)
@@ -742,7 +742,7 @@ class TestUniqueCombinedView(unittest.TestCase):
              patch("src.database.save_cached_catalog") as save_mock, \
              patch("src.tmdb_helper.fetch_country_catalog_page", return_value=(cards, 1)) as fetch_mock, \
              patch("src.api.fetch_items") as provider_fetch:
-            CineWindow._load_next_unique_batch(win)
+            PopcornBoxWindow._load_next_unique_batch(win)
             time.sleep(0.2)
 
         fetch_mock.assert_called_once()
@@ -830,13 +830,13 @@ class TestUniqueCombinedView(unittest.TestCase):
              patch("src.database.save_cached_catalog"), \
              patch("src.tmdb_helper.fetch_country_catalog_page", side_effect=fake_page), \
              patch("src.api.fetch_items") as provider_fetch:
-            CineWindow._load_next_unique_batch(win)
+            PopcornBoxWindow._load_next_unique_batch(win)
             time.sleep(0.3)
             win.is_fetching_unique = False
-            CineWindow._load_next_unique_batch(win)
+            PopcornBoxWindow._load_next_unique_batch(win)
             time.sleep(0.3)
             win.is_fetching_unique = False
-            CineWindow._load_next_unique_batch(win)
+            PopcornBoxWindow._load_next_unique_batch(win)
             time.sleep(0.3)
 
         provider_fetch.assert_not_called()
@@ -924,7 +924,7 @@ class TestUniqueCombinedView(unittest.TestCase):
              patch("src.database.hydrate_items_from_metadata"), \
              patch("src.api.hydrate_missing_catalog_items"), \
              patch("src.api.fetch_items", side_effect=slow_fetch):
-            CineWindow._load_next_unique_batch(win)
+            PopcornBoxWindow._load_next_unique_batch(win)
             time.sleep(1.2)
 
         delivered = [

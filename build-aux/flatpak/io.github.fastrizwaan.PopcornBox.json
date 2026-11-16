@@ -3,7 +3,7 @@
     "runtime": "org.gnome.Platform",
     "runtime-version": "50",
     "sdk": "org.gnome.Sdk",
-    "command": "cine",
+    "command": "popcornbox",
     "finish-args": [
         "--share=ipc",
         "--share=network",
@@ -256,7 +256,7 @@
             ]
         },
         {
-            "name": "cine",
+            "name": "popcornbox",
             "builddir": true,
             "buildsystem": "meson",
             "sources": [

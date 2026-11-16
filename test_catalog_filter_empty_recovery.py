@@ -21,7 +21,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -30,12 +30,12 @@ if res_file.exists():
         pass
 
 from src import database, api
-from src.window import CineWindow
+from src.window import PopcornBoxWindow
 
 
 class TestCatalogFilterEmptyRecovery(unittest.TestCase):
     def setUp(self):
-        self.win = CineWindow.__new__(CineWindow)
+        self.win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         self.win._discover_catalog_list_cache = {}
         self.win._discover_views = {}
         self.win.current_sort = "Popular"
@@ -92,7 +92,7 @@ class TestCatalogFilterEmptyRecovery(unittest.TestCase):
         """When an addon produces 0 rows, _discover_catalog_list_cache must NOT cache empty []."""
         dead_addon_url = "https://dead-addon.test/manifest.json"
         with patch("src.database.get_addons", return_value=[]):
-            rows = CineWindow._get_discover_catalog_list(
+            rows = PopcornBoxWindow._get_discover_catalog_list(
                 self.win,
                 filter_media_type="all",
                 filter_addon_url=dead_addon_url
@@ -115,7 +115,7 @@ class TestCatalogFilterEmptyRecovery(unittest.TestCase):
 
         # Step 1: Temporarily empty / offline
         with patch("src.database.get_addons", return_value=[]):
-            rows1 = CineWindow._get_discover_catalog_list(
+            rows1 = PopcornBoxWindow._get_discover_catalog_list(
                 self.win,
                 filter_media_type="all",
                 filter_addon_url=addon_url
@@ -127,7 +127,7 @@ class TestCatalogFilterEmptyRecovery(unittest.TestCase):
              patch("src.api.is_addon_online", return_value=True), \
              patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            rows2 = CineWindow._get_discover_catalog_list(
+            rows2 = PopcornBoxWindow._get_discover_catalog_list(
                 self.win,
                 filter_media_type="all",
                 filter_addon_url=addon_url
@@ -141,7 +141,7 @@ class TestCatalogFilterEmptyRecovery(unittest.TestCase):
         self.win._current_discover_addon = dead_addon_url
 
         with patch.object(self.win, "_get_discover_catalog_list", return_value=[]):
-            CineWindow._refresh_discover_page(
+            PopcornBoxWindow._refresh_discover_page(
                 self.win,
                 filter_media_type="all",
                 filter_addon_url=dead_addon_url
@@ -177,7 +177,7 @@ class TestCatalogFilterEmptyRecovery(unittest.TestCase):
         dropdown.set_model(Gtk.StringList.new(["Popular", "PlavioHD - Sports"]))
         dropdown.set_selected(1)
 
-        CineWindow._on_library_sort_changed(self.win, dropdown, None)
+        PopcornBoxWindow._on_library_sort_changed(self.win, dropdown, None)
 
         self.assertEqual(self.win.library_stack.get_visible_child_name(), "content")
         self.assertEqual(self.win.current_catalog["catalog_id"], "plaviohd-sports")
@@ -203,7 +203,7 @@ class TestCatalogFilterEmptyRecovery(unittest.TestCase):
         with patch("src.database.get_addons", return_value=[mock_addon]), \
              patch("src.api.get_addon_catalogs", return_value=mock_addon["catalogs"]), \
              patch.object(self.win, "_refresh_discover_page") as mock_refresh:
-            CineWindow._on_library_genre_changed(self.win, dropdown, None)
+            PopcornBoxWindow._on_library_genre_changed(self.win, dropdown, None)
             # Must reset _current_discover_addon so other addons supporting Anime can be displayed
             self.assertIsNone(self.win._current_discover_addon)
             mock_refresh.assert_called_with(filter_media_type="all", filter_addon_url=None, force_refresh=True)
@@ -224,7 +224,7 @@ class TestCatalogFilterEmptyRecovery(unittest.TestCase):
         self.win._get_discover_catalog_list = MagicMock(side_effect=mock_get_cat_list)
 
         with patch("src.api.is_addon_online", return_value=True):
-            CineWindow._refresh_unique_combined_view(self.win)
+            PopcornBoxWindow._refresh_unique_combined_view(self.win)
 
         self.assertIsNone(self.win._current_discover_addon)
         self.assertEqual(len(self.win.unique_catalogs), 1)

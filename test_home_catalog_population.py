@@ -23,7 +23,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path(__file__).resolve().parent / "build-dir/files/share/popcorn-box/cine.gresource"
+res_file = Path(__file__).resolve().parent / "build-dir/files/share/popcorn-box/popcornbox.gresource"
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -31,7 +31,7 @@ if res_file.exists():
     except Exception:
         pass
 
-from src.window import CineWindow, DISCOVER_ROW_CARD_LIMIT
+from src.window import PopcornBoxWindow, DISCOVER_ROW_CARD_LIMIT
 from src import api, database
 
 
@@ -88,14 +88,14 @@ class TestHomeCatalogPopulation(unittest.TestCase):
         self.win._discover_scroll_parked_rows = None
         self.win._discover_scroll_parked_upper = None
 
-        self.win._load_next_discover_batch = lambda req_id, batch_size=4: CineWindow._load_next_discover_batch(self.win, req_id, batch_size)
-        self.win._populate_discover_row_slot = lambda slot, row_info, items, target_box: CineWindow._populate_discover_row_slot(self.win, slot, row_info, items, target_box)
+        self.win._load_next_discover_batch = lambda req_id, batch_size=4: PopcornBoxWindow._load_next_discover_batch(self.win, req_id, batch_size)
+        self.win._populate_discover_row_slot = lambda slot, row_info, items, target_box: PopcornBoxWindow._populate_discover_row_slot(self.win, slot, row_info, items, target_box)
         self.win._set_discover_spinner_active = MagicMock()
         self.win._discover_result_matches_item = lambda it: True
         self.win._discover_row_card_metrics = lambda: (15, 130)
         self.win._fit_discover_row_card = lambda card: None
         self.win._queue_next_discover_tmdb_page = MagicMock(return_value=False)
-        self.win._cancel_discover_batch_timer = lambda: CineWindow._cancel_discover_batch_timer(self.win)
+        self.win._cancel_discover_batch_timer = lambda: PopcornBoxWindow._cancel_discover_batch_timer(self.win)
         self.win._get_discover_view_key = MagicMock(return_value="home|all|all|all|all|all|all|Popular")
 
     def tearDown(self):
@@ -140,7 +140,7 @@ class TestHomeCatalogPopulation(unittest.TestCase):
              patch("src.api.is_addon_online", return_value=True):
 
             # Start loading with initial batch of 4
-            CineWindow._load_next_discover_batch(self.win, req_id=1, batch_size=4)
+            PopcornBoxWindow._load_next_discover_batch(self.win, req_id=1, batch_size=4)
 
             # Wait for background batches to chain through all 10 catalogs
             timeout = time.time() + 5.0
@@ -170,7 +170,7 @@ class TestHomeCatalogPopulation(unittest.TestCase):
         # 50 items
         items = [{"id": f"tt{i}", "title": f"Movie {i}", "type": "movie"} for i in range(50)]
 
-        CineWindow._populate_discover_row_slot(self.win, slot, row_info, items, self.win.discover_box)
+        PopcornBoxWindow._populate_discover_row_slot(self.win, slot, row_info, items, self.win.discover_box)
 
         sec_scroll = slot.get_first_child().get_next_sibling()
         self.assertIsNotNone(sec_scroll)
@@ -197,7 +197,7 @@ class TestHomeCatalogPopulation(unittest.TestCase):
         adj.get_page_size.return_value = 600.0
         adj.get_upper.return_value = 2000.0  # at_bottom is True
 
-        CineWindow._on_discover_scroll(self.win, adj)
+        PopcornBoxWindow._on_discover_scroll(self.win, adj)
 
         # Pending timer cancelled
         self.assertIsNone(self.win._discover_batch_timer_id)
@@ -207,7 +207,7 @@ class TestHomeCatalogPopulation(unittest.TestCase):
     def test_cancel_all_background_fetching_cleans_timer(self):
         """_cancel_all_background_fetching terminates in-flight batch timer without warning."""
         self.win._discover_batch_timer_id = GLib.timeout_add(500, lambda: False)
-        CineWindow._cancel_all_background_fetching(self.win)
+        PopcornBoxWindow._cancel_all_background_fetching(self.win)
         self.assertIsNone(self.win._discover_batch_timer_id)
 
     def test_home_catalogs_exclude_tv_radio_music(self):
@@ -233,7 +233,7 @@ class TestHomeCatalogPopulation(unittest.TestCase):
              patch("src.api.is_catalog_provider", return_value=True), \
              patch("src.api.get_addon_catalogs", side_effect=lambda a, cache_only=False: a.get("catalogs", [])), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            home_rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=True)
+            home_rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=True)
 
         home_cat_ids = {r["catalog_id"] for r in home_rows}
         self.assertEqual(home_cat_ids, {"c_movie", "c_series", "c_anime"})
@@ -263,7 +263,7 @@ class TestHomeCatalogPopulation(unittest.TestCase):
              patch("src.api.is_catalog_provider", return_value=True), \
              patch("src.api.get_addon_catalogs", side_effect=lambda a, cache_only=False: a.get("catalogs", [])), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            discover_rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=False)
+            discover_rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=False)
 
         disc_cat_ids = {r["catalog_id"] for r in discover_rows}
         self.assertIn("c_tv", disc_cat_ids)
@@ -291,8 +291,8 @@ class TestHomeCatalogPopulation(unittest.TestCase):
              patch("src.api.is_catalog_provider", return_value=True), \
              patch("src.api.get_addon_catalogs", side_effect=lambda a, cache_only=False: a.get("catalogs", [])), \
              patch("src.api.is_catalog_browsable", return_value=True):
-            home_rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=True)
-            discover_rows = CineWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=False)
+            home_rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=True)
+            discover_rows = PopcornBoxWindow._get_discover_catalog_list(self.win, filter_media_type="all", is_home=False)
 
         self.assertEqual(len(home_rows), 1)
         self.assertEqual(home_rows[0]["catalog_id"], "m1")
@@ -311,7 +311,7 @@ class TestHomeCatalogPopulation(unittest.TestCase):
         row_info = {"title": "Test Row", "media_type": "movie", "catalog_id": "test", "manifest_url": "https://test/manifest.json"}
         items = [{"id": f"tt{i}", "title": f"Movie {i}", "type": "movie"} for i in range(10)]
 
-        CineWindow._populate_discover_row_slot(self.win, slot, row_info, items, self.win.discover_box)
+        PopcornBoxWindow._populate_discover_row_slot(self.win, slot, row_info, items, self.win.discover_box)
         sec_scroll = slot.get_first_child().get_next_sibling()
         self.assertIsInstance(sec_scroll, Gtk.ScrolledWindow)
         h_policy, v_policy = sec_scroll.get_policy()
@@ -332,7 +332,7 @@ class TestHomeCatalogPopulation(unittest.TestCase):
 
         self.win._get_discover_catalog_list = MagicMock(return_value=catalogs)
         self.win.category_btn_stack.set_visible_child_name("home")
-        CineWindow._refresh_discover_page(self.win, filter_media_type="all")
+        PopcornBoxWindow._refresh_discover_page(self.win, filter_media_type="all")
 
         # Initial batch must be all 12 catalogs, not capped at 6
         self.win._load_next_discover_batch.assert_called_once()
@@ -350,7 +350,7 @@ class TestHomeCatalogPopulation(unittest.TestCase):
         self.win.discover_request_id = 42
         self.win._load_next_discover_batch = MagicMock()
 
-        CineWindow._refresh_discover_page(self.win, filter_media_type="all")
+        PopcornBoxWindow._refresh_discover_page(self.win, filter_media_type="all")
 
         # Request ID must not be bumped, and no new batch dispatched
         self.assertEqual(self.win.discover_request_id, 42)
@@ -379,7 +379,7 @@ class TestHomeCatalogPopulation(unittest.TestCase):
         }
         self.win._load_next_discover_batch = MagicMock()
 
-        CineWindow._refresh_discover_page(self.win, filter_media_type="all")
+        PopcornBoxWindow._refresh_discover_page(self.win, filter_media_type="all")
 
         # Must have reset next_row_index to 0 because 0 catalog rows were rendered
         self.assertEqual(self.win._discover_views[view_key]["next_row_index"], 0)
@@ -398,7 +398,7 @@ class TestHomeCatalogPopulation(unittest.TestCase):
         self.win._discover_abort_event = abort_ev
         self.win.discover_request_id = 99
 
-        CineWindow._load_next_discover_batch(self.win, req_id=99, batch_size=5)
+        PopcornBoxWindow._load_next_discover_batch(self.win, req_id=99, batch_size=5)
 
         self._drain_glib(10)
 

@@ -22,7 +22,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -186,21 +186,21 @@ class TestGenreDropdownDatabase(unittest.TestCase):
 
 class TestGenreDropdownWindow(unittest.TestCase):
     def test_sync_library_genre_dropdown_selection(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.library_genre_dropdown = Gtk.DropDown.new_from_strings(["All Genres", "Action", "Comedy", "Drama"])
         win._syncing_genre_dropdown = False
 
-        CineWindow._sync_library_genre_dropdown_selection(win, "Comedy")
+        PopcornBoxWindow._sync_library_genre_dropdown_selection(win, "Comedy")
         selected_idx = win.library_genre_dropdown.get_selected()
         self.assertEqual(win.library_genre_dropdown.get_model().get_string(selected_idx), "Comedy")
 
-        CineWindow._sync_library_genre_dropdown_selection(win, None)
+        PopcornBoxWindow._sync_library_genre_dropdown_selection(win, None)
         selected_idx = win.library_genre_dropdown.get_selected()
         self.assertEqual(win.library_genre_dropdown.get_model().get_string(selected_idx), "All Genres")
 
     def test_on_library_genre_changed(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win._syncing_genre_dropdown = False
         win.library_stack.get_visible_child_name.return_value = "content"
@@ -210,39 +210,39 @@ class TestGenreDropdownWindow(unittest.TestCase):
         dropdown = Gtk.DropDown.new_from_strings(["All Genres", "Action", "Comedy"])
         dropdown.set_selected(1)  # "Action"
 
-        CineWindow._on_library_genre_changed(win, dropdown, None)
+        PopcornBoxWindow._on_library_genre_changed(win, dropdown, None)
         self.assertEqual(win.current_genre, "Action")
         win._apply_sort_to_current_catalog.assert_called_once()
         win._refresh_content.assert_called_once()
 
     def test_update_genre_dropdown_preserves_valid_genre(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.library_genre_dropdown = Gtk.DropDown()
         win._syncing_genre_dropdown = False
         win.current_genre = "Action"
 
-        CineWindow._update_genre_dropdown(win, "movie")
+        PopcornBoxWindow._update_genre_dropdown(win, "movie")
         selected_idx = win.library_genre_dropdown.get_selected()
         selected_genre = win.library_genre_dropdown.get_model().get_string(selected_idx)
         self.assertEqual(selected_genre, "Action")
         self.assertEqual(win.current_genre, "Action")
 
     def test_update_genre_dropdown_resets_invalid_genre(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.library_genre_dropdown = Gtk.DropDown()
         win._syncing_genre_dropdown = False
         win.current_genre = "NonExistentGenreXYZ"
 
-        CineWindow._update_genre_dropdown(win, "movie")
+        PopcornBoxWindow._update_genre_dropdown(win, "movie")
         selected_idx = win.library_genre_dropdown.get_selected()
         selected_genre = win.library_genre_dropdown.get_model().get_string(selected_idx)
         self.assertEqual(selected_genre, "All Genres")
         self.assertIsNone(win.current_genre)
 
     def test_sort_dropdown_sync_and_change(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.library_sort_dropdown = Gtk.DropDown.new_from_strings(["Popular", "Featured", "Recent", "2025", "2024"])
         win._syncing_sort_dropdown = False
@@ -251,14 +251,14 @@ class TestGenreDropdownWindow(unittest.TestCase):
         win.library_stack.get_visible_child_name.return_value = "content"
         win.current_catalog = {"catalog_id": "top", "display_name": "Popular Movies"}
 
-        CineWindow._sync_library_sort_dropdown_selection(win, "Featured")
+        PopcornBoxWindow._sync_library_sort_dropdown_selection(win, "Featured")
         selected_idx = win.library_sort_dropdown.get_selected()
         self.assertEqual(win.library_sort_dropdown.get_model().get_string(selected_idx), "Featured")
 
         # Test selecting a Year "2024"
         dropdown = Gtk.DropDown.new_from_strings(["Popular", "Featured", "Recent", "2025", "2024"])
         dropdown.set_selected(4)  # "2024"
-        CineWindow._on_library_sort_changed(win, dropdown, None)
+        PopcornBoxWindow._on_library_sort_changed(win, dropdown, None)
         self.assertEqual(win.current_sort, "2024")
         self.assertEqual(win.current_year, "2024")
         win._apply_sort_to_current_catalog.assert_called_once()

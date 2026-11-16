@@ -6,8 +6,8 @@ from gi.repository import Gtk, Adw, Gio, GLib
 sys.path.append("/var/home/rizvan/PopcornBox/src")
 
 def on_activate(app):
-    from window import CineWindow
-    win = CineWindow(application=app)
+    from window import PopcornBoxWindow
+    win = PopcornBoxWindow(application=app)
     app.add_window(win)
     print(f"Anime supported: {win.anime_supported}")
     print(f"Movies tab button visible: {win.anime_inactive_btn_movies.get_visible()}")

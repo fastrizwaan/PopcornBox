@@ -1,1 +1,1 @@
-i18n.gettext('cine', preset: 'glib')
+i18n.gettext('popcornbox', preset: 'glib')

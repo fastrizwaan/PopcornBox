@@ -21,7 +21,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -30,7 +30,7 @@ if res_file.exists():
         pass
 
 from src import database, api
-from src.window import CineWindow
+from src.window import PopcornBoxWindow
 
 
 class TestCountryFilter(unittest.TestCase):

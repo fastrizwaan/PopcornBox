@@ -18,7 +18,7 @@ if _schema_path.exists():
     os.environ["GSETTINGS_SCHEMA_DIR"] = _schema_dir.name
 
 from gi.repository import Gio
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))

@@ -6,7 +6,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
 -->
 <interface>
   <requires lib="gtk" version="4.0"/>
-  <template class="CineWindow" parent="AdwApplicationWindow">
+  <template class="PopcornBoxWindow" parent="AdwApplicationWindow">
     <property name="name">io-github-fastrizwaan-PopcornBox</property>
     <property name="title" translatable="yes">PopcornBox</property>
     <property name="default-width">800</property>
@@ -2651,7 +2651,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                         </style>
                         <child type="overlay">
                           <object class="GtkImage" id="audio_only_icon">
-                            <property name="icon-name">cine-audio-x-generic-symbolic</property>
+                            <property name="icon-name">popcornbox-audio-x-generic-symbolic</property>
                             <property name="visible">false</property>
                             <property name="pixel-size">128</property>
                             <property name="opacity">0.33</property>
@@ -2687,7 +2687,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                 <property name="width-request">72</property>
                                 <property name="height-request">72</property>
                                 <style>
-                                  <class name="cine-spinner"/>
+                                  <class name="popcornbox-spinner"/>
                                 </style>
                               </object>
                             </child>
@@ -2899,7 +2899,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                               <class name="circular"/>
                                               <class name="flat"/>
                                             </style>
-                                            <property name="icon-name">cine-skip-backward-symbolic</property>
+                                            <property name="icon-name">popcornbox-skip-backward-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Previous</property>
                                             <signal name="clicked" handler="_on_previous_clicked"/>
                                           </object>
@@ -2910,7 +2910,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                               <class name="circular"/>
                                               <class name="flat"/>
                                             </style>
-                                            <property name="icon-name">cine-playback-start-symbolic</property>
+                                            <property name="icon-name">popcornbox-playback-start-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Play/Pause</property>
                                             <property name="halign">3</property>
                                             <signal name="clicked" handler="_on_play_pause_clicked"/>
@@ -2922,7 +2922,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                               <class name="circular"/>
                                               <class name="flat"/>
                                             </style>
-                                            <property name="icon-name">cine-skip-forward-symbolic</property>
+                                            <property name="icon-name">popcornbox-skip-forward-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Next</property>
                                             <property name="halign">3</property>
                                             <signal name="clicked" handler="_on_next_clicked"/>
@@ -2931,7 +2931,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                         <child>
                                           <object class="GtkMenuButton" id="volume_menu_btn">
                                             <property name="halign">3</property>
-                                            <property name="icon-name">cine-volume-max-symbolic</property>
+                                            <property name="icon-name">popcornbox-volume-max-symbolic</property>
                                             <property name="direction">0</property>
                                             <property name="tooltip-text" translatable="yes">Volume</property>
                                             <style>
@@ -2944,7 +2944,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                   <object class="GtkBox" id="volume_box">
                                                     <child>
                                                       <object class="GtkToggleButton" id="mute_toggle_btn">
-                                                        <property name="icon-name">cine-volume-mute-symbolic</property>
+                                                        <property name="icon-name">popcornbox-volume-mute-symbolic</property>
                                                         <property name="tooltip-text" translatable="yes">Mute/Unmute</property>
                                                         <style>
                                                           <class name="flat"/>
@@ -2980,7 +2980,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                             </style>
                                             <property name="direction">0</property>
                                             <property name="halign">3</property>
-                                            <property name="icon-name">cine-subtitles-symbolic</property>
+                                            <property name="icon-name">popcornbox-subtitles-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Subtitles</property>
                                             <property name="menu-model">
                                               <menu id="subtitles_menu"></menu>
@@ -2996,7 +2996,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                             </style>
                                             <property name="direction">0</property>
                                             <property name="halign">3</property>
-                                            <property name="icon-name">cine-audio-symbolic</property>
+                                            <property name="icon-name">popcornbox-audio-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Audio</property>
                                             <property name="menu-model">
                                               <menu id="audio_tracks_menu"></menu>
@@ -3011,7 +3011,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                             </style>
                                             <property name="direction">0</property>
                                             <property name="halign">3</property>
-                                            <property name="icon-name">cine-video-symbolic</property>
+                                            <property name="icon-name">popcornbox-video-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Video</property>
                                             <property name="menu-model">
                                               <menu id="video_tracks_menu"></menu>
@@ -3027,7 +3027,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                             <signal name="notify::active" handler="_sync_chapter_menu_selected"/>
                                             <property name="direction">0</property>
                                             <property name="halign">3</property>
-                                            <property name="icon-name">cine-chapters-symbolic</property>
+                                            <property name="icon-name">popcornbox-chapters-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Chapters</property>
                                             <property name="menu-model">
                                               <menu id="chapters_menu"></menu>
@@ -3046,7 +3046,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                               <class name="circular"/>
                                               <class name="flat"/>
                                             </style>
-                                            <property name="icon-name">cine-playlist-shuffle-symbolic</property>
+                                            <property name="icon-name">popcornbox-playlist-shuffle-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Shuffle Playlist</property>
                                             <property name="valign">2</property>
                                             <property name="halign">3</property>
@@ -3059,7 +3059,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                               <class name="circular"/>
                                               <class name="flat"/>
                                             </style>
-                                            <property name="icon-name">cine-playlist-repeat-symbolic</property>
+                                            <property name="icon-name">popcornbox-playlist-repeat-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Loop Playlist</property>
                                             <property name="valign">2</property>
                                             <property name="halign">3</property>
@@ -3072,7 +3072,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                               <class name="circular"/>
                                               <class name="flat"/>
                                             </style>
-                                            <property name="icon-name">cine-repeat-file-symbolic</property>
+                                            <property name="icon-name">popcornbox-repeat-file-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Loop File</property>
                                             <property name="valign">2</property>
                                             <property name="halign">3</property>
@@ -3086,7 +3086,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                               <class name="flat"/>
                                             </style>
                                             <property name="tooltip-text" translatable="yes">Playlist</property>
-                                            <property name="icon-name">cine-playlist-symbolic</property>
+                                            <property name="icon-name">popcornbox-playlist-symbolic</property>
                                             <property name="valign">2</property>
                                             <property name="halign">3</property>
                                             <property name="action-name">win.open-playlist-dialog</property>
@@ -3101,7 +3101,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                               <class name="circular"/>
                                               <class name="flat"/>
                                             </style>
-                                            <property name="icon-name">cine-view-fullscreen-symbolic</property>
+                                            <property name="icon-name">popcornbox-view-fullscreen-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Fullscreen</property>
                                             <property name="valign">2</property>
                                             <property name="halign">3</property>
@@ -3313,7 +3313,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                         <property name="valign">3</property>
                                         <child>
                                           <object class="GtkImage">
-                                            <property name="icon-name">cine-skip-forward-symbolic</property>
+                                            <property name="icon-name">popcornbox-skip-forward-symbolic</property>
                                           </object>
                                         </child>
                                         <child>

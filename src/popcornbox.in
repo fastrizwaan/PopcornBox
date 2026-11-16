@@ -1,6 +1,6 @@
 #!@PYTHON@
 
-# cine.in
+# popcornbox.in
 #
 # Copyright 2026 Diego
 #
@@ -32,13 +32,13 @@ localedir = '@localedir@'
 sys.path.insert(1, pkgdatadir)
 signal.signal(signal.SIGINT, signal.SIG_DFL)
 try:
-  locale.bindtextdomain('cine', localedir)
-  locale.textdomain('cine')
+  locale.bindtextdomain('popcornbox', localedir)
+  locale.textdomain('popcornbox')
 except:
   print('Cannot set locale.')
 try:
-  gettext.bindtextdomain('cine', localedir)
-  gettext.textdomain('cine')
+  gettext.bindtextdomain('popcornbox', localedir)
+  gettext.textdomain('popcornbox')
 except:
   print('Cannot load translations.')
 
@@ -48,14 +48,17 @@ if __name__ == '__main__':
     from gettext import gettext as _
     from gi.repository import GLib
 
-    # This should set the icon/name in sound settings to Cine,
+    # This should set the icon/name in sound settings to PopcornBox,
     # but it doesn't work with mpv ao=pipewire
-    GLib.set_prgname('cine')
-    GLib.set_application_name(_('Cine'))
+    GLib.set_prgname('popcornbox')
+    GLib.set_application_name(_('PopcornBox'))
 
     from gi.repository import Gio
-    resource = Gio.Resource.load(os.path.join(pkgdatadir, 'cine.gresource'))
+    resource = Gio.Resource.load(os.path.join(pkgdatadir, 'popcornbox.gresource'))
     resource._register()
 
-    from cine import main
+    try:
+        from popcornbox import main
+    except ImportError:
+        from cine import main
     sys.exit(main.main(VERSION))

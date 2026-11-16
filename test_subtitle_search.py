@@ -21,7 +21,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -195,12 +195,12 @@ class TestSubtitleSearch(unittest.TestCase):
         self.assertEqual(dialog.lbl_count.get_text(), "0 subtitles found")
 
     def test_window_track_menus_has_search_subtitle(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         import gi
         gi.require_version("Gio", "2.0")
         from gi.repository import Gio
 
-        mock_win = MagicMock(spec=CineWindow)
+        mock_win = MagicMock(spec=PopcornBoxWindow)
         mock_win.subtitles_menu = Gio.Menu()
         mock_win.audio_tracks_menu = Gio.Menu()
         mock_win.video_tracks_menu = Gio.Menu()
@@ -209,7 +209,7 @@ class TestSubtitleSearch(unittest.TestCase):
         mock_win.audio_tracks_menu_btn = MagicMock()
 
         # Run _update_track_menus unbound on mock_win
-        CineWindow._update_track_menus(mock_win, [])
+        PopcornBoxWindow._update_track_menus(mock_win, [])
 
         # Check items in subtitles_menu
         n_items = mock_win.subtitles_menu.get_n_items()
@@ -292,8 +292,8 @@ class TestSubtitleSearch(unittest.TestCase):
         ]))
 
     def test_smart_subtitles_skips_download_when_embedded_present(self):
-        from src.window import CineWindow
-        mock_win = MagicMock(spec=CineWindow)
+        from src.window import PopcornBoxWindow
+        mock_win = MagicMock(spec=PopcornBoxWindow)
         mock_win._is_playing_trailer.return_value = False
         mock_win._subtitles_configured_for_file = False
         mock_win._pending_subtitle_request = {
@@ -314,7 +314,7 @@ class TestSubtitleSearch(unittest.TestCase):
         ]
 
         # Call _check_and_configure_subtitles unbound
-        CineWindow._check_and_configure_subtitles(mock_win)
+        PopcornBoxWindow._check_and_configure_subtitles(mock_win)
 
         # Verify that track 4 (SDH) was selected
         self.assertEqual(mock_win.mpv.sid, 4)
@@ -324,8 +324,8 @@ class TestSubtitleSearch(unittest.TestCase):
         mock_win.fetch_and_add_subtitles.assert_not_called()
 
     def test_smart_subtitles_downloads_when_no_embedded_present(self):
-        from src.window import CineWindow
-        mock_win = MagicMock(spec=CineWindow)
+        from src.window import PopcornBoxWindow
+        mock_win = MagicMock(spec=PopcornBoxWindow)
         mock_win._is_playing_trailer.return_value = False
         mock_win._subtitles_configured_for_file = False
         mock_win._pending_subtitle_request = {
@@ -345,7 +345,7 @@ class TestSubtitleSearch(unittest.TestCase):
         ]
 
         # Call _check_and_configure_subtitles unbound
-        CineWindow._check_and_configure_subtitles(mock_win)
+        PopcornBoxWindow._check_and_configure_subtitles(mock_win)
 
         # Verify fetch_and_add_subtitles WAS called with pending request!
         mock_win.fetch_and_add_subtitles.assert_called_once_with(
@@ -360,8 +360,8 @@ class TestSubtitleSearch(unittest.TestCase):
         self.assertIsNone(mock_win._pending_subtitle_request)
 
     def test_track_list_observer_auto_selects_sdh_and_clears_pending_download(self):
-        from src.window import CineWindow
-        mock_win = MagicMock(spec=CineWindow)
+        from src.window import PopcornBoxWindow
+        mock_win = MagicMock(spec=PopcornBoxWindow)
         mock_win._is_playing_trailer.return_value = False
         mock_win._subtitles_configured_for_file = False
         mock_win._pending_subtitle_request = {
@@ -376,15 +376,15 @@ class TestSubtitleSearch(unittest.TestCase):
             {"type": "sub", "id": 2, "lang": "eng", "title": "English [SDH]", "external": False},
         ]
 
-        CineWindow._on_track_list_for_subtitles(mock_win, track_list)
+        PopcornBoxWindow._on_track_list_for_subtitles(mock_win, track_list)
 
         self.assertEqual(mock_win.mpv.sid, 2)
         self.assertTrue(mock_win._subtitles_configured_for_file)
         self.assertIsNone(mock_win._pending_subtitle_request)
 
     def test_smart_subtitles_falls_back_to_regular_when_no_sdh(self):
-        from src.window import CineWindow
-        mock_win = MagicMock(spec=CineWindow)
+        from src.window import PopcornBoxWindow
+        mock_win = MagicMock(spec=PopcornBoxWindow)
         mock_win._is_playing_trailer.return_value = False
         mock_win._subtitles_configured_for_file = False
         mock_win._pending_subtitle_request = {
@@ -398,7 +398,7 @@ class TestSubtitleSearch(unittest.TestCase):
             {"type": "sub", "id": 1, "lang": "eng", "title": "English", "external": False},
         ]
 
-        CineWindow._check_and_configure_subtitles(mock_win)
+        PopcornBoxWindow._check_and_configure_subtitles(mock_win)
 
         self.assertEqual(mock_win.mpv.sid, 1)
         self.assertTrue(mock_win._subtitles_configured_for_file)
@@ -520,9 +520,9 @@ class TestSubtitleSearch(unittest.TestCase):
         self.assertEqual(keys[1], "subs_tt9999995_movie_None_None_hi")
 
     def test_fetch_and_add_subtitles_selects_first_successful_download(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
 
-        win = CineWindow.__new__(CineWindow)
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win.pending_subtitles = []
         win._subtitle_fetch_id = 0
         win._try_add_pending_subtitles = MagicMock()

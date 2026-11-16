@@ -16,7 +16,7 @@ via MPV (python-mpv).
 
 Key Source Files (`src/`):
 - `src/window.py`:
-  Core application window (`CineWindow`). Manages view stacks, navigation routing,
+  Core application window (`PopcornBoxWindow`). Manages view stacks, navigation routing,
   Discover catalog rows, Continue Watching carousels, category menus, search,
   and playback transitions.
 - `src/window.blp` & `src/window.ui`:
@@ -70,7 +70,7 @@ Stack Homogeneity & Layout Integrity:
   If either stack is homogeneous, GTK sizes the entire stack to match its widest
   or tallest child widget (such as a wide FlowBox grid or detailed series cast list),
   forcing the video player or toast overlays to exceed window bounds and generating
-  `AdwToastOverlay exceeds CineWindow width` warnings.
+  `AdwToastOverlay exceeds PopcornBoxWindow width` warnings.
 
 UI Spacing & Layout Guidelines:
 - Headerbar gap to first section: 12px. The first section header must have

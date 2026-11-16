@@ -36,9 +36,9 @@ class TestRuntimeDefectFixes(unittest.TestCase):
             subprocess.run(["glib-compile-schemas", cls.schema_temp_dir.name], check=True)
             os.environ["GSETTINGS_SCHEMA_DIR"] = cls.schema_temp_dir.name
 
-        res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+        res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
         if not res_file.exists():
-            res_file = Path("cine.gresource")
+            res_file = Path("popcornbox.gresource")
         if res_file.exists():
             try:
                 res = Gio.Resource.load(str(res_file))
@@ -373,7 +373,7 @@ class TestRuntimeDefectFixes(unittest.TestCase):
     # main.py: skip sidecar files inside subdirectories
     # ------------------------------------------------------------------
     def test_find_first_file_skips_sidecars_in_subdirectory(self):
-        from src.main import CineApplication
+        from src.main import PopcornBoxApplication
 
         folder = Path(self.temp_dir.name) / "movie-folder"
         folder.mkdir()
@@ -383,7 +383,7 @@ class TestRuntimeDefectFixes(unittest.TestCase):
 
         class DummyApp:
             def find_first_file(self, gfile, visited=None):
-                return CineApplication.find_first_file(self, gfile, visited)
+                return PopcornBoxApplication.find_first_file(self, gfile, visited)
 
         found = DummyApp().find_first_file(Gio.File.new_for_path(str(folder)))
         self.assertEqual(found, str(video))
@@ -489,9 +489,9 @@ class TestRuntimeDefectFixes(unittest.TestCase):
     # window.py: failed refresh must not make a stale link look fresh
     # ------------------------------------------------------------------
     def test_continue_watching_failed_refresh_does_not_mark_stream_fresh(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
 
-        win = CineWindow.__new__(CineWindow)
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win.show_player_loading = MagicMock()
         win._finish_continue_watching_play = MagicMock()
 
@@ -524,7 +524,7 @@ class TestRuntimeDefectFixes(unittest.TestCase):
              patch("src.database.save_continue_watching") as save_cw, \
              patch("src.api.refresh_stream", side_effect=fake_refresh), \
              patch("src.window.GLib.idle_add", side_effect=fake_idle_add):
-            CineWindow._on_continue_watching_clicked(win, item)
+            PopcornBoxWindow._on_continue_watching_clicked(win, item)
             self.assertTrue(refresh_done.wait(2))
             self.assertTrue(idle_attempted.wait(2))
 
@@ -533,14 +533,14 @@ class TestRuntimeDefectFixes(unittest.TestCase):
         win._finish_continue_watching_play.assert_called_once()
 
     def test_cw_background_refresh_claims_running_flag_before_thread_start(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
 
-        win = CineWindow.__new__(CineWindow)
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win._last_cw_bg_refresh_time = 0
 
         with patch("src.window.threading.Thread") as thread_cls:
-            CineWindow._start_background_continue_watching_refresh(win, [])
-            CineWindow._start_background_continue_watching_refresh(win, [])
+            PopcornBoxWindow._start_background_continue_watching_refresh(win, [])
+            PopcornBoxWindow._start_background_continue_watching_refresh(win, [])
 
         self.assertEqual(thread_cls.call_count, 1)
         self.assertTrue(win._cw_bg_refresh_running)
@@ -782,9 +782,9 @@ class TestRuntimeDefectFixes(unittest.TestCase):
     # window.py: a superseded continue-watching refresh must not play
     # ------------------------------------------------------------------
     def test_continue_watching_slow_refresh_cannot_hijack_newer_click(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
 
-        win = CineWindow.__new__(CineWindow)
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
         win.show_player_loading = MagicMock()
         win._finish_continue_watching_play = MagicMock()
 
@@ -819,10 +819,10 @@ class TestRuntimeDefectFixes(unittest.TestCase):
              patch("src.database.save_continue_watching"), \
              patch("src.api.refresh_stream", side_effect=fake_refresh), \
              patch("src.window.GLib.idle_add", side_effect=fake_idle_add):
-            CineWindow._on_continue_watching_clicked(win, item_a)
+            PopcornBoxWindow._on_continue_watching_clicked(win, item_a)
             self.assertTrue(refresh_started.wait(2))
 
-            CineWindow._on_continue_watching_clicked(win, item_b)
+            PopcornBoxWindow._on_continue_watching_clicked(win, item_b)
             self.assertEqual(win._finish_continue_watching_play.call_count, 1)
             self.assertIs(win._finish_continue_watching_play.call_args[0][0], item_b)
 

@@ -21,7 +21,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -31,7 +31,7 @@ if res_file.exists():
 
 import time
 from src import database, api
-from src.window import CineWindow
+from src.window import PopcornBoxWindow
 
 class TestMetadataHydration(unittest.TestCase):
     def setUp(self):
@@ -151,7 +151,7 @@ class TestMetadataHydration(unittest.TestCase):
 
     def test_unique_mode_enables_genre_and_year_dropdowns(self):
         """When unique mode is active, genre and year dropdowns are enabled even for manifest without declared genres."""
-        win = MagicMock(spec=CineWindow)
+        win = MagicMock(spec=PopcornBoxWindow)
         win.genre_dropdown = Gtk.DropDown()
         win.year_dropdown = Gtk.DropDown()
         win._is_unique_mode_active = MagicMock(return_value=True)
@@ -162,13 +162,13 @@ class TestMetadataHydration(unittest.TestCase):
             "catalogs": [{"type": "series", "id": "primevideo", "name": "Prime Video"}]
         }
 
-        CineWindow._populate_discover_genre_dropdown(win, mock_addon_no_genre, "series")
+        PopcornBoxWindow._populate_discover_genre_dropdown(win, mock_addon_no_genre, "series")
         self.assertTrue(win.genre_dropdown.get_sensitive())
         g_model = win.genre_dropdown.get_model()
         self.assertGreater(g_model.get_n_items(), 1)
         self.assertEqual(g_model.get_string(0), "All Genres")
 
-        CineWindow._populate_discover_year_dropdown(win, mock_addon_no_genre, "series")
+        PopcornBoxWindow._populate_discover_year_dropdown(win, mock_addon_no_genre, "series")
         self.assertTrue(win.year_dropdown.get_sensitive())
         y_model = win.year_dropdown.get_model()
         self.assertGreater(y_model.get_n_items(), 1)

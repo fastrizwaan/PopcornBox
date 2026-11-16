@@ -207,7 +207,7 @@ class Playlist(Adw.Dialog):
             css_classes=["title"],
         )
         list_item.playing_icon = Gtk.Image(
-            margin_end=14, icon_name="cine-playback-start-symbolic", visible=False
+            margin_end=14, icon_name="popcornbox-playback-start-symbolic", visible=False
         )
         row.append(list_item.icon)
         row.append(list_item.title)
@@ -240,7 +240,7 @@ class Playlist(Adw.Dialog):
             parent_dir = os.path.basename(os.path.dirname(path)) if path else ""
             dir = parent_dir if parent_dir else path
 
-            icon_name = "cine-applications-multimedia-symbolic"
+            icon_name = "popcornbox-applications-multimedia-symbolic"
 
             if not is_local_path(path):
                 content_type = "mpv-url"
@@ -256,7 +256,7 @@ class Playlist(Adw.Dialog):
                 file_title = os.path.splitext(name_with_ext)[0]
 
             if content_type == "inode/directory":
-                icon_name = "cine-folder-symbolic"
+                icon_name = "popcornbox-folder-symbolic"
                 file_title = name_with_ext
                 try:
                     is_empty = not os.listdir(path)
@@ -267,17 +267,17 @@ class Playlist(Adw.Dialog):
                     list_item.title.set_opacity(0.5)
             elif content_type:
                 if "video" in content_type:
-                    icon_name = "cine-video-x-generic-symbolic"
+                    icon_name = "popcornbox-video-x-generic-symbolic"
                 elif "mpegurl" in content_type:
-                    icon_name = "cine-playlist-m3u-symbolic"
+                    icon_name = "popcornbox-playlist-m3u-symbolic"
                 elif "audio" in content_type:
-                    icon_name = "cine-audio-x-generic-symbolic"
+                    icon_name = "popcornbox-audio-x-generic-symbolic"
                 elif "image" in content_type:
-                    icon_name = "cine-image-x-generic-symbolic"
+                    icon_name = "popcornbox-image-x-generic-symbolic"
                 elif content_type == "mpv-url":
-                    icon_name = "cine-globe-symbolic"
+                    icon_name = "popcornbox-globe-symbolic"
                 elif content_type == "error":
-                    icon_name = "cine-warning-symbolic"
+                    icon_name = "popcornbox-warning-symbolic"
 
             list_item.title.set_text(file_title)
             dir = GLib.markup_escape_text(dir)

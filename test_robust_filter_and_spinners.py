@@ -20,29 +20,29 @@ import gi
 gi.require_version('Gtk', '4.0')
 from gi.repository import Gtk, Gio, GLib
 
-res_file = Path(__file__).resolve().parent / "build-dir/files/share/popcorn-box/cine.gresource"
+res_file = Path(__file__).resolve().parent / "build-dir/files/share/popcorn-box/popcornbox.gresource"
 if res_file.exists():
     res = Gio.Resource.load(str(res_file))
     Gio.resources_register(res)
 
-from src.window import CineWindow, MovieDetailsPage
+from src.window import PopcornBoxWindow, MovieDetailsPage
 
 
 class TestRobustFilterAndSpinners(unittest.TestCase):
     def setUp(self):
-        self.mock_window = MagicMock(spec=CineWindow)
+        self.mock_window = MagicMock(spec=PopcornBoxWindow)
         self.mock_window.discover_search_entry = Gtk.SearchEntry()
         self.mock_window.current_discover_search_query = ""
         self.mock_window.discover_spinner = Gtk.Spinner()
         self.mock_window._syncing_discover_toolbar = False
-        self.mock_window._clear_discover_search_on_filter_change = lambda: CineWindow._clear_discover_search_on_filter_change(self.mock_window)
+        self.mock_window._clear_discover_search_on_filter_change = lambda: PopcornBoxWindow._clear_discover_search_on_filter_change(self.mock_window)
 
     def test_clear_discover_search_on_filter_change(self):
         """Verify that _clear_discover_search_on_filter_change clears entry text and current query."""
         self.mock_window.discover_search_entry.set_text("virgin")
         self.mock_window.current_discover_search_query = "virgin"
 
-        CineWindow._clear_discover_search_on_filter_change(self.mock_window)
+        PopcornBoxWindow._clear_discover_search_on_filter_change(self.mock_window)
 
         self.assertEqual(self.mock_window.discover_search_entry.get_text(), "")
         self.assertEqual(self.mock_window.current_discover_search_query, "")
@@ -55,7 +55,7 @@ class TestRobustFilterAndSpinners(unittest.TestCase):
         self.mock_window.reload_catalog_grid = MagicMock()
         self.mock_window._set_discover_spinner_active = MagicMock()
 
-        CineWindow._on_discover_filter_changed(self.mock_window)
+        PopcornBoxWindow._on_discover_filter_changed(self.mock_window)
 
         self.assertEqual(self.mock_window.discover_search_entry.get_text(), "")
         self.assertEqual(self.mock_window.current_discover_search_query, "")
@@ -68,10 +68,10 @@ class TestRobustFilterAndSpinners(unittest.TestCase):
         spinner.set_visible(True)
         self.mock_window.discover_spinner = spinner
 
-        CineWindow._set_discover_spinner_active(self.mock_window, True)
+        PopcornBoxWindow._set_discover_spinner_active(self.mock_window, True)
         self.assertTrue(spinner.get_visible())
 
-        CineWindow._set_discover_spinner_active(self.mock_window, False)
+        PopcornBoxWindow._set_discover_spinner_active(self.mock_window, False)
         self.assertTrue(spinner.get_visible())
 
     def test_discover_spinner_repeated_state_is_not_reapplied(self):
@@ -84,11 +84,11 @@ class TestRobustFilterAndSpinners(unittest.TestCase):
         window._discover_spinner_active = None
 
         for _ in range(5):
-            CineWindow._set_discover_spinner_active(window, True)
+            PopcornBoxWindow._set_discover_spinner_active(window, True)
         spinner.start.assert_called_once()
 
         for _ in range(5):
-            CineWindow._set_discover_spinner_active(window, False)
+            PopcornBoxWindow._set_discover_spinner_active(window, False)
         spinner.stop.assert_called_once()
 
     def test_movie_details_provider_spinner(self):
@@ -106,7 +106,7 @@ class TestRobustFilterAndSpinners(unittest.TestCase):
     def test_cancel_all_background_fetching_stops_spinner(self):
         """_cancel_all_background_fetching must stop the discover spinner."""
         self.mock_window._set_discover_spinner_active = MagicMock()
-        CineWindow._cancel_all_background_fetching(self.mock_window)
+        PopcornBoxWindow._cancel_all_background_fetching(self.mock_window)
         self.mock_window._set_discover_spinner_active.assert_called_with(False)
 
 

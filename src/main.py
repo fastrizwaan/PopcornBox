@@ -38,7 +38,7 @@ gi.require_version("GLib", "2.0")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from .window import CineWindow
+from .window import PopcornBoxWindow, CineWindow
 from .preferences import Preferences, settings
 from .mpris import MPRIS
 from .save_session import is_same_playlist
@@ -61,11 +61,11 @@ def _is_sidecar_file(name):
 
 
 
-class CineApplication(Adw.Application):
+class PopcornBoxApplication(Adw.Application):
     """The main application singleton class."""
 
     def __init__(self):
-        debug_log("CineApplication.__init__ START")
+        debug_log("PopcornBoxApplication.__init__ START")
         super().__init__(
             application_id="io.github.fastrizwaan.PopcornBox",
             flags=Gio.ApplicationFlags.HANDLES_OPEN,
@@ -82,12 +82,12 @@ class CineApplication(Adw.Application):
         )
 
         self.connect("shutdown", self._on_shutdown)
-        debug_log("CineApplication.__init__ DONE")
+        debug_log("PopcornBoxApplication.__init__ DONE")
 
     def do_startup(self):
-        debug_log("CineApplication.do_startup START")
+        debug_log("PopcornBoxApplication.do_startup START")
         self.mpris = MPRIS(self)
-        debug_log("CineApplication.do_startup MPRIS ready")
+        debug_log("PopcornBoxApplication.do_startup MPRIS ready")
 
         Adw.Application.do_startup(self)
         Adw.StyleManager.get_default().props.color_scheme = Adw.ColorScheme.FORCE_DARK
@@ -98,21 +98,21 @@ class CineApplication(Adw.Application):
         self._create_action(
             "preferences", self.on_preferences_action, ["<primary>comma"]
         )
-        debug_log("CineApplication.do_startup DONE")
+        debug_log("PopcornBoxApplication.do_startup DONE")
 
     def do_activate(self):
-        debug_log("CineApplication.do_activate START - Instantiating CineWindow")
-        win = CineWindow(application=self, is_activate=True)
-        debug_log("CineApplication.do_activate - CineWindow created, calling win.present()")
+        debug_log("PopcornBoxApplication.do_activate START - Instantiating PopcornBoxWindow")
+        win = PopcornBoxWindow(application=self, is_activate=True)
+        debug_log("PopcornBoxApplication.do_activate - PopcornBoxWindow created, calling win.present()")
         win.present()
-        debug_log("CineApplication.do_activate DONE - win.present() finished")
+        debug_log("PopcornBoxApplication.do_activate DONE - win.present() finished")
 
     def do_open(self, files, n_files, hint):
-        win: CineWindow = cast(CineWindow, self.props.active_window)
+        win: PopcornBoxWindow = cast(PopcornBoxWindow, self.props.active_window)
         open_new = settings.get_boolean("open-new-windows") or not win
 
         if open_new:
-            win = CineWindow(application=self)
+            win = PopcornBoxWindow(application=self)
             win.start_page.set_visible(False)
 
             first_video_path = None
@@ -177,7 +177,7 @@ class CineApplication(Adw.Application):
                 win.mpv.loadfile(path, "append-play")
 
         for window in self.get_windows():
-            w = cast(CineWindow, window)
+            w = cast(PopcornBoxWindow, window)
             # Pause previous opened windows
             w.mpv.pause = w != win
 
@@ -256,7 +256,7 @@ class CineApplication(Adw.Application):
             if options.contains("new-window"):
                 return -1
 
-            print("Cine is running, to open a new window, run with --new-window.")
+            print("PopcornBox is running, to open a new window, run with --new-window.")
             return 0
 
         return -1
@@ -306,7 +306,10 @@ class CineApplication(Adw.Application):
             pass
 
 
+CineApplication = PopcornBoxApplication
+
+
 def main(version):
     """The application's entry point."""
-    app = CineApplication()
+    app = PopcornBoxApplication()
     return app.run(sys.argv)

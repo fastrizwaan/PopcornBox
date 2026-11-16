@@ -22,7 +22,7 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, Gio
 
-res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
 if res_file.exists():
     try:
         res = Gio.Resource.load(str(res_file))
@@ -49,7 +49,7 @@ else:
     except Exception:
         pass
 
-from src.window import CineWindow, MovieDetailsPage, _is_event_set
+from src.window import PopcornBoxWindow, MovieDetailsPage, _is_event_set
 
 
 class TestCancelBackgroundFetching(unittest.TestCase):
@@ -101,7 +101,7 @@ class TestCancelBackgroundFetching(unittest.TestCase):
         win.person_box = None
 
         with patch("src.movie_widget.cancel_pending_image_downloads") as mock_cancel_img:
-            CineWindow._cancel_all_background_fetching(win)
+            PopcornBoxWindow._cancel_all_background_fetching(win)
             mock_cancel_img.assert_called_once()
 
         # All old events must be set
@@ -164,7 +164,7 @@ class TestCancelBackgroundFetching(unittest.TestCase):
         win.person_box = MagicMock()
         win.person_box.get_first_child.return_value = None
 
-        CineWindow._cancel_all_background_fetching(win)
+        PopcornBoxWindow._cancel_all_background_fetching(win)
 
         self.assertTrue(prewarm_ev.is_set())
         self.assertTrue(detail_child.stream_abort_event.is_set())
@@ -194,7 +194,7 @@ class TestCancelBackgroundFetching(unittest.TestCase):
         win.person_box = MagicMock()
         win.person_box.get_first_child.return_value = None
 
-        CineWindow._cancel_all_background_fetching(win, cancel_streams=False)
+        PopcornBoxWindow._cancel_all_background_fetching(win, cancel_streams=False)
 
         # Other events set, but streams preserved for failover!
         self.assertFalse(detail_child.stream_abort_event.is_set())
@@ -217,7 +217,7 @@ class TestCancelBackgroundFetching(unittest.TestCase):
         ]
 
         with patch("gi.repository.GLib.source_remove"):
-            CineWindow._extend_stream_queue(win, new_streams)
+            PopcornBoxWindow._extend_stream_queue(win, new_streams)
 
         self.assertEqual(len(win.stream_queue), 2)
         self.assertFalse(win._waiting_for_more_streams)

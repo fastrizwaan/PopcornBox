@@ -48,6 +48,9 @@ def get_runner_bundle_path():
 
     # Look in system data dir (for installed Flatpak / system installs)
     alt_paths = [
+        os.path.join("/app/share/popcorn-box/popcornbox", RUNNER_BUNDLE_FILENAME),
+        os.path.join("/usr/share/popcorn-box/popcornbox", RUNNER_BUNDLE_FILENAME),
+        os.path.join("/usr/local/share/popcorn-box/popcornbox", RUNNER_BUNDLE_FILENAME),
         os.path.join("/app/share/popcorn-box/cine", RUNNER_BUNDLE_FILENAME),
         os.path.join("/usr/share/popcorn-box/cine", RUNNER_BUNDLE_FILENAME),
         os.path.join("/usr/local/share/popcorn-box/cine", RUNNER_BUNDLE_FILENAME),

@@ -4801,8 +4801,8 @@ class MovieDetailsPage(Gtk.Overlay):
 
 
 @Gtk.Template(resource_path="/io/github/fastrizwaan/PopcornBox/window.ui")
-class CineWindow(Adw.ApplicationWindow):
-    __gtype_name__ = "CineWindow"
+class PopcornBoxWindow(Adw.ApplicationWindow):
+    __gtype_name__ = "PopcornBoxWindow"
 
     window_handle: Gtk.WindowHandle = Gtk.Template.Child()
     toast_overlay: Adw.ToastOverlay = Gtk.Template.Child()
@@ -5015,9 +5015,9 @@ class CineWindow(Adw.ApplicationWindow):
     time_total_label: Gtk.Label = Gtk.Template.Child()
 
     def __init__(self, is_activate=False, **kwargs):
-        debug_log("CineWindow.__init__ BEGIN")
+        debug_log("PopcornBoxWindow.__init__ BEGIN")
         super().__init__(**kwargs)
-        debug_log("CineWindow.__init__ super().__init__ DONE (GTK template bound)")
+        debug_log("PopcornBoxWindow.__init__ super().__init__ DONE (GTK template bound)")
         self.library_sort_dropdown = None
         self.library_genre_dropdown = None
         self.library_unique_check = None
@@ -5224,9 +5224,9 @@ class CineWindow(Adw.ApplicationWindow):
             # terminal=True,
             # log_handler=print,
             loglevel="info",
-            audio_client_name=_("Cine"),
+            audio_client_name=_("PopcornBox"),
             screenshot_directory=SCREENSHOT_DIR,
-            screenshot_template="cine_%n",
+            screenshot_template="popcornbox_%n",
             config=True,
             config_dir=CONFIG_DIR,
             input_default_bindings=False,
@@ -6447,15 +6447,15 @@ class CineWindow(Adw.ApplicationWindow):
             return
 
         if is_muted or volume == 0:
-            icon = "cine-volume-mute-symbolic"
+            icon = "popcornbox-volume-mute-symbolic"
         elif volume < 33:
-            icon = "cine-volume-low-symbolic"
+            icon = "popcornbox-volume-low-symbolic"
         elif volume < 66:
-            icon = "cine-volume-mid-symbolic"
+            icon = "popcornbox-volume-mid-symbolic"
         elif volume <= 100.5:
-            icon = "cine-volume-max-symbolic"
+            icon = "popcornbox-volume-max-symbolic"
         else:
-            icon = "cine-volume-overamp-symbolic"
+            icon = "popcornbox-volume-overamp-symbolic"
 
         self.volume_menu_btn.props.icon_name = icon
 
@@ -7092,8 +7092,8 @@ class CineWindow(Adw.ApplicationWindow):
             )
 
     def _update_play_pause_icon(self, paused):
-        play = "cine-playback-start-symbolic"
-        pause = "cine-playback-pause-symbolic"
+        play = "popcornbox-playback-start-symbolic"
+        pause = "popcornbox-playback-pause-symbolic"
 
         btn_icon = play if paused else pause
         self.play_pause_btn.set_icon_name(btn_icon)
@@ -7245,11 +7245,11 @@ class CineWindow(Adw.ApplicationWindow):
                     is_playing = not self.mpv.idle_active
 
                     if is_playing and any(f_name.endswith(ext) for ext in SUB_EXTS):
-                        self.drop_icon.props.icon_name = "cine-subtitles-symbolic"
+                        self.drop_icon.props.icon_name = "popcornbox-subtitles-symbolic"
                         self.drop_label.props.label = _("Add Subtitle Track")
                         return
 
-                self.drop_icon.props.icon_name = "cine-playback-start-symbolic"
+                self.drop_icon.props.icon_name = "popcornbox-playback-start-symbolic"
                 self.drop_label.props.label = _("Play")
 
             except GLib.Error as e:
@@ -8073,9 +8073,9 @@ class CineWindow(Adw.ApplicationWindow):
         def on_fs_change(_name, value):
             def update():
                 icon = (
-                    "cine-view-restore-symbolic"
+                    "popcornbox-view-restore-symbolic"
                     if value
-                    else "cine-view-fullscreen-symbolic"
+                    else "popcornbox-view-fullscreen-symbolic"
                 )
                 text = _("Exit Fullscreen") if value else _("Fullscreen")
                 self.fullscreen_btn.set_tooltip_text(text)
@@ -8233,7 +8233,7 @@ class CineWindow(Adw.ApplicationWindow):
                 if is_idle:
                     self.error_count = 0
                     self.revealer_ui.set_reveal_child(True)
-                    self.set_title(_("Cine"))
+                    self.set_title(_("PopcornBox"))
                     self.hide_icon_indicator = True
                     if isinstance(self.visible_dialog, Playlist):
                         self.visible_dialog.close()
@@ -8277,8 +8277,8 @@ class CineWindow(Adw.ApplicationWindow):
         def on_sub_vis_change(name, value):
             def set_icon():
                 try:
-                    sub_on_icon = "cine-subtitles-symbolic"
-                    sub_off_icon = "cine-subtitles-off-symbolic"
+                    sub_on_icon = "popcornbox-subtitles-symbolic"
+                    sub_off_icon = "popcornbox-subtitles-off-symbolic"
 
                     sub_on = (value == "auto" or value) and self.mpv.sid
                     self.subtitles_menu_btn.props.icon_name = (
@@ -8310,7 +8310,7 @@ class CineWindow(Adw.ApplicationWindow):
             def set_icon():
                 audio_on = value == "auto" or value
                 self.audio_tracks_menu_btn.props.icon_name = (
-                    "cine-audio-symbolic" if audio_on else "cine-audio-off-symbolic"
+                    "popcornbox-audio-symbolic" if audio_on else "popcornbox-audio-off-symbolic"
                 )
 
             idle_add_once(set_icon)
@@ -9077,7 +9077,7 @@ class CineWindow(Adw.ApplicationWindow):
             self.library_unique_check.set_visible(False)
         self._update_sort_dropdown("all")
         self._update_genre_dropdown("all")
-        debug_log("CineWindow.__init__ calling initial _refresh_discover_page(filter_media_type='all') for Home")
+        debug_log("PopcornBoxWindow.__init__ calling initial _refresh_discover_page(filter_media_type='all') for Home")
         self._refresh_discover_page(filter_media_type="all")
         
         self.search_entry.connect("search-changed", self._on_search_changed)
@@ -9094,7 +9094,7 @@ class CineWindow(Adw.ApplicationWindow):
         search_key_ctrl.connect("key-pressed", on_search_key_pressed)
         self.search_entry.add_controller(search_key_ctrl)
 
-        debug_log("CineWindow.__init__ updating category buttons visibility")
+        debug_log("PopcornBoxWindow.__init__ updating category buttons visibility")
         self.update_category_buttons_visibility()
 
         # Trigger background addon health check gently after startup (deferred 30s to keep launch instantaneous)
@@ -9106,7 +9106,7 @@ class CineWindow(Adw.ApplicationWindow):
         # Trigger background Stremio sync once on startup (deferred 3s to keep startup instantaneous)
         GLib.timeout_add(3000, lambda: (self._trigger_background_stremio_sync(), False)[1])
 
-        debug_log("CineWindow.__init__ ALL DONE")
+        debug_log("PopcornBoxWindow.__init__ ALL DONE")
         settings.connect("changed::show-movies-button", lambda *a: self.update_category_buttons_visibility())
         settings.connect("changed::show-series-button", lambda *a: self.update_category_buttons_visibility())
         settings.connect("changed::show-anime-button", lambda *a: self.update_category_buttons_visibility())
@@ -10195,7 +10195,7 @@ class CineWindow(Adw.ApplicationWindow):
                     msg = _("No items found for this filter.")
                 if empty_box is not None:
                     flowbox.remove(empty_box)
-                new_empty = CineWindow._create_empty_filter_box(self, msg)
+                new_empty = PopcornBoxWindow._create_empty_filter_box(self, msg)
                 flowbox.append(new_empty)
 
     def _on_discover_results_search_changed(self, *_args):
@@ -10356,7 +10356,7 @@ class CineWindow(Adw.ApplicationWindow):
         return "all"
 
     def _populate_discover_type_dropdown(self):
-        CineWindow._update_supported_media_types(self)
+        PopcornBoxWindow._update_supported_media_types(self)
 
     def _populate_discover_catalog_dropdown(self, chosen_type):
         from . import api
@@ -10943,7 +10943,7 @@ class CineWindow(Adw.ApplicationWindow):
         if hasattr(self, "_on_unique_toggled"):
             self._on_unique_toggled(button)
         else:
-            CineWindow._on_unique_toggled(self, button)
+            PopcornBoxWindow._on_unique_toggled(self, button)
 
     def _get_current_discover_filter_dict(self):
         t_sel = self.type_dropdown.get_selected() if hasattr(self, "type_dropdown") and self.type_dropdown else 0
@@ -11816,7 +11816,7 @@ class CineWindow(Adw.ApplicationWindow):
                 self._set_discover_spinner_active(False)
                 self.has_more_unique = False
                 if hasattr(self, "unique_flowbox"):
-                    CineWindow._update_flowbox_empty_state(self, self.unique_flowbox)
+                    PopcornBoxWindow._update_flowbox_empty_state(self, self.unique_flowbox)
             else:
                 # Keep the indicator running over the short gap before the
                 # next batch instead of blinking on every page.
@@ -15172,6 +15172,7 @@ class CineWindow(Adw.ApplicationWindow):
                         if hasattr(self, "_discover_views") and v_key in self._discover_views:
                             self._discover_views.pop(v_key, None)
 
+                        filter_addon_url = getattr(self, "_current_discover_addon", None)
                         if filter_addon_url and str(filter_addon_url).startswith("cloudstream://catalog/"):
                             from . import cloudstream
                             pid = cloudstream.provider_id_from_catalog_url(filter_addon_url)
@@ -22017,3 +22018,7 @@ class CineWindow(Adw.ApplicationWindow):
         from .download_row import DownloadItemRow
         for dl in items:
             listbox.append(DownloadItemRow(dl))
+
+
+CineWindow = PopcornBoxWindow
+

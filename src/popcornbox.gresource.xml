@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/io/github/fastrizwaan/PopcornBox">
+    <file alias="style.css">style.css</file>
+    <file preprocess="xml-stripblanks">history.ui</file>
+    <file preprocess="xml-stripblanks">playlist.ui</file>
+    <file preprocess="xml-stripblanks">preferences.ui</file>
+    <file preprocess="xml-stripblanks">options.ui</file>
+    <file preprocess="xml-stripblanks">window.ui</file>
+    <file preprocess="xml-stripblanks">shortcuts-dialog.ui</file>
+  </gresource>
+  <gresource prefix="/io/github/fastrizwaan/PopcornBox/icons/scalable/actions">
+    <file alias="popcornbox-audio-off-symbolic.svg">../data/icons/scalable/actions/popcornbox-audio-off-symbolic.svg</file>
+    <file alias="cine-audio-off-symbolic.svg">../data/icons/scalable/actions/popcornbox-audio-off-symbolic.svg</file>
+    <file alias="popcornbox-audio-symbolic.svg">../data/icons/scalable/actions/popcornbox-audio-symbolic.svg</file>
+    <file alias="cine-audio-symbolic.svg">../data/icons/scalable/actions/popcornbox-audio-symbolic.svg</file>
+    <file alias="popcornbox-list-add-symbolic.svg">../data/icons/scalable/actions/popcornbox-list-add-symbolic.svg</file>
+    <file alias="cine-list-add-symbolic.svg">../data/icons/scalable/actions/popcornbox-list-add-symbolic.svg</file>
+    <file alias="popcornbox-options-symbolic.svg">../data/icons/scalable/actions/popcornbox-options-symbolic.svg</file>
+    <file alias="cine-options-symbolic.svg">../data/icons/scalable/actions/popcornbox-options-symbolic.svg</file>
+    <file alias="popcornbox-playback-pause-symbolic.svg">../data/icons/scalable/actions/popcornbox-playback-pause-symbolic.svg</file>
+    <file alias="cine-playback-pause-symbolic.svg">../data/icons/scalable/actions/popcornbox-playback-pause-symbolic.svg</file>
+    <file alias="popcornbox-playback-start-symbolic.svg">../data/icons/scalable/actions/popcornbox-playback-start-symbolic.svg</file>
+    <file alias="cine-playback-start-symbolic.svg">../data/icons/scalable/actions/popcornbox-playback-start-symbolic.svg</file>
+    <file alias="popcornbox-playlist-repeat-symbolic.svg">../data/icons/scalable/actions/popcornbox-playlist-repeat-symbolic.svg</file>
+    <file alias="cine-playlist-repeat-symbolic.svg">../data/icons/scalable/actions/popcornbox-playlist-repeat-symbolic.svg</file>
+    <file alias="popcornbox-playlist-shuffle-symbolic.svg">../data/icons/scalable/actions/popcornbox-playlist-shuffle-symbolic.svg</file>
+    <file alias="cine-playlist-shuffle-symbolic.svg">../data/icons/scalable/actions/popcornbox-playlist-shuffle-symbolic.svg</file>
+    <file alias="popcornbox-playlist-symbolic.svg">../data/icons/scalable/actions/popcornbox-playlist-symbolic.svg</file>
+    <file alias="cine-playlist-symbolic.svg">../data/icons/scalable/actions/popcornbox-playlist-symbolic.svg</file>
+    <file alias="popcornbox-playlist-symbolic-rtl.svg">../data/icons/scalable/actions/popcornbox-playlist-symbolic-rtl.svg</file>
+    <file alias="cine-playlist-symbolic-rtl.svg">../data/icons/scalable/actions/popcornbox-playlist-symbolic-rtl.svg</file>
+    <file alias="popcornbox-repeat-file-symbolic.svg">../data/icons/scalable/actions/popcornbox-repeat-file-symbolic.svg</file>
+    <file alias="cine-repeat-file-symbolic.svg">../data/icons/scalable/actions/popcornbox-repeat-file-symbolic.svg</file>
+    <file alias="popcornbox-skip-backward-symbolic.svg">../data/icons/scalable/actions/popcornbox-skip-backward-symbolic.svg</file>
+    <file alias="cine-skip-backward-symbolic.svg">../data/icons/scalable/actions/popcornbox-skip-backward-symbolic.svg</file>
+    <file alias="popcornbox-skip-forward-symbolic.svg">../data/icons/scalable/actions/popcornbox-skip-forward-symbolic.svg</file>
+    <file alias="cine-skip-forward-symbolic.svg">../data/icons/scalable/actions/popcornbox-skip-forward-symbolic.svg</file>
+    <file alias="popcornbox-volume-mute-symbolic.svg">../data/icons/scalable/actions/popcornbox-volume-mute-symbolic.svg</file>
+    <file alias="cine-volume-mute-symbolic.svg">../data/icons/scalable/actions/popcornbox-volume-mute-symbolic.svg</file>
+    <file alias="popcornbox-volume-max-symbolic.svg">../data/icons/scalable/actions/popcornbox-volume-max-symbolic.svg</file>
+    <file alias="cine-volume-max-symbolic.svg">../data/icons/scalable/actions/popcornbox-volume-max-symbolic.svg</file>
+    <file alias="popcornbox-volume-mid-symbolic.svg">../data/icons/scalable/actions/popcornbox-volume-mid-symbolic.svg</file>
+    <file alias="cine-volume-mid-symbolic.svg">../data/icons/scalable/actions/popcornbox-volume-mid-symbolic.svg</file>
+    <file alias="popcornbox-volume-low-symbolic.svg">../data/icons/scalable/actions/popcornbox-volume-low-symbolic.svg</file>
+    <file alias="cine-volume-low-symbolic.svg">../data/icons/scalable/actions/popcornbox-volume-low-symbolic.svg</file>
+    <file alias="popcornbox-volume-overamp-symbolic.svg">../data/icons/scalable/actions/popcornbox-volume-overamp-symbolic.svg</file>
+    <file alias="cine-volume-overamp-symbolic.svg">../data/icons/scalable/actions/popcornbox-volume-overamp-symbolic.svg</file>
+    <file alias="popcornbox-warning-symbolic.svg">../data/icons/scalable/actions/popcornbox-warning-symbolic.svg</file>
+    <file alias="cine-warning-symbolic.svg">../data/icons/scalable/actions/popcornbox-warning-symbolic.svg</file>
+    <file alias="popcornbox-subtitles-off-symbolic.svg">../data/icons/scalable/actions/popcornbox-subtitles-off-symbolic.svg</file>
+    <file alias="cine-subtitles-off-symbolic.svg">../data/icons/scalable/actions/popcornbox-subtitles-off-symbolic.svg</file>
+    <file alias="popcornbox-subtitles-symbolic.svg">../data/icons/scalable/actions/popcornbox-subtitles-symbolic.svg</file>
+    <file alias="cine-subtitles-symbolic.svg">../data/icons/scalable/actions/popcornbox-subtitles-symbolic.svg</file>
+    <file alias="popcornbox-video-symbolic.svg">../data/icons/scalable/actions/popcornbox-video-symbolic.svg</file>
+    <file alias="cine-video-symbolic.svg">../data/icons/scalable/actions/popcornbox-video-symbolic.svg</file>
+    <file alias="popcornbox-chapters-symbolic.svg">../data/icons/scalable/actions/popcornbox-chapters-symbolic.svg</file>
+    <file alias="cine-chapters-symbolic.svg">../data/icons/scalable/actions/popcornbox-chapters-symbolic.svg</file>
+    <file alias="popcornbox-view-fullscreen-symbolic.svg">../data/icons/scalable/actions/popcornbox-view-fullscreen-symbolic.svg</file>
+    <file alias="cine-view-fullscreen-symbolic.svg">../data/icons/scalable/actions/popcornbox-view-fullscreen-symbolic.svg</file>
+    <file alias="popcornbox-view-restore-symbolic.svg">../data/icons/scalable/actions/popcornbox-view-restore-symbolic.svg</file>
+    <file alias="cine-view-restore-symbolic.svg">../data/icons/scalable/actions/popcornbox-view-restore-symbolic.svg</file>
+
+    <file alias="popcornbox-applications-multimedia-symbolic.svg">../data/icons/scalable/actions/popcornbox-applications-multimedia-symbolic.svg</file>
+    <file alias="cine-applications-multimedia-symbolic.svg">../data/icons/scalable/actions/popcornbox-applications-multimedia-symbolic.svg</file>
+    <file alias="popcornbox-audio-x-generic-symbolic.svg">../data/icons/scalable/actions/popcornbox-audio-x-generic-symbolic.svg</file>
+    <file alias="cine-audio-x-generic-symbolic.svg">../data/icons/scalable/actions/popcornbox-audio-x-generic-symbolic.svg</file>
+    <file alias="popcornbox-folder-symbolic.svg">../data/icons/scalable/actions/popcornbox-folder-symbolic.svg</file>
+    <file alias="cine-folder-symbolic.svg">../data/icons/scalable/actions/popcornbox-folder-symbolic.svg</file>
+    <file alias="popcornbox-globe-symbolic.svg">../data/icons/scalable/actions/popcornbox-globe-symbolic.svg</file>
+    <file alias="cine-globe-symbolic.svg">../data/icons/scalable/actions/popcornbox-globe-symbolic.svg</file>
+    <file alias="popcornbox-image-x-generic-symbolic.svg">../data/icons/scalable/actions/popcornbox-image-x-generic-symbolic.svg</file>
+    <file alias="cine-image-x-generic-symbolic.svg">../data/icons/scalable/actions/popcornbox-image-x-generic-symbolic.svg</file>
+    <file alias="popcornbox-video-x-generic-symbolic.svg">../data/icons/scalable/actions/popcornbox-video-x-generic-symbolic.svg</file>
+    <file alias="cine-video-x-generic-symbolic.svg">../data/icons/scalable/actions/popcornbox-video-x-generic-symbolic.svg</file>
+    <file alias="popcornbox-playlist-m3u-symbolic.svg">../data/icons/scalable/actions/popcornbox-playlist-m3u-symbolic.svg</file>
+    <file alias="cine-playlist-m3u-symbolic.svg">../data/icons/scalable/actions/popcornbox-playlist-m3u-symbolic.svg</file>
+
+    <!-- missing icons from runtime(?) -->
+    <file alias="document-edit-symbolic.svg">../data/icons/scalable/actions/document-edit-symbolic.svg</file>
+    <file alias="edit-undo-symbolic.svg">../data/icons/scalable/actions/edit-undo-symbolic.svg</file>
+    <file alias="object-flip-horizontal-symbolic.svg">../data/icons/scalable/actions/object-flip-horizontal-symbolic.svg</file>
+    <file alias="object-flip-vertical-symbolic.svg">../data/icons/scalable/actions/object-flip-vertical-symbolic.svg</file>
+    <file alias="object-rotate-left-symbolic.svg">../data/icons/scalable/actions/object-rotate-left-symbolic.svg</file>
+    <file alias="object-rotate-right-symbolic.svg">../data/icons/scalable/actions/object-rotate-right-symbolic.svg</file>
+    <file alias="popcorn-discover-symbolic.svg">../data/icons/scalable/actions/popcorn-discover-symbolic.svg</file>
+    <file alias="popcorn-anime-symbolic.svg">../data/icons/scalable/actions/popcorn-anime-symbolic.svg</file>
+    <file alias="popcorn-movies-symbolic.svg">../data/icons/scalable/actions/popcorn-movies-symbolic.svg</file>
+    <file alias="popcorn-tv-series-symbolic.svg">../data/icons/scalable/actions/popcorn-tv-series-symbolic.svg</file>
+    <file alias="eye-closed-symbolic.svg">../data/icons/scalable/actions/eye-closed-symbolic.svg</file>
+    <file alias="eye-open-negative-filled-symbolic.svg">../data/icons/scalable/actions/eye-open-negative-filled-symbolic.svg</file>
+    <file alias="heart-filled-symbolic.svg">../data/icons/scalable/actions/heart-filled-symbolic.svg</file>
+    <file alias="non-starred-symbolic.svg">../data/icons/scalable/actions/non-starred-symbolic.svg</file>
+    <file alias="starred-symbolic.svg">../data/icons/scalable/actions/starred-symbolic.svg</file>
+    <file alias="star-outline-rounded-symbolic.svg">../data/icons/scalable/actions/star-outline-rounded-symbolic.svg</file>
+    <file alias="filter-symbolic.svg">../data/icons/scalable/actions/filter-symbolic.svg</file>
+    <file alias="view-grid-symbolic.svg">../data/icons/scalable/actions/view-grid-symbolic.svg</file>
+    <file alias="list-symbolic.svg">../data/icons/scalable/actions/list-symbolic.svg</file>
+  </gresource>
+  <gresource prefix="/io/github/fastrizwaan/PopcornBox/icons/scalable/apps">
+    <file alias="io.github.fastrizwaan.PopcornBox.svg">../data/icons/scalable/apps/io.github.fastrizwaan.PopcornBox.svg</file>
+  </gresource>
+  <gresource prefix="/io/github/fastrizwaan/PopcornBox/icons/128x128/apps">
+    <file alias="io.github.fastrizwaan.PopcornBox.png">../data/icons/128x128/apps/io.github.fastrizwaan.PopcornBox.png</file>
+  </gresource>
+</gresources>

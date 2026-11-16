@@ -26,7 +26,7 @@ class TestCollections(unittest.TestCase):
             os.environ["GSETTINGS_SCHEMA_DIR"] = cls.schema_temp_dir.name
 
         from gi.repository import Gio
-        res_file = Path("build-dir/files/share/popcorn-box/cine.gresource")
+        res_file = Path("build-dir/files/share/popcorn-box/popcornbox.gresource")
         if res_file.exists():
             try:
                 res = Gio.Resource.load(str(res_file))
@@ -222,7 +222,7 @@ class TestCollections(unittest.TestCase):
         self.assertEqual(details.get("type"), "collections")
 
     def test_download_playback_isolation_and_navigation(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.details_box = MagicMock()
         # Pretend a collection details page is alive in details_box
@@ -233,7 +233,7 @@ class TestCollections(unittest.TestCase):
         win.details_box.get_first_child.return_value = mock_page
         win.main_stack = MagicMock()
         win.nav_stack = []
-        win._restore_nav_entry = lambda entry: CineWindow._restore_nav_entry(win, entry)
+        win._restore_nav_entry = lambda entry: PopcornBoxWindow._restore_nav_entry(win, entry)
         win.mpv = MagicMock()
         win.mpv.time_pos = 10.0
         win.mpv.duration = 100.0
@@ -241,7 +241,7 @@ class TestCollections(unittest.TestCase):
         win.previous_page_before_player = "details"
 
         # Now simulate playing a download
-        CineWindow._play_stream(
+        PopcornBoxWindow._play_stream(
             win,
             url="http://127.0.0.1:8888/download_file.mkv",
             title="Some Downloaded Movie",
@@ -259,7 +259,7 @@ class TestCollections(unittest.TestCase):
 
         # 2. Now close the player
         with patch("src.player.stop_player"):
-            CineWindow._close_player(win)
+            PopcornBoxWindow._close_player(win)
             # Must navigate back to 'downloads', NOT 'details'
             win.main_stack.set_visible_child_name.assert_called_with("downloads")
             # _current_playing_item must be cleared
@@ -412,7 +412,7 @@ class TestCollections(unittest.TestCase):
             self.assertEqual(page.sidebar_stack.get_visible_child_name(), "streams")
 
     def test_collection_navigation_stack_and_back_restore(self):
-        from src.window import CineWindow
+        from src.window import PopcornBoxWindow
         win = MagicMock()
         win.main_stack = MagicMock()
         win.main_stack.get_visible_child_name.return_value = "details"
@@ -439,7 +439,7 @@ class TestCollections(unittest.TestCase):
         win.details_box.get_first_child.return_value = mock_col_page
 
         # 1. Push current nav state from collection page
-        CineWindow._push_current_nav_state(win)
+        PopcornBoxWindow._push_current_nav_state(win)
         self.assertEqual(len(win.nav_stack), 1)
         entry = win.nav_stack[0]
         self.assertEqual(entry["main_page"], "details")
@@ -451,7 +451,7 @@ class TestCollections(unittest.TestCase):
         win._on_movie_clicked = MagicMock()
         win._is_same_movie = lambda a, b: False
         win.details_box.get_first_child.return_value = None
-        CineWindow._restore_nav_entry(win, entry)
+        PopcornBoxWindow._restore_nav_entry(win, entry)
 
         win._on_movie_clicked.assert_called_once_with(entry["movie_data"], push_history=False)
 
