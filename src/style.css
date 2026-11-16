@@ -1,14 +1,19 @@
+@define-color window_bg_color rgb(5, 5, 6);
+@define-color window_fg_color #e5e5e5;
+@define-color headerbar_bg_color @window_bg_color;
+@define-color card_bg_color rgba(60, 60, 62, 0.66);
+@define-color popover_bg_color rgba(25, 25, 27, 0.975);
+@define-color dialog_bg_color @window_bg_color;
+
 window {
   --cine-grey: #e5e5e5;
-  --window-bg-color: @window_bg_color;
-  --window-fg-color: @window_fg_color;
-  --headerbar-bg-color: @window_bg_color;
-  --headerbar-shade-color: transparent;
-  --card-bg-color: @card_bg_color;
-  --card-fg-color: @card_fg_color;
-  --popover-bg-color: @popover_bg_color;
-  --popover-fg-color: @popover_fg_color;
-  --dialog-bg-color: @dialog_bg_color;
+  --window-bg-color: rgb(5, 5, 6);
+  --window-fg-color: var(--cine-grey);
+  --headerbar-bg-color: var(--window-bg-color);
+  --card-bg-color: rgba(60, 60, 62, 0.66);
+  --popover-bg-color: rgba(25, 25, 27, 0.975);
+  --popover-fg-color: var(--cine-grey);
+  --dialog-bg-color: var(--window-bg-color);
 }
 
 label.link {
@@ -31,11 +36,6 @@ toast {
       rgba(0, 0, 0, 0.14) 0%,
       rgba(0, 0, 0, 0.08) 40%,
       rgba(0, 0, 0, 0) 100%);
-}
-
-headerbar {
-  box-shadow: none;
-  border-bottom: none;
 }
 
 headerbar.details-headerbar,
@@ -100,7 +100,7 @@ cine-list-view,
 
 .start-page {
   color: var(--cine-grey);
-  background: linear-gradient(180deg, transparent 0%, @window_bg_color 100%);
+  background: linear-gradient(180deg, transparent 0%, #0c0c0e 100%);
 }
 
 .start-page button {
