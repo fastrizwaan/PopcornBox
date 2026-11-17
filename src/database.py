@@ -1705,6 +1705,57 @@ def save_playback_preferences(item_id, season=None, episode=None, stream_info=No
         _write_db(db)
 
 
+def clear_working_stream(item_id, season=None, episode=None, failed_stream=None):
+    """Clear or invalidate a remembered working stream if it matches the failed stream (or unconditionally if failed_stream is None)."""
+    if not item_id:
+        return
+    s_key = f"{season}" if season is not None else ""
+    e_key = f"{episode}" if episode is not None else ""
+    ids_to_check = [str(x) for x in item_id if x] if isinstance(item_id, (list, tuple, set)) else [str(item_id)]
+    for mid in list(ids_to_check):
+        cached_meta = get_cached_metadata(mid)
+        if cached_meta:
+            for alt_k in ("imdb_id", "id"):
+                alt_v = cached_meta.get(alt_k)
+                if alt_v and str(alt_v) not in ids_to_check:
+                    ids_to_check.append(str(alt_v))
+            for a in cached_meta.get("alias_ids") or []:
+                if a and str(a) not in ids_to_check:
+                    ids_to_check.append(str(a))
+    cw_entry = get_continue_watching_item(ids_to_check)
+    if cw_entry:
+        for alt_k in ("imdb_id", "id"):
+            alt_v = cw_entry.get(alt_k)
+            if alt_v and str(alt_v) not in ids_to_check:
+                ids_to_check.append(str(alt_v))
+        for a in cw_entry.get("alias_ids") or []:
+            if a and str(a) not in ids_to_check:
+                ids_to_check.append(str(a))
+
+    failed_url = (failed_stream.get("url") or failed_stream.get("magnet")) if isinstance(failed_stream, dict) else None
+    failed_hash = (failed_stream.get("hash") or failed_stream.get("infoHash")) if isinstance(failed_stream, dict) else None
+
+    with _db_lock:
+        db = _read_db()
+        settings = db.setdefault("settings", {})
+        changed = False
+        for mid in ids_to_check:
+            for key in (f"working_stream_{mid}_{s_key}_{e_key}", f"working_stream_{mid}__"):
+                if key in settings:
+                    if failed_stream is None:
+                        del settings[key]
+                        changed = True
+                    else:
+                        st = settings[key]
+                        st_url = (st.get("url") or st.get("magnet")) if isinstance(st, dict) else None
+                        st_hash = (st.get("hash") or st.get("infoHash")) if isinstance(st, dict) else None
+                        if (failed_url and st_url == failed_url) or (failed_hash and st_hash == failed_hash):
+                            del settings[key]
+                            changed = True
+        if changed:
+            _write_db(db)
+
+
 def get_working_stream(item_id, season=None, episode=None):
     """Get the remembered working stream/torrent for a movie or series episode."""
     if not item_id:

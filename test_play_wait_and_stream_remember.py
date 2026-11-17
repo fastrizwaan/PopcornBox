@@ -295,6 +295,107 @@ class TestPlayWaitAndStreamRemember(unittest.TestCase):
             mock_start.assert_called_once()
             self.assertFalse(getattr(page, "_auto_play_on_streams_loaded", False))
 
+    def test_hls_proxy_resolve_relative_url_preserves_query_tokens(self):
+        """Verify _resolve_relative_url preserves master playlist tokens on child variants."""
+        from src.hls_proxy import _resolve_relative_url
+
+        base = "https://cdn.example.com/master.m3u8?token=jwt123&app=test"
+        # Relative variant without query
+        rel1 = "video/1080p.m3u8"
+        res1 = _resolve_relative_url(base, rel1)
+        self.assertEqual(res1, "https://cdn.example.com/video/1080p.m3u8?token=jwt123&app=test")
+
+        # Relative variant with its own query string
+        rel2 = "video/720p.m3u8?sig=custom_sig"
+        res2 = _resolve_relative_url(base, rel2)
+        self.assertEqual(res2, "https://cdn.example.com/video/720p.m3u8?sig=custom_sig")
+
+        # Absolute URL on different domain
+        rel3 = "https://other.cdn.com/seg.ts"
+        res3 = _resolve_relative_url(base, rel3)
+        self.assertEqual(res3, "https://other.cdn.com/seg.ts")
+
+    def test_hls_proxy_error_marks_blocked_and_none_playback_url(self):
+        """Verify prepare_hls_stream_async reports is_blocked=True and playback_url=None on HTTP 404/errors."""
+        from src import hls_proxy
+        import urllib.error
+
+        results = []
+        def _cb(is_fmp4, session_id, playback_url, total_dur, actual_offset, is_blocked):
+            results.append({
+                "is_fmp4": is_fmp4,
+                "session_id": session_id,
+                "playback_url": playback_url,
+                "is_blocked": is_blocked
+            })
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = urllib.error.HTTPError("https://dead.stream/m.m3u8", 404, "Not Found", {}, None)
+            hls_proxy.prepare_hls_stream_async("https://dead.stream/m.m3u8", callback=_cb)
+            # Give background thread time to execute
+            time.sleep(0.1)
+            # Process GLib idle loop
+            ctx = GLib.MainContext.default()
+            while ctx.pending():
+                ctx.iteration(False)
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0]["is_blocked"])
+        self.assertIsNone(results[0]["playback_url"])
+
+    def test_database_clear_working_stream(self):
+        """Verify clear_working_stream removes the failed stream from settings."""
+        from src import database
+
+        stream = {
+            "url": "https://failing-provider.com/stream.mp4",
+            "is_http": True,
+            "quality": "1080p",
+            "addon_names": ["FailingAddon"]
+        }
+        database.save_working_stream("tt8888888", stream_info=stream)
+        self.assertIsNotNone(database.get_working_stream("tt8888888"))
+
+        # Clear with a non-matching stream: should NOT remove
+        other_stream = {"url": "https://other.com/video.mp4"}
+        database.clear_working_stream("tt8888888", failed_stream=other_stream)
+        self.assertIsNotNone(database.get_working_stream("tt8888888"))
+
+        # Clear with matching stream: SHOULD remove
+        database.clear_working_stream("tt8888888", failed_stream=stream)
+        self.assertIsNone(database.get_working_stream("tt8888888"))
+
+    def test_failover_discovery_extends_queue_with_working_streams(self):
+        """Verify _handle_streams_exhausted_or_discover starts discovery and extends queue instead of terminating."""
+        from src.window import CineWindow
+
+        win = MagicMock(spec=CineWindow)
+        win.stream_request_id = 1
+        win.stream_queue = [{
+            "url": "https://dead1.com/v.mp4",
+            "is_http": True
+        }]
+        win.stream_queue_index = 1  # Exhausted
+        win.stream_queue_item_id = "tt23724682"
+        win.stream_queue_media_type = "movie"
+        win.stream_queue_season = None
+        win.stream_queue_episode = None
+        win.stream_queue_title = "Outcome"
+        win.details_box = MagicMock()
+        win.details_box.get_first_child.return_value = None
+        win._waiting_for_more_streams = False
+        win._stream_waiting_watchdog_id = None
+        win._extend_stream_queue = MagicMock()
+
+        # Call unbound method
+        with patch("src.api.get_torrents_streamed") as mock_streamed:
+            CineWindow._handle_streams_exhausted_or_discover(win, request_id=1)
+            self.assertTrue(win._waiting_for_more_streams)
+            win.show_player_loading.assert_called_once()
+            win._start_stream_waiting_watchdog.assert_called_once_with(1)
+            time.sleep(0.1)
+            mock_streamed.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

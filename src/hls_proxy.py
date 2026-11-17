@@ -28,6 +28,17 @@ from gi.repository import GLib
 logger = logging.getLogger("PopcornBox.HLSProxy")
 
 
+def _resolve_relative_url(base_url: str, relative_url: str) -> str:
+    """Resolve a relative URL against a base URL, preserving query parameters/tokens when appropriate."""
+    full_url = urllib.parse.urljoin(base_url, relative_url)
+    parsed_base = urllib.parse.urlparse(base_url)
+    parsed_rel = urllib.parse.urlparse(relative_url)
+    if parsed_base.query and not parsed_rel.query and not parsed_rel.netloc:
+        delimiter = "&" if "?" in full_url else "?"
+        full_url = f"{full_url}{delimiter}{parsed_base.query}"
+    return full_url
+
+
 class HlsSession:
     """Represents a parsed HLS VOD playlist session."""
 
@@ -109,7 +120,7 @@ class HlsSession:
                 m_match = re.search(r'URI="([^"]+)"', line)
                 if m_match:
                     sub_url = m_match.group(1)
-                    full_map = urllib.parse.urljoin(current_url, sub_url)
+                    full_map = _resolve_relative_url(current_url, sub_url)
                     line = line.replace(f'URI="{sub_url}"', f'URI="{full_map}"')
                 headers.append(line)
                 i += 1
@@ -118,7 +129,7 @@ class HlsSession:
                 m_match = re.search(r'URI="([^"]+)"', line)
                 if m_match:
                     sub_url = m_match.group(1)
-                    full_key = urllib.parse.urljoin(current_url, sub_url)
+                    full_key = _resolve_relative_url(current_url, sub_url)
                     line = line.replace(f'URI="{sub_url}"', f'URI="{full_key}"')
                 headers.append(line)
                 i += 1
@@ -149,7 +160,7 @@ class HlsSession:
                     i += 1
                 if i < len(lines):
                     seg_url = lines[i].strip()
-                    full_seg_url = urllib.parse.urljoin(current_url, seg_url)
+                    full_seg_url = _resolve_relative_url(current_url, seg_url)
                     segments.append((dur, inf_line, full_seg_url))
                     cum_times.append(cur_time)
                     cur_time += dur
@@ -184,7 +195,7 @@ class HlsSession:
                 if i + 1 < len(lines):
                     v_url = lines[i + 1].strip()
                     if v_url and not v_url.startswith("#"):
-                        full_v_url = urllib.parse.urljoin(base_url, v_url)
+                        full_v_url = _resolve_relative_url(base_url, v_url)
                         variants.append((res, bw, full_v_url))
 
         if variants:
@@ -352,10 +363,15 @@ def prepare_hls_stream_async(url: str, headers: dict = None, seek_target: float 
                     GLib.idle_add(callback, False, None, url, session.total_duration if session.total_duration > 0 else None, 0.0, False)
                 return
         except urllib.error.HTTPError as he:
-            is_blocked = he.code in (402, 403, 429)
             logger.warning(f"[HLSProxy] HLS stream HTTP error {he.code}: {he.reason} ({url})")
             if callback:
-                GLib.idle_add(callback, False, None, None if is_blocked else url, None, 0.0, is_blocked)
+                # Any HTTP 4xx or 5xx error means the manifest cannot be fetched; do not pass dead URL to MPV
+                GLib.idle_add(callback, False, None, None, None, 0.0, True)
+        except urllib.error.URLError as ue:
+            logger.warning(f"[HLSProxy] Failed to connect to HLS stream ({ue.reason}) ({url})")
+            if callback:
+                # Host not found, connection refused, or network unreachable
+                GLib.idle_add(callback, False, None, None, None, 0.0, True)
         except Exception as e:
             logger.warning(f"[HLSProxy] Failed to prepare HLS stream ({e}), falling back to direct URL")
             if callback:

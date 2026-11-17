@@ -4132,6 +4132,13 @@ class MovieDetailsPage(Gtk.Overlay):
             self.window._cancel_all_background_fetching(cancel_streams=False)
 
         ready_st = getattr(self, 'selected_torrent', None) or getattr(self, 'remembered_working_stream', None)
+        if ready_st and isinstance(ready_st, dict):
+            st_url = ready_st.get("url") or ready_st.get("magnet")
+            if st_url:
+                from . import api
+                st_saved = ready_st.get("saved_at") or ready_st.get("created_at") or ready_st.get("timestamp")
+                if api.is_provider_in_cooldown(st_url) or api.is_stream_url_expired(st_url, buffer_seconds=30, saved_at=st_saved):
+                    ready_st = None
         # If streams have not populated yet and no stream is ready, wait for streams to populate and auto-play
         if not getattr(self, 'torrents', None) and not ready_st:
             media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
@@ -4314,6 +4321,14 @@ class MovieDetailsPage(Gtk.Overlay):
                     return
 
         if not getattr(self, 'selected_torrent', None):
+            if getattr(self, '_fetching_streams', False):
+                media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
+                self._auto_play_on_streams_loaded = True
+                if hasattr(self, 'progress_label') and self.progress_label:
+                    self.progress_label.set_text(_("Loading streams to play..."))
+                if self.window:
+                    self.window.show_player_loading(_("Loading streams to play..."), media_title)
+                return
             if self.window:
                 self.window.hide_player_loading()
                 if hasattr(self.window, '_show_toast'):
@@ -16458,7 +16473,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         return GLib.SOURCE_REMOVE
 
     def _extend_stream_queue(self, new_streams):
-        if not getattr(self, "stream_queue", None) or not isinstance(new_streams, (list, tuple)):
+        if getattr(self, "stream_queue", None) is None or not isinstance(new_streams, (list, tuple)):
             return
         # Do not pollute direct stream queues with torrents or vice versa!
         queue_is_direct = any(is_direct_stream(s) for s in self.stream_queue)
@@ -16968,10 +16983,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 if getattr(self, "_hls_prep_url", None) != url:
                     return
                 if is_blocked or not playback_url:
-                    if fast_start:
-                        # The direct load is already in flight; a failed probe
-                        # must not tear it down. mpv's own error path advances.
-                        logger.warning(f"[HLS] Manifest probe failed/blocked (is_blocked={is_blocked}), keeping direct load")
+                    if fast_start and getattr(self, "_stream_media_started", False):
+                        # Direct playback is already actively running and rendering frames; keep it
+                        logger.warning(f"[HLS] Manifest probe failed/blocked (is_blocked={is_blocked}), keeping active direct playback")
                         return
                     logger.warning(f"[HLS] Stream preparation failed/blocked (is_blocked={is_blocked}), advancing queue")
                     self._is_hls_proxy_active = False
@@ -17820,24 +17834,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             c_url = cand.get("url") or cand.get("magnet") if isinstance(cand, dict) else None
             if c_url and (c_url.startswith("http://") or c_url.startswith("https://")):
                 cand_saved = cand.get("saved_at") or cand.get("created_at") or cand.get("timestamp")
-                if api.is_stream_url_expired(c_url, buffer_seconds=30, saved_at=cand_saved):
-                    logger.info(f"Skipping expired stream in queue: {c_url}")
+                if api.is_provider_in_cooldown(c_url) or api.is_stream_url_expired(c_url, buffer_seconds=30, saved_at=cand_saved):
+                    logger.info(f"Skipping expired/cooldown stream in queue: {c_url}")
                     self.stream_queue_index += 1
                     continue
             break
 
         if self.stream_queue_index >= len(self.stream_queue):
-            page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
-            is_fetching = False
-            if page:
-                is_fetching = bool(getattr(page, "_fetching_streams", False))
-            if is_fetching:
-                logger.info("[FAILOVER] Candidate streams exhausted but stream discovery is still in progress; waiting for incoming streams...")
-                self._waiting_for_more_streams = True
-                self.show_player_loading(_("Finding more streams..."), self.stream_queue_title or "Stream")
-                self._start_stream_waiting_watchdog(request_id)
-            else:
-                self._handle_all_streams_exhausted()
+            self._handle_streams_exhausted_or_discover(request_id)
             return
 
         torrent = self.stream_queue[self.stream_queue_index]
@@ -18004,21 +18008,20 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if not getattr(self, 'stream_queue', None):
             return
         if self.stream_queue_index >= len(self.stream_queue):
-            page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
-            is_fetching = False
-            if page:
-                is_fetching = bool(getattr(page, "_fetching_streams", False))
-            if is_fetching:
-                logger.info("[FAILOVER] Candidate streams exhausted but stream discovery is still in progress; waiting for incoming streams...")
-                self._waiting_for_more_streams = True
-                self.show_player_loading(_("Finding more streams..."), self.stream_queue_title or "Stream")
-                self._start_stream_waiting_watchdog(request_id)
-            else:
-                self._handle_all_streams_exhausted()
+            self._handle_streams_exhausted_or_discover(request_id)
             return
 
         failed_st = self.stream_queue[self.stream_queue_index]
-        from . import api
+        from . import api, database
+        p_id = (
+            getattr(self, "_current_playing_item", {}).get("id")
+            or getattr(self, "_current_playing_item", {}).get("imdb_id")
+            or getattr(self, "stream_queue_item_id", None)
+        )
+        season = getattr(self, "_current_playing_item", {}).get("season")
+        episode = getattr(self, "_current_playing_item", {}).get("episode")
+        if p_id and failed_st:
+            database.clear_working_stream(p_id, season, episode, failed_stream=failed_st)
 
         # 1. If HTTP stream failed, check if retrying with alternate User-Agent recovers it (e.g. 403 bot blocks vs 428 bot blocks)
         last_err = str(getattr(self, "_last_stream_error", "") or "").lower()
@@ -18160,17 +18163,129 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._show_toast(msg)
             self._play_current_stream_from_queue(request_id)
         else:
-            page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
-            is_fetching = False
-            if page:
-                is_fetching = bool(getattr(page, "_fetching_streams", False))
-            if is_fetching:
-                logger.info("[FAILOVER] Candidate streams exhausted but stream discovery is still in progress; waiting for incoming streams...")
-                self._waiting_for_more_streams = True
-                self.show_player_loading(_("Finding more streams..."), self.stream_queue_title or "Stream")
-                self._start_stream_waiting_watchdog(request_id)
-            else:
-                self._handle_all_streams_exhausted()
+            self._handle_streams_exhausted_or_discover(request_id)
+
+    def _handle_streams_exhausted_or_discover(self, request_id):
+        if request_id != getattr(self, "stream_request_id", 0):
+            return
+        page = self.details_box.get_first_child() if hasattr(self, "details_box") else None
+        is_fetching = False
+        if page:
+            is_fetching = bool(getattr(page, "_fetching_streams", False))
+        if is_fetching:
+            logger.info("[FAILOVER] Candidate streams exhausted but stream discovery is still in progress; waiting for incoming streams...")
+            self._waiting_for_more_streams = True
+            self.show_player_loading(_("Finding more streams..."), self.stream_queue_title or "Stream")
+            self._start_stream_waiting_watchdog(request_id)
+            return
+
+        # If we haven't attempted fresh stream discovery for this playback request yet, fetch from addons!
+        attempted_req = getattr(self, "_stream_discovery_attempted_for_req", None)
+        item_id = (
+            getattr(self, "stream_queue_item_id", None)
+            or getattr(self, "_current_playing_item", {}).get("imdb_id")
+            or getattr(self, "_current_playing_item", {}).get("id")
+        )
+        if attempted_req != request_id and item_id:
+            self._stream_discovery_attempted_for_req = request_id
+            media_type = getattr(self, "stream_queue_media_type", None) or getattr(self, "_current_playing_item", {}).get("type", "movie")
+            season = self.stream_queue_season if getattr(self, "stream_queue_season", None) is not None else getattr(self, "_current_playing_item", {}).get("season")
+            episode = self.stream_queue_episode if getattr(self, "stream_queue_episode", None) is not None else getattr(self, "_current_playing_item", {}).get("episode")
+            title = self.stream_queue_title or getattr(self, "_current_playing_item", {}).get("title") or "Stream"
+            logger.info(f"[FAILOVER] Candidate streams exhausted for {item_id}; starting background discovery for fresh working streams...")
+            self._waiting_for_more_streams = True
+            self.show_player_loading(_("Finding working streams..."), title)
+            self._start_stream_waiting_watchdog(request_id)
+
+            queue_is_direct = any(is_direct_stream(s) for s in (self.stream_queue or []))
+            queue_is_torrent = any(is_torrent_stream(s) for s in (self.stream_queue or []))
+            source_scope = "direct" if (queue_is_direct and not queue_is_torrent) else ("torrent" if (queue_is_torrent and not queue_is_direct) else None)
+
+            def _discovery_worker():
+                from . import api, database
+                # 1. Check if SQLite cache has other streams not in stream_queue
+                cache_key = api.get_stream_cache_key(item_id, media_type, season, episode)
+                cached = database.get_cached_streams(cache_key)
+                existing_keys = set()
+                for s in (self.stream_queue or []):
+                    if isinstance(s, dict):
+                        k = s.get("url") or s.get("magnet") or s.get("hash") or s.get("infoHash")
+                        if k:
+                            existing_keys.add(k)
+
+                cached_cands = []
+                if cached and isinstance(cached, list):
+                    for s in cached:
+                        if not isinstance(s, dict):
+                            continue
+                        k = s.get("url") or s.get("magnet") or s.get("hash") or s.get("infoHash")
+                        if not k or k in existing_keys:
+                            continue
+                        if source_scope == "direct" and not is_direct_stream(s):
+                            continue
+                        if source_scope == "torrent" and not is_torrent_stream(s):
+                            continue
+                        if s.get("url") and api.is_provider_in_cooldown(s["url"]):
+                            continue
+                        existing_keys.add(k)
+                        cached_cands.append(s)
+
+                if cached_cands:
+                    def _apply_cached():
+                        if request_id == getattr(self, "stream_request_id", 0) and getattr(self, "_waiting_for_more_streams", False):
+                            self._extend_stream_queue(cached_cands)
+                    GLib.idle_add(_apply_cached)
+
+                # 2. Fetch fresh streams from addons via api.get_torrents_streamed
+                def _on_addon_batch(batch, is_cached=False, is_complete=False):
+                    if request_id != getattr(self, "stream_request_id", 0):
+                        return
+                    new_streams = []
+                    for s in (batch or []):
+                        if not isinstance(s, dict):
+                            continue
+                        k = s.get("url") or s.get("magnet") or s.get("hash") or s.get("infoHash")
+                        if not k or k in existing_keys:
+                            continue
+                        if source_scope == "direct" and not is_direct_stream(s):
+                            continue
+                        if source_scope == "torrent" and not is_torrent_stream(s):
+                            continue
+                        existing_keys.add(k)
+                        new_streams.append(s)
+                    if new_streams:
+                        self._extend_stream_queue(new_streams)
+                    if is_complete and getattr(self, "_waiting_for_more_streams", False):
+                        if self.stream_queue_index >= len(self.stream_queue or []):
+                            self._cancel_stream_waiting_watchdog()
+                            self._waiting_for_more_streams = False
+                            self._handle_all_streams_exhausted()
+
+                try:
+                    api.get_torrents_streamed(
+                        item_id,
+                        media_type,
+                        season,
+                        episode,
+                        callback=lambda b, c=False, comp=False: GLib.idle_add(_on_addon_batch, b, c, comp),
+                        title=title,
+                        force_refresh=True,
+                        source_scope=source_scope,
+                    )
+                except Exception as ex:
+                    logger.error(f"[FAILOVER] Error during background stream discovery: {ex}")
+                    def _fail_on_err():
+                        if request_id == getattr(self, "stream_request_id", 0) and getattr(self, "_waiting_for_more_streams", False):
+                            if self.stream_queue_index >= len(self.stream_queue or []):
+                                self._cancel_stream_waiting_watchdog()
+                                self._waiting_for_more_streams = False
+                                self._handle_all_streams_exhausted()
+                    GLib.idle_add(_fail_on_err)
+
+            threading.Thread(target=_discovery_worker, daemon=True, name="FailoverDiscoveryWorker").start()
+            return
+
+        self._handle_all_streams_exhausted()
 
     def _handle_all_streams_exhausted(self):
         logger.warning("All candidate streams failed or were exhausted.")
