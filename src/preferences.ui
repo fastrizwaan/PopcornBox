@@ -100,7 +100,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                 <child>
                   <object class="AdwSwitchRow" id="kids_mode_row">
                     <property name="title" translatable="yes">Kids Safe Mode (Under 16)</property>
-                    <property name="subtitle" translatable="yes">Filter out mature, erotic, and adult content (R, TV-MA, NC-17, 16+, 18+) using TMDB &amp; IMDb ratings</property>
+                    <property name="subtitle" translatable="yes">Filter out mature, erotic, and adult content (R, TV-MA, NC-17, 16+, 18+) using TMDB &amp;amp; IMDb ratings</property>
                   </object>
                 </child>
                 <child>
@@ -335,7 +335,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                 </child>
                 <child>
                   <object class="AdwSwitchRow" id="stremio_sync_switch_row">
-                    <property name="title" translatable="yes">Sync Library &amp; Continue Watching</property>
+                    <property name="title" translatable="yes">Sync Library &amp;amp; Continue Watching</property>
                     <property name="subtitle" translatable="yes">Automatically keep playback progress and favorites in sync</property>
                     <property name="sensitive">false</property>
                   </object>
@@ -524,7 +524,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
             </child>
             <child>
               <object class="AdwPreferencesGroup">
-                <property name="title" translatable="yes">Network &amp; DNS</property>
+                <property name="title" translatable="yes">Network &amp;amp; DNS</property>
                 <child>
                   <object class="AdwSwitchRow" id="doh_switch_row">
                     <property name="title" translatable="yes">DNS-over-HTTPS (DoH)</property>
@@ -536,7 +536,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
             </child>
             <child>
               <object class="AdwPreferencesGroup">
-                <property name="title" translatable="yes">Backup &amp; Restore</property>
+                <property name="title" translatable="yes">Backup &amp;amp; Restore</property>
                 <property name="description" translatable="yes">Backup or restore all addons, plugins, and CloudStream repositories</property>
                 <child>
                   <object class="AdwActionRow" id="backup_config_row">

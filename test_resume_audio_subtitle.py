@@ -245,6 +245,114 @@ class TestResumeAudioSubtitle(unittest.TestCase):
         # Calling with no arguments should not raise TypeError
         win._clear_saved_external_subtitle()
 
+    def test_languages_match(self):
+        """api.languages_match matches ISO 639-1, 639-2, English names, and country tags."""
+        from src import api
+        self.assertTrue(api.languages_match("en", "eng"))
+        self.assertTrue(api.languages_match("eng", "English"))
+        self.assertTrue(api.languages_match("en-US", "en"))
+        self.assertTrue(api.languages_match("hin", "hi"))
+        self.assertTrue(api.languages_match("hi", "Hindi"))
+        self.assertTrue(api.languages_match("tam", "ta"))
+        self.assertTrue(api.languages_match("ta", "Tamil"))
+        self.assertFalse(api.languages_match("ta", "en"))
+        self.assertFalse(api.languages_match("tam", "hi"))
+
+    def test_find_best_audio_track_priority(self):
+        """find_best_audio_track respects the priority order (e.g. en before hi)."""
+        from src import api
+        tracks = [
+            {"type": "audio", "id": 1, "lang": "hin", "title": "Hindi DDP 5.1", "default": True},
+            {"type": "audio", "id": 2, "lang": "tam", "title": "Tamil DDP 5.1"},
+            {"type": "audio", "id": 3, "lang": "tel", "title": "Telugu DDP 5.1"},
+            {"type": "audio", "id": 4, "lang": "eng", "title": "English Atmos 5.1", "default": True},
+        ]
+        best = api.find_best_audio_track(tracks, preferred_langs=["en", "hi"])
+        self.assertIsNotNone(best)
+        self.assertEqual(best["id"], 4)
+        self.assertEqual(best["lang"], "eng")
+
+    def test_restore_audio_never_selects_unmatched_track_id(self):
+        """Saved track_id from an older stream must never select an unrelated language (e.g. Tamil for English)."""
+        win = MagicMock()
+        win._is_playing_trailer.return_value = False
+        win.mpv.idle_active = False
+        win.mpv.aid = 1
+        # Saved preference had track_id 2 from a previous release (where 2 was English),
+        # but in this release, track 2 is Tamil!
+        win._current_playing_item = {
+            "id": "tt66666",
+            "audio_track_id": 2,
+            "audio_track_lang": "en",
+            "audio_track_title": "English 5.1",
+        }
+        track_list = [
+            {"type": "audio", "id": 1, "lang": "hin", "title": "Hindi DDP 5.1", "default": True},
+            {"type": "audio", "id": 2, "lang": "tam", "title": "Tamil DDP 5.1"},
+            {"type": "audio", "id": 3, "lang": "tel", "title": "Telugu DDP 5.1"},
+            {"type": "audio", "id": 4, "lang": "eng", "title": "English Atmos 5.1", "default": True},
+        ]
+        win.mpv.track_list = track_list
+
+        win._playback_preference_keys = window.PopcornBoxWindow._playback_preference_keys.__get__(win, window.PopcornBoxWindow)
+        win._get_saved_audio_preference = window.PopcornBoxWindow._get_saved_audio_preference.__get__(win, window.PopcornBoxWindow)
+        win._get_saved_subtitle_preference = lambda item: None
+        win._restore_audio_and_subtitle_preferences = window.PopcornBoxWindow._restore_audio_and_subtitle_preferences.__get__(win, window.PopcornBoxWindow)
+
+        win._restore_audio_and_subtitle_preferences(track_list)
+
+        # Must select Track 4 (English), NEVER Track 2 (Tamil)
+        self.assertEqual(win.mpv.aid, 4)
+
+    def test_match_stream_to_movie_rejects_unrelated_substring_match(self):
+        """Streams for unrelated titles (e.g. Muskurahatein for Musk) must be flagged as MATCH_MISMATCH."""
+        from src import api
+        stream = {
+            "title": "🎬CineStream 🧊 1080p • CNCVerse Bridge",
+            "url": "https://qrtgf.b-cdn.net/s3/upload/videos/2026/08/[Fibwatch.Com]Muskurahatein.(2017).Hindi.1080P.mkv",
+            "behaviorHints": {
+                "filename": "Musk.2026.1080p-CineTmdb.mkv",  # faked addon filename
+            }
+        }
+        res = api.match_stream_to_movie(stream, target_title="Musk", expected_year=2026)
+        self.assertEqual(res, api.MATCH_MISMATCH)
+
+    def test_match_stream_to_movie_accepts_valid_stream(self):
+        """Valid streams matching the title and year must not be flagged as MATCH_MISMATCH."""
+        from src import api
+        stream = {
+            "title": "🎬Nebula 🧊 1080p",
+            "url": "https://content.api.nebula.app/video_episodes/123/manifest.m3u8",
+            "behaviorHints": {
+                "filename": "Musk.2026.1080p.WEB-DL.English-Nebula"
+            }
+        }
+        res = api.match_stream_to_movie(stream, target_title="Musk", expected_year=2026)
+        self.assertNotEqual(res, api.MATCH_MISMATCH)
+
+    def test_match_stream_to_movie_accepts_opaque_hash_url(self):
+        """Opaque CDN resource hashes must not be treated as conflicting titles."""
+        from src import api
+        stream = {
+            "title": "🎬CineStream 🧊 1080p",
+            "url": "https://bcdnxw.hakunaymatata.com/resource/47e474a252957c4090155ac7a2b53068.mp4?sign=abc",
+            "behaviorHints": {
+                "filename": "Musk.2026.1080p-CineTmdb.mp4"
+            }
+        }
+        res = api.match_stream_to_movie(stream, target_title="Musk", expected_year=2026)
+        self.assertNotEqual(res, api.MATCH_MISMATCH)
+
+    def test_match_stream_to_movie_rejects_wrong_year(self):
+        """Streams explicitly labeling a conflicting release year (>1 yr apart) must be MATCH_MISMATCH."""
+        from src import api
+        stream = {
+            "title": "Avatar.The.Way.of.Water.2022.1080p.mkv",
+            "url": "https://example.com/Avatar.The.Way.of.Water.2022.1080p.mkv",
+        }
+        res = api.match_stream_to_movie(stream, target_title="Avatar", expected_year=2009)
+        self.assertEqual(res, api.MATCH_MISMATCH)
+
 
 if __name__ == "__main__":
     unittest.main()

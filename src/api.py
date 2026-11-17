@@ -6053,6 +6053,131 @@ def match_stream_to_episode(stream, target_season, target_episode, ep_title=None
     return MATCH_UNKNOWN
 
 
+def get_stream_url_filename(url):
+    """Extract file name from URL last path segment or magnet dn parameter."""
+    if not url or not isinstance(url, str):
+        return ""
+    if url.startswith("magnet:"):
+        try:
+            parsed = urllib.parse.parse_qs(url.split("?", 1)[-1])
+            dn = parsed.get("dn", [None])[0]
+            if dn:
+                return dn
+        except Exception:
+            pass
+        return ""
+    try:
+        clean_url = url.split("?")[0].split("#")[0]
+        unquoted = urllib.parse.unquote(clean_url)
+        last_seg = unquoted.rstrip("/").rsplit("/", 1)[-1]
+        exts = (".mkv", ".mp4", ".avi", ".webm", ".m4v", ".ts", ".iso", ".mov", ".flv", ".wmv")
+        if any(last_seg.lower().endswith(ext) for ext in exts):
+            return last_seg
+    except Exception:
+        pass
+    return ""
+
+
+def is_opaque_identifier(s):
+    """Return True if string looks like an opaque hash, UUID, or pure numeric ID rather than a named release."""
+    if not s or not isinstance(s, str):
+        return True
+    s_clean = s.rsplit(".", 1)[0]
+    # Hex hashes (MD5, SHA1, SHA256)
+    if re.fullmatch(r"[0-9a-fA-F]{16,64}", s_clean):
+        return True
+    # UUIDs
+    if re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", s_clean):
+        return True
+    # Numeric IDs
+    if re.fullmatch(r"\d+", s_clean):
+        return True
+    return False
+
+
+MOVIE_STOP_WORDS = {'the', 'a', 'an', 'and', 'or', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'by', 'from'}
+
+
+def check_movie_title_mismatch(target_title, filename):
+    """
+    Return True if filename explicitly represents a DIFFERENT movie title.
+    Returns False if filename is opaque, ambiguous, or matches target_title words.
+    """
+    if not target_title or not filename or is_opaque_identifier(filename):
+        return False
+    # Strip site prefixes like [Fibwatch.Com] or [YTS.MX] or domain prefixes
+    fn = re.sub(r'\[[^\]]*\]', ' ', filename)
+    fn = re.sub(r'www\.[^\s\.]+\.[a-z]{2,4}', ' ', fn, flags=re.I)
+
+    clean_title = re.sub(r'[^\w\s]', ' ', target_title).lower()
+    title_words = [w for w in clean_title.split() if w not in MOVIE_STOP_WORDS and len(w) > 0]
+    if not title_words:
+        title_words = [w for w in clean_title.split() if len(w) > 0]
+    if not title_words:
+        return False
+
+    clean_fn = re.sub(r'[^\w\s]', ' ', fn).lower()
+    matched = [w for w in title_words if re.search(r'\b' + re.escape(w) + r'\b', clean_fn)]
+
+    if len(title_words) <= 2:
+        return len(matched) < len(title_words)
+    threshold = (len(title_words) * 2 + 2) // 3
+    return len(matched) < threshold
+
+
+def match_stream_to_movie(stream, target_title=None, expected_year=None):
+    """
+    Evaluates whether a stream corresponds to the requested movie title and year.
+    Returns:
+        MATCH_UNKNOWN (0): Stream appears compatible or is ambiguous.
+        MATCH_MISMATCH (-1): Explicit indicator of a different movie title or conflicting release year.
+    """
+    if not isinstance(stream, dict):
+        return MATCH_UNKNOWN
+
+    expected_year_str = str(expected_year or "").strip()[:4]
+    has_expected_year = len(expected_year_str) == 4 and expected_year_str.isdigit()
+    exp_year_int = int(expected_year_str) if has_expected_year else None
+
+    # Check URL filename (represents the physical file on the server/CDN)
+    url = stream.get("url") or stream.get("externalUrl")
+    url_fn = get_stream_url_filename(url)
+    if url_fn and not is_opaque_identifier(url_fn):
+        if check_movie_title_mismatch(target_title, url_fn):
+            return MATCH_MISMATCH
+        if exp_year_int is not None:
+            fn_years = [int(y) for y in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", url_fn)]
+            # If explicit year in filename differs from expected year by more than 1 year
+            if fn_years and all(abs(y - exp_year_int) > 1 for y in fn_years):
+                return MATCH_MISMATCH
+
+    # Check behaviorHints / explicit stream filename
+    bh = stream.get("behaviorHints") or {}
+    bh_fn = bh.get("filename") if isinstance(bh, dict) else ""
+    stream_fn = stream.get("filename") or ""
+    for fn in (bh_fn, stream_fn):
+        if fn and isinstance(fn, str) and not is_opaque_identifier(fn):
+            if check_movie_title_mismatch(target_title, fn):
+                return MATCH_MISMATCH
+            if exp_year_int is not None:
+                fn_years = [int(y) for y in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", fn)]
+                if fn_years and all(abs(y - exp_year_int) > 1 for y in fn_years):
+                    return MATCH_MISMATCH
+
+    # Check stream title / name if it looks like a scene/torrent release name
+    name_or_title = stream.get("name") or stream.get("title") or ""
+    if name_or_title and isinstance(name_or_title, str) and any(tag in name_or_title.lower() for tag in ("1080p", "720p", "2160p", "4k", "bluray", "web-dl", "webrip", "hdtv")):
+        if not name_or_title.startswith("🎬") and not name_or_title.startswith("🍿"):
+            if check_movie_title_mismatch(target_title, name_or_title):
+                return MATCH_MISMATCH
+            if exp_year_int is not None:
+                t_years = [int(y) for y in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", name_or_title)]
+                if t_years and all(abs(y - exp_year_int) > 1 for y in t_years):
+                    return MATCH_MISMATCH
+
+    return MATCH_UNKNOWN
+
+
 def is_torrent_stream(stream):
     """Determine if a stream dictionary represents a torrent stream."""
     if not isinstance(stream, dict):
@@ -6135,7 +6260,7 @@ def is_torrent_addon(addon):
 
 
 
-def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
+def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, title=None, expected_year=None):
     if not all_streams:
         return []
     valid_streams = []
@@ -6376,6 +6501,11 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None):
                 continue
             stream_entry["ep_match"] = ep_match
         else:
+            if title or expected_year:
+                movie_match = match_stream_to_movie(stream_entry, target_title=title, expected_year=expected_year)
+                if movie_match == MATCH_MISMATCH:
+                    seen_keys[dedup_key] = None
+                    continue
             stream_entry["ep_match"] = MATCH_UNKNOWN
 
         seen_keys[dedup_key] = len(valid_streams)
@@ -7140,23 +7270,17 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         except Exception:
             pass
 
-    def _filter_wrong_movie_year(streams):
-        """Drop only streams that explicitly label themselves with another year."""
-        if not expected_year or not is_movie_request:
+    def _filter_mismatched_movie_streams(streams):
+        """Drop streams that explicitly belong to a different movie title or conflicting release year."""
+        if not is_movie_request:
             return list(streams or [])
         accepted = []
         for stream in streams or []:
             if not isinstance(stream, dict):
                 accepted.append(stream)
                 continue
-            hints = stream.get("behaviorHints") or {}
-            text = " ".join(str(value or "") for value in (
-                stream.get("title"), stream.get("stream_title"), stream.get("name"),
-                stream.get("filename"), hints.get("filename") if isinstance(hints, dict) else "",
-            ))
-            years = set(re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", text))
-            if years and expected_year not in years:
-                print(f"[STREAM DEBUG] discarded wrong-year stream expected={expected_year} found={sorted(years)!r}")
+            if match_stream_to_movie(stream, target_title=title, expected_year=expected_year) == MATCH_MISMATCH:
+                print(f"[STREAM DEBUG] discarded mismatched movie stream title={title!r} expected_year={expected_year!r} url={(stream.get('url') or '')[:80]}")
                 continue
             accepted.append(stream)
         return accepted
@@ -7196,7 +7320,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             if route_streams:
                 print(f"[STREAM DEBUG] CloudStream immediate route lookup returned {len(route_streams)} stream(s)")
                 initial_cs_streams = list(route_streams)
-                parsed_initial = process_raw_streams(route_streams, season=season, episode=episode, ep_title=ep_title) or route_streams
+                parsed_initial = process_raw_streams(route_streams, season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year) or route_streams
                 if parsed_initial:
                     clean_source_scope = str(source_scope).strip().lower() if source_scope else None
                     is_only_cs = bool(
@@ -7407,8 +7531,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         cached = [s for s in cached if not _has_wrong_tmdb(s)]
         cache_candidates = [s for s in cache_candidates if not _has_wrong_tmdb(s)]
 
-    cached = _filter_wrong_movie_year(cached)
-    cache_candidates = _filter_wrong_movie_year(cache_candidates)
+    cached = _filter_mismatched_movie_streams(cached)
+    cache_candidates = _filter_mismatched_movie_streams(cache_candidates)
 
     print(
         f"[STREAM DEBUG] cache key={cache_key!r} cards={len(cached or [])} "
@@ -8026,7 +8150,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                             addon_orig_info = future_to_addon.get(future, (None, None))
                             addon_obj = addon_orig_info[0] if addon_orig_info else None
                             addon_name, streams = future.result()
-                            streams = _filter_wrong_movie_year(streams)
+                            streams = _filter_mismatched_movie_streams(streams)
                             if streams:
                                 # Successful response — clear any previous failure count for Stremio addons
                                 if addon_obj and addon_obj.get("manifest_url") and not addon_obj.get("raw_id"):
@@ -8039,7 +8163,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                         s["addon_name"] = addon_name
                                     all_raw_streams.append(s)
                                 if callback and not (abort_event and abort_event.is_set()):
-                                    current_parsed = process_raw_streams(list(all_raw_streams), season=season, episode=episode, ep_title=ep_title)
+                                    current_parsed = process_raw_streams(list(all_raw_streams), season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year)
                                     print(f"[STREAM DEBUG] incremental results addon={addon_name!r} raw_total={len(all_raw_streams)} parsed_cards={len(current_parsed)}")
                                     if source_scope:
                                         current_scope = [s for s in current_parsed if _stream_matches_source_scope(s, source_scope)]
@@ -8068,7 +8192,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         print(f"[STREAM DEBUG] cache write skipped: request cancelled id={imdb_id!r}")
         return []
 
-    parsed_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title)
+    parsed_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year)
     selected_scope_streams = None
     other_scope_streams = []
     if source_scope:
@@ -8175,7 +8299,10 @@ SUBTITLE_LANGUAGE_MAP = {
     "ur": ["ur", "urd", "urdu"], "urd": ["ur", "urd", "urdu"], "urdu": ["ur", "urd", "urdu"],
     "fa": ["fa", "per", "fas", "persian"], "per": ["fa", "per", "fas", "persian"], "persian": ["fa", "per", "fas", "persian"],
     "pl": ["pl", "pol", "polish"], "pol": ["pl", "pol", "polish"], "polish": ["pl", "pol", "polish"],
-    "nl": ["nl", "dut", "nld", "dutch"], "dut": ["nl", "dut", "nld", "dutch"], "dutch": ["nl", "dut", "nld", "dutch"]
+    "nl": ["nl", "dut", "nld", "dutch"], "dut": ["nl", "dut", "nld", "dutch"], "dutch": ["nl", "dut", "nld", "dutch"],
+    "fil": ["fil", "tl", "tgl", "tagalog", "filipino"], "tl": ["fil", "tl", "tgl", "tagalog", "filipino"],
+    "ms": ["ms", "msa", "may", "malay"], "msa": ["ms", "msa", "may", "malay"],
+    "nb": ["nb", "nob", "nor", "no", "norwegian", "norwegian bokmål"], "nob": ["nb", "nob", "nor", "no", "norwegian", "norwegian bokmål"]
 }
 
 SUBTITLE_LANGUAGE_NAMES = {
@@ -8216,7 +8343,9 @@ SUBTITLE_LANGUAGE_NAMES = {
     "dan": "Danish", "da": "Danish", "danish": "Danish",
     "fin": "Finnish", "fi": "Finnish", "finnish": "Finnish",
     "nor": "Norwegian", "no": "Norwegian", "norwegian": "Norwegian",
-    "nob": "Norwegian Bokmål",
+    "nob": "Norwegian Bokmål", "nb": "Norwegian Bokmål",
+    "fil": "Filipino", "tl": "Tagalog", "tgl": "Tagalog",
+    "msa": "Malay", "may": "Malay", "ms": "Malay",
     "hrv": "Croatian", "hr": "Croatian", "croatian": "Croatian",
     "srp": "Serbian", "sr": "Serbian", "serbian": "Serbian",
     "bul": "Bulgarian", "bg": "Bulgarian", "bulgarian": "Bulgarian",
@@ -8530,9 +8659,152 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
 
 def get_language_name(code):
     if not code:
-        return "Unknown"
-    c = str(code).lower().strip().split("-")[0].split("_")[0]
-    return SUBTITLE_LANGUAGE_NAMES.get(str(code).lower().strip(), SUBTITLE_LANGUAGE_NAMES.get(c, str(code).upper()))
+        return ""
+    code_str = str(code).strip()
+    if not code_str:
+        return ""
+    c_full = code_str.lower()
+    c = c_full.split("-")[0].split("_")[0]
+    return SUBTITLE_LANGUAGE_NAMES.get(c_full, SUBTITLE_LANGUAGE_NAMES.get(c, code_str.upper()))
+
+def expand_language_codes_for_mpv(raw_langs_str):
+    """
+    Expand a comma-separated list of language codes into a clean comma-separated list
+    including 2-letter and 3-letter codes for MPV (no whitespace).
+    e.g. 'en, hi' -> 'en,eng,hi,hin'
+    """
+    if not raw_langs_str:
+        return ""
+    expanded = []
+    tokens = [l.strip().lower() for l in raw_langs_str.replace(";", ",").split(",") if l.strip()]
+    for token in tokens:
+        clean = token.split("-")[0].split("_")[0]
+        mapped = list(SUBTITLE_LANGUAGE_MAP.get(clean, SUBTITLE_LANGUAGE_MAP.get(token, [clean, token])))
+        for m in mapped:
+            if len(m) in (2, 3) and m not in expanded:
+                expanded.append(m)
+        if token not in expanded:
+            expanded.append(token)
+    return ",".join(expanded)
+
+def languages_match(lang1, lang2):
+    """
+    Return True if two language codes or names represent the same language.
+    Handles ISO 639-1, ISO 639-2, full names, and country suffixes (e.g. 'en' and 'eng', 'hi' and 'hin').
+    """
+    if not lang1 or not lang2:
+        return False
+    s1 = str(lang1).lower().strip()
+    s2 = str(lang2).lower().strip()
+    if s1 == s2:
+        return True
+    c1 = s1.split("-")[0].split("_")[0]
+    c2 = s2.split("-")[0].split("_")[0]
+    if c1 == c2:
+        return True
+    set1 = set(SUBTITLE_LANGUAGE_MAP.get(c1, SUBTITLE_LANGUAGE_MAP.get(s1, [c1, s1])))
+    set2 = set(SUBTITLE_LANGUAGE_MAP.get(c2, SUBTITLE_LANGUAGE_MAP.get(s2, [c2, s2])))
+    name1 = SUBTITLE_LANGUAGE_NAMES.get(s1, SUBTITLE_LANGUAGE_NAMES.get(c1, "")).lower()
+    name2 = SUBTITLE_LANGUAGE_NAMES.get(s2, SUBTITLE_LANGUAGE_NAMES.get(c2, "")).lower()
+    if name1 and name2 and name1 == name2:
+        return True
+    return bool(set1 & set2)
+
+def get_user_preferred_audio_languages():
+    """Retrieve user preferred audio languages string from GSettings or database."""
+    pref_langs_str = ""
+    try:
+        import gi
+        gi.require_version('Gio', '2.0')
+        from gi.repository import Gio
+        schema_source = Gio.SettingsSchemaSource.get_default()
+        if schema_source and schema_source.lookup("io.github.fastrizwaan.PopcornBox", True):
+            settings = Gio.Settings.new("io.github.fastrizwaan.PopcornBox")
+            pref_langs_str = settings.get_string("audio-languages")
+    except Exception:
+        pass
+        
+    if not pref_langs_str:
+        pref_langs_str = database.get_setting("audio-languages", "") or database.get_setting("audio_languages", "")
+
+    return pref_langs_str or ""
+
+def _parse_preferred_audio_languages():
+    """Return the user's audio language preferences as a priority list, defaulting to English."""
+    pref = get_user_preferred_audio_languages()
+    raw_langs = [l.strip().lower() for l in pref.replace(";", ",").split(",") if l.strip()]
+    return raw_langs or ["en", "eng", "english"]
+
+def find_best_audio_track(tracks, preferred_langs=None):
+    """
+    Find the best audio track from tracks according to:
+    1. Language preference order (e.g. en first, then hi)
+    2. Non-commentary / non-audio-description
+    3. Multi-channel audio (higher channels preferred, e.g. 6 (5.1) over 2 (stereo))
+    4. Default track flag
+    5. Track ID order
+    Returns the best track dict, or None if no acceptable track is found.
+    """
+    if not tracks:
+        return None
+
+    if preferred_langs is None:
+        raw_langs = _parse_preferred_audio_languages()
+    elif isinstance(preferred_langs, str):
+        raw_langs = [l.strip().lower() for l in preferred_langs.replace(";", ",").split(",") if l.strip()]
+        raw_langs = raw_langs or ["en", "eng", "english"]
+    else:
+        raw_langs = [str(l).strip().lower() for l in preferred_langs if str(l).strip()]
+        raw_langs = raw_langs or ["en", "eng", "english"]
+
+    rank_sets = _build_language_rank_sets(raw_langs)
+
+    candidates = []
+    for track in tracks:
+        if not isinstance(track, dict) or track.get("type") != "audio":
+            continue
+
+        raw_lang = str(track.get("lang") or "").lower().strip()
+        lang_clean = raw_lang.split("-")[0].split("_")[0]
+        track_title = str(track.get("title") or "").lower()
+        is_default = bool(track.get("default"))
+        track_id = int(track.get("id", 0))
+        channels = int(track.get("audio-channels") or track.get("demux-channel-count") or 2)
+        
+        is_commentary = bool("commentary" in track_title or "comment" in track_title)
+        is_vis_impaired = bool(track.get("visual-impaired") or "description" in track_title or " ad " in f" {track_title} ")
+
+        matched_rank = 999
+        for idx, rset in enumerate(rank_sets):
+            if raw_lang in rset or lang_clean in rset:
+                matched_rank = idx
+                break
+            for item in rset:
+                if len(item) >= 3 and re.search(r"\b" + re.escape(item) + r"\b", track_title):
+                    matched_rank = idx
+                    break
+                elif len(item) == 2 and re.search(r"[\(\[\{\s]" + re.escape(item) + r"[\)\]\}\s]", f" {track_title} "):
+                    matched_rank = idx
+                    break
+            if matched_rank < 999:
+                break
+
+        if matched_rank < 999:
+            score = (
+                matched_rank,
+                1 if is_commentary else 0,
+                1 if is_vis_impaired else 0,
+                -channels,
+                0 if is_default else 1,
+                track_id
+            )
+            candidates.append((score, track))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]
 
 def search_subtitles_online(query="", imdb_id=None, media_type="movie", season=None, episode=None):
     """

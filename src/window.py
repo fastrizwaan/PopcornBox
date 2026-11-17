@@ -4407,8 +4407,15 @@ class MovieDetailsPage(Gtk.Overlay):
                 seen_identities.add(t_ident)
             elif _streams_match(t, self.selected_torrent) or any(_streams_match(t, c) for c in candidates):
                 continue
-            if sel_s is None or sel_e is None or api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH:
-                candidates.append(t)
+            if sel_s is not None and sel_e is not None:
+                if api.match_stream_to_episode(t, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
+                    continue
+            else:
+                m_year = getattr(self, "movie_details", {}).get("year") or self.movie_stub.get("year")
+                m_title = getattr(self, "movie_details", {}).get("title") or self.movie_stub.get("title") or media_title
+                if api.match_stream_to_movie(t, target_title=m_title, expected_year=m_year) == api.MATCH_MISMATCH:
+                    continue
+            candidates.append(t)
 
         if is_direct or pref_prov or pref_q:
             candidates.sort(key=_queue_sort_priority)
@@ -4741,19 +4748,50 @@ class MovieDetailsPage(Gtk.Overlay):
                 season = getattr(self, "selected_season", None)
                 episode = getattr(self, "selected_episode", None)
                 stream_subs = self.selected_torrent.get("subtitles") if hasattr(self, "selected_torrent") and isinstance(self.selected_torrent, dict) else None
-                if hasattr(self.window, "_pending_subtitle_request") or hasattr(self.window, "fetch_and_add_subtitles"):
-                    self.window._pending_subtitle_request = {
-                        "imdb_id": imdb_id,
-                        "media_type": self.media_type,
-                        "season": season,
-                        "episode": episode,
-                        "stream_subtitles": stream_subs,
-                        "stream_title": media_title,
-                    }
-                    self.window._subtitles_configured_for_file = False
-                from . import api
-                headers = api.extract_stream_headers(self.selected_torrent, url=magnet)
-                self.window._play_stream(magnet, media_title, headers=headers)
+
+                if not is_trailer and hasattr(self.window, "play_stream_with_failover"):
+                    queue = [self.selected_torrent]
+                    cand_pool = getattr(self, "torrent_list", []) or []
+                    candidates = []
+                    from . import api
+                    m_year = getattr(self, "movie_details", {}).get("year") or self.movie_stub.get("year")
+                    m_title = getattr(self, "movie_details", {}).get("title") or self.movie_stub.get("title") or media_title
+                    for t in cand_pool:
+                        if t == self.selected_torrent or not t.get("is_http"):
+                            continue
+                        if season is not None and episode is not None:
+                            if api.match_stream_to_episode(t, season, episode) == api.MATCH_MISMATCH:
+                                continue
+                        else:
+                            if api.match_stream_to_movie(t, target_title=m_title, expected_year=m_year) == api.MATCH_MISMATCH:
+                                continue
+                        candidates.append(t)
+                    queue.extend(candidates)
+                    self.window.play_stream_with_failover(
+                        queue,
+                        initial_index=0,
+                        title=media_title,
+                        previous_page="details",
+                        season=season,
+                        episode=episode,
+                        imdb_id=imdb_id,
+                        media_type=self.media_type,
+                        stream_subtitles=stream_subs
+                    )
+                else:
+                    if hasattr(self.window, "_pending_subtitle_request") or hasattr(self.window, "fetch_and_add_subtitles"):
+                        self.window._pending_subtitle_request = {
+                            "imdb_id": imdb_id,
+                            "media_type": self.media_type,
+                            "season": season,
+                            "episode": episode,
+                            "stream_subtitles": stream_subs,
+                            "stream_title": media_title,
+                        }
+                        self.window._subtitles_configured_for_file = False
+                    from . import api
+                    headers = api.extract_stream_headers(self.selected_torrent, url=magnet)
+                    self.window._play_stream(magnet, media_title, headers=headers)
         else:
             from . import player
             if self.window:
@@ -5714,88 +5752,187 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._show_ui()
             self._hide_ui_timeout()
 
-    def _update_track_menus(self, track_list):
-        self.subtitles_menu.remove_all()
-        self.subtitles_menu.append(_("Add Subtitle Track"), "win.add-sub-tracks")
-        self.subtitles_menu.append(_("Search Subtitle"), "win.search-subtitles")
+    def _format_sub_label(self, track, same_lang_count=1):
+        from . import api
+        track_id = int(track.get("id", 0))
+        lang = str(track.get("lang") or "").strip()
+        title = str(track.get("title") or "").strip()
+        lang_name = api.get_language_name(lang) if lang else ""
+        is_forced = bool(track.get("forced"))
+        is_sdh = api.is_sdh_track(track)
+        is_ext = bool(track.get("external") or track.get("external-filename") or track.get("external_filename"))
 
+        clean_title = title
+        if clean_title:
+            t_low = clean_title.lower().strip("[](). -_")
+            if t_low in (lang.lower(), lang_name.lower(), "sdh", "forced", "cc"):
+                clean_title = ""
+
+        if lang_name:
+            if clean_title:
+                if lang_name.lower() in clean_title.lower():
+                    base = clean_title
+                else:
+                    base = f"{lang_name} – {clean_title}"
+            else:
+                base = lang_name
+        else:
+            base = clean_title if clean_title else f"{_('Track')} {track_id}"
+
+        if is_forced and "[forced]" not in base.lower():
+            base += " [Forced]"
+        if is_sdh and "[sdh]" not in base.lower():
+            base += " [SDH]"
+        if is_ext and "[ext" not in base.lower() and "external" not in base.lower():
+            base += " [External]"
+        if same_lang_count > 1:
+            base += f" ({_('Track')} {track_id})"
+        return base
+
+    def _format_audio_label(self, track, same_lang_count=1):
+        from . import api
+        track_id = int(track.get("id", 0))
+        lang = str(track.get("lang") or "").strip()
+        title = str(track.get("title") or "").strip()
+        lang_name = api.get_language_name(lang) if lang else ""
+
+        clean_title = title
+        if clean_title:
+            t_low = clean_title.lower().strip("[](). -_")
+            if t_low in (lang.lower(), lang_name.lower()):
+                clean_title = ""
+
+        channels_int = track.get("audio-channels") or track.get("demux-channel-count")
+        demux_ch = track.get("demux-channels")
+        if demux_ch:
+            ch_str = str(demux_ch)
+        elif channels_int == 6:
+            ch_str = "5.1"
+        elif channels_int == 8:
+            ch_str = "7.1"
+        elif channels_int == 2:
+            ch_str = "Stereo"
+        elif channels_int == 1:
+            ch_str = "Mono"
+        else:
+            ch_str = f"{channels_int}ch" if channels_int else ""
+
+        codec = str(track.get("codec") or "").upper()
+        if codec in ["AAC", "AC3", "EAC3", "DTS", "FLAC", "OPUS", "MP3", "TRUEHD", "VORBIS"]:
+            tech = f"{ch_str} {codec}".strip()
+        else:
+            tech = ch_str
+
+        if lang_name:
+            if clean_title:
+                if lang_name.lower() in clean_title.lower():
+                    base = clean_title
+                else:
+                    base = f"{lang_name} – {clean_title}"
+            else:
+                base = lang_name
+        else:
+            base = clean_title if clean_title else f"{_('Track')} {track_id}"
+
+        if tech and tech.lower() not in base.lower():
+            base += f" ({tech})"
+        if same_lang_count > 1:
+            base += f" [{_('Track')} {track_id}]"
+        return base
+
+    def _format_video_label(self, track):
+        track_id = int(track.get("id", 0))
+        title = str(track.get("title") or "").strip()
+        w = track.get("demux-w")
+        h = track.get("demux-h")
+        fps = track.get("demux-fps")
+        res = f"{w}x{h}" if w and h else ""
+        if res and fps and float(fps) > 0:
+            res = f"{res} @ {round(float(fps))}fps"
+        if title:
+            return f"{title} ({res})" if res else title
+        return res if res else f"{_('Track')} {track_id}"
+
+    def _update_track_menus(self, track_list):
+        from collections import Counter
+        from . import api
+
+        # 1. Subtitles Menu
+        self.subtitles_menu.remove_all()
+        actions_section = Gio.Menu.new()
+        actions_section.append(_("Add Subtitle Track"), "win.add-sub-tracks")
+        actions_section.append(_("Search Subtitle"), "win.search-subtitles")
+        self.subtitles_menu.append_section(None, actions_section)
+
+        tracks_section = Gio.Menu.new()
         item_none_sub = Gio.MenuItem.new(_("None"), None)
         item_none_sub.set_action_and_target_value(
             "win.select-subtitle", GLib.Variant("i", 0)
         )
-        self.subtitles_menu.append_item(item_none_sub)
+        tracks_section.append_item(item_none_sub)
 
+        sub_tracks = [t for t in (track_list or []) if t.get("type") == "sub"]
+        sub_lang_counts = Counter()
+        for t in sub_tracks:
+            lang = (t.get("lang") or "").strip()
+            name = api.get_language_name(lang) if lang else "Unknown"
+            sub_lang_counts[name] += 1
+
+        for track in sub_tracks:
+            track_id = int(track.get("id", 0))
+            lang = (track.get("lang") or "").strip()
+            name = api.get_language_name(lang) if lang else "Unknown"
+            label = self._format_sub_label(track, sub_lang_counts[name])
+            item = Gio.MenuItem.new(label, None)
+            item.set_action_and_target_value("win.select-subtitle", GLib.Variant("i", track_id))
+            tracks_section.append_item(item)
+
+        self.subtitles_menu.append_section(None, tracks_section)
+
+        # 2. Audio Tracks Menu
         self.audio_tracks_menu.remove_all()
-        self.audio_tracks_menu.append(_("Add Audio Track"), "win.add-audio-tracks")
+        audio_actions_section = Gio.Menu.new()
+        audio_actions_section.append(_("Add Audio Track"), "win.add-audio-tracks")
+        self.audio_tracks_menu.append_section(None, audio_actions_section)
 
+        audio_tracks_section = Gio.Menu.new()
         item_none_audio = Gio.MenuItem.new(_("None"), None)
         item_none_audio.set_action_and_target_value(
             "win.select-audio", GLib.Variant("i", 0)
         )
-        self.audio_tracks_menu.append_item(item_none_audio)
+        audio_tracks_section.append_item(item_none_audio)
 
+        audio_tracks = [t for t in (track_list or []) if t.get("type") == "audio"]
+        audio_lang_counts = Counter()
+        for t in audio_tracks:
+            lang = (t.get("lang") or "").strip()
+            name = api.get_language_name(lang) if lang else "Unknown"
+            audio_lang_counts[name] += 1
+
+        for track in audio_tracks:
+            track_id = int(track.get("id", 0))
+            lang = (track.get("lang") or "").strip()
+            name = api.get_language_name(lang) if lang else "Unknown"
+            label = self._format_audio_label(track, audio_lang_counts[name])
+            item = Gio.MenuItem.new(label, None)
+            item.set_action_and_target_value("win.select-audio", GLib.Variant("i", track_id))
+            audio_tracks_section.append_item(item)
+
+        self.audio_tracks_menu.append_section(None, audio_tracks_section)
+
+        # 3. Video Tracks Menu
         self.video_tracks_menu.remove_all()
+        video_tracks = [t for t in (track_list or []) if t.get("type") == "video" and not t.get("albumart")]
+        video_tracks_section = Gio.Menu.new()
+        for track in video_tracks:
+            track_id = int(track.get("id", 0))
+            label = self._format_video_label(track)
+            item = Gio.MenuItem.new(label, None)
+            item.set_action_and_target_value("win.select-video", GLib.Variant("i", track_id))
+            video_tracks_section.append_item(item)
 
-        for track in track_list:
-            if track["type"] in ("sub", "audio", "video"):
-                self._add_track_to_menu(track)
-
-        video_count = len(
-            [t for t in track_list if t["type"] == "video" and not t.get("albumart")]
-        )
-        self.video_tracks_menu_btn.set_visible(video_count > 1)
-
-        def hide_box_action_buttons(menu_btn, count=1):
-            """Hide the space before action labels"""
-            try:
-                target = menu_btn.get_popover()
-                for _i in range(8):
-                    if target:
-                        target = target.get_first_child()
-                if target:
-                    target.set_visible(False)
-                if count > 1 and target:
-                    parent_box = target.get_parent()
-                    if parent_box:
-                        mb1 = parent_box.get_parent()
-                        if mb1:
-                            mb2 = mb1.get_next_sibling()
-                            if mb2:
-                                mb2_child = mb2.get_first_child()
-                                if mb2_child:
-                                    mb2_ind = mb2_child.get_first_child()
-                                    if mb2_ind:
-                                        mb2_ind.set_visible(False)
-            except Exception:
-                pass
-
-        hide_box_action_buttons(self.subtitles_menu_btn, count=2)
-        hide_box_action_buttons(self.audio_tracks_menu_btn, count=1)
-
-    def _add_track_to_menu(self, track):
-        track_id = int(track.get("id", 0))
-        track_type = track.get("type")
-        lang = track.get("lang")
-        title = track.get("title")
-
-        label_parts = [p for p in (title, lang) if p]
-        label = (
-            " – ".join(label_parts) if label_parts else (_("Track") + f" {track_id}")
-        )
-
-        if track_type == "sub":
-            menu = self.subtitles_menu
-            action = "win.select-subtitle"
-        elif track_type == "audio":
-            menu = self.audio_tracks_menu
-            action = "win.select-audio"
-        else:
-            menu = self.video_tracks_menu
-            action = "win.select-video"
-
-        item = Gio.MenuItem.new(label, None)
-        item.set_action_and_target_value(action, GLib.Variant("i", track_id))
-        menu.append_item(item)
+        self.video_tracks_menu.append_section(None, video_tracks_section)
+        self.video_tracks_menu_btn.set_visible(len(video_tracks) > 1)
 
     def _create_action(self, name, callback):
         action = Gio.SimpleAction.new(name, None)
@@ -6701,8 +6838,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 keys.append(key)
         for key in keys:
             database.set_setting(key, pref)
-        if pref.get("lang"):
-            database.set_setting("last_audio_lang", pref["lang"])
         item = item_context if isinstance(item_context, dict) else getattr(self, "_current_playing_item", None)
         if item and isinstance(item, dict):
             item["audio_track_id"] = pref.get("track_id")
@@ -6712,7 +6847,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
     def _get_saved_audio_preference(self, item=None):
         item = item if isinstance(item, dict) else getattr(self, "_current_playing_item", None)
-        if isinstance(item, dict) and (item.get("audio_track_lang") or item.get("audio_track_title") or item.get("audio_track_id") is not None or item.get("audio_disabled")):
+        if isinstance(item, dict) and (item.get("audio_track_lang") or item.get("audio_track_title") or item.get("audio_disabled")):
             return {
                 "track_id": item.get("audio_track_id"),
                 "lang": item.get("audio_track_lang"),
@@ -6722,11 +6857,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         from . import database
         for key in self._playback_preference_keys(item, prefix="preferred_audio_"):
             saved = database.get_setting(key, None)
-            if isinstance(saved, dict) and (saved.get("lang") or saved.get("title") or saved.get("track_id") is not None or saved.get("disabled")):
+            if isinstance(saved, dict) and (saved.get("lang") or saved.get("title") or saved.get("disabled")):
                 return saved
-        last_lang = database.get_setting("last_audio_lang", None)
-        if last_lang:
-            return {"lang": str(last_lang), "track_id": None, "title": None, "disabled": False}
         return None
 
     def _remember_subtitle_preference(self, pref, item_context=None):
@@ -6750,7 +6882,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
     def _get_saved_subtitle_preference(self, item=None):
         item = item if isinstance(item, dict) else getattr(self, "_current_playing_item", None)
-        if isinstance(item, dict) and (item.get("sub_track_lang") or item.get("sub_track_title") or item.get("sub_track_id") is not None or item.get("sub_disabled") or item.get("sub_visibility")):
+        if isinstance(item, dict) and (item.get("sub_track_lang") or item.get("sub_track_title") or item.get("sub_disabled") or item.get("sub_visibility")):
             return {
                 "track_id": item.get("sub_track_id"),
                 "lang": item.get("sub_track_lang"),
@@ -6762,7 +6894,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         from . import database
         for key in self._playback_preference_keys(item, prefix="preferred_sub_"):
             saved = database.get_setting(key, None)
-            if isinstance(saved, dict) and (saved.get("lang") or saved.get("title") or saved.get("track_id") is not None or saved.get("disabled") or saved.get("sub_visibility")):
+            if isinstance(saved, dict) and (saved.get("lang") or saved.get("title") or saved.get("disabled") or saved.get("sub_visibility")):
                 return saved
         return None
 
@@ -6834,37 +6966,43 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         
         # 1. Restore Audio Track
         audio_pref = self._get_saved_audio_preference(item)
-        if audio_pref:
-            if audio_pref.get("disabled"):
-                try:
-                    self.mpv.aid = "no"
-                except Exception:
-                    pass
-            else:
+        audio_tracks = [t for t in tracks if t.get("type") == "audio"]
+        if audio_pref and audio_pref.get("disabled"):
+            try:
+                self.mpv.aid = "no"
+            except Exception:
+                pass
+        elif audio_tracks:
+            from . import api
+            matched_track = None
+            if audio_pref:
                 p_lang = (audio_pref.get("lang") or "").lower()
                 p_title = (audio_pref.get("title") or "").lower()
                 p_id = audio_pref.get("track_id")
                 
-                audio_tracks = [t for t in tracks if t.get("type") == "audio"]
-                matched_track = None
                 if p_lang and p_title:
-                    matched_track = next((t for t in audio_tracks if (t.get("lang") or "").lower() == p_lang and p_title in (t.get("title") or "").lower()), None)
+                    matched_track = next((t for t in audio_tracks if api.languages_match(t.get("lang"), p_lang) and p_title in (t.get("title") or "").lower()), None)
+                if not matched_track and p_lang and p_id is not None:
+                    matched_track = next((t for t in audio_tracks if api.languages_match(t.get("lang"), p_lang) and int(t.get("id", -1)) == int(p_id)), None)
                 if not matched_track and p_lang:
-                    matched_track = next((t for t in audio_tracks if (t.get("lang") or "").lower() == p_lang), None)
+                    matched_track = next((t for t in audio_tracks if api.languages_match(t.get("lang"), p_lang)), None)
                 if not matched_track and p_title:
                     matched_track = next((t for t in audio_tracks if p_title in (t.get("title") or "").lower()), None)
-                if not matched_track and p_id and any(int(t.get("id", -1)) == int(p_id) for t in audio_tracks):
-                    matched_track = next((t for t in audio_tracks if int(t.get("id", -1)) == int(p_id)), None)
+
+            if not matched_track:
+                # No saved item preference or saved preference not found in tracks:
+                # Select the best audio track based on user's priority order (e.g. en, hi -> en over hi)
+                matched_track = api.find_best_audio_track(audio_tracks)
                     
-                if matched_track:
-                    t_id = int(matched_track.get("id", 0))
-                    try:
-                        cur_aid = getattr(self.mpv, "aid", None)
-                        if cur_aid != t_id:
-                            self.mpv.aid = t_id
-                            logger.info(f"[AUDIO] Restored preferred audio track: id={t_id}, lang={matched_track.get('lang')}, title={matched_track.get('title')}")
-                    except Exception as e:
-                        logger.debug(f"[AUDIO] Error setting aid {t_id}: {e}")
+            if matched_track:
+                t_id = int(matched_track.get("id", 0))
+                try:
+                    cur_aid = getattr(self.mpv, "aid", None)
+                    if cur_aid != t_id:
+                        self.mpv.aid = t_id
+                        logger.info(f"[AUDIO] Set audio track: id={t_id}, lang={matched_track.get('lang')}, title={matched_track.get('title')}")
+                except Exception as e:
+                    logger.debug(f"[AUDIO] Error setting aid {t_id}: {e}")
 
         # 2. Restore Subtitle Track & Visibility
         sub_pref = self._get_saved_subtitle_preference(item)
@@ -6880,6 +7018,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 except Exception:
                     pass
             elif not sub_pref.get("is_external"):
+                from . import api
                 p_lang = (sub_pref.get("lang") or "").lower()
                 p_title = (sub_pref.get("title") or "").lower()
                 p_id = sub_pref.get("track_id")
@@ -6887,13 +7026,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 sub_tracks = [t for t in tracks if t.get("type") == "sub"]
                 matched_track = None
                 if p_lang and p_title:
-                    matched_track = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang and p_title in (t.get("title") or "").lower()), None)
+                    matched_track = next((t for t in sub_tracks if api.languages_match(t.get("lang"), p_lang) and p_title in (t.get("title") or "").lower()), None)
+                if not matched_track and p_lang and p_id is not None:
+                    matched_track = next((t for t in sub_tracks if api.languages_match(t.get("lang"), p_lang) and int(t.get("id", -1)) == int(p_id)), None)
                 if not matched_track and p_lang:
-                    matched_track = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang), None)
+                    matched_track = next((t for t in sub_tracks if api.languages_match(t.get("lang"), p_lang)), None)
                 if not matched_track and p_title:
                     matched_track = next((t for t in sub_tracks if p_title in (t.get("title") or "").lower()), None)
-                if not matched_track and p_id and any(int(t.get("id", -1)) == int(p_id) for t in sub_tracks):
-                    matched_track = next((t for t in sub_tracks if int(t.get("id", -1)) == int(p_id)), None)
                     
                 if matched_track:
                     t_id = int(matched_track.get("id", 0))
@@ -7978,6 +8117,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         self.mpv.playlist_pos = 0
 
                     self.error_count += 1
+                    self._last_stream_error = str(error)
                     is_yt = bool(
                         (self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower() or "googlevideo.com" in self.loaded_path.lower()))
                         or (isinstance(getattr(self, "_current_playing_item", None), dict) and any(
@@ -8168,7 +8308,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         def on_track_change(name, value):
             def set_track():
                 action_name = track_map.get(name) or ""
-                val = value if isinstance(value, int) else 0
+                if isinstance(value, bool):
+                    val = 0
+                elif isinstance(value, int):
+                    val = value
+                else:
+                    track_type = {"sid": "sub", "aid": "audio", "vid": "video"}.get(name)
+                    tracks = getattr(self.mpv, "track_list", []) or []
+                    sel = next((t for t in tracks if t.get("type") == track_type and t.get("selected")), None)
+                    val = int(sel.get("id", 0)) if sel else 0
                 if action := self.lookup_action(action_name):
                     action.set_state(  # pyright: ignore[reportAttributeAccessIssue]
                         GLib.Variant("i", val)
@@ -16662,12 +16810,27 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     self.mpv["demuxer-readahead-secs"] = 60
                     self.mpv["demuxer-max-bytes"] = 256 * 1024 * 1024
                     self.mpv["demuxer-max-back-bytes"] = 64 * 1024 * 1024
-                    self.mpv["cache-pause-wait"] = 15.0
+                    self.mpv["cache-pause-wait"] = 2.0
                     self.mpv["cache-pause-initial"] = "no"
                 self.mpv["cache"] = "yes"
                 self.mpv["cache-pause"] = "yes"
             except Exception:
                 pass
+
+        # Apply user preferred audio and subtitle languages to MPV
+        try:
+            pref_audios = api.get_user_preferred_audio_languages()
+            if pref_audios:
+                expanded_a = api.expand_language_codes_for_mpv(pref_audios)
+                if expanded_a:
+                    self.mpv["alang"] = expanded_a
+            pref_subs = api.get_user_preferred_languages()
+            if pref_subs:
+                expanded_s = api.expand_language_codes_for_mpv(pref_subs)
+                if expanded_s:
+                    self.mpv["slang"] = expanded_s
+        except Exception as e:
+            logger.debug(f"Error setting mpv alang/slang: {e}")
 
         playback_trace("mpv options configured")
         is_playing_tr = self._is_playing_trailer() or is_trailer
@@ -16712,6 +16875,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         )
 
         self._hls_prep_url = url if is_hls else None
+        self._subtitles_configured_for_file = False
 
         if is_hls and not is_trailer:
             from . import hls_proxy
@@ -16805,6 +16969,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         if sub_file:
             self._pending_local_subtitle = (str(url), str(sub_file))
+        self._subtitles_configured_for_file = False
         playback_trace("loadfile issue", str(url)[:100])
         if seek_target and float(seek_target) > 5.0 and not is_trailer:
             self._seek_after_loaded = float(seek_target)
@@ -16903,9 +17068,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
     def _on_track_list_for_subtitles(self, track_list):
         """Called when track-list updates in MPV. If a preferred embedded subtitle is found, select it immediately and prevent downloading."""
-        if getattr(self, "_subtitles_configured_for_file", False):
-            return
         if self._is_playing_trailer() or getattr(self.mpv, "idle_active", False):
+            return
+        cur_sid = getattr(self.mpv, "sid", None)
+        if getattr(self, "_subtitles_configured_for_file", False) and cur_sid not in ("no", 0, None):
             return
 
         sub_pref = self._get_saved_subtitle_preference()
@@ -16924,15 +17090,16 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 p_title = (sub_pref.get("title") or "").lower()
                 p_id = sub_pref.get("track_id")
                 sub_tracks = [t for t in (track_list or []) if t.get("type") == "sub"]
+                from . import api
                 matched = None
                 if p_lang and p_title:
-                    matched = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang and p_title in (t.get("title") or "").lower()), None)
+                    matched = next((t for t in sub_tracks if api.languages_match(t.get("lang"), p_lang) and p_title in (t.get("title") or "").lower()), None)
+                if not matched and p_lang and p_id is not None:
+                    matched = next((t for t in sub_tracks if api.languages_match(t.get("lang"), p_lang) and int(t.get("id", -1)) == int(p_id)), None)
                 if not matched and p_lang:
-                    matched = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang), None)
+                    matched = next((t for t in sub_tracks if api.languages_match(t.get("lang"), p_lang)), None)
                 if not matched and p_title:
                     matched = next((t for t in sub_tracks if p_title in (t.get("title") or "").lower()), None)
-                if not matched and p_id and any(int(t.get("id", -1)) == int(p_id) for t in sub_tracks):
-                    matched = next((t for t in sub_tracks if int(t.get("id", -1)) == int(p_id)), None)
                 if matched:
                     t_id = int(matched.get("id", 0))
                     try:
@@ -17039,6 +17206,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self._clear_saved_external_subtitle()
 
         tracks = getattr(self.mpv, "track_list", []) or []
+        from . import api
         if sub_pref and not sub_pref.get("is_external"):
             p_lang = (sub_pref.get("lang") or "").lower()
             p_title = (sub_pref.get("title") or "").lower()
@@ -17046,13 +17214,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             sub_tracks = [t for t in tracks if t.get("type") == "sub"]
             matched = None
             if p_lang and p_title:
-                matched = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang and p_title in (t.get("title") or "").lower()), None)
+                matched = next((t for t in sub_tracks if api.languages_match(t.get("lang"), p_lang) and p_title in (t.get("title") or "").lower()), None)
+            if not matched and p_lang and p_id is not None:
+                matched = next((t for t in sub_tracks if api.languages_match(t.get("lang"), p_lang) and int(t.get("id", -1)) == int(p_id)), None)
             if not matched and p_lang:
-                matched = next((t for t in sub_tracks if (t.get("lang") or "").lower() == p_lang), None)
+                matched = next((t for t in sub_tracks if api.languages_match(t.get("lang"), p_lang)), None)
             if not matched and p_title:
                 matched = next((t for t in sub_tracks if p_title in (t.get("title") or "").lower()), None)
-            if not matched and p_id and any(int(t.get("id", -1)) == int(p_id) for t in sub_tracks):
-                matched = next((t for t in sub_tracks if int(t.get("id", -1)) == int(p_id)), None)
             if matched:
                 t_id = int(matched.get("id", 0))
                 try:
@@ -17065,7 +17233,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 except Exception as e:
                     logger.debug(f"[SUBS] Failed to set MPV sid to {t_id}: {e}")
 
-        from . import api
         best_embedded = api.find_best_subtitle_track(tracks, only_embedded=True)
 
         if best_embedded:
@@ -17198,8 +17365,54 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             logger.warning(f"[SUBS] Failed to download subtitle #{idx}: {url}")
                 if downloaded_count == 0:
                     logger.warning(f"[SUBS] Subtitle download failed for imdb_id={imdb_id}")
+                    def _fallback_embedded():
+                        if getattr(self.mpv, "idle_active", False):
+                            return False
+                        cur_sid = getattr(self.mpv, "sid", None)
+                        if cur_sid in ("no", 0, None):
+                            tracks = getattr(self.mpv, "track_list", []) or []
+                            from . import api
+                            best = api.find_best_subtitle_track(tracks, only_embedded=True)
+                            if not best:
+                                sub_tracks = [t for t in tracks if t.get("type") == "sub"]
+                                if sub_tracks:
+                                    best = next((t for t in sub_tracks if not t.get("forced")), sub_tracks[0])
+                            if best:
+                                t_id = int(best.get("id", 0))
+                                try:
+                                    self.mpv.sid = t_id
+                                    self.mpv["sub-visibility"] = "yes"
+                                    self._subtitles_configured_for_file = True
+                                    logger.info(f"[SUBS] Fallback to embedded subtitle track id={t_id} ({best.get('lang')})")
+                                except Exception as e:
+                                    logger.debug(f"[SUBS] Failed to set fallback sid {t_id}: {e}")
+                        return False
+                    GLib.idle_add(_fallback_embedded)
             else:
                 logger.info(f"[SUBS] No external subtitles found for imdb_id={imdb_id}")
+                def _fallback_embedded_no_subs():
+                    if getattr(self.mpv, "idle_active", False):
+                        return False
+                    cur_sid = getattr(self.mpv, "sid", None)
+                    if cur_sid in ("no", 0, None):
+                        tracks = getattr(self.mpv, "track_list", []) or []
+                        from . import api
+                        best = api.find_best_subtitle_track(tracks, only_embedded=True)
+                        if not best:
+                            sub_tracks = [t for t in tracks if t.get("type") == "sub"]
+                            if sub_tracks:
+                                best = next((t for t in sub_tracks if not t.get("forced")), sub_tracks[0])
+                        if best:
+                            t_id = int(best.get("id", 0))
+                            try:
+                                self.mpv.sid = t_id
+                                self.mpv["sub-visibility"] = "yes"
+                                self._subtitles_configured_for_file = True
+                                logger.info(f"[SUBS] Fallback to embedded subtitle track id={t_id} ({best.get('lang')})")
+                            except Exception as e:
+                                logger.debug(f"[SUBS] Failed to set fallback sid {t_id}: {e}")
+                    return False
+                GLib.idle_add(_fallback_embedded_no_subs)
                             
         threading.Thread(target=fetch, daemon=True).start()
 
@@ -17209,17 +17422,17 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             return
             
         try:
-            is_idle = self.mpv.core_idle
+            is_idle = bool(getattr(self.mpv, "idle_active", False))
         except Exception:
             is_idle = True
 
         if is_idle:
-            # MPV isn't playing yet — schedule a retry in 1 second
-            logger.debug("[SUBS] MPV core_idle=True, scheduling retry in 1s")
+            # MPV isn't playing yet — schedule a retry in 500ms
+            logger.debug("[SUBS] MPV idle_active=True, scheduling retry in 500ms")
             def _retry():
                 self._try_add_pending_subtitles()
                 return False
-            GLib.timeout_add(1000, _retry)
+            GLib.timeout_add(500, _retry)
             return
             
         try:
@@ -17293,6 +17506,28 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self.stream_queue_index = self.stream_queue.index(current_stream)
             except ValueError:
                 self.stream_queue_index = 0
+
+        # Filter out any mismatched streams (wrong episode or wrong movie) from queue
+        page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
+        target_m_title = title or (getattr(page, 'movie_details', {}) or {}).get('title') or (getattr(page, 'movie_stub', {}) or {}).get('title')
+        target_m_year = (getattr(page, 'movie_details', {}) or {}).get('year') or (getattr(page, 'movie_stub', {}) or {}).get('year')
+        from . import api
+        filtered_queue = []
+        for s in self.stream_queue:
+            if season is not None and episode is not None:
+                if api.match_stream_to_episode(s, season, episode) == api.MATCH_MISMATCH:
+                    continue
+            else:
+                if api.match_stream_to_movie(s, target_title=target_m_title, expected_year=target_m_year) == api.MATCH_MISMATCH:
+                    continue
+            filtered_queue.append(s)
+        if filtered_queue:
+            if current_stream in filtered_queue:
+                self.stream_queue_index = filtered_queue.index(current_stream)
+            else:
+                self.stream_queue_index = 0
+            self.stream_queue = filtered_queue
+            current_stream = self.stream_queue[self.stream_queue_index]
 
         entry_subs = current_stream.get("subtitles") if isinstance(current_stream, dict) else None
         all_subs = stream_subtitles or entry_subs
@@ -17435,10 +17670,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if ids_to_check:
             self._current_playing_item["alias_ids"] = list(ids_to_check)
         if existing_cw:
-            for tf in (
-                "audio_track_id", "audio_track_lang", "audio_track_title", "audio_disabled",
-                "sub_track_id", "sub_track_lang", "sub_track_title", "sub_visibility", "sub_disabled", "sub_is_external"
-            ):
+            track_fields = [
+                "audio_track_lang", "audio_track_title", "audio_disabled",
+                "sub_track_lang", "sub_track_title", "sub_visibility", "sub_disabled", "sub_is_external"
+            ]
+            if same_cw_episode:
+                track_fields.extend(["audio_track_id", "sub_track_id"])
+            for tf in track_fields:
                 if tf in existing_cw and tf not in self._current_playing_item:
                     self._current_playing_item[tf] = existing_cw[tf]
 
@@ -17701,7 +17939,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         from . import api
 
         # 1. If HTTP stream failed, check if retrying with alternate User-Agent recovers it (e.g. 403 bot blocks vs 428 bot blocks)
-        if isinstance(failed_st, dict) and failed_st.get("is_http") and not failed_st.get("_ua_fallback_tried"):
+        last_err = str(getattr(self, "_last_stream_error", "") or "").lower()
+        is_server_error = any(code in last_err for code in ["500", "502", "503", "504", "404", "429", "too many requests", "not found", "internal server error", "bad gateway"])
+        if not is_server_error and isinstance(failed_st, dict) and failed_st.get("is_http") and not failed_st.get("_ua_fallback_tried"):
             failed_st["_ua_fallback_tried"] = True
             st_headers = api.extract_stream_headers(failed_st)
             magnet = failed_st.get("url") or failed_st.get("magnet")

@@ -39,12 +39,13 @@ settings = Gio.Settings.new("io.github.fastrizwaan.PopcornBox")
 
 def sync_mpv_with_settings(window):
     """Apply settings values to the mpv instance"""
+    from . import api
     mpv = window.mpv
     mpv["sub-color"] = settings.get_string("subtitle-color")
     mpv["sub-scale"] = settings.get_double("subtitle-scale")
     mpv["sub-font"] = settings.get_string("subtitle-font")
-    mpv["slang"] = settings.get_string("subtitle-languages")
-    mpv["alang"] = settings.get_string("audio-languages")
+    mpv["slang"] = api.expand_language_codes_for_mpv(settings.get_string("subtitle-languages"))
+    mpv["alang"] = api.expand_language_codes_for_mpv(settings.get_string("audio-languages"))
     mpv["volume"] = settings.get_int("volume")
     mpv["save-position-on-quit"] = settings.get_boolean("save-video-position")
     hwdec_enabled = settings.get_boolean("hwdec")
@@ -521,10 +522,12 @@ class Preferences(Adw.Dialog):
             self.mpv["sub-shadow-color"] = "#97000000"
 
     def _on_slang_changed(self, settings, key):
-        self.mpv["slang"] = settings.get_string(key)
+        from . import api
+        self.mpv["slang"] = api.expand_language_codes_for_mpv(settings.get_string(key))
 
     def _on_alang_changed(self, settings, key):
-        self.mpv["alang"] = settings.get_string(key)
+        from . import api
+        self.mpv["alang"] = api.expand_language_codes_for_mpv(settings.get_string(key))
 
     def _on_thumb_preview_changed(self, settings, key):
         if not settings.get_boolean(key) and self.win.preview_player:
