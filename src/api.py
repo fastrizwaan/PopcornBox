@@ -6856,6 +6856,8 @@ def refresh_stream(imdb_id, media_type="movie", season=None, episode=None, old_s
     
     return old_stream, fresh_streams
 
+DEFAULT_BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
 def extract_stream_headers(stream_entry, url=None):
     """
     Extract HTTP headers required for streaming from behaviorHints (proxyHeaders, headers, requestHeaders)
@@ -6909,6 +6911,11 @@ def extract_stream_headers(stream_entry, url=None):
     if target_url and isinstance(target_url, str) and "hakunaymatata.com" in target_url.lower():
         # hakunaymatata.com rejects Mozilla browser User-Agents with HTTP 428 and external Referers with HTTP 429
         headers = {k: v for k, v in headers.items() if k.lower() not in ("user-agent", "referer")}
+    elif not any(k.lower() == "user-agent" for k in headers):
+        # Default to standard browser User-Agent for all direct HTTP streams (prevents Cloudflare/CDN bot blocks and stalls)
+        is_http_url = isinstance(target_url, str) and target_url.startswith(("http://", "https://"))
+        if is_http_url or stream_dict.get("is_http"):
+            headers["User-Agent"] = DEFAULT_BROWSER_USER_AGENT
 
     return headers
 

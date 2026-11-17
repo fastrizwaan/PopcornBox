@@ -200,6 +200,101 @@ class TestPlayWaitAndStreamRemember(unittest.TestCase):
 
         self.assertEqual(page.selected_torrent, stream2_remembered)
 
+    def test_extract_stream_headers_default_browser_user_agent(self):
+        """Verify extract_stream_headers sets DEFAULT_BROWSER_USER_AGENT for HTTP streams unless custom or hakunaymatata."""
+        from src import api
+
+        # 1. Direct HTTP stream with no headers -> sets default browser User-Agent
+        stream = {
+            "url": "https://floral-dawn-5cec.workers.dev/video.mp4",
+            "is_http": True
+        }
+        headers = api.extract_stream_headers(stream)
+        self.assertIn("User-Agent", headers)
+        self.assertEqual(headers["User-Agent"], api.DEFAULT_BROWSER_USER_AGENT)
+
+        # 2. hakunaymatata.com -> strips User-Agent to bypass 428/429
+        hakuna_stream = {
+            "url": "https://hakunaymatata.com/stream/file.mp4",
+            "is_http": True
+        }
+        h_headers = api.extract_stream_headers(hakuna_stream)
+        self.assertNotIn("User-Agent", h_headers)
+
+        # 3. Custom User-Agent in behaviorHints proxyHeaders -> preserves custom UA
+        custom_ua_stream = {
+            "url": "https://custom.com/stream.mp4",
+            "is_http": True,
+            "behaviorHints": {
+                "proxyHeaders": {
+                    "request": {
+                        "User-Agent": "CustomPlayer/1.0",
+                        "Referer": "https://custom.com"
+                    }
+                }
+            }
+        }
+        c_headers = api.extract_stream_headers(custom_ua_stream)
+        self.assertEqual(c_headers.get("User-Agent"), "CustomPlayer/1.0")
+        self.assertEqual(c_headers.get("Referer"), "https://custom.com")
+
+    def test_continue_watching_alias_resolution_for_working_streams(self):
+        """Verify continue_watching entries provide cross-alias lookup for get_working_stream."""
+        from src import database
+
+        stream = {
+            "url": "https://debrid.worker/file.mp4",
+            "is_http": True,
+            "stream_title": "Movie 1080p",
+            "quality": "1080p",
+            "addon_names": ["Torrentio"]
+        }
+
+        # Save continue watching with alias IDs
+        database.save_continue_watching({
+            "id": "tmdb:99999",
+            "imdb_id": "tt9999999",
+            "alias_ids": ["tt9999999", "tmdb:99999"],
+            "title": "Alias Test Movie",
+            "selected_torrent": stream,
+            "stream_url": stream["url"]
+        })
+
+        # Save working stream under tt9999999
+        database.save_working_stream("tt9999999", stream_info=stream)
+
+        # Lookup by tmdb:99999 should find it via continue_watching alias resolution
+        found = database.get_working_stream("tmdb:99999")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.get("url"), stream["url"])
+
+    def test_play_button_proceeds_when_stream_already_ready(self):
+        """Verify MovieDetailsPage.on_watch_clicked plays immediately when a working stream is already loaded."""
+        from src.window import MovieDetailsPage
+
+        movie_data = {
+            "id": "tt1234567",
+            "imdb_id": "tt1234567",
+            "title": "Immediate Play Movie",
+            "type": "movie"
+        }
+        page = MovieDetailsPage(movie_data, on_back=lambda: None)
+
+        ready_stream = {
+            "url": "https://fast-stream.org/movie.mp4",
+            "is_http": True,
+            "stream_title": "Fast Stream 1080p"
+        }
+        page.remembered_working_stream = ready_stream
+        page.selected_torrent = ready_stream
+        page.torrents = None  # Streams still fetching from network
+
+        # Calling on_watch_clicked should not arm _auto_play_on_streams_loaded since stream is already ready
+        with patch.object(page, "_start_streaming") as mock_start:
+            page.on_watch_clicked()
+            mock_start.assert_called_once()
+            self.assertFalse(getattr(page, "_auto_play_on_streams_loaded", False))
+
 
 if __name__ == "__main__":
     unittest.main()

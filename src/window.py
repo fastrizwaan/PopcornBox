@@ -584,17 +584,25 @@ class MovieDetailsPage(Gtk.Overlay):
         self.preferred_direct_provider = None
         self.user_selected_quality = None
         from . import database
-        item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
-        primary_id = item_id[0] if isinstance(item_id, list) else item_id
-        if primary_id:
-            self.remembered_working_stream = database.get_working_stream(primary_id, self.selected_season, self.selected_episode)
+        lookup_ids = []
+        for k in ("id", "imdb_id"):
+            v = self.movie_stub.get(k)
+            if v and str(v) not in lookup_ids:
+                lookup_ids.append(str(v))
+        for a in self.movie_stub.get("alias_ids") or []:
+            if a and str(a) not in lookup_ids:
+                lookup_ids.append(str(a))
+        primary_id = lookup_ids[0] if lookup_ids else None
+        if lookup_ids:
+            self.remembered_working_stream = database.get_working_stream(lookup_ids, self.selected_season, self.selected_episode)
             if self.remembered_working_stream:
                 self.selected_torrent = self.remembered_working_stream
                 if self.remembered_working_stream.get("quality"):
                     self.user_selected_quality = _normalize_stream_quality(self.remembered_working_stream)
-            self.preferred_direct_provider = database.get_setting(f"preferred_direct_provider_{primary_id}", None)
-            if not self.user_selected_quality:
-                self.user_selected_quality = database.get_setting(f"preferred_quality_{primary_id}", None)
+            if primary_id:
+                self.preferred_direct_provider = database.get_setting(f"preferred_direct_provider_{primary_id}", None)
+                if not self.user_selected_quality:
+                    self.user_selected_quality = database.get_setting(f"preferred_quality_{primary_id}", None)
         if not self.preferred_direct_provider and hasattr(self, "window") and self.window:
             self.preferred_direct_provider = getattr(self.window, "preferred_direct_provider", None)
         if not self.preferred_direct_provider:
@@ -3468,9 +3476,15 @@ class MovieDetailsPage(Gtk.Overlay):
             self.torrents = []
             self._user_explicitly_selected_stream = False
             from . import database
-            item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
-            primary_id = item_id[0] if isinstance(item_id, list) else item_id
-            cw_stream = database.get_working_stream(primary_id, sel_season, sel_episode) if primary_id else None
+            lookup_ids = []
+            for k in ("id", "imdb_id"):
+                v = self.movie_stub.get(k)
+                if v and str(v) not in lookup_ids:
+                    lookup_ids.append(str(v))
+            for a in self.movie_stub.get("alias_ids") or []:
+                if a and str(a) not in lookup_ids:
+                    lookup_ids.append(str(a))
+            cw_stream = database.get_working_stream(lookup_ids, sel_season, sel_episode) if lookup_ids else None
             self.remembered_working_stream = cw_stream or getattr(self, "remembered_working_stream", None)
             self.selected_torrent = self.remembered_working_stream
             if hasattr(self, 'provider_dropdown'):
@@ -4117,8 +4131,9 @@ class MovieDetailsPage(Gtk.Overlay):
         if self.window and hasattr(self.window, "_cancel_all_background_fetching"):
             self.window._cancel_all_background_fetching(cancel_streams=False)
 
-        # If streams have not populated yet, wait for streams to populate and auto-play
-        if not getattr(self, 'torrents', None):
+        ready_st = getattr(self, 'selected_torrent', None) or getattr(self, 'remembered_working_stream', None)
+        # If streams have not populated yet and no stream is ready, wait for streams to populate and auto-play
+        if not getattr(self, 'torrents', None) and not ready_st:
             media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
             self._auto_play_on_streams_loaded = True
             if hasattr(self, 'progress_label') and self.progress_label:
@@ -4281,6 +4296,8 @@ class MovieDetailsPage(Gtk.Overlay):
                     self.selected_torrent = pref_matches[0]
                 else:
                     self.selected_torrent = raw_t_list[0]
+            elif ready_st:
+                self.selected_torrent = ready_st
             else:
                 if not getattr(self, 'torrents', None):
                     media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
@@ -13401,7 +13418,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         from . import database
         from . import api
-        working_stream = database.get_working_stream(p_id, season, episode) or item_data.get("selected_torrent")
+        lookup_ids = []
+        for k in ("id", "imdb_id"):
+            v = item_data.get(k)
+            if v and str(v) not in lookup_ids:
+                lookup_ids.append(str(v))
+        for a in item_data.get("alias_ids") or []:
+            if a and str(a) not in lookup_ids:
+                lookup_ids.append(str(a))
+        working_stream = database.get_working_stream(lookup_ids or p_id, season, episode) or item_data.get("selected_torrent")
 
         # Fast targeted refresh if stream link is stale (e.g. app restarted after a day or two)
         if database.is_stream_stale(working_stream or item_data) and p_id:
@@ -16356,9 +16381,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         logger.warning(
             f"[FAILOVER] Stream loading timed out after {timeout} seconds for stream {self.stream_queue_index + 1}/{len(self.stream_queue)}. Advancing to next stream..."
         )
-        self._show_toast(
-            _("Stream timed out after {seconds}s. Trying next stream...").format(seconds=timeout)
-        )
+        self._last_stream_error = f"Stream timed out after {timeout}s"
         self._try_next_stream_in_queue()
         return GLib.SOURCE_REMOVE
 
@@ -16825,6 +16848,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self.mpv["ytdl"] = False
             except Exception:
                 pass
+
+            if not user_agent and not is_hakuna and not is_web_media_url:
+                user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
             self.mpv["user-agent"] = user_agent or ""
             self.mpv["referrer"] = referrer or ""
@@ -17567,12 +17593,22 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 if api.match_stream_to_movie(s, target_title=target_m_title, expected_year=target_m_year) == api.MATCH_MISMATCH:
                     continue
             filtered_queue.append(s)
-        if filtered_queue:
-            if current_stream in filtered_queue:
-                self.stream_queue_index = filtered_queue.index(current_stream)
+        # Deduplicate queue by stream identity while preserving order
+        unique_queue = []
+        seen_stream_idents = set()
+        for s in (filtered_queue or self.stream_queue):
+            ident = _stream_identity(s)
+            if ident and ident[0] != "object":
+                if ident in seen_stream_idents:
+                    continue
+                seen_stream_idents.add(ident)
+            unique_queue.append(s)
+        if unique_queue:
+            if current_stream in unique_queue:
+                self.stream_queue_index = unique_queue.index(current_stream)
             else:
-                self.stream_queue_index = 0
-            self.stream_queue = filtered_queue
+                self.stream_queue_index = max(0, min(self.stream_queue_index, len(unique_queue) - 1))
+            self.stream_queue = unique_queue
             current_stream = self.stream_queue[self.stream_queue_index]
 
         entry_subs = current_stream.get("subtitles") if isinstance(current_stream, dict) else None

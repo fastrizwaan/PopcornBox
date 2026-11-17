@@ -1649,6 +1649,15 @@ def save_working_stream(item_id, season=None, episode=None, stream_info=None):
             for a in cached_meta.get("alias_ids") or []:
                 if a and str(a) not in ids_to_save:
                     ids_to_save.append(str(a))
+    cw_entry = get_continue_watching_item(ids_to_save)
+    if cw_entry:
+        for alt_k in ("imdb_id", "id"):
+            alt_v = cw_entry.get(alt_k)
+            if alt_v and str(alt_v) not in ids_to_save:
+                ids_to_save.append(str(alt_v))
+        for a in cw_entry.get("alias_ids") or []:
+            if a and str(a) not in ids_to_save:
+                ids_to_save.append(str(a))
     with _db_lock:
         db = _read_db()
         settings = db.setdefault("settings", {})
@@ -1681,6 +1690,15 @@ def save_playback_preferences(item_id, season=None, episode=None, stream_info=No
                     for a in cached_meta.get("alias_ids") or []:
                         if a and str(a) not in ids_to_save:
                             ids_to_save.append(str(a))
+            cw_entry = get_continue_watching_item(ids_to_save)
+            if cw_entry:
+                for alt_k in ("imdb_id", "id"):
+                    alt_v = cw_entry.get(alt_k)
+                    if alt_v and str(alt_v) not in ids_to_save:
+                        ids_to_save.append(str(alt_v))
+                for a in cw_entry.get("alias_ids") or []:
+                    if a and str(a) not in ids_to_save:
+                        ids_to_save.append(str(a))
             for mid in ids_to_save:
                 settings[f"working_stream_{mid}_{s_key}_{e_key}"] = normalized
         settings.update(settings_values)
@@ -1712,6 +1730,15 @@ def get_working_stream(item_id, season=None, episode=None):
             for a in cached_meta.get("alias_ids") or []:
                 if a and str(a) not in ids_to_match:
                     ids_to_match.append(str(a))
+    cw_entry = get_continue_watching_item(ids_to_match)
+    if cw_entry:
+        for alt_k in ("imdb_id", "id"):
+            alt_v = cw_entry.get(alt_k)
+            if alt_v and str(alt_v) not in ids_to_match:
+                ids_to_match.append(str(alt_v))
+        for a in cw_entry.get("alias_ids") or []:
+            if a and str(a) not in ids_to_match:
+                ids_to_match.append(str(a))
 
     s_key = f"{season}" if season is not None else ""
     e_key = f"{episode}" if episode is not None else ""
