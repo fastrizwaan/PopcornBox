@@ -466,13 +466,13 @@ def stream_sort_key_all(t, sel_s=None, sel_e=None, ep_t=None, pref_prov=None, re
     seeds = int(t.get('seeders') or t.get('seeds') or 0)
     has_seeds = 1 if (is_http or seeds > 0) else 0
     ep_m = api.match_stream_to_episode(t, sel_s, sel_e, ep_t) if (sel_s is not None and sel_e is not None) else 0
+    is_remembered = 1 if (rem_st and _streams_match(t, rem_st)) else 0
     tier = get_stream_priority_tier(t)
     ping_ok = 1 if t.get('ping_status') is True else 0
     is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
-    is_remembered = 1 if (rem_st and _streams_match(t, rem_st)) else 0
     size = float(t.get('size_gb') or 0.0)
     is_under_4gb = 1 if ((0 < size < 4.0) or (size == 0.0)) else 0
-    return (has_seeds, ep_m, tier, ping_ok, is_pref, is_remembered, is_under_4gb, seeds, size)
+    return (has_seeds, ep_m, is_remembered, tier, ping_ok, is_pref, is_under_4gb, seeds, size)
 
 
 
@@ -2427,10 +2427,13 @@ class MovieDetailsPage(Gtk.Overlay):
                     GLib.idle_add(self.window._update_continue_watching_section)
 
         working_stream = getattr(self, "remembered_working_stream", None)
-        if not working_stream and primary_id:
-            working_stream = database.get_working_stream(primary_id, getattr(self, "selected_season", None), getattr(self, "selected_episode", None))
+        if not working_stream and (primary_id or ids_to_check):
+            lookup_ids = ids_to_check if ids_to_check else primary_id
+            working_stream = database.get_working_stream(lookup_ids, getattr(self, "selected_season", None), getattr(self, "selected_episode", None))
             if working_stream:
                 self.remembered_working_stream = working_stream
+                if not getattr(self, "selected_torrent", None):
+                    self.selected_torrent = working_stream
 
         # Disconnect existing click handler if any
         if hasattr(self, '_continue_btn_hid') and self._continue_btn_hid:
@@ -3463,9 +3466,13 @@ class MovieDetailsPage(Gtk.Overlay):
         if not same_stream_item:
             self.current_t_list = []
             self.torrents = []
-            self.selected_torrent = None
-            self.remembered_working_stream = None
             self._user_explicitly_selected_stream = False
+            from . import database
+            item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
+            primary_id = item_id[0] if isinstance(item_id, list) else item_id
+            cw_stream = database.get_working_stream(primary_id, sel_season, sel_episode) if primary_id else None
+            self.remembered_working_stream = cw_stream or getattr(self, "remembered_working_stream", None)
+            self.selected_torrent = self.remembered_working_stream
             if hasattr(self, 'provider_dropdown'):
                 self._ignore_provider_signals = True
                 try:
@@ -3602,10 +3609,12 @@ class MovieDetailsPage(Gtk.Overlay):
             from . import api
             active_bg = getattr(self, "active_binge_group", None) or (getattr(self.window, "active_binge_group", None) if self.window else None)
             has_bg_stream = bool(active_bg and any(api.stream_matches_binge_group(t, active_bg) for t in (self.torrents or [])))
+            rem_ws = getattr(self, "remembered_working_stream", None)
+            has_rem_stream = bool(rem_ws and any(_streams_match(t, rem_ws) for t in (self.torrents or [])))
 
             ready_for_auto_play = False
             if self.torrents:
-                if has_bg_stream or has_pref_stream or is_complete or (not pref_prov and not pref_q and not active_bg):
+                if has_rem_stream or has_bg_stream or has_pref_stream or is_complete or (not pref_prov and not pref_q and not active_bg and not rem_ws):
                     ready_for_auto_play = True
 
             if ready_for_auto_play and getattr(self, '_auto_play_on_streams_loaded', False):
@@ -3883,15 +3892,17 @@ class MovieDetailsPage(Gtk.Overlay):
                     full_item_str = f"{status_prefix}{raw_title}{suffix}"
                 strings.append(full_item_str)
             selected_idx = 0
-            curr_sel = getattr(self, 'selected_torrent', None)
+            curr_sel = getattr(self, 'selected_torrent', None) or getattr(self, 'remembered_working_stream', None)
             if curr_sel and sel_s is not None and sel_e is not None:
                 from . import api
                 if api.match_stream_to_episode(curr_sel, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
                     curr_sel = None
             user_explicit = getattr(self, '_user_explicitly_selected_stream', False)
-            if user_explicit and curr_sel and t_list:
-                selected_idx = _find_stream_index_exact(curr_sel, t_list)
-                if selected_idx < 0:
+            if curr_sel and t_list:
+                matched_idx = _find_stream_index_exact(curr_sel, t_list)
+                if matched_idx >= 0:
+                    selected_idx = matched_idx
+                else:
                     selected_idx = 0
             else:
                 selected_idx = 0
@@ -3900,7 +3911,7 @@ class MovieDetailsPage(Gtk.Overlay):
             try:
                 self.file_dropdown.set_model(Gtk.StringList.new(strings))
                 self.file_dropdown.set_selected(selected_idx)
-                if not (user_explicit and curr_sel and selected_idx == 0 and _stream_identity(curr_sel) != _stream_identity(t_list[0])):
+                if t_list and selected_idx < len(t_list):
                     self.selected_torrent = t_list[selected_idx]
             finally:
                 self._programmatic_dropdown_switch = False
@@ -3993,13 +4004,7 @@ class MovieDetailsPage(Gtk.Overlay):
             if getattr(self, "remembered_working_stream", None) and target_t_list:
                 idx = _find_stream_index_exact(self.remembered_working_stream, target_t_list)
                 if idx >= 0:
-                    is_all_prov = (source_idx == 0)
-                    is_all_qual = (target_btn and target_btn.get_label() == "All")
-                    user_chose = getattr(self, '_user_explicitly_selected_stream', False)
-                    if is_all_prov and is_all_qual and not user_chose:
-                        self.selected_torrent = target_t_list[0]
-                    else:
-                        self.selected_torrent = target_t_list[idx]
+                    self.selected_torrent = target_t_list[idx]
 
             if target_btn and target_t_list:
                 if not target_btn.get_active():
@@ -4112,6 +4117,38 @@ class MovieDetailsPage(Gtk.Overlay):
         if self.window and hasattr(self.window, "_cancel_all_background_fetching"):
             self.window._cancel_all_background_fetching(cancel_streams=False)
 
+        # If streams have not populated yet, wait for streams to populate and auto-play
+        if not getattr(self, 'torrents', None):
+            media_title = self.movie_stub.get("name") or self.movie_stub.get("title", "Unknown Title")
+            self._auto_play_on_streams_loaded = True
+            if hasattr(self, 'progress_label') and self.progress_label:
+                self.progress_label.set_text(_("Loading streams to play..."))
+            if self.window:
+                self.window.show_player_loading(_("Loading streams to play..."), media_title)
+            playback_trace("waiting for streams (auto-play armed)")
+            if not getattr(self, '_fetching_streams', False):
+                self.fetch_torrents_async(force=False)
+
+            current_gen = getattr(self, '_fetch_gen', 0)
+            def _fallback_wait_check():
+                if not self._is_current_details_page() or getattr(self, '_fetch_gen', 0) != current_gen:
+                    return False
+                if getattr(self, '_auto_play_on_streams_loaded', False):
+                    if getattr(self, 'torrents', None):
+                        self._auto_play_on_streams_loaded = False
+                        playback_trace("fallback auto-play from wait check", f"cards={len(self.torrents)}")
+                        GLib.idle_add(self.on_watch_clicked, None)
+                    elif not getattr(self, '_fetching_streams', False):
+                        self._auto_play_on_streams_loaded = False
+                        if self.window:
+                            self.window.hide_player_loading()
+                            self.window._next_episode_transition_in_progress = False
+                        if hasattr(self, 'progress_label') and self.progress_label:
+                            self.progress_label.set_text(_("No streams available."))
+                return False
+            GLib.timeout_add(3000, _fallback_wait_check)
+            return
+
         raw_t_list = getattr(self, 'current_t_list', []) or []
         
         sel_prov_name = "All Providers"
@@ -4173,6 +4210,8 @@ class MovieDetailsPage(Gtk.Overlay):
                 else:
                     raw_sorted = sorted(raw_t_list, key=sort_all_fn, reverse=True)
                     self.selected_torrent = raw_sorted[0]
+            elif rem_st:
+                self.selected_torrent = rem_st
             else:
                 self.selected_torrent = None
         elif selected:
@@ -4256,6 +4295,13 @@ class MovieDetailsPage(Gtk.Overlay):
                     if self.window and hasattr(self.window, '_show_toast'):
                         self.window._show_toast("No streams match active filter.")
                     return
+
+        if not getattr(self, 'selected_torrent', None):
+            if self.window:
+                self.window.hide_player_loading()
+                if hasattr(self.window, '_show_toast'):
+                    self.window._show_toast(_("No playable stream available."))
+            return
 
         playback_trace("stream chosen", str(self.selected_torrent.get("title") or self.selected_torrent.get("name") or "")[:80])
 

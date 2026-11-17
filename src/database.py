@@ -1638,8 +1638,23 @@ def save_working_stream(item_id, season=None, episode=None, stream_info=None):
         norm["saved_at"] = _time.time()
     s_key = f"{season}" if season is not None else ""
     e_key = f"{episode}" if episode is not None else ""
-    key = f"working_stream_{item_id}_{s_key}_{e_key}"
-    set_setting(key, norm)
+    ids_to_save = [str(x) for x in item_id if x] if isinstance(item_id, (list, tuple, set)) else [str(item_id)]
+    for mid in list(ids_to_save):
+        cached_meta = get_cached_metadata(mid)
+        if cached_meta:
+            for alt_k in ("imdb_id", "id"):
+                alt_v = cached_meta.get(alt_k)
+                if alt_v and str(alt_v) not in ids_to_save:
+                    ids_to_save.append(str(alt_v))
+            for a in cached_meta.get("alias_ids") or []:
+                if a and str(a) not in ids_to_save:
+                    ids_to_save.append(str(a))
+    with _db_lock:
+        db = _read_db()
+        settings = db.setdefault("settings", {})
+        for mid in ids_to_save:
+            settings[f"working_stream_{mid}_{s_key}_{e_key}"] = norm
+        _write_db(db)
 
 def save_playback_preferences(item_id, season=None, episode=None, stream_info=None, settings_values=None):
     """Persist playback choices in one database write."""
@@ -1655,7 +1670,19 @@ def save_playback_preferences(item_id, season=None, episode=None, stream_info=No
         if normalized and item_id:
             s_key = f"{season}" if season is not None else ""
             e_key = f"{episode}" if episode is not None else ""
-            settings[f"working_stream_{item_id}_{s_key}_{e_key}"] = normalized
+            ids_to_save = [str(x) for x in item_id if x] if isinstance(item_id, (list, tuple, set)) else [str(item_id)]
+            for mid in list(ids_to_save):
+                cached_meta = get_cached_metadata(mid)
+                if cached_meta:
+                    for alt_k in ("imdb_id", "id"):
+                        alt_v = cached_meta.get(alt_k)
+                        if alt_v and str(alt_v) not in ids_to_save:
+                            ids_to_save.append(str(alt_v))
+                    for a in cached_meta.get("alias_ids") or []:
+                        if a and str(a) not in ids_to_save:
+                            ids_to_save.append(str(a))
+            for mid in ids_to_save:
+                settings[f"working_stream_{mid}_{s_key}_{e_key}"] = normalized
         settings.update(settings_values)
         _write_db(db)
 
@@ -1674,39 +1701,53 @@ def get_working_stream(item_id, season=None, episode=None):
         except Exception:
             return True
 
+    ids_to_match = [str(x) for x in item_id if x] if isinstance(item_id, (list, set, tuple)) else [str(item_id)]
+    for mid in list(ids_to_match):
+        cached_meta = get_cached_metadata(mid)
+        if cached_meta:
+            for alt_k in ("imdb_id", "id"):
+                alt_v = cached_meta.get(alt_k)
+                if alt_v and str(alt_v) not in ids_to_match:
+                    ids_to_match.append(str(alt_v))
+            for a in cached_meta.get("alias_ids") or []:
+                if a and str(a) not in ids_to_match:
+                    ids_to_match.append(str(a))
+
     s_key = f"{season}" if season is not None else ""
     e_key = f"{episode}" if episode is not None else ""
-    key = f"working_stream_{item_id}_{s_key}_{e_key}"
-    saved = get_setting(key, None)
-    if saved and _is_stream_valid_for_ep(saved):
-        return saved
-    if s_key or e_key:
-        general_saved = get_setting(f"working_stream_{item_id}__", None)
-        if general_saved and _is_stream_valid_for_ep(general_saved):
-            return general_saved
 
-    # Check remembered season/series pack torrent
-    pack_torrent = get_series_pack_torrent(item_id, season=season)
-    if pack_torrent and not pack_torrent.get("is_http"):
-        info_hash = pack_torrent.get("hash")
-        cached_files = get_torrent_files(info_hash) if info_hash else []
-        if cached_files and season is not None and episode is not None:
-            from . import api
-            ep_idx = api.find_matching_file_index(cached_files, season=season, episode=episode, strict=True)
-            if ep_idx is not None:
+    for mid in ids_to_match:
+        key = f"working_stream_{mid}_{s_key}_{e_key}"
+        saved = get_setting(key, None)
+        if saved and _is_stream_valid_for_ep(saved):
+            return saved
+        if s_key or e_key:
+            general_saved = get_setting(f"working_stream_{mid}__", None)
+            if general_saved and _is_stream_valid_for_ep(general_saved):
+                return general_saved
+
+        # Check remembered season/series pack torrent
+        pack_torrent = get_series_pack_torrent(mid, season=season)
+        if pack_torrent and not pack_torrent.get("is_http"):
+            info_hash = pack_torrent.get("hash")
+            cached_files = get_torrent_files(info_hash) if info_hash else []
+            if cached_files and season is not None and episode is not None:
+                from . import api
+                ep_idx = api.find_matching_file_index(cached_files, season=season, episode=episode, strict=True)
+                if ep_idx is not None:
+                    cand = dict(pack_torrent)
+                    cand["file_index"] = ep_idx
+                    cand["fileIdx"] = ep_idx
+                    if ep_idx < len(cached_files):
+                        cand["filename"] = cached_files[ep_idx]["path"]
+                    return cand
+            elif _is_stream_valid_for_ep(pack_torrent):
                 cand = dict(pack_torrent)
-                cand["file_index"] = ep_idx
-                cand["fileIdx"] = ep_idx
-                if ep_idx < len(cached_files):
-                    cand["filename"] = cached_files[ep_idx]["path"]
+                cand["file_index"] = None
+                cand["fileIdx"] = None
                 return cand
-        elif _is_stream_valid_for_ep(pack_torrent):
-            cand = dict(pack_torrent)
-            cand["file_index"] = None
-            cand["fileIdx"] = None
-            return cand
 
-    cw = get_continue_watching_item(item_id)
+    cw = get_continue_watching_item(ids_to_match)
     if cw:
         cand = None
         if cw.get("selected_torrent"):
