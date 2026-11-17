@@ -28,6 +28,20 @@ from gi.repository import GLib
 logger = logging.getLogger("PopcornBox.HLSProxy")
 
 
+def _sanitize_url(url: str) -> str:
+    """Sanitize URL path by percent-encoding spaces and brackets."""
+    if not url or not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return url
+    try:
+        parts = urllib.parse.urlsplit(url)
+        clean_path = urllib.parse.unquote(parts.path)
+        quoted_path = urllib.parse.quote(clean_path, safe="/:@&=+$,;~*()!'")
+        clean_query = parts.query.replace(" ", "%20") if parts.query else ""
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, quoted_path, clean_query, parts.fragment))
+    except Exception:
+        return url.replace(" ", "%20")
+
+
 def _resolve_relative_url(base_url: str, relative_url: str) -> str:
     """Resolve a relative URL against a base URL, preserving query parameters/tokens when appropriate."""
     full_url = urllib.parse.urljoin(base_url, relative_url)
@@ -36,7 +50,7 @@ def _resolve_relative_url(base_url: str, relative_url: str) -> str:
     if parsed_base.query and not parsed_rel.query and not parsed_rel.netloc:
         delimiter = "&" if "?" in full_url else "?"
         full_url = f"{full_url}{delimiter}{parsed_base.query}"
-    return full_url
+    return _sanitize_url(full_url)
 
 
 class HlsSession:
@@ -44,7 +58,7 @@ class HlsSession:
 
     def __init__(self, session_id: str, url: str, headers: dict = None):
         self.session_id = session_id
-        self.url = url
+        self.url = _sanitize_url(url)
         self.headers = dict(headers or {})
         self.header_lines = []
         self.segments = []  # list of (duration, inf_line, resolved_seg_url)

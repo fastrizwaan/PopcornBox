@@ -1155,7 +1155,15 @@ def save_continue_watching(item, sync_to_remote=True):
                     updated_item["position"] = existing_pos
                 if new_prog <= 0.01 and existing_prog > 0.01:
                     updated_item["progress"] = existing_prog
-                if not updated_item.get("duration") and existing_dur > 0:
+                # Do not let a truncated/partial stream or demuxer artifact shrink the known media duration
+                new_dur = float(updated_item.get("duration") or 0.0)
+                if existing_dur > 0:
+                    if new_dur <= 0.0 or new_dur < existing_dur * 0.85:
+                        updated_item["duration"] = existing_dur
+                        cur_p = float(updated_item.get("position") or 0.0)
+                        if cur_p > 0.0:
+                            updated_item["progress"] = min(1.0, max(0.0, cur_p / existing_dur))
+                elif not updated_item.get("duration") and existing_dur > 0:
                     updated_item["duration"] = existing_dur
 
             # Preserve track preferences from existing record if not explicitly in item

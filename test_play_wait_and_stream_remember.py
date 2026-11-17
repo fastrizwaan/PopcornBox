@@ -396,6 +396,99 @@ class TestPlayWaitAndStreamRemember(unittest.TestCase):
             time.sleep(0.1)
             mock_streamed.assert_called_once()
 
+    def test_sanitize_stream_url(self):
+        """Verify sanitize_stream_url encodes spaces and brackets without double-encoding."""
+        from src.window import sanitize_stream_url
+
+        url1 = "https://example.com/Resident Evil (2002) [Hindi BD].mkv?id=123&token=abc"
+        res1 = sanitize_stream_url(url1)
+        self.assertNotIn(" ", res1)
+        self.assertIn("Resident%20Evil", res1)
+        self.assertIn("%5BHindi%20BD%5D", res1)
+        self.assertIn("id=123&token=abc", res1)
+
+        # Non-HTTP/magnet untouched
+        mag = "magnet:?xt=urn:btih:12345&dn=Resident+Evil"
+        self.assertEqual(sanitize_stream_url(mag), mag)
+
+    def test_stream_identity_unquoting(self):
+        """Verify _stream_identity unquotes URLs so %20 and space match the same identity."""
+        from src.window import _stream_identity
+
+        s1 = {"url": "https://worker.dev/Resident%20Evil%20(2002).mkv"}
+        s2 = {"url": "https://worker.dev/Resident Evil (2002).mkv"}
+        self.assertEqual(_stream_identity(s1), _stream_identity(s2))
+
+    def test_continue_watching_duration_shrink_protection(self):
+        """Verify save_continue_watching never shrinks the known media duration when a partial stream reports a shorter length."""
+        from src import database
+
+        # 1. Save established movie item with 5629s duration
+        item = {
+            "id": "tt35538033",
+            "title": "Resident Evil",
+            "type": "movie",
+            "position": 2236.4,
+            "duration": 5629.7,
+            "progress": 0.397
+        }
+        database.save_continue_watching(item)
+        saved = database.get_continue_watching()[0]
+        self.assertAlmostEqual(saved["duration"], 5629.7, places=1)
+
+        # 2. Incoming update from partial stream reporting only 2400s duration and inflated 0.98 progress
+        item_update = {
+            "id": "tt35538033",
+            "title": "Resident Evil",
+            "type": "movie",
+            "position": 2360.8,
+            "duration": 2400.0,
+            "progress": 0.983
+        }
+        database.save_continue_watching(item_update)
+        updated = database.get_continue_watching()[0]
+        # Duration should be preserved as 5629.7, and progress should be ~0.419, NOT 0.983!
+        self.assertAlmostEqual(updated["duration"], 5629.7, places=1)
+        self.assertAlmostEqual(updated["progress"], 2360.8 / 5629.7, places=2)
+        self.assertLess(updated["progress"], 0.50)
+
+    def test_premature_eof_triggers_failover_and_preserves_position(self):
+        """Verify _handle_eof treats premature stream completion (< 88% progress) as interruption and triggers failover."""
+        from src.window import CineWindow
+        from src import database
+
+        win = MagicMock(spec=CineWindow)
+        win._is_playing_trailer.return_value = False
+        win.next_ep_dismissed = False
+        win.mpv = MagicMock()
+        win.mpv.time_pos = 2360.8
+        win.mpv.duration = 2400.0  # demuxer truncated
+        win._is_hls_proxy_active = False
+        win._current_playing_item = {
+            "id": "tt35538033",
+            "title": "Resident Evil",
+            "type": "movie",
+            "position": 2360.8,
+            "duration": 5629.7,
+            "progress": 0.419
+        }
+        win.stream_queue = [{"url": "https://st1.com"}, {"url": "https://st2.com"}]
+        win._try_next_stream_in_queue = MagicMock()
+        win._show_toast = MagicMock()
+        win._close_player = MagicMock()
+
+        CineWindow._handle_eof(win)
+
+        # Should have called _try_next_stream_in_queue, NOT _close_player
+        win._try_next_stream_in_queue.assert_called_once()
+        win._close_player.assert_not_called()
+
+        # Database should have the item safely saved with position preserved
+        cw = database.get_continue_watching()
+        self.assertEqual(len(cw), 1)
+        self.assertEqual(cw[0]["id"], "tt35538033")
+        self.assertAlmostEqual(cw[0]["position"], 2360.8, places=1)
+
 
 if __name__ == "__main__":
     unittest.main()

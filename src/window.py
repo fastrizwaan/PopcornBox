@@ -108,9 +108,9 @@ from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject, Pango
 DISCOVER_ROW_CARD_LIMIT = 30
 MAX_ADDON_SEARCH_PAGES = 500
 
-STREAM_LOADING_TIMEOUT_SECONDS = 30
+STREAM_LOADING_TIMEOUT_SECONDS = 10
 # Torrents must find peers before any bytes arrive, so metadata discovery
-# routinely outlasts the HTTP-oriented 30s window.
+# routinely outlasts the HTTP-oriented 10s window.
 TORRENT_LOADING_TIMEOUT_SECONDS = 180
 
 # Resuming only a few seconds in skips the intro, and since the position is
@@ -130,6 +130,22 @@ HOME_EXCLUDED_MEDIA_TYPES = {
     "music", "radio", "radios", "podcast", "podcasts", "audio",
 }
 
+def sanitize_stream_url(url):
+    """Sanitize HTTP/HTTPS stream URLs by percent-encoding spaces, brackets and control characters in path."""
+    if not url or not isinstance(url, str):
+        return url
+    if not url.startswith(("http://", "https://")):
+        return url
+    try:
+        import urllib.parse
+        parts = urllib.parse.urlsplit(url)
+        clean_path = urllib.parse.unquote(parts.path)
+        quoted_path = urllib.parse.quote(clean_path, safe="/:@&=+$,;~*()!'")
+        clean_query = parts.query.replace(" ", "%20") if parts.query else ""
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, quoted_path, clean_query, parts.fragment))
+    except Exception:
+        return url.replace(" ", "%20")
+
 def _streams_match(s1, s2):
     return api.streams_match(s1, s2)
 
@@ -138,7 +154,9 @@ def _stream_identity(stream):
         return None
     link = stream.get("url") or stream.get("magnet")
     if link:
-        return ("link", str(link))
+        import urllib.parse
+        norm_link = urllib.parse.unquote(str(link)).strip().rstrip("/")
+        return ("link", norm_link)
     hash_value = stream.get("hash") or stream.get("infoHash")
     if hash_value:
         file_index = stream.get("file_index")
@@ -295,9 +313,12 @@ def is_direct_stream(stream):
     return False
 
 
-def _fresh_stream_candidates(refreshed, fresh_queue, previous):
-    """Return newly fetched playable links, excluding the known dead link."""
+def _fresh_stream_candidates(refreshed, fresh_queue, previous, failed_identities=None):
+    """Return newly fetched playable links, excluding known dead links."""
     previous_identity = _stream_identity(previous)
+    failed_set = set(failed_identities or ())
+    if previous_identity:
+        failed_set.add(previous_identity)
     is_direct = is_direct_stream(previous) if previous else False
     is_torrent = is_torrent_stream(previous) if previous else False
     candidates = []
@@ -315,7 +336,7 @@ def _fresh_stream_candidates(refreshed, fresh_queue, previous):
         if is_torrent and not is_torrent_stream(stream):
             continue
         identity = _stream_identity(stream)
-        if identity is None or identity == previous_identity or identity in seen:
+        if identity is None or identity in failed_set or identity in seen:
             continue
         seen.add(identity)
         stream["_refreshed"] = True
@@ -323,8 +344,10 @@ def _fresh_stream_candidates(refreshed, fresh_queue, previous):
     return candidates
 
 
-def _merge_fresh_stream_queue(primary, fallback=(), exclude_streams=()):
+def _merge_fresh_stream_queue(primary, fallback=(), exclude_streams=(), failed_identities=None):
     excluded = {_stream_identity(stream) for stream in (exclude_streams or ())}
+    if failed_identities:
+        excluded.update(failed_identities)
     target_stream = None
     for s in list(primary or ()) + list(fallback or ()):
         if isinstance(s, dict):
@@ -355,7 +378,10 @@ def _stream_link_changed(refreshed, previous):
     if not isinstance(refreshed, dict) or not refreshed:
         return False
     old = previous if isinstance(previous, dict) else {}
-    return (refreshed.get("url") or refreshed.get("magnet")) != (old.get("url") or old.get("magnet"))
+    import urllib.parse
+    r_link = urllib.parse.unquote(str(refreshed.get("url") or refreshed.get("magnet") or "")).strip().rstrip("/")
+    o_link = urllib.parse.unquote(str(old.get("url") or old.get("magnet") or "")).strip().rstrip("/")
+    return bool(r_link and r_link != o_link)
 
 
 def _normalize_stream_quality(stream):
@@ -5318,6 +5344,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self.stream_queue_details_page = None
         self.stream_queue_item_key = None
         self.stream_request_id = 0
+        self._failed_stream_identities = set()
         self._waiting_for_more_streams = False
         self._stream_loading_watchdog_id = None
         self._trailer_loading_watchdog_id = None
@@ -6775,6 +6802,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 else:
                     if req_seek and curr_time >= float(req_seek) - 5.0:
                         self._request_seek_position = None
+                    existing_dur = float(self._current_playing_item.get("duration") or 0.0)
+                    effective_dur = max(duration, existing_dur)
+                    if effective_dur > 0 and duration < effective_dur * 0.85:
+                        duration = effective_dur
                     prog = min(1.0, max(0.0, curr_time / duration)) if duration > 0 else 0.0
                     self._current_playing_item["position"] = curr_time
                     self._current_playing_item["duration"] = duration
@@ -16484,18 +16515,28 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             new_streams = [s for s in new_streams if is_torrent_stream(s)]
 
         existing_keys = set()
+        failed_ids = getattr(self, "_failed_stream_identities", set())
+        import urllib.parse
         for s in self.stream_queue:
             if isinstance(s, dict):
                 k = s.get("url") or s.get("magnet") or s.get("infoHash") or s.get("hash") or s.get("ytId")
                 if k:
                     existing_keys.add(k)
+                    if isinstance(k, str):
+                        existing_keys.add(urllib.parse.unquote(k).strip())
         to_add = []
         for st in new_streams:
             if not isinstance(st, dict):
                 continue
+            ident = _stream_identity(st)
+            if ident in failed_ids:
+                continue
             k = st.get("url") or st.get("magnet") or st.get("infoHash") or st.get("hash") or st.get("ytId")
-            if k and k not in existing_keys:
+            norm_k = urllib.parse.unquote(k).strip() if isinstance(k, str) else k
+            if k and k not in existing_keys and norm_k not in existing_keys:
                 existing_keys.add(k)
+                if norm_k:
+                    existing_keys.add(norm_k)
                 to_add.append(st)
 
         if not to_add:
@@ -16554,6 +16595,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._cancel_stream_waiting_watchdog()
         self._waiting_for_more_streams = False
         self.stream_request_id += 1
+        self._failed_stream_identities = set()
         self.stream_queue = []
         self.stream_queue_index = 0
         self.stream_queue_key = None
@@ -16601,8 +16643,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._hls_session_id = None
             self._hls_time_offset = 0.0
             self._hls_total_duration = None
-        if url and isinstance(url, str) and url.startswith(("http://", "https://")) and " " in url:
-            url = url.replace(" ", "%20")
+        if url and isinstance(url, str) and url.startswith(("http://", "https://")):
+            url = sanitize_stream_url(url)
         if url and isinstance(url, str) and any(d in url.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "embed"]):
             self.hide_player_loading()
             if getattr(self, "stream_queue", None) and self.stream_queue_index < len(self.stream_queue) - 1:
@@ -16872,7 +16914,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self.mpv["http-header-fields"] = custom_header_fields
 
             try:
-                self.mpv["network-timeout"] = 30.0
+                self.mpv["network-timeout"] = 10.0
                 self.mpv["demuxer-lavf-o"] = ""
                 is_live_hls_channel = is_channel_context and str(url).split("?", 1)[0].lower().endswith(".m3u8")
                 if is_live_hls_channel:
@@ -17555,6 +17597,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if episode is not None:
             self.selected_episode = episode
         self.stream_request_id += 1
+        self._failed_stream_identities = set()
         self.stream_queue = list(queue)
         self.stream_queue_index = max(0, min(int(initial_index or 0), len(self.stream_queue) - 1)) if self.stream_queue else 0
         self.stream_queue_title = title
@@ -17846,8 +17889,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         torrent = self.stream_queue[self.stream_queue_index]
         magnet = torrent.get("url") or torrent.get("magnet") if isinstance(torrent, dict) else None
-        if magnet and isinstance(magnet, str) and magnet.startswith(("http://", "https://")) and " " in magnet:
-            magnet = magnet.replace(" ", "%20")
+        if magnet and isinstance(magnet, str) and magnet.startswith(("http://", "https://")):
+            magnet = sanitize_stream_url(magnet)
+            if isinstance(torrent, dict):
+                torrent["url"] = magnet
+                if "magnet" in torrent:
+                    torrent["magnet"] = magnet
         hash_val = torrent.get("hash") or torrent.get("infoHash") if isinstance(torrent, dict) else None
         sources = torrent.get("sources") if isinstance(torrent, dict) else None
         file_index = torrent.get("file_index") if isinstance(torrent, dict) else None
@@ -18026,13 +18073,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         # 1. If HTTP stream failed, check if retrying with alternate User-Agent recovers it (e.g. 403 bot blocks vs 428 bot blocks)
         last_err = str(getattr(self, "_last_stream_error", "") or "").lower()
         is_server_error = any(code in last_err for code in ["500", "502", "503", "504", "404", "429", "too many requests", "not found", "internal server error", "bad gateway"])
+        if not hasattr(self, "_failed_stream_identities"):
+            self._failed_stream_identities = set()
         if not is_server_error and isinstance(failed_st, dict) and failed_st.get("is_http") and not failed_st.get("_ua_fallback_tried"):
             failed_st["_ua_fallback_tried"] = True
             st_headers = api.extract_stream_headers(failed_st)
             magnet = failed_st.get("url") or failed_st.get("magnet")
             if magnet:
-                if isinstance(magnet, str) and magnet.startswith(("http://", "https://")) and " " in magnet:
-                    magnet = magnet.replace(" ", "%20")
+                if isinstance(magnet, str) and magnet.startswith(("http://", "https://")):
+                    magnet = sanitize_stream_url(magnet)
                     failed_st["url"] = magnet
                     if "magnet" in failed_st:
                         failed_st["magnet"] = magnet
@@ -18051,6 +18100,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     fallback_headers = {k: v for k, v in st_headers.items() if k.lower() not in ('user-agent', 'referer')}
                     self._play_stream(magnet, self.stream_queue_title or "Stream", headers=fallback_headers, preserve_queue=True)
                     return
+
+        # Record this stream as failed so it is never retried in this playback session
+        failed_ident = _stream_identity(failed_st)
+        if failed_ident:
+            self._failed_stream_identities.add(failed_ident)
+        if isinstance(failed_st, dict) and failed_st.get("url"):
+            import urllib.parse
+            self._failed_stream_identities.add(("link", urllib.parse.unquote(str(failed_st["url"])).strip().rstrip("/")))
 
         # 2. If HTTP stream failed and has not been refreshed yet, attempt auto-heal refresh from provider first
         if isinstance(failed_st, dict) and failed_st.get("is_http") and not failed_st.get("_refreshed"):
@@ -18079,7 +18136,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         old_stream=failed_st,
                         provider=target_prov
                     )
-                    fresh_candidates = _fresh_stream_candidates(refreshed, fresh_queue, failed_st)
+                    fresh_candidates = _fresh_stream_candidates(
+                        refreshed, fresh_queue, failed_st, failed_identities=self._failed_stream_identities
+                    )
                     if fresh_candidates:
                         chosen_stream = fresh_candidates[0]
                         logger.info(f"[AUTO-HEAL] Using a fresh stream candidate for provider {target_prov}")
@@ -18093,7 +18152,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             current_index = int(getattr(self, "stream_queue_index", 0) or 0)
                             remaining = queue[current_index + 1:] if current_index < len(queue) else []
                             retry_queue = _merge_fresh_stream_queue(
-                                fresh_candidates, remaining, exclude_streams=[failed_st]
+                                fresh_candidates, remaining, exclude_streams=[failed_st], failed_identities=self._failed_stream_identities
                             )
                             if not retry_queue:
                                 self._advance_to_next_stream_in_queue(request_id, failed_st)
@@ -18131,6 +18190,17 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             return
         if not getattr(self, 'stream_queue', None):
             return
+
+        if not hasattr(self, "_failed_stream_identities"):
+            self._failed_stream_identities = set()
+        if failed_st and isinstance(failed_st, dict):
+            f_ident = _stream_identity(failed_st)
+            if f_ident:
+                self._failed_stream_identities.add(f_ident)
+            u = failed_st.get("url")
+            if u:
+                import urllib.parse
+                self._failed_stream_identities.add(("link", urllib.parse.unquote(str(u)).strip().rstrip("/")))
 
         # Prioritize remaining streams from the same provider!
         target_prov = None
@@ -18207,19 +18277,30 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 cache_key = api.get_stream_cache_key(item_id, media_type, season, episode)
                 cached = database.get_cached_streams(cache_key)
                 existing_keys = set()
+                failed_ids = getattr(self, "_failed_stream_identities", set())
+                import urllib.parse
                 for s in (self.stream_queue or []):
                     if isinstance(s, dict):
-                        k = s.get("url") or s.get("magnet") or s.get("hash") or s.get("infoHash")
-                        if k:
-                            existing_keys.add(k)
+                        for k in (s.get("url"), s.get("magnet"), s.get("hash"), s.get("infoHash")):
+                            if k:
+                                existing_keys.add(k)
+                                if isinstance(k, str):
+                                    existing_keys.add(urllib.parse.unquote(k).strip())
+                for fid in failed_ids:
+                    if isinstance(fid, tuple) and len(fid) >= 2:
+                        existing_keys.add(fid[1])
 
                 cached_cands = []
                 if cached and isinstance(cached, list):
                     for s in cached:
                         if not isinstance(s, dict):
                             continue
+                        ident = _stream_identity(s)
+                        if ident in failed_ids:
+                            continue
                         k = s.get("url") or s.get("magnet") or s.get("hash") or s.get("infoHash")
-                        if not k or k in existing_keys:
+                        norm_k = urllib.parse.unquote(k).strip() if isinstance(k, str) else k
+                        if not k or k in existing_keys or norm_k in existing_keys:
                             continue
                         if source_scope == "direct" and not is_direct_stream(s):
                             continue
@@ -18228,6 +18309,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         if s.get("url") and api.is_provider_in_cooldown(s["url"]):
                             continue
                         existing_keys.add(k)
+                        if norm_k:
+                            existing_keys.add(norm_k)
                         cached_cands.append(s)
 
                 if cached_cands:
@@ -18244,14 +18327,20 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     for s in (batch or []):
                         if not isinstance(s, dict):
                             continue
+                        ident = _stream_identity(s)
+                        if ident in failed_ids:
+                            continue
                         k = s.get("url") or s.get("magnet") or s.get("hash") or s.get("infoHash")
-                        if not k or k in existing_keys:
+                        norm_k = urllib.parse.unquote(k).strip() if isinstance(k, str) else k
+                        if not k or k in existing_keys or norm_k in existing_keys:
                             continue
                         if source_scope == "direct" and not is_direct_stream(s):
                             continue
                         if source_scope == "torrent" and not is_torrent_stream(s):
                             continue
                         existing_keys.add(k)
+                        if norm_k:
+                            existing_keys.add(norm_k)
                         new_streams.append(s)
                     if new_streams:
                         self._extend_stream_queue(new_streams)
@@ -18996,7 +19085,43 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     def _handle_eof(self):
         if self._is_playing_trailer() or getattr(self, "next_ep_dismissed", False):
             self._close_player(remove_torrent=False)
-        elif not (self._is_auto_play_next_enabled() and self._try_play_next_episode()):
+            return
+
+        # Check if EOF was premature (e.g. server closed connection or truncated stream)
+        curr_pos = float(getattr(self.mpv, "time_pos", 0) or 0.0)
+        curr_dur = float(getattr(self.mpv, "duration", 0) or 0.0)
+        if getattr(self, "_is_hls_proxy_active", False):
+            curr_pos += getattr(self, "_hls_time_offset", 0.0)
+            if getattr(self, "_hls_total_duration", None):
+                curr_dur = self._hls_total_duration
+        item = getattr(self, "_current_playing_item", None) or {}
+        if curr_pos <= 0:
+            curr_pos = float(item.get("position") or 0.0)
+        existing_dur = float(item.get("duration") or 0.0)
+        metadata_dur = float(item.get("runtime") or 0.0) * 60.0
+        effective_dur = max(curr_dur, existing_dur, metadata_dur)
+        prog = (curr_pos / effective_dur) if effective_dur > 0 else 0.0
+
+        is_completed = (prog >= 0.88) or (effective_dur > 0 and (effective_dur - curr_pos) <= 60.0)
+
+        if not is_completed and curr_pos > 0:
+            logger.warning(
+                f"[FAILOVER] Stream ended prematurely at {curr_pos:.1f}s / {effective_dur:.1f}s "
+                f"(progress {prog:.1%}). Treating as stream interruption..."
+            )
+            item["position"] = curr_pos
+            if effective_dur > 0:
+                item["duration"] = effective_dur
+                item["progress"] = min(1.0, max(0.0, curr_pos / effective_dur))
+            from . import database
+            database.save_continue_watching(item)
+
+            if getattr(self, "stream_queue", None) and len(self.stream_queue) > 0:
+                self._show_toast(_("Stream interrupted. Trying next stream..."))
+                self._try_next_stream_in_queue()
+                return
+
+        if not (self._is_auto_play_next_enabled() and self._try_play_next_episode()):
             self._close_player(remove_torrent=False)
 
     # How long before the end of an episode the next episode's streams are
@@ -19286,6 +19411,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     if curr_dur <= 0:
                         curr_dur = float(self._current_playing_item.get("duration") or 0.0)
 
+                    existing_dur = float(self._current_playing_item.get("duration") or 0.0)
+                    metadata_dur = float(self._current_playing_item.get("runtime") or 0.0) * 60.0
+                    effective_dur = max(curr_dur, existing_dur, metadata_dur)
+                    if effective_dur > 0 and curr_dur < effective_dur * 0.85:
+                        curr_dur = effective_dur
+
                     if curr_pos > 0:
                         prog = min(1.0, max(0.0, curr_pos / curr_dur)) if curr_dur > 0 else float(self._current_playing_item.get("progress") or 0.01)
                         self._current_playing_item["position"] = curr_pos
@@ -19302,7 +19433,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
                     if curr_pos > 0:
                         from . import database
-                        if prog >= 0.92:
+                        # Require genuine completion: at least 600s watched, progress >= 0.92, duration >= 600s
+                        # (or for short clips, progress >= 0.92 and duration > 30s)
+                        is_genuinely_finished = (
+                            prog >= 0.92
+                            and (curr_pos >= 600 or (curr_dur < 600 and curr_dur > 30 and (curr_dur - curr_pos) <= 30))
+                        )
+                        if is_genuinely_finished:
                             if is_series:
                                 self._advance_continue_watching_for_item(self._current_playing_item)
                             else:

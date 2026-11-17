@@ -6590,15 +6590,19 @@ def streams_match(s1, s2):
         return False
 
     u1, u2 = s1.get("url") or "", s2.get("url") or ""
-    if u1 and u2 and u1 == u2:
-        return True
-
-    # Same URL path excluding query parameters / session tokens
-    if u1 and u2 and u1.startswith("http") and u2.startswith("http"):
-        p1 = u1.split("?")[0].rstrip("/")
-        p2 = u2.split("?")[0].rstrip("/")
-        if p1 == p2 and len(p1) > 20:
+    if u1 and u2:
+        import urllib.parse
+        clean_u1 = urllib.parse.unquote(str(u1)).strip()
+        clean_u2 = urllib.parse.unquote(str(u2)).strip()
+        if clean_u1 == clean_u2:
             return True
+
+        # Same URL path excluding query parameters / session tokens
+        if u1.startswith("http") and u2.startswith("http"):
+            p1 = clean_u1.split("?")[0].rstrip("/")
+            p2 = clean_u2.split("?")[0].rstrip("/")
+            if p1 == p2 and len(p1) > 20:
+                return True
 
     # Conflicting distinct qualities cannot match
     q1 = (s1.get("quality") or "").strip().lower()
