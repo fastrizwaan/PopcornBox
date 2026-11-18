@@ -1715,6 +1715,17 @@ class MovieDetailsPage(Gtk.Overlay):
                 ]
             except Exception:
                 pass
+        else:
+            m_title = getattr(self, "movie_details", {}).get("title") or getattr(self, "movie_stub", {}).get("title") or getattr(self, "movie_stub", {}).get("name")
+            if m_title:
+                try:
+                    streams = [
+                        stream for stream in streams
+                        if api.match_stream_to_movie(stream, target_title=m_title)
+                        != api.MATCH_MISMATCH
+                    ]
+                except Exception:
+                    pass
 
         for stream in streams:
             names = stream.get("addon_names") or []
@@ -3611,6 +3622,11 @@ class MovieDetailsPage(Gtk.Overlay):
                     if sel_season is not None and sel_episode is not None:
                         from . import api
                         filtered_new = [t for t in filtered_new if api.match_stream_to_episode(t, sel_season, sel_episode, ep_title) != api.MATCH_MISMATCH]
+                    else:
+                        m_title = getattr(self, "movie_details", {}).get("title") or getattr(self, "movie_stub", {}).get("title") or getattr(self, "movie_stub", {}).get("name")
+                        if m_title:
+                            from . import api
+                            filtered_new = [t for t in filtered_new if api.match_stream_to_movie(t, target_title=m_title) != api.MATCH_MISMATCH]
                     source_idx = getattr(self, 'source_idx', 0)
                     if source_idx == 1:
                         filtered_new = [t for t in filtered_new if is_direct_stream(t)]
@@ -3852,6 +3868,14 @@ class MovieDetailsPage(Gtk.Overlay):
                     print(f"[STREAM DEBUG] streams loaded for another episode; refetching key={expected_key!r}")
                     GLib.idle_add(self._refetch_for_selected_episode)
             filtered_torrents = episode_torrents
+        else:
+            m_title = getattr(self, "movie_details", {}).get("title") or getattr(self, "movie_stub", {}).get("title") or getattr(self, "movie_stub", {}).get("name")
+            if m_title:
+                from . import api
+                filtered_torrents = [
+                    t for t in filtered_torrents
+                    if api.match_stream_to_movie(t, target_title=m_title) != api.MATCH_MISMATCH
+                ]
 
         if not filtered_torrents:
             self.current_t_list = []
@@ -3933,10 +3957,15 @@ class MovieDetailsPage(Gtk.Overlay):
                 strings.append(full_item_str)
             selected_idx = 0
             curr_sel = getattr(self, 'selected_torrent', None) or getattr(self, 'remembered_working_stream', None)
-            if curr_sel and sel_s is not None and sel_e is not None:
+            if curr_sel:
                 from . import api
-                if api.match_stream_to_episode(curr_sel, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
-                    curr_sel = None
+                if sel_s is not None and sel_e is not None:
+                    if api.match_stream_to_episode(curr_sel, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
+                        curr_sel = None
+                else:
+                    m_title = getattr(self, "movie_details", {}).get("title") or getattr(self, "movie_stub", {}).get("title") or getattr(self, "movie_stub", {}).get("name")
+                    if m_title and api.match_stream_to_movie(curr_sel, target_title=m_title) == api.MATCH_MISMATCH:
+                        curr_sel = None
             user_explicit = getattr(self, '_user_explicitly_selected_stream', False)
             if curr_sel and t_list:
                 matched_idx = _find_stream_index_exact(curr_sel, t_list)
@@ -4225,14 +4254,26 @@ class MovieDetailsPage(Gtk.Overlay):
             from . import api
             t_list = [t for t in t_list if api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH]
             raw_t_list = [t for t in raw_t_list if api.match_stream_to_episode(t, sel_s, sel_e, ep_t) != api.MATCH_MISMATCH]
+        else:
+            m_title = getattr(self, "movie_details", {}).get("title") or getattr(self, "movie_stub", {}).get("title") or getattr(self, "movie_stub", {}).get("name")
+            if m_title:
+                from . import api
+                t_list = [t for t in t_list if api.match_stream_to_movie(t, target_title=m_title) != api.MATCH_MISMATCH]
+                raw_t_list = [t for t in raw_t_list if api.match_stream_to_movie(t, target_title=m_title) != api.MATCH_MISMATCH]
 
         user_explicit = getattr(self, '_user_explicitly_selected_stream', False)
         selected = getattr(self, 'selected_torrent', None)
-        if selected and sel_s is not None and sel_e is not None and not user_explicit:
+        if selected and not user_explicit:
             from . import api
-            if api.match_stream_to_episode(selected, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
-                selected = None
-                self.selected_torrent = None
+            if sel_s is not None and sel_e is not None:
+                if api.match_stream_to_episode(selected, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
+                    selected = None
+                    self.selected_torrent = None
+            else:
+                m_title = getattr(self, "movie_details", {}).get("title") or getattr(self, "movie_stub", {}).get("title") or getattr(self, "movie_stub", {}).get("name")
+                if m_title and api.match_stream_to_movie(selected, target_title=m_title) == api.MATCH_MISMATCH:
+                    selected = None
+                    self.selected_torrent = None
 
         is_all_providers = (source_idx == 0 and sel_prov_name == "All Providers")
 
@@ -4273,11 +4314,17 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.selected_torrent = selected
         else:
             working_stream = getattr(self, "remembered_working_stream", None)
-            if working_stream and sel_s is not None and sel_e is not None:
+            if working_stream:
                 from . import api
-                if api.match_stream_to_episode(working_stream, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
-                    working_stream = None
-                    self.remembered_working_stream = None
+                if sel_s is not None and sel_e is not None:
+                    if api.match_stream_to_episode(working_stream, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
+                        working_stream = None
+                        self.remembered_working_stream = None
+                else:
+                    m_title = getattr(self, "movie_details", {}).get("title") or getattr(self, "movie_stub", {}).get("title") or getattr(self, "movie_stub", {}).get("name")
+                    if m_title and api.match_stream_to_movie(working_stream, target_title=m_title) == api.MATCH_MISMATCH:
+                        working_stream = None
+                        self.remembered_working_stream = None
             if not working_stream:
                 from . import database
                 item_id = (
@@ -4513,6 +4560,10 @@ class MovieDetailsPage(Gtk.Overlay):
                 continue
             if sel_s is not None and sel_e is not None:
                 if api.match_stream_to_episode(t, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
+                    continue
+            else:
+                m_title = getattr(self, "movie_details", {}).get("title") or getattr(self, "movie_stub", {}).get("title") or getattr(self, "movie_stub", {}).get("name") or media_title
+                if m_title and api.match_stream_to_movie(t, target_title=m_title) == api.MATCH_MISMATCH:
                     continue
             candidates.append(t)
 
@@ -4853,13 +4904,15 @@ class MovieDetailsPage(Gtk.Overlay):
                     cand_pool = getattr(self, "torrent_list", []) or []
                     candidates = []
                     from . import api
-                    m_year = getattr(self, "movie_details", {}).get("year") or self.movie_stub.get("year")
-                    m_title = getattr(self, "movie_details", {}).get("title") or self.movie_stub.get("title") or media_title
+                    m_title = getattr(self, "movie_details", {}).get("title") or getattr(self, "movie_stub", {}).get("title") or media_title
                     for t in cand_pool:
                         if t == self.selected_torrent or not t.get("is_http"):
                             continue
                         if season is not None and episode is not None:
                             if api.match_stream_to_episode(t, season, episode) == api.MATCH_MISMATCH:
+                                continue
+                        else:
+                            if m_title and api.match_stream_to_movie(t, target_title=m_title) == api.MATCH_MISMATCH:
                                 continue
                         candidates.append(t)
                     queue.extend(candidates)
@@ -17631,12 +17684,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         # Filter out any mismatched streams (wrong episode or wrong movie) from queue
         page = self.details_box.get_first_child() if hasattr(self, 'details_box') else None
         target_m_title = title or (getattr(page, 'movie_details', {}) or {}).get('title') or (getattr(page, 'movie_stub', {}) or {}).get('title')
-        target_m_year = (getattr(page, 'movie_details', {}) or {}).get('year') or (getattr(page, 'movie_stub', {}) or {}).get('year')
         from . import api
         filtered_queue = []
         for s in self.stream_queue:
             if season is not None and episode is not None:
                 if api.match_stream_to_episode(s, season, episode) == api.MATCH_MISMATCH:
+                    continue
+            else:
+                if target_m_title and api.match_stream_to_movie(s, target_title=target_m_title) == api.MATCH_MISMATCH:
                     continue
             filtered_queue.append(s)
         # Deduplicate queue by stream identity while preserving order

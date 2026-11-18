@@ -304,8 +304,8 @@ class TestResumeAudioSubtitle(unittest.TestCase):
         # Must select Track 4 (English), NEVER Track 2 (Tamil)
         self.assertEqual(win.mpv.aid, 4)
 
-    def test_match_stream_to_movie_never_rejects_streams(self):
-        """Movie name matching is disabled; match_stream_to_movie must return MATCH_UNKNOWN."""
+    def test_match_stream_to_movie_rejects_unrelated_substring_match(self):
+        """Movie name matching rejects unrelated substring match (e.g. Muskurahatein for Musk)."""
         from src import api
         stream = {
             "title": "🎬CineStream 🧊 1080p • CNCVerse Bridge",
@@ -315,7 +315,7 @@ class TestResumeAudioSubtitle(unittest.TestCase):
             }
         }
         res = api.match_stream_to_movie(stream, target_title="Musk", expected_year=2026)
-        self.assertEqual(res, api.MATCH_UNKNOWN)
+        self.assertEqual(res, api.MATCH_MISMATCH)
 
     def test_match_stream_to_movie_accepts_valid_stream(self):
         """Valid streams matching the title and year must not be flagged as MATCH_MISMATCH."""

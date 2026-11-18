@@ -6078,9 +6078,20 @@ def get_stream_url_filename(url):
     return ""
 
 
+GENERIC_STREAM_FILENAMES = {
+    "master.m3u8", "index.m3u8", "playlist.m3u8", "manifest.mpd", "manifest.m3u8",
+    "video.mp4", "stream.mp4", "stream.mkv", "play.m3u8", "tracks-v1a1.m3u8", "video.mkv"
+}
+
+
 def is_opaque_identifier(s):
     """Return True if string looks like an opaque hash, UUID, or pure numeric ID rather than a named release."""
     if not s or not isinstance(s, str):
+        return True
+    s_lower = s.lower().strip()
+    if s_lower in GENERIC_STREAM_FILENAMES:
+        return True
+    if any(s_lower.startswith(p) for p in ("master.", "index.", "playlist.", "manifest.")):
         return True
     s_clean = s.rsplit(".", 1)[0]
     # Hex hashes (MD5, SHA1, SHA256)
@@ -6100,17 +6111,96 @@ MOVIE_STOP_WORDS = {'the', 'a', 'an', 'and', 'or', 'of', 'in', 'on', 'at', 'to',
 
 def check_movie_title_mismatch(target_title, filename):
     """
-    Deprecated/no-op: Movie title mismatch check is disabled in stream searches.
-    Always returns False.
+    Return True if filename explicitly represents a DIFFERENT movie title.
+    Returns False if filename is opaque, generic, ambiguous, or matches target_title words.
+    Does NOT check release year.
     """
-    return False
+    if not target_title or not filename or is_opaque_identifier(filename):
+        return False
+
+    # Strip site prefixes like [Fibwatch.Com] or [YTS.MX] or domain prefixes
+    fn = re.sub(r'\[[^\]]*\]', ' ', filename)
+    fn = re.sub(r'www\.[^\s\.]+\.[a-z]{2,4}', ' ', fn, flags=re.I)
+
+    clean_title = re.sub(r'[^\w\s]', ' ', target_title).lower()
+    title_words = [w for w in clean_title.split() if w not in MOVIE_STOP_WORDS and len(w) > 0]
+    if not title_words:
+        title_words = [w for w in clean_title.split() if len(w) > 0]
+    if not title_words:
+        return False
+
+    clean_fn = re.sub(r'[^\w\s]', ' ', fn).lower()
+    fn_words = set(clean_fn.split())
+
+    # Check whole word matches
+    matched = [w for w in title_words if w in fn_words or re.search(r'\b' + re.escape(w) + r'\b', clean_fn)]
+
+    # Check for false positive substring match:
+    # If target title word is ONLY present as a substring of an unrelated longer word (e.g. musk in muskurahatein)
+    for tw in title_words:
+        if tw not in matched:
+            for fw in fn_words:
+                if tw in fw and len(fw) > len(tw) + 2:
+                    return True
+
+    # Common technical/codec tags that are not movie titles
+    tech_tags = {
+        "1080p", "720p", "2160p", "4k", "bluray", "web", "dl", "webrip", "mkv", "mp4",
+        "hindi", "english", "x264", "x265", "hevc", "dvdrip", "hdrip", "aac", "ddp",
+        "sub", "dub", "esub", "rip", "hdtv", "hd", "sd", "atmos", "truehd", "remux",
+        "cine", "cinetmdb", "yts", "mx", "tgx", "eztv", "rarbg", "galaxyrg", "extended"
+    }
+    meaningful_fn_words = [w for w in fn_words if w not in tech_tags and not w.isdigit()]
+
+    if not matched and len(meaningful_fn_words) >= 1:
+        # Candidate has distinct title words, none of which match our target title
+        return True
+
+    if len(title_words) <= 2:
+        return len(matched) < len(title_words)
+    threshold = (len(title_words) * 2 + 1) // 3
+    return len(matched) < threshold
 
 
 def match_stream_to_movie(stream, target_title=None, expected_year=None):
     """
-    Evaluates whether a stream corresponds to the requested movie title and year.
-    Movie title and year matching is removed in stream searches; returns MATCH_UNKNOWN.
+    Evaluates whether a stream corresponds to the requested movie title.
+    Does NOT evaluate release year (movie name matching only).
+    Returns:
+        MATCH_UNKNOWN (0): Stream appears compatible or is ambiguous.
+        MATCH_MISMATCH (-1): Explicit indicator of a different movie title.
     """
+    if not isinstance(stream, dict) or not target_title:
+        return MATCH_UNKNOWN
+
+    # 1. URL filename or magnet dn (represents the physical file on the server/CDN)
+    url = stream.get("url") or stream.get("externalUrl") or stream.get("magnet")
+    url_fn = get_stream_url_filename(url)
+    if url_fn and not is_opaque_identifier(url_fn):
+        if check_movie_title_mismatch(target_title, url_fn):
+            return MATCH_MISMATCH
+
+    # 2. behaviorHints or explicit filename
+    bh = stream.get("behaviorHints") or {}
+    bh_fn = bh.get("filename") if isinstance(bh, dict) else ""
+    if bh_fn and isinstance(bh_fn, str) and not is_opaque_identifier(bh_fn):
+        if check_movie_title_mismatch(target_title, bh_fn):
+            return MATCH_MISMATCH
+
+    s_fn = stream.get("filename")
+    if s_fn and isinstance(s_fn, str) and s_fn != bh_fn and not is_opaque_identifier(s_fn):
+        if check_movie_title_mismatch(target_title, s_fn):
+            return MATCH_MISMATCH
+
+    # 3. Torrent / release title (check first line of title if it looks like a scene release)
+    t_desc = stream.get("title") or stream.get("description") or ""
+    if t_desc and isinstance(t_desc, str):
+        first_line = t_desc.splitlines()[0].strip()
+        if not any(first_line.startswith(em) for em in ("🎬", "🍿", "📺", "⚡", "🧲", "🌐")):
+            if any(k in first_line.lower() for k in ("1080p", "720p", "2160p", "4k", "bluray", "web-dl", "webrip", "hdtv", "x264", "x265", "hevc")):
+                if check_movie_title_mismatch(target_title, first_line):
+                    return MATCH_MISMATCH
+
     return MATCH_UNKNOWN
 
 
@@ -6437,6 +6527,11 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
                 continue
             stream_entry["ep_match"] = ep_match
         else:
+            if title:
+                movie_match = match_stream_to_movie(stream_entry, target_title=title)
+                if movie_match == MATCH_MISMATCH:
+                    seen_keys[dedup_key] = None
+                    continue
             stream_entry["ep_match"] = MATCH_UNKNOWN
 
         seen_keys[dedup_key] = len(valid_streams)
@@ -7212,6 +7307,21 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         except Exception:
             pass
 
+    def _filter_mismatched_movie_streams(streams):
+        """Drop streams that explicitly belong to a different movie title."""
+        if not is_movie_request or not title:
+            return list(streams or [])
+        accepted = []
+        for stream in streams or []:
+            if not isinstance(stream, dict):
+                accepted.append(stream)
+                continue
+            if match_stream_to_movie(stream, target_title=title) == MATCH_MISMATCH:
+                print(f"[STREAM DEBUG] discarded mismatched movie stream title={title!r} url={(stream.get('url') or '')[:80]}")
+                continue
+            accepted.append(stream)
+        return accepted
+
     print(
         f"[STREAM DEBUG] API start original_id={original_id!r} normalized_id={imdb_id!r} "
         f"media={media_type!r} season={season!r} episode={episode!r} force={force_refresh} "
@@ -7457,6 +7567,9 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             )
         cached = [s for s in cached if not _has_wrong_tmdb(s)]
         cache_candidates = [s for s in cache_candidates if not _has_wrong_tmdb(s)]
+
+    cached = _filter_mismatched_movie_streams(cached)
+    cache_candidates = _filter_mismatched_movie_streams(cache_candidates)
 
     print(
         f"[STREAM DEBUG] cache key={cache_key!r} cards={len(cached or [])} "
@@ -8074,6 +8187,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                             addon_orig_info = future_to_addon.get(future, (None, None))
                             addon_obj = addon_orig_info[0] if addon_orig_info else None
                             addon_name, streams = future.result()
+                            streams = _filter_mismatched_movie_streams(streams)
                             if streams:
                                 # Successful response — clear any previous failure count for Stremio addons
                                 if addon_obj and addon_obj.get("manifest_url") and not addon_obj.get("raw_id"):
