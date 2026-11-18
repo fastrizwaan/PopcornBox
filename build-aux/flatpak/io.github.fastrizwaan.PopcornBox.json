@@ -1,7 +1,7 @@
 {
     "id": "io.github.fastrizwaan.PopcornBox",
     "runtime": "org.gnome.Platform",
-    "runtime-version": "50",
+    "runtime-version": "51",
     "sdk": "org.gnome.Sdk",
     "command": "popcornbox",
     "finish-args": [
@@ -230,16 +230,38 @@
             ]
         },
         {
-            "name": "python3-libtorrent",
+            "name": "boost",
             "buildsystem": "simple",
             "build-commands": [
-                "pip3 install --prefix=/app libtorrent"
+                "./bootstrap.sh --prefix=/app --with-python=python3",
+                "./b2 stage -j $FLATPAK_BUILDER_N_JOBS variant=release threading=multi link=shared debug-symbols=off",
+                "./b2 install --prefix=/app variant=release threading=multi link=shared debug-symbols=off"
             ],
-            "build-options": {
-                "build-args": [
-                    "--share=network"
-                ]
-            }
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://archives.boost.io/release/1.92.0/source/boost_1_92_0.tar.bz2",
+                    "sha256": "5c1d40cb8e19adbf740a4ec2da35b3e58f3f5804b1dce44deb53df72193cbc6c"
+                }
+            ]
+        },
+        {
+            "name": "libtorrent",
+            "buildsystem": "cmake-ninja",
+            "config-opts": [
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_CXX_STANDARD=17",
+                "-Dpython-bindings=ON",
+                "-Dpython-egg-info=ON",
+                "-Dboost-python-module-name=python"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://github.com/arvidn/libtorrent/releases/download/v2.0.15/libtorrent-rasterbar-2.0.15.tar.gz",
+                    "sha256": "5e2e79129823b7ea48721164c32b5aaf83d3fd733b5502100f6705b29f27bb02"
+                }
+            ]
         },
         {
             "name": "python-mpv",
