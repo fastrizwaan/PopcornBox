@@ -353,6 +353,48 @@ class TestResumeAudioSubtitle(unittest.TestCase):
         res = api.match_stream_to_movie(stream, target_title="Avatar", expected_year=2009)
         self.assertEqual(res, api.MATCH_UNKNOWN)
 
+    def test_match_stream_to_movie_accepts_tuner_and_various_stream_formats(self):
+        """Streams for Tuner (torrents, international titles, YTS badges, cloudstream) must be accepted."""
+        from src import api
+        test_streams = [
+            # Standard scene torrent
+            {
+                "title": "Torrentio 2160p",
+                "url": "magnet:?xt=urn:btih:90c6258c02ef2151362baf673b39c52a9fe6915c&dn=Tuner.2025.2160p",
+            },
+            # Spanish release
+            {
+                "title": "Torrentio 1080p",
+                "url": "magnet:?xt=urn:btih:b785ad68e920fd3647eb5c933145e93a6995dd45&dn=El.Afinador.2026",
+            },
+            # YTS stream badge format (quality | seeds | size)
+            {
+                "name": "Popcorn 1080p",
+                "title": "1080p | 👤 15 | 2.1 GB",
+                "magnet": "magnet:?xt=urn:btih:abc&dn=Tuner",
+            },
+            # Direct Google Drive or Pixeldrain stream
+            {
+                "title": "Fast Server · 1080p",
+                "url": "https://video-downloads.googleusercontent.com/ADGPM2nXoYgoRvR14WJx8xPi0frnqHogr8",
+            },
+        ]
+        for s in test_streams:
+            self.assertEqual(api.match_stream_to_movie(s, target_title="Tuner"), api.MATCH_UNKNOWN)
+
+    def test_match_stream_to_movie_accepts_shaun_the_sheep_yts_streams(self):
+        """Multi-word title movie (Shaun the Sheep) with YTS badges must be accepted."""
+        from src import api
+        stream = {
+            "name": "Popcorn 1080p",
+            "title": "1080p | 👤 15 | 2.1 GB",
+            "magnet": "magnet:?xt=urn:btih:def&dn=Shaun+the+Sheep",
+        }
+        self.assertEqual(
+            api.match_stream_to_movie(stream, target_title="Shaun the Sheep: The Beast of Mossy Bottom"),
+            api.MATCH_UNKNOWN
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

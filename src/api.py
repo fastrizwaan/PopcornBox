@@ -6111,9 +6111,14 @@ MOVIE_STOP_WORDS = {'the', 'a', 'an', 'and', 'or', 'of', 'in', 'on', 'at', 'to',
 
 def check_movie_title_mismatch(target_title, filename):
     """
-    Return True if filename explicitly represents a DIFFERENT movie title.
-    Returns False if filename is opaque, generic, ambiguous, or matches target_title words.
-    Does NOT check release year.
+    Return True if filename explicitly represents a DIFFERENT movie title
+    via a false-positive substring match (e.g. target 'Musk' found only inside
+    unrelated word 'Muskurahatein' or 'Musketeer' without any whole-word match).
+    
+    Returns False if filename is opaque, generic, ambiguous, in another language,
+    or does not contain a false-positive substring match.
+    Does NOT require the target title to be present (as many UI titles, CDN URLs,
+    and international releases do not contain the English title).
     """
     if not target_title or not filename or is_opaque_identifier(filename):
         return False
@@ -6133,33 +6138,20 @@ def check_movie_title_mismatch(target_title, filename):
     fn_words = set(clean_fn.split())
 
     # Check whole word matches
-    matched = [w for w in title_words if w in fn_words or re.search(r'\b' + re.escape(w) + r'\b', clean_fn)]
+    matched = set(w for w in title_words if w in fn_words or re.search(r'\b' + re.escape(w) + r'\b', clean_fn))
 
     # Check for false positive substring match:
-    # If target title word is ONLY present as a substring of an unrelated longer word (e.g. musk in muskurahatein)
+    # A target title word (especially short words like 'musk') is present ONLY as a
+    # substring of a longer unrelated word (e.g. 'musk' in 'muskurahatein', 'musk' in 'musketeer')
+    # and has NO whole-word match in the filename.
     for tw in title_words:
-        if tw not in matched:
+        if tw not in matched and len(tw) >= 2:
             for fw in fn_words:
-                if tw in fw and len(fw) > len(tw) + 2:
-                    return True
+                if tw in fw and len(fw) >= len(tw) + 3:
+                    if not fw.startswith(tw + 's') and not fw.startswith(tw + 'ed') and not fw.startswith(tw + 'ing'):
+                        return True
 
-    # Common technical/codec tags that are not movie titles
-    tech_tags = {
-        "1080p", "720p", "2160p", "4k", "bluray", "web", "dl", "webrip", "mkv", "mp4",
-        "hindi", "english", "x264", "x265", "hevc", "dvdrip", "hdrip", "aac", "ddp",
-        "sub", "dub", "esub", "rip", "hdtv", "hd", "sd", "atmos", "truehd", "remux",
-        "cine", "cinetmdb", "yts", "mx", "tgx", "eztv", "rarbg", "galaxyrg", "extended"
-    }
-    meaningful_fn_words = [w for w in fn_words if w not in tech_tags and not w.isdigit()]
-
-    if not matched and len(meaningful_fn_words) >= 1:
-        # Candidate has distinct title words, none of which match our target title
-        return True
-
-    if len(title_words) <= 2:
-        return len(matched) < len(title_words)
-    threshold = (len(title_words) * 2 + 1) // 3
-    return len(matched) < threshold
+    return False
 
 
 def match_stream_to_movie(stream, target_title=None, expected_year=None):
