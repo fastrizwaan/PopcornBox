@@ -3,7 +3,7 @@ Targeted tests for stream provider correctness:
   - TMDB ID correctness for Nuvio plugin scrapers
   - Stale-cache eviction when TMDB ID changes
   - Duplicate scraper deduplication (code-identical vs different)
-  - Wrong-movie-year filter (movies only, TV unaffected)
+  - Stream passthrough without movie year rejection (all provider streams kept)
   - execute_scraper error classification
   - Deno/Node runtime detection reporting
 """
@@ -521,13 +521,14 @@ class TestWrongYearFilter(unittest.TestCase):
             "saved_at": __import__("time").time(),
         }
 
-    def test_wrong_year_in_title_discarded(self):
+    def test_different_year_in_title_not_discarded(self):
+        """Movie streams labeled with another year pass through without rejection."""
         good = self._make_stream("Movie 2015 BluRay 1080p", url="https://good.test/m.mp4")
         bad = self._make_stream("Movie 2018 WEB-DL 1080p", url="https://bad.test/m.mp4")
         result = self._run_filter([good, bad], expected_year="2015")
         urls = {s.get("url") for s in result}
         self.assertIn("https://good.test/m.mp4", urls)
-        self.assertNotIn("https://bad.test/m.mp4", urls)
+        self.assertIn("https://bad.test/m.mp4", urls)
 
     def test_no_year_in_title_not_discarded(self):
         """Streams that omit a year entirely must pass through — do not reject on absence."""

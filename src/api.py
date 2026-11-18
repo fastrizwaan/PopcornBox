@@ -6100,81 +6100,17 @@ MOVIE_STOP_WORDS = {'the', 'a', 'an', 'and', 'or', 'of', 'in', 'on', 'at', 'to',
 
 def check_movie_title_mismatch(target_title, filename):
     """
-    Return True if filename explicitly represents a DIFFERENT movie title.
-    Returns False if filename is opaque, ambiguous, or matches target_title words.
+    Deprecated/no-op: Movie title mismatch check is disabled in stream searches.
+    Always returns False.
     """
-    if not target_title or not filename or is_opaque_identifier(filename):
-        return False
-    # Strip site prefixes like [Fibwatch.Com] or [YTS.MX] or domain prefixes
-    fn = re.sub(r'\[[^\]]*\]', ' ', filename)
-    fn = re.sub(r'www\.[^\s\.]+\.[a-z]{2,4}', ' ', fn, flags=re.I)
-
-    clean_title = re.sub(r'[^\w\s]', ' ', target_title).lower()
-    title_words = [w for w in clean_title.split() if w not in MOVIE_STOP_WORDS and len(w) > 0]
-    if not title_words:
-        title_words = [w for w in clean_title.split() if len(w) > 0]
-    if not title_words:
-        return False
-
-    clean_fn = re.sub(r'[^\w\s]', ' ', fn).lower()
-    matched = [w for w in title_words if re.search(r'\b' + re.escape(w) + r'\b', clean_fn)]
-
-    if len(title_words) <= 2:
-        return len(matched) < len(title_words)
-    threshold = (len(title_words) * 2 + 2) // 3
-    return len(matched) < threshold
+    return False
 
 
 def match_stream_to_movie(stream, target_title=None, expected_year=None):
     """
     Evaluates whether a stream corresponds to the requested movie title and year.
-    Returns:
-        MATCH_UNKNOWN (0): Stream appears compatible or is ambiguous.
-        MATCH_MISMATCH (-1): Explicit indicator of a different movie title or conflicting release year.
+    Movie title and year matching is removed in stream searches; returns MATCH_UNKNOWN.
     """
-    if not isinstance(stream, dict):
-        return MATCH_UNKNOWN
-
-    expected_year_str = str(expected_year or "").strip()[:4]
-    has_expected_year = len(expected_year_str) == 4 and expected_year_str.isdigit()
-    exp_year_int = int(expected_year_str) if has_expected_year else None
-
-    # Check URL filename (represents the physical file on the server/CDN)
-    url = stream.get("url") or stream.get("externalUrl")
-    url_fn = get_stream_url_filename(url)
-    if url_fn and not is_opaque_identifier(url_fn):
-        if check_movie_title_mismatch(target_title, url_fn):
-            return MATCH_MISMATCH
-        if exp_year_int is not None:
-            fn_years = [int(y) for y in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", url_fn)]
-            # If explicit year in filename differs from expected year by more than 1 year
-            if fn_years and all(abs(y - exp_year_int) > 1 for y in fn_years):
-                return MATCH_MISMATCH
-
-    # Check behaviorHints / explicit stream filename
-    bh = stream.get("behaviorHints") or {}
-    bh_fn = bh.get("filename") if isinstance(bh, dict) else ""
-    stream_fn = stream.get("filename") or ""
-    for fn in (bh_fn, stream_fn):
-        if fn and isinstance(fn, str) and not is_opaque_identifier(fn):
-            if check_movie_title_mismatch(target_title, fn):
-                return MATCH_MISMATCH
-            if exp_year_int is not None:
-                fn_years = [int(y) for y in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", fn)]
-                if fn_years and all(abs(y - exp_year_int) > 1 for y in fn_years):
-                    return MATCH_MISMATCH
-
-    # Check stream title / name if it looks like a scene/torrent release name
-    name_or_title = stream.get("name") or stream.get("title") or ""
-    if name_or_title and isinstance(name_or_title, str) and any(tag in name_or_title.lower() for tag in ("1080p", "720p", "2160p", "4k", "bluray", "web-dl", "webrip", "hdtv")):
-        if not name_or_title.startswith("🎬") and not name_or_title.startswith("🍿"):
-            if check_movie_title_mismatch(target_title, name_or_title):
-                return MATCH_MISMATCH
-            if exp_year_int is not None:
-                t_years = [int(y) for y in re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", name_or_title)]
-                if t_years and all(abs(y - exp_year_int) > 1 for y in t_years):
-                    return MATCH_MISMATCH
-
     return MATCH_UNKNOWN
 
 
@@ -6501,11 +6437,6 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
                 continue
             stream_entry["ep_match"] = ep_match
         else:
-            if title or expected_year:
-                movie_match = match_stream_to_movie(stream_entry, target_title=title, expected_year=expected_year)
-                if movie_match == MATCH_MISMATCH:
-                    seen_keys[dedup_key] = None
-                    continue
             stream_entry["ep_match"] = MATCH_UNKNOWN
 
         seen_keys[dedup_key] = len(valid_streams)
@@ -7281,21 +7212,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         except Exception:
             pass
 
-    def _filter_mismatched_movie_streams(streams):
-        """Drop streams that explicitly belong to a different movie title or conflicting release year."""
-        if not is_movie_request:
-            return list(streams or [])
-        accepted = []
-        for stream in streams or []:
-            if not isinstance(stream, dict):
-                accepted.append(stream)
-                continue
-            if match_stream_to_movie(stream, target_title=title, expected_year=expected_year) == MATCH_MISMATCH:
-                print(f"[STREAM DEBUG] discarded mismatched movie stream title={title!r} expected_year={expected_year!r} url={(stream.get('url') or '')[:80]}")
-                continue
-            accepted.append(stream)
-        return accepted
-
     print(
         f"[STREAM DEBUG] API start original_id={original_id!r} normalized_id={imdb_id!r} "
         f"media={media_type!r} season={season!r} episode={episode!r} force={force_refresh} "
@@ -7541,9 +7457,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             )
         cached = [s for s in cached if not _has_wrong_tmdb(s)]
         cache_candidates = [s for s in cache_candidates if not _has_wrong_tmdb(s)]
-
-    cached = _filter_mismatched_movie_streams(cached)
-    cache_candidates = _filter_mismatched_movie_streams(cache_candidates)
 
     print(
         f"[STREAM DEBUG] cache key={cache_key!r} cards={len(cached or [])} "
@@ -8161,7 +8074,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                             addon_orig_info = future_to_addon.get(future, (None, None))
                             addon_obj = addon_orig_info[0] if addon_orig_info else None
                             addon_name, streams = future.result()
-                            streams = _filter_mismatched_movie_streams(streams)
                             if streams:
                                 # Successful response — clear any previous failure count for Stremio addons
                                 if addon_obj and addon_obj.get("manifest_url") and not addon_obj.get("raw_id"):

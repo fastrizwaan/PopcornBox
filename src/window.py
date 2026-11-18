@@ -4514,11 +4514,6 @@ class MovieDetailsPage(Gtk.Overlay):
             if sel_s is not None and sel_e is not None:
                 if api.match_stream_to_episode(t, sel_s, sel_e, ep_t) == api.MATCH_MISMATCH:
                     continue
-            else:
-                m_year = getattr(self, "movie_details", {}).get("year") or self.movie_stub.get("year")
-                m_title = getattr(self, "movie_details", {}).get("title") or self.movie_stub.get("title") or media_title
-                if api.match_stream_to_movie(t, target_title=m_title, expected_year=m_year) == api.MATCH_MISMATCH:
-                    continue
             candidates.append(t)
 
         if is_direct or pref_prov or pref_q:
@@ -4865,9 +4860,6 @@ class MovieDetailsPage(Gtk.Overlay):
                             continue
                         if season is not None and episode is not None:
                             if api.match_stream_to_episode(t, season, episode) == api.MATCH_MISMATCH:
-                                continue
-                        else:
-                            if api.match_stream_to_movie(t, target_title=m_title, expected_year=m_year) == api.MATCH_MISMATCH:
                                 continue
                         candidates.append(t)
                     queue.extend(candidates)
@@ -17645,9 +17637,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         for s in self.stream_queue:
             if season is not None and episode is not None:
                 if api.match_stream_to_episode(s, season, episode) == api.MATCH_MISMATCH:
-                    continue
-            else:
-                if api.match_stream_to_movie(s, target_title=target_m_title, expected_year=target_m_year) == api.MATCH_MISMATCH:
                     continue
             filtered_queue.append(s)
         # Deduplicate queue by stream identity while preserving order

@@ -304,18 +304,18 @@ class TestResumeAudioSubtitle(unittest.TestCase):
         # Must select Track 4 (English), NEVER Track 2 (Tamil)
         self.assertEqual(win.mpv.aid, 4)
 
-    def test_match_stream_to_movie_rejects_unrelated_substring_match(self):
-        """Streams for unrelated titles (e.g. Muskurahatein for Musk) must be flagged as MATCH_MISMATCH."""
+    def test_match_stream_to_movie_never_rejects_streams(self):
+        """Movie name matching is disabled; match_stream_to_movie must return MATCH_UNKNOWN."""
         from src import api
         stream = {
             "title": "🎬CineStream 🧊 1080p • CNCVerse Bridge",
             "url": "https://qrtgf.b-cdn.net/s3/upload/videos/2026/08/[Fibwatch.Com]Muskurahatein.(2017).Hindi.1080P.mkv",
             "behaviorHints": {
-                "filename": "Musk.2026.1080p-CineTmdb.mkv",  # faked addon filename
+                "filename": "Musk.2026.1080p-CineTmdb.mkv",
             }
         }
         res = api.match_stream_to_movie(stream, target_title="Musk", expected_year=2026)
-        self.assertEqual(res, api.MATCH_MISMATCH)
+        self.assertEqual(res, api.MATCH_UNKNOWN)
 
     def test_match_stream_to_movie_accepts_valid_stream(self):
         """Valid streams matching the title and year must not be flagged as MATCH_MISMATCH."""
@@ -328,7 +328,7 @@ class TestResumeAudioSubtitle(unittest.TestCase):
             }
         }
         res = api.match_stream_to_movie(stream, target_title="Musk", expected_year=2026)
-        self.assertNotEqual(res, api.MATCH_MISMATCH)
+        self.assertEqual(res, api.MATCH_UNKNOWN)
 
     def test_match_stream_to_movie_accepts_opaque_hash_url(self):
         """Opaque CDN resource hashes must not be treated as conflicting titles."""
@@ -341,17 +341,17 @@ class TestResumeAudioSubtitle(unittest.TestCase):
             }
         }
         res = api.match_stream_to_movie(stream, target_title="Musk", expected_year=2026)
-        self.assertNotEqual(res, api.MATCH_MISMATCH)
+        self.assertEqual(res, api.MATCH_UNKNOWN)
 
-    def test_match_stream_to_movie_rejects_wrong_year(self):
-        """Streams explicitly labeling a conflicting release year (>1 yr apart) must be MATCH_MISMATCH."""
+    def test_match_stream_to_movie_does_not_reject_different_year(self):
+        """Year matching is removed from stream searches; streams are not discarded."""
         from src import api
         stream = {
             "title": "Avatar.The.Way.of.Water.2022.1080p.mkv",
             "url": "https://example.com/Avatar.The.Way.of.Water.2022.1080p.mkv",
         }
         res = api.match_stream_to_movie(stream, target_title="Avatar", expected_year=2009)
-        self.assertEqual(res, api.MATCH_MISMATCH)
+        self.assertEqual(res, api.MATCH_UNKNOWN)
 
 
 if __name__ == "__main__":
