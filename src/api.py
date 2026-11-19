@@ -6127,14 +6127,14 @@ def check_movie_title_mismatch(target_title, filename):
     fn = re.sub(r'\[[^\]]*\]', ' ', filename)
     fn = re.sub(r'www\.[^\s\.]+\.[a-z]{2,4}', ' ', fn, flags=re.I)
 
-    clean_title = re.sub(r'[^\w\s]', ' ', target_title).lower()
+    clean_title = re.sub(r'[^a-zA-Z0-9\s]', ' ', target_title).lower()
     title_words = [w for w in clean_title.split() if w not in MOVIE_STOP_WORDS and len(w) > 0]
     if not title_words:
         title_words = [w for w in clean_title.split() if len(w) > 0]
     if not title_words:
         return False
 
-    clean_fn = re.sub(r'[^\w\s]', ' ', fn).lower()
+    clean_fn = re.sub(r'[^a-zA-Z0-9\s]', ' ', fn).lower()
     fn_words = set(clean_fn.split())
 
     # Check whole word matches

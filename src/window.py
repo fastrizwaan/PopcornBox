@@ -8778,8 +8778,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self.filter_toggle_btn.set_active(False)
             filter_type = getattr(self, "_current_discover_type", "all")
             filter_addon = getattr(self, "_current_discover_addon", None)
+            if hasattr(self, "_populate_discover_catalog_dropdown"):
+                self._populate_discover_catalog_dropdown(filter_type)
             self._sync_library_genre_dropdown_selection(self.current_genre)
-            self._sync_library_sort_dropdown_selection(getattr(self, "current_sort", "Recent"))
+            self._sync_library_sort_dropdown_selection(getattr(self, "current_sort", "Popular"))
             self._refresh_discover_page(filter_media_type=filter_type, filter_addon_url=filter_addon)
         self.back_to_discover_btn.connect("clicked", on_back_to_discover_clicked)
         
@@ -8826,7 +8828,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self.current_language = None
             self.current_country = None
             self.current_network = None
-            self.current_sort = "Recent"
+            self.current_sort = "Popular"
             self.current_discover_search_query = ""
             self.current_search_query = ""
             self._unique_section_scope = None
@@ -9363,7 +9365,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self.current_media_type = "movie"
         self.current_catalog = {"catalog_id": "top", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json", "media_type": "movie", "display_name": "Popular Movies"}
         self.current_genre = None
-        self.current_sort = "Recent"
+        self.current_sort = "Popular"
         self.current_year = None
         self.current_language = None
         self.current_country = None
@@ -9681,7 +9683,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if m_type == "all":
             m_type = getattr(self, "current_media_type", "movie")
 
-        cur_sort = getattr(self, "current_sort", "Recent")
+        cur_sort = getattr(self, "current_sort", "Popular")
 
         if cur_sort == "Year" or (len(str(cur_sort)) == 4 and str(cur_sort).isdigit()):
             # Context: Years (All Years first, then current year to 1960)
@@ -9760,7 +9762,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         model = self.library_sort_dropdown.get_model()
         if not model:
             return
-        target = sort_or_year or "Recent"
+        target = sort_or_year or "Popular"
         target_idx = 0
         found = False
         for i in range(model.get_n_items()):
@@ -9814,7 +9816,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         items = base_items + cat_names
 
-        current_selected = getattr(self, "current_sort", "Recent")
+        current_selected = getattr(self, "current_sort", "Popular")
         context_mode = f"sort:{target_type}:{len(items)}"
         if getattr(self, "_current_sort_context", None) == context_mode and hasattr(self.library_sort_dropdown, "get_model"):
             model = self.library_sort_dropdown.get_model()
@@ -9846,7 +9848,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             elif current_selected and len(current_selected) == 4 and current_selected.isdigit() and "Year" in items:
                 target_idx = items.index("Year")
             else:
-                self.current_sort = "Recent" if "Recent" in items else (items[0] if items else "Recent")
+                self.current_sort = "Popular" if "Popular" in items else (items[0] if items else "Popular")
 
             self.library_sort_dropdown.set_selected(target_idx)
         except Exception as e:
@@ -9942,7 +9944,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     "display_name": "Popular Content"
                 }
 
-        cur_sort = getattr(self, "current_sort", "Recent")
+        cur_sort = getattr(self, "current_sort", "Popular")
 
         cat_map = getattr(self, "_dropdown_catalogs_map", {})
         if cur_sort in cat_map:
@@ -10089,7 +10091,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._set_discover_spinner_active(True)
         val_str = selected_item.get_string()
 
-        cur_sort = getattr(self, "current_sort", "Recent")
+        cur_sort = getattr(self, "current_sort", "Popular")
         if cur_sort == "Year" or (len(str(cur_sort)) == 4 and str(cur_sort).isdigit()):
             if val_str in ("All Years", _("All Years"), "Year", _("Year"), "All", _("All")):
                 self.current_year = None
@@ -11068,6 +11070,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._syncing_discover_toolbar = False
         self.current_genre = self.current_year = self.current_language = None
         self.current_country = self.current_network = None
+        self.current_sort = "Popular"
         self._current_discover_type = "all"
         self._current_discover_addon = None
         # Unique is the Discover default, so Reset restores it: the checkbox,
@@ -11358,6 +11361,17 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             if m_type in ("all", "movie_series") and selected_catalog_type
             else (m_type if m_type not in ("all", "movie_series") else "movie")
         )
+
+        sec_name = str(section or "").lower()
+        sec_id = str(catalog_id or "").lower()
+        if any(k in sec_name or k in sec_id for k in ("new", "latest", "recent", "last added", "date")):
+            self.current_sort = "Recent"
+        elif any(k in sec_name or k in sec_id for k in ("featured", "top rated", "imdb")):
+            self.current_sort = "Featured"
+        elif any(k in sec_name or k in sec_id for k in ("popular", "trending", "top")):
+            self.current_sort = "Popular"
+        else:
+            self.current_sort = "Popular"
 
         self._current_discover_type = m_type
         self.current_media_type = effective_media_type
@@ -12058,8 +12072,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         from .movie_widget import MovieWidget
         SLICE_SIZE = 6
         slices = [items[i:i + SLICE_SIZE] for i in range(0, len(items), SLICE_SIZE)]
-        recent_first = str(getattr(self, "current_sort", "Recent") or "Recent").strip().lower() in (
-            "recent", "new", "latest"
+        recent_first = str(getattr(self, "current_sort", "") or "").strip().lower() in (
+            "recent", "new", "latest", "last added", "date"
         )
 
         def _append_next(slice_idx):
@@ -12188,9 +12202,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         cur_network = getattr(self, "current_network", None)
         if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "Network", _("Network"), "All"):
             cur_network = None
-        cur_sort = getattr(self, "current_sort", "Recent")
+        cur_sort = getattr(self, "current_sort", "Popular")
         if not isinstance(cur_sort, str):
-            cur_sort = "Recent"
+            cur_sort = "Popular"
         unique_lock = self._unique_lock
 
         def worker():
@@ -12645,6 +12659,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             return None
 
                         try:
+                            is_cs_cat = (cat_info.get("_source") == "cloudstream" or str(m_url or "").startswith("cloudstream://"))
+                            cat_timeout = 8.0 if is_cs_cat else 2.5
                             raw_items = api.fetch_items(
                                 media_type=m_type,
                                 catalog_id=c_id,
@@ -12652,7 +12668,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 genre=fetch_genre or "",
                                 page=page,
                                 limit=50,
-                                timeout=2.5,
+                                timeout=cat_timeout,
                                 is_cancelled=(lambda: _is_event_set(abort_ev))
                             )
                             if _is_event_set(abort_ev):
@@ -13175,9 +13191,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         cached = [it for it in cached if not api.is_future_item(it)]
                     if cached and not _is_event_set(abort_ev):
                         database.save_cached_catalog(cache_key, cached)
-                    if cached and catalog.get("_source") == "tmdb_catalog":
+                    c_id = str(catalog.get("catalog_id", "")).lower()
+                    c_name = str(catalog.get("catalog_name", "") or catalog.get("display_name", "")).lower()
+                    is_date_catalog = any(k in c_id or k in c_name for k in ("new", "latest", "recent", "last added", "year"))
+                    if cached and catalog.get("_source") == "tmdb_catalog" and catalog.get("tmdb_sort") == "date":
                         cached.sort(key=lambda it: str(it.get("release_date") or ""), reverse=True)
-                    elif cached and cur_sort_val == "Recent":
+                    elif cached and is_date_catalog and cur_sort_val in ("Recent", "New", "Last Added"):
                         cached.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
                     def apply_cached(cached_items=cached):
                         if current_req_id != getattr(self, "content_request_id", 0) or _is_event_set(abort_ev):
@@ -13340,9 +13359,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     items = api.prefilter_kids_safe_items(items, media_type=media_type)
                 if items:
                     items = [it for it in items if not api.is_future_item(it)]
-                if items and catalog.get("_source") == "tmdb_catalog":
+                c_id = str(catalog.get("catalog_id", "")).lower()
+                c_name = str(catalog.get("catalog_name", "") or catalog.get("display_name", "")).lower()
+                is_date_catalog = any(k in c_id or k in c_name for k in ("new", "latest", "recent", "last added", "year"))
+                if items and catalog.get("_source") == "tmdb_catalog" and catalog.get("tmdb_sort") == "date":
                     items.sort(key=lambda it: str(it.get("release_date") or ""), reverse=True)
-                elif items and cur_sort_val == "Recent":
+                elif items and is_date_catalog and cur_sort_val in ("Recent", "New", "Last Added"):
                     items.sort(key=lambda it: str(it.get("year") or it.get("releaseInfo") or "")[:4], reverse=True)
             except Exception as e:
                 logger.error(f"Error fetching content: {e}")
@@ -13459,17 +13481,22 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             else:
                 self.genre_dropdown.set_visible(False)
             c_id = str(self.current_catalog.get("catalog_id", "")).lower()
+            cat_name = str(self.current_catalog.get("catalog_name", "") or self.current_catalog.get("display_name", "")).lower()
             if self.current_catalog.get("_source") == "tmdb_catalog":
+                self.current_sort = "Recent" if self.current_catalog.get("tmdb_sort") == "date" else "Popular"
+            elif any(k in c_id or k in cat_name for k in ("new", "latest", "recent", "last added")):
                 self.current_sort = "Recent"
-            elif c_id in ["top", "kitsu-anime-trending"]:
+            elif c_id in ["top", "kitsu-anime-trending"] or "popular" in cat_name:
                 self.current_sort = "Popular"
-            elif c_id in ["imdbrating", "kitsu-anime-top"]:
+            elif c_id in ["imdbrating", "kitsu-anime-top"] or "featured" in cat_name or "top rated" in cat_name:
                 self.current_sort = "Featured"
             elif c_id in ("year", "years", "acc85513", "tmdb.year"):
                 if getattr(self, "current_year", None):
                     self.current_sort = "Year"
                 else:
                     self.current_sort = "Recent"
+            else:
+                self.current_sort = "Popular"
         except Exception as e:
             logger.error(f"Error opening catalog grid: {e}")
         finally:
@@ -13477,7 +13504,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._syncing_discover_toolbar = False
 
         self._sync_library_genre_dropdown_selection(self.current_genre)
-        self._sync_library_sort_dropdown_selection(getattr(self, "current_sort", "Recent"))
+        self._sync_library_sort_dropdown_selection(getattr(self, "current_sort", "Popular"))
 
         disp_title = str(title or (self.current_catalog.get("display_name") if self.current_catalog else "Catalog"))
         cur_y = getattr(self, "current_year", None)
@@ -13782,9 +13809,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         threading.Thread(target=_fetch_worker, daemon=True, name="DiscoverManifestFetch").start()
 
     def _get_discover_catalog_list(self, filter_media_type=None, filter_addon_url=None, force_refresh=False, is_home=False):
-        cur_sort = getattr(self, "current_sort", "Recent")
+        cur_sort = getattr(self, "current_sort", "Popular")
         if not isinstance(cur_sort, str):
-            cur_sort = "Recent"
+            cur_sort = "Popular"
         cur_year = getattr(self, "current_year", None)
         if not isinstance(cur_year, (str, int)) or str(cur_year) in ("All Years", _("All Years"), "Year", _("Year"), "All"):
             cur_year = None
@@ -14217,8 +14244,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 return 0 if row.get("tmdb_sort") == "date" else 1
             cid = str(row.get("catalog_id", "")).lower()
             cname = str(row.get("catalog_name", "")).lower()
-            if cur_year or cur_sort == "Recent":
-                if cid == "year" or "new" in cname or "recent" in cname:
+            if cur_year or cur_sort in ("Recent", "New", "Last Added"):
+                if cid == "year" or any(k in cname or k in cid for k in ("new", "recent", "latest", "last added")):
                     return 0
                 if cid in ["top", "kitsu-anime-trending"] or "popular" in cname:
                     return 1
@@ -14621,9 +14648,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         cur_year = getattr(self, "current_year", None)
         if not isinstance(cur_year, (str, int)) or str(cur_year) in ("All Years", _("All Years"), "Year", _("Year"), "All"):
             cur_year = None
-        cur_sort = getattr(self, "current_sort", "Recent")
+        cur_sort = getattr(self, "current_sort", "Popular")
         if not isinstance(cur_sort, str):
-            cur_sort = "Recent"
+            cur_sort = "Popular"
         return f"{cat_btn}|{getattr(self, '_current_discover_type', 'all')}|{getattr(self, '_current_discover_addon', None) or 'all'}|{cur_genre or 'all'}|{cur_year or 'all'}|{cur_lang or 'all'}|{cur_country or 'all'}|{cur_network or 'all'}|{cur_sort}"
 
     def _refresh_discover_page(self, filter_media_type=None, filter_addon_url=None, custom_title=None, force_refresh=False):
@@ -14635,6 +14662,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._refresh_unique_combined_view()
             return
         from . import database
+
+        self._current_discover_type = filter_media_type or "all"
+        self._current_discover_addon = filter_addon_url
 
         view_key = self._get_discover_view_key()
         if not force_refresh and getattr(self, "_active_discover_view_key", None) == view_key:
@@ -14659,9 +14689,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             self._discover_active_pool = None
-        
-        self._current_discover_type = filter_media_type or "all"
-        self._current_discover_addon = filter_addon_url
         
         if not hasattr(self, "_discover_views"):
             self._discover_views = {}
@@ -14855,8 +14882,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         self.language_dropdown.set_selected(0)
                     finally:
                         self._syncing_discover_toolbar = False
-                self.current_sort = "Recent"
-                self._sync_library_sort_dropdown_selection("Recent")
+                self.current_sort = "Popular"
+                self._sync_library_sort_dropdown_selection("Popular")
                 self._sync_library_genre_dropdown_selection(None)
                 self._refresh_discover_page(filter_media_type=self._current_discover_type or "all", filter_addon_url=None, force_refresh=True)
 
@@ -15258,6 +15285,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         # that have no local results yet; fetch_items handles
                         # transport failures and timeout.
                         debug_log(f"discover row FETCHING from API: '{row_title}' (type={m_type}, id={c_id}, genre={fetch_genre})")
+                        is_cs_row = (row_info.get("_source") == "cloudstream" or str(m_url or "").startswith("cloudstream://"))
                         items = api.fetch_items(
                             media_type=m_type,
                             catalog_id=c_id,
@@ -15265,7 +15293,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             genre=fetch_genre or "",
                             page=1,
                             limit=DISCOVER_ROW_CARD_LIMIT,
-                            timeout=2.5,
+                            timeout=8.0 if is_cs_row else 2.5,
                             is_cancelled=(lambda: _is_event_set(abort_ev))
                         )
                         if _is_event_set(abort_ev):
@@ -15542,8 +15570,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                         self.language_dropdown.set_selected(0)
                                     finally:
                                         self._syncing_discover_toolbar = False
-                                self.current_sort = "Recent"
-                                self._sync_library_sort_dropdown_selection("Recent")
+                                self.current_sort = "Popular"
+                                self._sync_library_sort_dropdown_selection("Popular")
                                 self._sync_library_genre_dropdown_selection(None)
                                 self._refresh_discover_page(filter_media_type=self._current_discover_type or "all", filter_addon_url=None, force_refresh=True)
 
@@ -15628,12 +15656,17 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         sec_row.add_css_class("discover-row-box")
 
-        sort_mode = str(getattr(self, "current_sort", "Recent") or "Recent").strip().lower()
+        sort_mode = str(getattr(self, "current_sort", "") or "").strip().lower()
         items = [it for it in (items or []) if not api.is_future_item(it)]
-        if row_info.get("_source") == "tmdb_catalog":
+        row_id = str(row_info.get("catalog_id") or "").lower()
+        row_name = str(row_info.get("catalog_name") or row_info.get("title") or "").lower()
+        is_date_row = (
+            row_info.get("tmdb_sort") == "date"
+            or any(k in row_id or k in row_name for k in ("new", "recent", "latest", "last added"))
+        )
+        if row_info.get("_source") == "tmdb_catalog" and row_info.get("tmdb_sort") == "date":
             items = sorted(items, key=lambda item: str(item.get("release_date") or ""), reverse=True)
-        elif sort_mode in ("recent", "new", "latest"):
-            # Cached and freshly fetched rows use the same newest-first order.
+        elif is_date_row and sort_mode in ("recent", "new", "latest", "last added"):
             items = sorted(items, key=_discover_item_release_sort_key, reverse=True)
 
         display_items = items[:DISCOVER_ROW_CARD_LIMIT]

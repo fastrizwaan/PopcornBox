@@ -533,6 +533,19 @@ class TestCloudStream(unittest.TestCase):
             self.assertTrue(len(sources) >= 1)
             self.assertTrue(any("thebeast4k.mp4" in s.get("url", "") for s in sources))
 
+        # Check all 5 catalog sections are declared and fetched
+        sec_names = [s["name"] for s in provider.catalog_sections]
+        self.assertIn("Hindi Movies", sec_names)
+        self.assertIn("English Movies", sec_names)
+        with patch("src.cloudstream._http_get_text", return_value=mock_html):
+            main_sections = provider.get_main_page(page=1)
+            main_names = [s[0] for s in main_sections]
+            self.assertIn("Latest Movies", main_names)
+            self.assertIn("Latest Series", main_names)
+            self.assertIn("4K HDR", main_names)
+            self.assertIn("Hindi Movies", main_names)
+            self.assertIn("English Movies", main_names)
+
     def test_bulk_install_compatible_filtering(self):
         mock_plugins = [
             {"id": "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#FourKHDHub", "name": "FourKHDHub", "is_installed": False},

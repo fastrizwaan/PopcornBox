@@ -4088,35 +4088,36 @@ class FourKHDHubCloudStreamProvider(CloudStreamProvider):
         sections = []
         p = int(page or 1)
 
-        # 1. Latest Movies
-        movies_url = f"{base}/category/movies/" if p <= 1 else f"{base}/category/movies/?pagex={p}"
-        try:
-            m_html = _http_get_text(movies_url, timeout=8.0)
-            movies = self._parse_movie_cards(m_html, base)
-            if movies:
-                sections.append(("Latest Movies", movies))
-        except Exception as e:
-            logger.debug(f"FourKHDHub Latest Movies failed: {e}")
+        section_defs = [
+            ("Latest Movies", f"/category/movies/" if p <= 1 else f"/category/movies/?pagex={p}"),
+            ("Latest Series", f"/category/series/" if p <= 1 else f"/category/series/?pagex={p}"),
+            ("4K HDR", f"/category/2160p-HDR/" if p <= 1 else f"/category/2160p-HDR/?pagex={p}"),
+            ("Hindi Movies", f"/category/hindi-movies/" if p <= 1 else f"/category/hindi-movies/?pagex={p}"),
+            ("English Movies", f"/category/english-movies/" if p <= 1 else f"/category/english-movies/?pagex={p}"),
+        ]
 
-        # 2. Latest Series
-        series_url = f"{base}/category/series/" if p <= 1 else f"{base}/category/series/?pagex={p}"
-        try:
-            s_html = _http_get_text(series_url, timeout=8.0)
-            series = self._parse_movie_cards(s_html, base)
-            if series:
-                sections.append(("Latest Series", series))
-        except Exception as e:
-            logger.debug(f"FourKHDHub Latest Series failed: {e}")
+        def _fetch(sec_name, sec_path):
+            try:
+                url = f"{base}{sec_path}"
+                html = _http_get_text(url, timeout=8.0)
+                cards = self._parse_movie_cards(html, base)
+                return sec_name, cards
+            except Exception as e:
+                logger.debug(f"FourKHDHub {sec_name} failed: {e}")
+                return sec_name, []
 
-        # 3. 4K HDR
-        fourk_url = f"{base}/category/2160p-HDR/" if p <= 1 else f"{base}/category/2160p-HDR/?pagex={p}"
         try:
-            f_html = _http_get_text(fourk_url, timeout=8.0)
-            fourk_items = self._parse_movie_cards(f_html, base)
-            if fourk_items:
-                sections.append(("4K HDR", fourk_items))
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                results = list(ex.map(lambda s: _fetch(s[0], s[1]), section_defs))
+            for sec_name, cards in results:
+                if cards:
+                    sections.append((sec_name, cards))
         except Exception as e:
-            logger.debug(f"FourKHDHub 4K HDR failed: {e}")
+            logger.debug(f"FourKHDHub get_main_page pool failed: {e}")
+            for sec_name, sec_path in section_defs:
+                name, cards = _fetch(sec_name, sec_path)
+                if cards:
+                    sections.append((name, cards))
 
         return sections
 
@@ -7776,12 +7777,16 @@ def is_provider_online(provider_id):
 
     with _PROVIDER_HEALTH_LOCK:
         entry = _PROVIDER_HEALTH.get(str(provider_id))
+        if entry is None and hasattr(prov, "id") and prov.id:
+            entry = _PROVIDER_HEALTH.get(str(prov.id))
         if entry is not None:
             is_online, ts = entry
             if not is_online:
                 if (time.time() - ts) < _PROVIDER_OFFLINE_TTL:
                     return False
                 _PROVIDER_HEALTH.pop(str(provider_id), None)
+                if hasattr(prov, "id") and prov.id:
+                    _PROVIDER_HEALTH.pop(str(prov.id), None)
     return True
 
 
@@ -7793,6 +7798,12 @@ def mark_provider_status(provider_id, is_online, error=None):
         return
     with _PROVIDER_HEALTH_LOCK:
         _PROVIDER_HEALTH[str(provider_id)] = (bool(is_online), time.time())
+        try:
+            prov = get_provider(provider_id)
+            if prov and hasattr(prov, "id") and prov.id and str(prov.id) != str(provider_id):
+                _PROVIDER_HEALTH[str(prov.id)] = (bool(is_online), time.time())
+        except Exception:
+            pass
 
 
 def _catalog_type_matches(catalog_type, media_type):
@@ -7902,6 +7913,10 @@ def on_adult_content_toggled(is_hidden):
                 database.toggle_cloudstream_plugin(p["id"], False)
 
 
+_MAIN_PAGE_INFLIGHT = {}
+_MAIN_PAGE_INFLIGHT_LOCK = threading.Lock()
+
+
 def _get_provider_main_page(provider, page):
     cache_key = (str(provider.id), int(page or 1))
     now = time.time()
@@ -7909,6 +7924,23 @@ def _get_provider_main_page(provider, page):
         cached = _MAIN_PAGE_CACHE.get(cache_key)
         if cached and now - cached[0] < _MAIN_PAGE_CACHE_TTL_SECONDS:
             return cached[1]
+
+    wait_for_flight = False
+    with _MAIN_PAGE_INFLIGHT_LOCK:
+        if cache_key in _MAIN_PAGE_INFLIGHT:
+            ev = _MAIN_PAGE_INFLIGHT[cache_key]
+            wait_for_flight = True
+        else:
+            ev = threading.Event()
+            _MAIN_PAGE_INFLIGHT[cache_key] = ev
+
+    if wait_for_flight:
+        ev.wait(timeout=10.0)
+        with _MAIN_PAGE_CACHE_LOCK:
+            cached = _MAIN_PAGE_CACHE.get(cache_key)
+            if cached:
+                return cached[1]
+        return []
 
     try:
         try:
@@ -7919,6 +7951,10 @@ def _get_provider_main_page(provider, page):
     except Exception as e:
         logger.debug(f"CloudStream catalog fetch failed provider={provider.name!r}: {e}")
         sections = []
+    finally:
+        with _MAIN_PAGE_INFLIGHT_LOCK:
+            _MAIN_PAGE_INFLIGHT.pop(cache_key, None)
+        ev.set()
 
     total_items = 0
     for sec in sections:
