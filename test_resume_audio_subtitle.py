@@ -395,6 +395,175 @@ class TestResumeAudioSubtitle(unittest.TestCase):
             api.MATCH_UNKNOWN
         )
 
+    def test_dialogue_preferred_over_sdh_in_subtitles(self):
+        """find_best_subtitle_track chooses standard dialogue over SDH / CC roll-up subtitles."""
+        from src import api
+        tracks = [
+            {"type": "sub", "id": 1, "lang": "eng", "title": "English [CC]", "hearing-impaired": True},
+            {"type": "sub", "id": 2, "lang": "eng", "title": "English", "hearing-impaired": False},
+        ]
+        best = api.find_best_subtitle_track(tracks, preferred_langs=["en"])
+        self.assertIsNotNone(best)
+        self.assertEqual(best["id"], 2)
+
+    def test_filter_subtitles_by_language_ranks_dialogue_before_sdh(self):
+        """_filter_subtitles_by_language places clean dialogue subtitles ahead of SDH."""
+        from src import api
+        rank_sets = api._build_language_rank_sets(["en"])
+        subs = [
+            {"lang": "eng", "title": "English (SDH)", "hearing-impaired": True},
+            {"lang": "eng", "title": "English Dialogue", "hearing-impaired": False},
+        ]
+        filtered = api._filter_subtitles_by_language(subs, rank_sets)
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual(filtered[0]["title"], "English Dialogue")
+        self.assertEqual(filtered[1]["title"], "English (SDH)")
+
+    def test_find_best_audio_track_fallback(self):
+        """When no tracks match preferred_langs, find_best_audio_track falls back to default/first audio track."""
+        from src import api
+        tracks = [
+            {"type": "audio", "id": 1, "lang": "und", "title": "Main Audio", "default": True, "audio-channels": 6},
+            {"type": "audio", "id": 2, "lang": "und", "title": "Commentary", "default": False, "audio-channels": 2},
+        ]
+        # preferred_langs is 'en' which does not match 'und'
+        best = api.find_best_audio_track(tracks, preferred_langs=["en"])
+        self.assertIsNotNone(best)
+        self.assertEqual(best["id"], 1)
+
+    def test_capture_track_preferences_ignores_idle_aid_false(self):
+        """_capture_current_track_preferences does NOT mark audio disabled when mpv.aid is False (idle)."""
+        win = MagicMock()
+        win.mpv.idle_active = False
+        win.mpv.aid = False  # MPV idle / stopped returns False, which is == 0 in raw Python
+        win.mpv.sid = False
+        win.mpv.track_list = [
+            {"type": "audio", "id": 1, "lang": "eng", "title": "English"},
+        ]
+        win._remember_audio_preference = MagicMock()
+        win._remember_subtitle_preference = MagicMock()
+        win._capture_current_track_preferences = window.PopcornBoxWindow._capture_current_track_preferences.__get__(win, window.PopcornBoxWindow)
+
+        item = {"id": "tt77777"}
+        win._capture_current_track_preferences(item)
+
+        # Must NOT mark audio disabled
+        self.assertFalse(item.get("audio_disabled", False))
+        win._remember_audio_preference.assert_not_called()
+
+    def test_subtitle_manual_selection_prevents_bounce(self):
+        """Manual subtitle selection sets _user_selected_subtitle and prevents _on_track_list_for_subtitles override."""
+        win = MagicMock()
+        win.mpv.idle_active = False
+        win.mpv.track_list = [
+            {"type": "sub", "id": 1, "lang": "eng", "title": "English 1"},
+            {"type": "sub", "id": 2, "lang": "eng", "title": "English 2"},
+        ]
+        win._playback_preference_keys = window.PopcornBoxWindow._playback_preference_keys.__get__(win, window.PopcornBoxWindow)
+        win._remember_subtitle_preference = MagicMock()
+        win._clear_saved_external_subtitle = MagicMock()
+        win._on_subtitle_selected = window.PopcornBoxWindow._on_subtitle_selected.__get__(win, window.PopcornBoxWindow)
+        win._on_track_list_for_subtitles = window.PopcornBoxWindow._on_track_list_for_subtitles.__get__(win, window.PopcornBoxWindow)
+
+        # User selects track 2 (English 2)
+        action = MagicMock()
+        parameter = MagicMock()
+        parameter.get_int32.return_value = 2
+        win._on_subtitle_selected(action, parameter)
+
+        self.assertEqual(win.mpv.sid, 2)
+        self.assertTrue(win._user_selected_subtitle)
+        self.assertTrue(win._subtitles_configured_for_file)
+
+        # Subsequent track_list change must NOT overwrite sid to 1
+        win._on_track_list_for_subtitles(win.mpv.track_list)
+        self.assertEqual(win.mpv.sid, 2)
+
+    def test_history_dialog_activates_via_play_stream(self):
+        """HistoryDialog._on_row_activated delegates to win._play_stream."""
+        from src import history
+        mock_win = MagicMock()
+        diag = MagicMock(spec=history.HistoryDialog)
+        diag._win = mock_win
+        diag.close = MagicMock()
+        history.HistoryDialog._on_row_activated(diag, "/tmp/test_video.mkv")
+
+        mock_win._play_stream.assert_called_once_with("/tmp/test_video.mkv", title="test_video.mkv")
+        diag.close.assert_called_once()
+
+    def test_update_track_menus_groups_many_subtitles(self):
+        """When media has > 6 subtitle tracks, non-preferred foreign tracks are grouped into an 'Other Languages' submenu."""
+        win = MagicMock()
+        win.subtitles_menu = Gio.Menu.new()
+        win.audio_tracks_menu = Gio.Menu.new()
+        win.video_tracks_menu = Gio.Menu.new()
+        win.mpv.sid = 1
+        win._format_sub_label = window.PopcornBoxWindow._format_sub_label.__get__(win, window.PopcornBoxWindow)
+        win._format_audio_label = window.PopcornBoxWindow._format_audio_label.__get__(win, window.PopcornBoxWindow)
+        win._format_video_label = window.PopcornBoxWindow._format_video_label.__get__(win, window.PopcornBoxWindow)
+        win._update_track_menus = window.PopcornBoxWindow._update_track_menus.__get__(win, window.PopcornBoxWindow)
+
+        # 2 English tracks + 10 foreign tracks
+        track_list = [
+            {"type": "sub", "id": 1, "lang": "en", "title": "", "selected": True},
+            {"type": "sub", "id": 2, "lang": "en", "title": ""},
+            {"type": "sub", "id": 3, "lang": "bg", "title": ""},
+            {"type": "sub", "id": 4, "lang": "cs", "title": ""},
+            {"type": "sub", "id": 5, "lang": "da", "title": ""},
+            {"type": "sub", "id": 6, "lang": "de", "title": ""},
+            {"type": "sub", "id": 7, "lang": "el", "title": ""},
+            {"type": "sub", "id": 8, "lang": "es", "title": ""},
+            {"type": "sub", "id": 9, "lang": "fr", "title": ""},
+            {"type": "sub", "id": 10, "lang": "he", "title": ""},
+            {"type": "sub", "id": 11, "lang": "it", "title": ""},
+            {"type": "sub", "id": 12, "lang": "ja", "title": ""},
+        ]
+
+        with patch("src.api.get_user_preferred_languages", return_value=["en"]):
+            win._update_track_menus(track_list)
+
+        # In subtitles_menu: 2 sections (actions_section, tracks_section)
+        self.assertEqual(win.subtitles_menu.get_n_items(), 2)
+        # Check tracks_section items: None + 2 English tracks + 1 "Other Languages" submenu item = 4 items
+        # Gio.Menu structure: section 1 is at index 1
+        tracks_section_model = win.subtitles_menu.get_item_link(1, Gio.MENU_LINK_SECTION)
+        self.assertIsNotNone(tracks_section_model)
+        # Verify it has 4 items (None + English 1 + English 2 + Other Languages submenu)
+        self.assertEqual(tracks_section_model.get_n_items(), 4)
+
+        # Verify the 4th item has a submenu link
+        other_submenu = tracks_section_model.get_item_link(3, Gio.MENU_LINK_SUBMENU)
+        self.assertIsNotNone(other_submenu)
+        # Verify other_submenu contains the remaining 10 foreign language tracks
+        self.assertEqual(other_submenu.get_n_items(), 10)
+
+    def test_update_track_menus_few_subtitles_no_submenu(self):
+        """When media has <= 6 subtitle tracks, all tracks remain at the primary level without a submenu."""
+        win = MagicMock()
+        win.subtitles_menu = Gio.Menu.new()
+        win.audio_tracks_menu = Gio.Menu.new()
+        win.video_tracks_menu = Gio.Menu.new()
+        win.mpv.sid = 1
+        win._format_sub_label = window.PopcornBoxWindow._format_sub_label.__get__(win, window.PopcornBoxWindow)
+        win._format_audio_label = window.PopcornBoxWindow._format_audio_label.__get__(win, window.PopcornBoxWindow)
+        win._format_video_label = window.PopcornBoxWindow._format_video_label.__get__(win, window.PopcornBoxWindow)
+        win._update_track_menus = window.PopcornBoxWindow._update_track_menus.__get__(win, window.PopcornBoxWindow)
+
+        track_list = [
+            {"type": "sub", "id": 1, "lang": "en", "title": ""},
+            {"type": "sub", "id": 2, "lang": "fr", "title": ""},
+            {"type": "sub", "id": 3, "lang": "es", "title": ""},
+        ]
+
+        with patch("src.api.get_user_preferred_languages", return_value=["en"]):
+            win._update_track_menus(track_list)
+
+        tracks_section_model = win.subtitles_menu.get_item_link(1, Gio.MENU_LINK_SECTION)
+        # None + 3 tracks = 4 items, NO submenu
+        self.assertEqual(tracks_section_model.get_n_items(), 4)
+        for i in range(tracks_section_model.get_n_items()):
+            self.assertIsNone(tracks_section_model.get_item_link(i, Gio.MENU_LINK_SUBMENU))
+
 
 if __name__ == "__main__":
     unittest.main()

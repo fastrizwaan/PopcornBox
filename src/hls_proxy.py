@@ -105,6 +105,15 @@ class HlsSession:
 
         # Check if master playlist (#EXT-X-STREAM-INF)
         if "#EXT-X-STREAM-INF" in text:
+            # If the master playlist defines separate audio tracks (#EXT-X-MEDIA:TYPE=AUDIO),
+            # following only a video variant strips the audio entirely and results in silent video.
+            # Direct MPV playback handles multi-rendition master playlists with separate audio natively.
+            if "#EXT-X-MEDIA:" in text and re.search(r'#EXT-X-MEDIA:[^\n\r]*TYPE=AUDIO', text, re.IGNORECASE):
+                logger.info(f"[HLSProxy] Master playlist has separate audio tracks (#EXT-X-MEDIA:TYPE=AUDIO), passing through for native MPV playback: {current_url}")
+                self.is_fmp4 = False
+                self.is_ready = True
+                return self
+
             variant_url = self._extract_best_variant_url(text, current_url)
             if variant_url:
                 logger.info(f"[HLSProxy] Master playlist detected, following variant: {variant_url}")

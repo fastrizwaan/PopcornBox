@@ -277,6 +277,15 @@ def execute_custom_scraper(
     scraper_name = getattr(scraper, "name", "Custom Plugin")
     scraper_id = getattr(scraper, "id", "custom.unknown")
 
+    if not tmdb_id and imdb_id:
+        try:
+            from . import tmdb_helper
+            resolved = tmdb_helper.resolve_to_tmdb_id(imdb_id, media_type, title, year=year)
+            if resolved:
+                tmdb_id = str(resolved).strip()
+        except Exception:
+            pass
+
     def _call():
         # Inspect parameters to call with supported signature
         sig = inspect.signature(scraper.get_streams)
@@ -378,6 +387,7 @@ def test_custom_scraper(scraper_id: str) -> tuple[bool, int, str]:
                 episode=1,
                 title="Game of Thrones",
                 year="2011",
+                tmdb_id="1399",
                 timeout=20.0
             )
         else:
@@ -388,6 +398,7 @@ def test_custom_scraper(scraper_id: str) -> tuple[bool, int, str]:
                 media_type="movie",
                 title="Inception",
                 year="2010",
+                tmdb_id="27205",
                 timeout=20.0
             )
 

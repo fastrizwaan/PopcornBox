@@ -290,8 +290,12 @@ class HistoryDialog(Adw.Dialog):
 
     def _on_row_activated(self, file_path):
         try:
-            self._win.mpv.loadfile(file_path, "replace")
-            self._win.mpv.pause = False
+            title = os.path.basename(file_path)
+            if hasattr(self._win, "_play_stream"):
+                self._win._play_stream(file_path, title=title)
+            else:
+                self._win.mpv.loadfile(file_path, "replace")
+                self._win.mpv.pause = False
             self.close()
         except Exception as e:
             logger.error(f"Error playing {file_path}: {e}")

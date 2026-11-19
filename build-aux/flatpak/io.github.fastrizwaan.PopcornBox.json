@@ -121,6 +121,9 @@
                 {
                     "name": "libplacebo",
                     "buildsystem": "meson",
+                    "config-opts": [
+                        "-Ddemos=false"
+                    ],
                     "sources": [
                         {
                             "type": "git",
@@ -180,6 +183,95 @@
                     "commands": [
                         "unzip deno.zip"
                     ]
+                }
+            ]
+        },
+        {
+            "name": "wasmtime",
+            "buildsystem": "simple",
+            "build-commands": [
+                "pip3 install --no-index --no-deps --prefix=/app wasmtime-*.whl"
+            ],
+            "sources": [
+                {
+                    "type": "file",
+                    "only-arches": [
+                        "x86_64"
+                    ],
+                    "url": "https://files.pythonhosted.org/packages/d5/9d/97c109d4a25c716c4045644398d7e684e1d4fa5ec6c99412b5cba35a9a98/wasmtime-50.0.1-py3-none-manylinux1_x86_64.whl",
+                    "sha256": "cc14c3a17654e0394e0225b11813532ef0cd7bd1e222a0c5494cdedaabeddac4"
+                },
+                {
+                    "type": "file",
+                    "only-arches": [
+                        "aarch64"
+                    ],
+                    "url": "https://files.pythonhosted.org/packages/8e/c4/58709b73e613e5366e4783537e2a861272d95f500c43fddf9b378d98415a/wasmtime-50.0.1-py3-none-manylinux2014_aarch64.whl",
+                    "sha256": "675484e525c028dc02762b777f1db4477ea70caa3fec6775426daff4d64edfb1"
+                }
+            ]
+        },
+        {
+            "name": "pycparser",
+            "buildsystem": "simple",
+            "build-commands": [
+                "pip3 install --no-index --no-deps --prefix=/app pycparser-*.whl"
+            ],
+            "sources": [
+                {
+                    "type": "file",
+                    "url": "https://files.pythonhosted.org/packages/b6/ae/315bbeee126a769cbde43cf4908acb4b40408d8bf8bbf334dd7368d8dadf/pycparser-3.12-py3-none-any.whl",
+                    "sha256": "a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e"
+                }
+            ]
+        },
+        {
+            "name": "cffi",
+            "buildsystem": "simple",
+            "build-commands": [
+                "pip3 install --no-index --no-deps --prefix=/app cffi-*.whl"
+            ],
+            "sources": [
+                {
+                    "type": "file",
+                    "only-arches": [
+                        "x86_64"
+                    ],
+                    "url": "https://files.pythonhosted.org/packages/e9/02/4e7d553a7ac4b4238b38b3c1b80d486e9d4436f8d2acbf87a0997fe3f402/cffi-2.1.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+                    "sha256": "b0431303acaea1089ad4b3e9ce4e6518193def1118d4073ca848635ee4ea2e96"
+                },
+                {
+                    "type": "file",
+                    "only-arches": [
+                        "aarch64"
+                    ],
+                    "url": "https://files.pythonhosted.org/packages/67/b8/b42132ca113dc567d37684437b46ca1dafc885902b02a110a02d5b511857/cffi-2.1.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+                    "sha256": "58acb8ab8e295e6c5ea12f888cbb13cf21511ef2a3303a23f4325c29d17fe5c1"
+                }
+            ]
+        },
+        {
+            "name": "cryptography",
+            "buildsystem": "simple",
+            "build-commands": [
+                "pip3 install --no-index --no-deps --prefix=/app cryptography-*.whl"
+            ],
+            "sources": [
+                {
+                    "type": "file",
+                    "only-arches": [
+                        "x86_64"
+                    ],
+                    "url": "https://files.pythonhosted.org/packages/bf/f1/1c1f6874e8550cfddd4b688ceb38cefb6ed15ceed224d56f133f3d88c214/cryptography-50.0.2-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+                    "sha256": "ee247f5c245c9a2fe7c8e2214e295918838e44e00a45a6718451e4004219e767"
+                },
+                {
+                    "type": "file",
+                    "only-arches": [
+                        "aarch64"
+                    ],
+                    "url": "https://files.pythonhosted.org/packages/d5/8d/6d585339bedf85d45044c85d8412dac53f2bb6f918e8b7777efba1787844/cryptography-50.0.2-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+                    "sha256": "c5e67125c7dca78d199ec4e116aa93dbb83494808ecbb8211a2cb09b1bf41dbd"
                 }
             ]
         },

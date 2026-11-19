@@ -121,6 +121,25 @@ class TestHlsProxy(unittest.TestCase):
         best = session._extract_best_variant_url(SAMPLE_MASTER_PLAYLIST, "https://cdn.example.com/master.m3u8")
         self.assertEqual(best, "https://cdn.example.com/1080p/manifest.m3u8")
 
+    def test_master_playlist_with_separate_audio_bypasses_proxy(self):
+        from unittest.mock import patch, MagicMock
+        master_with_audio = """#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio-en/playlist.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=6577000,AUDIO="audio"
+1080p/playlist.m3u8
+"""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = master_with_audio.encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = False
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            session = hls_proxy.HlsSession("test_audio", "https://cdn.example.com/master.m3u8")
+            session.fetch_and_parse()
+            self.assertFalse(session.is_fmp4)
+            self.assertTrue(session.is_ready)
+
     def test_proxy_server_http_request(self):
         port = hls_proxy.start_proxy_server()
         self.assertIsInstance(port, int)

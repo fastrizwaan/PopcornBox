@@ -7978,9 +7978,9 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 resolve_future = None
 
             # Direct stream providers:
-            # 1. Plugin scrapers (Nuvio)
+            # 1. Plugin scrapers (Nuvio) & Custom drop-in plugins
             initial_tmdb_id = known_tmdb_id
-            if not initial_tmdb_id and plugin_scrapers:
+            if not initial_tmdb_id and (plugin_scrapers or enabled_custom_scrapers):
                 initial_tmdb_id = tmdb_helper.resolve_to_tmdb_id(imdb_id, actual_media, title, year=expected_year)
                 if initial_tmdb_id:
                     print(
@@ -8473,12 +8473,12 @@ def _match_subtitle_language(sub, rank_sets):
     return -1
 
 def _filter_subtitles_by_language(subtitles, rank_sets):
-    """Keep only preferred-language subtitles, best language first and SDH before regular."""
+    """Keep only preferred-language subtitles, best language first and regular dialogue before SDH."""
     matched = []
     for sub in subtitles or []:
         rank = _match_subtitle_language(sub, rank_sets)
         if rank >= 0:
-            matched.append((rank, 0 if is_sdh_track(sub) else 1, sub))
+            matched.append((rank, 1 if is_sdh_track(sub) else 0, sub))
     matched.sort(key=lambda item: (item[0], item[1]))
     return [item[2] for item in matched]
 
@@ -8495,7 +8495,7 @@ def find_best_subtitle_track(tracks, preferred_langs=None, only_embedded=False):
     """
     Find the best subtitle track from tracks according to:
     1. Language preference order (from user settings or argument)
-    2. SDH priority (SDH preferred over non-SDH in the same language)
+    2. Dialogue priority (standard dialogue preferred over SDH in the same language)
     3. Full dialogue over forced subtitles
     4. Default track flag
     5. Track ID order
@@ -8547,7 +8547,7 @@ def find_best_subtitle_track(tracks, preferred_langs=None, only_embedded=False):
 
         # Fallback for undetermined / missing language tags
         if matched_rank == 999 and (not raw_sub_lang or raw_sub_lang in ["und", "unk", "unknown"]):
-            if sdh:
+            if not sdh:
                 matched_rank = 500
             elif is_default:
                 matched_rank = 501
@@ -8555,7 +8555,7 @@ def find_best_subtitle_track(tracks, preferred_langs=None, only_embedded=False):
                 matched_rank = 502
 
         if matched_rank < 999:
-            score = (matched_rank, 0 if sdh else 1, 1 if is_forced else 0, 0 if is_default else 1, track_id)
+            score = (matched_rank, 1 if sdh else 0, 1 if is_forced else 0, 0 if is_default else 1, track_id)
             candidates.append((score, track))
 
     if not candidates:
@@ -8830,7 +8830,27 @@ def find_best_audio_track(tracks, preferred_langs=None):
             candidates.append((score, track))
 
     if not candidates:
-        return None
+        audio_only = [t for t in tracks if isinstance(t, dict) and t.get("type") == "audio"]
+        if not audio_only:
+            return None
+        fallback_scored = []
+        for track in audio_only:
+            track_title = str(track.get("title") or "").lower()
+            is_default = bool(track.get("default"))
+            track_id = int(track.get("id", 0))
+            channels = int(track.get("audio-channels") or track.get("demux-channel-count") or 2)
+            is_commentary = bool("commentary" in track_title or "comment" in track_title)
+            is_vis_impaired = bool(track.get("visual-impaired") or "description" in track_title or " ad " in f" {track_title} ")
+            fallback_score = (
+                1 if is_commentary else 0,
+                1 if is_vis_impaired else 0,
+                -channels,
+                0 if is_default else 1,
+                track_id
+            )
+            fallback_scored.append((fallback_score, track))
+        fallback_scored.sort(key=lambda x: x[0])
+        return fallback_scored[0][1]
 
     candidates.sort(key=lambda x: x[0])
     return candidates[0][1]
