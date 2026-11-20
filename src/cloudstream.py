@@ -4293,20 +4293,30 @@ class FourKHDHubCloudStreamProvider(CloudStreamProvider):
         if not items:
             return []
 
-        # Find best matching item
+        is_series_request = str(media_type or "").lower() in ("series", "show", "shows", "tv", "anime")
+        target_year = str(year).strip()[:4] if (year and str(year).strip()[:4].isdigit()) else None
+
         best_item = None
-        target_clean = re.sub(r"[^\w\s]", "", (title or "").lower()).strip()
         for it in items:
-            it_name = re.sub(r"[^\w\s]", "", (it.get("name") or "").lower()).strip()
-            if target_clean and (target_clean in it_name or it_name in target_clean):
-                if year and it.get("year"):
-                    if str(year) == str(it.get("year")):
-                        best_item = it
-                        break
-                elif not best_item:
-                    best_item = it
-        if not best_item and items:
-            best_item = items[0]
+            it_name = it.get("name") or ""
+            if not _is_strict_title_match(title, it_name):
+                continue
+
+            it_type = it.get("type")
+            it_data = str(it.get("data") or "")
+            is_it_series = (it_type == CloudStreamTvType.TvSeries) or ("/series/" in it_data) or ("-series-" in it_data)
+            if is_series_request and not is_it_series:
+                continue
+            if not is_series_request and is_it_series:
+                continue
+
+            it_year = str(it.get("year") or "").strip()[:4]
+            if target_year and it_year and it_year.isdigit() and it_year != target_year:
+                continue
+
+            best_item = it
+            if target_year and it_year == target_year:
+                break
 
         if best_item:
             return self.load_links(best_item["data"], season=season, episode=episode)
@@ -5206,15 +5216,18 @@ class YTSCloudStreamProvider(CloudStreamProvider):
         items = self.search(title, imdb_id=imdb_id)
         if not items:
             return []
+        target_year = str(year).strip()[:4] if (year and str(year).strip()[:4].isdigit()) else None
         best_data = None
-        target_clean = re.sub(r"[^\w\s]", "", (title or "").lower()).strip()
         for it in items:
-            it_name = re.sub(r"[^\w\s]", "", (it.get("name") or "").lower()).strip()
-            if target_clean and (target_clean in it_name or it_name in target_clean):
-                best_data = it.get("data")
+            it_name = it.get("name") or ""
+            if not _is_strict_title_match(title, it_name):
+                continue
+            it_year = str(it.get("year") or "").strip()[:4]
+            if target_year and it_year and it_year.isdigit() and it_year != target_year:
+                continue
+            best_data = it.get("data")
+            if target_year and it_year == target_year:
                 break
-        if not best_data and items:
-            best_data = items[0].get("data")
         if best_data:
             return self.load_links(best_data)
         return []
@@ -5598,26 +5611,49 @@ class TorrentioCloudStreamProvider(CloudStreamProvider):
 
 
 _STOP_WORDS = {"the", "a", "an", "of", "and", "in", "on", "to", "for", "with", "at", "by", "from"}
+_RELEASE_TAG_WORDS = {
+    "movie", "film", "series", "web", "drama", "show", "shows", "tv", "part", "season",
+    "complete", "episodes", "episode", "hindi", "english", "dual", "multi", "audio", "dubbed",
+    "subbed", "hdrip", "webrip", "bluray", "dvdrip", "remastered", "extended", "unrated"
+}
 
 
 def _is_strict_title_match(query, candidate):
-    q_clean = re.sub(r"[^\w\s]", "", (query or "").lower()).strip()
-    c_clean = re.sub(r"[^\w\s]", "", (candidate or "").lower()).strip()
-    if not q_clean or not c_clean:
+    if not query or not candidate:
         return False
-    if q_clean == c_clean:
+    q_clean, _ = clean_cloudstream_title(query)
+    c_clean, _ = clean_cloudstream_title(candidate)
+
+    q_norm = re.sub(r"[^\w\s]", "", (q_clean or query).lower()).strip()
+    c_norm = re.sub(r"[^\w\s]", "", (c_clean or candidate).lower()).strip()
+    if not q_norm or not c_norm:
+        return False
+    if q_norm == c_norm:
         return True
-    q_words = [w for w in q_clean.split() if w not in _STOP_WORDS]
-    if not q_words:
-        q_words = q_clean.split()
-    c_words = [w for w in c_clean.split() if w not in _STOP_WORDS]
-    if not c_words:
-        c_words = c_clean.split()
-    q_set = set(q_words)
-    c_set = set(c_words)
-    if len(q_set) <= 2:
-        return q_set.issubset(c_set)
-    return (len(q_set.intersection(c_set)) / len(q_set)) >= 0.8
+
+    q_words = [w for w in q_norm.split() if w not in _STOP_WORDS] or q_norm.split()
+    c_words = [w for w in c_norm.split() if w not in _STOP_WORDS] or c_norm.split()
+
+    q_filtered = [w for w in q_words if w not in _RELEASE_TAG_WORDS] or q_words
+    c_filtered = [w for w in c_words if w not in _RELEASE_TAG_WORDS] or c_words
+
+    q_set = set(q_filtered)
+    c_set = set(c_filtered)
+
+    if q_set == c_set:
+        return True
+
+    overlap = q_set.intersection(c_set)
+    if not overlap:
+        return False
+
+    if len(q_set) == 1 or len(c_set) == 1:
+        return q_set == c_set
+
+    q_ratio = len(overlap) / len(q_set)
+    c_ratio = len(overlap) / len(c_set)
+
+    return q_ratio >= 0.75 and c_ratio >= 0.75
 
 
 class CNCVerseCloudStreamProvider(CloudStreamProvider):
@@ -8972,7 +9008,6 @@ def fetch_cloudstream_streams_for_media(
                         loaded_name
                         and not _is_strict_title_match(title, loaded_name)
                         and not (catalog_title and _is_strict_title_match(str(catalog_title), loaded_name))
-                        and not (requested_year and requested_year in (match_year, loaded_year))
                         and not (imdb_id and str(imdb_id).startswith("tt") and str(imdb_id) in match_data)
                     ):
                         continue

@@ -6025,6 +6025,9 @@ def match_stream_to_episode(stream, target_season, target_episode, ep_title=None
     if t_episode is None:
         return MATCH_UNKNOWN
 
+    if series_title and match_stream_to_movie(stream, target_title=series_title) == MATCH_MISMATCH:
+        return MATCH_MISMATCH
+
     text = get_stream_search_text(stream)
     if not text.strip():
         return MATCH_UNKNOWN
@@ -6526,7 +6529,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
         }
 
         if season is not None and episode is not None:
-            ep_match = match_stream_to_episode(stream_entry, season, episode, ep_title)
+            ep_match = match_stream_to_episode(stream_entry, season, episode, ep_title, series_title=title)
             # Filter out streams that explicitly belong to a different episode or season!
             if ep_match == MATCH_MISMATCH:
                 seen_keys[dedup_key] = None
@@ -7314,8 +7317,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             pass
 
     def _filter_mismatched_movie_streams(streams):
-        """Drop streams that explicitly belong to a different movie title."""
-        if not is_movie_request or not title:
+        """Drop streams that explicitly belong to a different title."""
+        if not title:
             return list(streams or [])
         accepted = []
         for stream in streams or []:
@@ -7323,7 +7326,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 accepted.append(stream)
                 continue
             if match_stream_to_movie(stream, target_title=title) == MATCH_MISMATCH:
-                print(f"[STREAM DEBUG] discarded mismatched movie stream title={title!r} url={(stream.get('url') or '')[:80]}")
+                print(f"[STREAM DEBUG] discarded mismatched stream title={title!r} url={(stream.get('url') or '')[:80]}")
                 continue
             accepted.append(stream)
         return accepted

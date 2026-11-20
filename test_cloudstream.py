@@ -851,6 +851,22 @@ class TestCloudStream(unittest.TestCase):
         self.assertFalse(cloudstream._is_strict_title_match("The Dog Stars", "Up Among The Stars"))
         self.assertFalse(cloudstream._is_strict_title_match("The Dog Stars", "7 Dogs (2026)"))
         self.assertFalse(cloudstream._is_strict_title_match("Inception", "Interstellar (2014)"))
+        self.assertFalse(cloudstream._is_strict_title_match("Love Ka Panga", "Love"))
+        self.assertFalse(cloudstream._is_strict_title_match("Love Ka Panga", "Love (2015)"))
+        self.assertFalse(cloudstream._is_strict_title_match("Love", "Love Ka Panga"))
+        self.assertTrue(cloudstream._is_strict_title_match("Love Ka Panga", "Love Ka Panga (2020)"))
+        self.assertTrue(cloudstream._is_strict_title_match("Love Ka Panga", "Love Ka Panga Season 1"))
+        self.assertFalse(cloudstream._is_strict_title_match("Love Ka Panga", "Panga (2020)"))
+
+    def test_fourkhdhub_does_not_match_short_substring_title(self):
+        p = cloudstream.FourKHDHubCloudStreamProvider()
+        mock_items = [
+            {"name": "Love (2015)", "data": "fourkhdhub:https://4khdhub.one/love-movie-4164/", "type": cloudstream.CloudStreamTvType.Movie, "year": "2015"},
+            {"name": "Merry Berry Love (2026)", "data": "fourkhdhub:https://4khdhub.one/merry-berry-love-series-8293/", "type": cloudstream.CloudStreamTvType.TvSeries, "year": "2026"},
+        ]
+        with unittest.mock.patch.object(p, "search", return_value=mock_items):
+            streams = p.get_streams_for_media("Love Ka Panga", media_type="series", year=2020, season=1, episode=1)
+            self.assertEqual(streams, [])
 
 
     def test_dailymotion_provider(self):
