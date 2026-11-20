@@ -59,6 +59,9 @@ if __name__ == '__main__':
 
     try:
         from popcornbox import main
-    except ImportError:
-        from cine import main
+    except ModuleNotFoundError as e:
+        if e.name == 'popcornbox':
+            from cine import main
+        else:
+            raise
     sys.exit(main.main(VERSION))

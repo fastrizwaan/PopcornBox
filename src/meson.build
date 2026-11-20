@@ -50,6 +50,7 @@ popcornbox_sources = [
   'download_row.py',
   'history.py',
   'hls_proxy.py',
+  'http_downloader.py',
   'libtorrent_stream.py',
   'main.py',
   'movie_widget.py',
