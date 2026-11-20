@@ -8,6 +8,7 @@ gi.require_version('Pango', '1.0')
 from gi.repository import Gtk, GLib, Pango, Gdk
 from . import player
 from . import database
+from . import http_downloader
 from .utils import idle_add_once
 
 class DownloadItemRow(Gtk.Box):
@@ -23,6 +24,7 @@ class DownloadItemRow(Gtk.Box):
         self.info_hash = download.get("info_hash") or ""
         self.magnet = download.get("magnet") or ""
         self.file_index = download.get("file_index")
+        self.is_http = bool(download.get("is_http"))
         
         self.display_title = download.get("name") or "Unknown"
         self.actual_filename = download.get("name") or ""
@@ -85,8 +87,9 @@ class DownloadItemRow(Gtk.Box):
         folder_btn.connect("clicked", self.on_folder_clicked)
         pop_box.append(folder_btn)
         
-        copy_btn = Gtk.Button(label="Copy Magnet Link", icon_name="edit-copy-symbolic")
-        copy_btn.set_tooltip_text("Copy Magnet Link")
+        copy_label = "Copy Stream URL" if self.is_http else "Copy Magnet Link"
+        copy_btn = Gtk.Button(label=copy_label, icon_name="edit-copy-symbolic")
+        copy_btn.set_tooltip_text(copy_label)
         copy_btn.set_has_frame(False)
         copy_btn.set_halign(Gtk.Align.START)
         copy_btn.connect("clicked", self.on_copy_clicked)
@@ -149,6 +152,73 @@ class DownloadItemRow(Gtk.Box):
         episode = self.download.get("episode")
         if season is not None and episode is not None:
             suffix += f" | S{int(season):02d}E{int(episode):02d}"
+
+        if self.is_http:
+            stats = http_downloader.get_http_download_stats(self.info_hash)
+
+            file_path = self.download.get("file_path")
+            if file_path:
+                display_filename = os.path.basename(file_path)
+                if display_filename and display_filename != self.display_title:
+                    suffix += f" | {display_filename}"
+
+            if not stats:
+                self.status_label.set_text("Not Downloaded" + suffix)
+                self.progress_bar.set_fraction(0.0)
+                self.play_btn.set_visible(True)
+                self.stop_btn.set_visible(False)
+                self.watch_btn.set_visible(False)
+                return True
+
+            status_desc = stats.get("status", "")
+            dl = stats.get("downloaded", 0) or 0
+            tot = stats.get("totalLength", 0) or 0
+            prog = stats.get("progress", 0.0) or 0.0
+            self.progress_bar.set_fraction(prog)
+
+            if status_desc == "finished":
+                mb = dl / (1024 * 1024)
+                self.status_label.set_text(f"Completed ({mb:.1f} MB)" + suffix)
+                self.play_btn.set_visible(False)
+                self.stop_btn.set_visible(False)
+                self.watch_btn.set_visible(True)
+            elif status_desc == "downloading":
+                speed_bytes = stats.get("downloadSpeed", 0) or 0
+                speed_kib = speed_bytes / 1024
+                if speed_kib >= 1024:
+                    speed_str = f"{speed_kib / 1024:.1f} MB/s"
+                else:
+                    speed_str = f"{speed_kib:.1f} KiB/s"
+                
+                if tot > 0:
+                    status_text = f"{prog * 100:.1f}% - D: {speed_str} ({dl / (1024*1024):.1f} MB / {tot / (1024*1024):.1f} MB)"
+                else:
+                    status_text = f"Downloading... - D: {speed_str} ({dl / (1024*1024):.1f} MB)"
+                self.status_label.set_text(status_text + suffix)
+                self.play_btn.set_visible(False)
+                self.stop_btn.set_visible(True)
+                self.watch_btn.set_visible(True)
+            elif status_desc == "paused":
+                mb = dl / (1024 * 1024)
+                if tot > 0:
+                    self.status_label.set_text(f"Paused ({mb:.1f} MB / {tot / (1024*1024):.1f} MB)" + suffix)
+                else:
+                    self.status_label.set_text(f"Paused ({mb:.1f} MB)" + suffix)
+                self.play_btn.set_visible(True)
+                self.stop_btn.set_visible(False)
+                self.watch_btn.set_visible(dl > 0)
+            elif status_desc == "failed":
+                err = stats.get("error") or "Download failed"
+                self.status_label.set_text(f"Failed: {err}" + suffix)
+                self.play_btn.set_visible(True)
+                self.stop_btn.set_visible(False)
+                self.watch_btn.set_visible(False)
+            else:
+                self.status_label.set_text("Not Downloaded" + suffix)
+                self.play_btn.set_visible(True)
+                self.stop_btn.set_visible(False)
+                self.watch_btn.set_visible(False)
+            return True
             
         stats = player.get_engine_stats(self.info_hash)
         if stats and stats.get("name") and stats.get("name") != "Unknown":
@@ -213,14 +283,17 @@ class DownloadItemRow(Gtk.Box):
         
     def on_play_clicked(self, btn):
         if hasattr(self, 'popover'): self.popover.popdown()
-        player.download_magnet_background(
-            self.magnet,
-            file_index=self.file_index,
-            item_id=self.download.get("item_id"),
-            media_type=self.download.get("media_type"),
-            season=self.download.get("season"),
-            episode=self.download.get("episode"),
-        )
+        if self.is_http:
+            http_downloader.resume_http_download(self.download, window=self.get_root())
+        else:
+            player.download_magnet_background(
+                self.magnet,
+                file_index=self.file_index,
+                item_id=self.download.get("item_id"),
+                media_type=self.download.get("media_type"),
+                season=self.download.get("season"),
+                episode=self.download.get("episode"),
+            )
         self.update_status()
         
     def on_watch_clicked(self, btn):
@@ -228,6 +301,26 @@ class DownloadItemRow(Gtk.Box):
         
         window = self.get_root()
         if not hasattr(window, '_play_stream'):
+            return
+
+        if self.is_http:
+            file_path = self.download.get("file_path")
+            target_file = None
+            if file_path and os.path.exists(file_path):
+                target_file = file_path
+            elif file_path and os.path.exists(file_path + ".part"):
+                target_file = file_path + ".part"
+            if target_file:
+                idle_add_once(
+                    window._play_stream,
+                    target_file,
+                    self.display_title,
+                    item_id=self.download.get("item_id"),
+                    media_type=self.download.get("media_type", "movie"),
+                    season=self.download.get("season"),
+                    episode=self.download.get("episode"),
+                    is_download=True
+                )
             return
             
         title = self.download.get("name", "Downloaded Media")
@@ -269,17 +362,28 @@ class DownloadItemRow(Gtk.Box):
         
     def on_stop_clicked(self, btn):
         if hasattr(self, 'popover'): self.popover.popdown()
-        player.stop_engine_explicit(self.info_hash)
+        if self.is_http:
+            http_downloader.stop_http_download(self.info_hash)
+        else:
+            player.stop_engine_explicit(self.info_hash)
         self.update_status()
         
     def on_folder_clicked(self, btn):
         if hasattr(self, 'popover'): self.popover.popdown()
-        path = os.path.join(player.DOWNLOAD_BASE, self.info_hash)
-        # Never create the torrent directory here: an empty folder would make
-        # update_status() report "Paused" for a download that never started.
-        if not os.path.isdir(path):
-            path = player.DOWNLOAD_BASE
+        if self.is_http:
+            file_path = self.download.get("file_path")
+            if file_path and os.path.exists(os.path.dirname(file_path)):
+                path = os.path.dirname(file_path)
+            else:
+                path = http_downloader.get_downloads_dir()
+        else:
+            path = os.path.join(player.DOWNLOAD_BASE, self.info_hash)
+            # Never create the torrent directory here: an empty folder would make
+            # update_status() report "Paused" for a download that never started.
+            if not os.path.isdir(path):
+                path = player.DOWNLOAD_BASE
         try:
+            os.makedirs(path, exist_ok=True)
             subprocess.Popen(
                 ["xdg-open", path],
                 stdout=subprocess.DEVNULL,
@@ -291,11 +395,26 @@ class DownloadItemRow(Gtk.Box):
             
     def on_copy_clicked(self, btn):
         if hasattr(self, 'popover'): self.popover.popdown()
-        clipboard = Gdk.Display.get_default().get_clipboard()
-        clipboard.set(self.magnet)
+        target_text = self.download.get("url") if self.is_http else self.magnet
+        if target_text:
+            clipboard = Gdk.Display.get_default().get_clipboard()
+            clipboard.set(target_text)
         
     def on_delete_clicked(self, btn):
         if hasattr(self, 'popover'): self.popover.popdown()
+        if self.is_http:
+            http_downloader.delete_http_download(self.info_hash, self.download.get("file_path"))
+            self.on_destroy()
+            parent = self.get_parent()
+            if parent:
+                if isinstance(parent, Gtk.ListBoxRow):
+                    grandparent = parent.get_parent()
+                    if grandparent:
+                        grandparent.remove(parent)
+                else:
+                    parent.remove(self)
+            return
+
         stop_thread = player.stop_engine_explicit(self.info_hash)
         database.remove_download(self.info_hash)
 

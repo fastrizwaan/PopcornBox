@@ -399,6 +399,8 @@ def init_background_downloads():
         max_seeding = 50
         
         for d in downloads:
+            if d.get("is_http") or not str(d.get("magnet", "")).startswith("magnet:"):
+                continue
             if not d.get("paused", False):
                 if d.get("finished", False):
                     if finished_count < max_seeding:

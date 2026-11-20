@@ -4647,6 +4647,27 @@ class MovieDetailsPage(Gtk.Overlay):
         if not url:
             return
 
+        media_title = (
+            getattr(self, "movie_details", {}).get("title")
+            or self.movie_stub.get("title")
+            or self.movie_stub.get("name")
+            or "video"
+        )
+        season = getattr(self, "selected_season", None)
+        if season is None:
+            season = self.movie_stub.get("season")
+        episode = getattr(self, "selected_episode", None)
+        if episode is None:
+            episode = self.movie_stub.get("episode")
+
+        if season is not None and episode is not None:
+            try:
+                clean_title = f"{media_title} S{int(season):02d}E{int(episode):02d}"
+            except (ValueError, TypeError):
+                clean_title = f"{media_title} S{season}E{episode}"
+        else:
+            clean_title = media_title
+
         from . import api
         headers = api.extract_stream_headers(torrent, url=url)
         bh = torrent.get("behaviorHints", {}) if isinstance(torrent, dict) else {}
@@ -4658,12 +4679,43 @@ class MovieDetailsPage(Gtk.Overlay):
         )
 
         if is_direct_http and not is_external:
-            self._download_http_stream(url, torrent, headers)
+            from . import http_downloader
+            item_id = self.movie_stub.get("id") or self.movie_stub.get("imdb_id") if hasattr(self, "movie_stub") and isinstance(self.movie_stub, dict) else None
+            http_downloader.start_http_download(
+                url,
+                torrent=torrent,
+                headers=headers,
+                clean_title=clean_title,
+                item_id=item_id,
+                media_type=self.media_type,
+                season=season,
+                episode=episode,
+                window=self.window if hasattr(self, "window") else self,
+            )
             return
 
         if is_external:
-            if self.window:
+            if self.window and hasattr(self.window, "_show_toast"):
                 self.window._show_toast(_("Web page streams cannot be downloaded."))
+            return
+
+        # Handle torrent streams via PopcornBox's background torrent downloader
+        from .libtorrent_stream import info_hash_from_magnet
+        from . import player, database
+
+        info_hash = info_hash_from_magnet(url) if url else None
+        if info_hash:
+            file_index = torrent.get("file_index")
+            item_id = self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
+            media_type = self.media_type
+            t_name = clean_title or torrent.get("stream_title") or torrent.get("name") or "Torrent Download"
+
+            database.add_download(info_hash, t_name, url, file_index, item_id, media_type, season, episode)
+            player.download_magnet_background(url, file_index, item_id, media_type, season, episode)
+            if self.window and hasattr(self.window, "_show_toast"):
+                self.window._show_toast(_(f"Downloading {t_name} in background..."), timeout=6)
+            elif hasattr(self, 'progress_label') and self.progress_label:
+                self.progress_label.set_text(f"Downloading {t_name} in background...")
             return
 
         try:
@@ -4673,76 +4725,24 @@ class MovieDetailsPage(Gtk.Overlay):
         if hasattr(self, 'progress_label') and self.progress_label:
             self.progress_label.set_text("Opening stream URL...")
 
-    def _download_http_stream(self, url, torrent, headers):
-        """Download a direct HTTP stream directly to Downloads."""
-        import os
-        import re
-        import threading
-        import urllib.request
-
-        filename = torrent.get("filename")
-        if not filename:
-            title = self.movie_stub.get("title") or self.movie_stub.get("name") or "video"
-            ext = "mp4"
-            if ".mkv" in url.lower(): ext = "mkv"
-            filename = f"{title}.{ext}"
-
-        filename = re.sub(r'[\\/*?:"<>|]', "", filename).strip() or "video.mp4"
-        download_dir = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) or os.path.expanduser("~/Downloads")
-        os.makedirs(download_dir, exist_ok=True)
-        dest_path = os.path.join(download_dir, filename)
-
-        base_name, ext = os.path.splitext(filename)
-        counter = 1
-        while os.path.exists(dest_path):
-            dest_path = os.path.join(download_dir, f"{base_name} ({counter}){ext}")
-            counter += 1
-
-        disp_name = os.path.basename(dest_path)
-        if self.window and hasattr(self.window, "_show_toast"):
-            self.window._show_toast(_(f"Downloading {disp_name} to Downloads..."))
-        elif hasattr(self, 'progress_label') and self.progress_label:
-            self.progress_label.set_text(f"Downloading {disp_name}...")
-
-        def _worker():
-            part_path = dest_path + ".part"
-            try:
-                req_headers = dict(headers or {})
-                req = urllib.request.Request(url, headers=req_headers)
-                try:
-                    resp = urllib.request.urlopen(req, timeout=30)
-                except urllib.error.HTTPError as he:
-                    if he.code == 428 and any(k.lower() == 'user-agent' for k in req_headers):
-                        req_headers = {k: v for k, v in req_headers.items() if k.lower() != 'user-agent'}
-                        req = urllib.request.Request(url, headers=req_headers)
-                        resp = urllib.request.urlopen(req, timeout=30)
-                    elif he.code in (401, 403) and not any(k.lower() == 'user-agent' for k in req_headers):
-                        req_headers['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-                        req = urllib.request.Request(url, headers=req_headers)
-                        resp = urllib.request.urlopen(req, timeout=30)
-                    else:
-                        raise
-
-                with resp, open(part_path, "wb") as out_f:
-                    while True:
-                        chunk = resp.read(256 * 1024)
-                        if not chunk:
-                            break
-                        out_f.write(chunk)
-                if os.path.exists(part_path):
-                    os.rename(part_path, dest_path)
-                if self.window and hasattr(self.window, "_show_toast"):
-                    GLib.idle_add(lambda: self.window._show_toast(_(f"Download complete: {disp_name}")))
-            except Exception as e:
-                logger.error(f"HTTP download failed: {e}")
-                if os.path.exists(part_path):
-                    try: os.remove(part_path)
-                    except Exception: pass
-                if self.window and hasattr(self.window, "_show_toast"):
-                    error_message = str(e)
-                    GLib.idle_add(lambda: self.window._show_toast(_(f"Download failed: {error_message}")))
-
-        threading.Thread(target=_worker, daemon=True).start()
+    def _download_http_stream(self, url, torrent, headers, clean_title=None):
+        """Download a direct HTTP stream to the sandboxed downloads area."""
+        from . import http_downloader
+        item_id = self.movie_stub.get("id") or self.movie_stub.get("imdb_id") if hasattr(self, "movie_stub") and isinstance(self.movie_stub, dict) else None
+        media_type = getattr(self, "media_type", None)
+        season = getattr(self, "selected_season", None)
+        episode = getattr(self, "selected_episode", None)
+        return http_downloader.start_http_download(
+            url,
+            torrent=torrent,
+            headers=headers,
+            clean_title=clean_title,
+            item_id=item_id,
+            media_type=media_type,
+            season=season,
+            episode=episode,
+            window=self.window if hasattr(self, "window") else self,
+        )
 
     def _copy_stream_url(self, torrent):
         if not torrent: return
@@ -23009,16 +23009,42 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             listbox.remove(child)
             
         if not items:
-            empty = Gtk.Label(label="No downloads yet.")
+            empty = Gtk.Label(label=_("No downloads yet."))
             empty.add_css_class("dim-label")
             empty.set_valign(Gtk.Align.CENTER)
             empty.set_vexpand(True)
             listbox.append(empty)
             return
-            
+
+        http_items = [d for d in items if d.get("is_http")]
+        torrent_items = [d for d in items if not d.get("is_http")]
+
         from .download_row import DownloadItemRow
-        for dl in items:
-            listbox.append(DownloadItemRow(dl))
+
+        def _create_section_header(title):
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+            box.set_margin_top(16)
+            box.set_margin_bottom(8)
+            box.set_margin_start(16)
+            box.set_margin_end(16)
+            lbl = Gtk.Label(label=title, halign=Gtk.Align.START)
+            lbl.add_css_class("title-3")
+            box.append(lbl)
+            row = Gtk.ListBoxRow()
+            row.set_child(box)
+            row.set_activatable(False)
+            row.set_selectable(False)
+            return row
+
+        if http_items:
+            listbox.append(_create_section_header(_("HTTP Downloads")))
+            for dl in http_items:
+                listbox.append(DownloadItemRow(dl))
+
+        if torrent_items:
+            listbox.append(_create_section_header(_("Torrents")))
+            for dl in torrent_items:
+                listbox.append(DownloadItemRow(dl))
 
 
 CineWindow = PopcornBoxWindow

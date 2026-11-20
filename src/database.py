@@ -1297,7 +1297,7 @@ def remove_continue_watching(item_id, blacklist=True, user_action=False, sync_to
 def get_downloads():
     return _read_db().get("downloads", [])
 
-def add_download(info_hash, name, magnet, file_index=None, item_id=None, media_type=None, season=None, episode=None):
+def add_download(info_hash, name, magnet=None, file_index=None, item_id=None, media_type=None, season=None, episode=None, is_http=False, url=None, file_path=None, status=None, total_bytes=None, downloaded_bytes=None):
     with _db_lock:
         db = _read_db()
         downloads = db.setdefault("downloads", [])
@@ -1316,6 +1316,18 @@ def add_download(info_hash, name, magnet, file_index=None, item_id=None, media_t
                     d["season"] = season
                 if episode is not None:
                     d["episode"] = episode
+                if is_http is not None:
+                    d["is_http"] = bool(is_http)
+                if url is not None:
+                    d["url"] = url
+                if file_path is not None:
+                    d["file_path"] = file_path
+                if status is not None:
+                    d["status"] = status
+                if total_bytes is not None:
+                    d["total_bytes"] = total_bytes
+                if downloaded_bytes is not None:
+                    d["downloaded_bytes"] = downloaded_bytes
                 
                 # Move the updated download to the top of the list
                 downloads.remove(d)
@@ -1327,15 +1339,37 @@ def add_download(info_hash, name, magnet, file_index=None, item_id=None, media_t
         downloads.insert(0, {
             "info_hash": info_hash,
             "name": name,
-            "magnet": magnet,
+            "magnet": magnet or "",
             "paused": False,
             "file_index": file_index,
             "item_id": item_id,
             "media_type": media_type,
             "season": season,
-            "episode": episode
+            "episode": episode,
+            "is_http": bool(is_http),
+            "url": url or "",
+            "file_path": file_path or "",
+            "status": status or ("downloading" if is_http else None),
+            "total_bytes": total_bytes or 0,
+            "downloaded_bytes": downloaded_bytes or 0,
         })
         _write_db(db)
+
+def update_http_download_status(info_hash, status=None, file_path=None, downloaded_bytes=None, total_bytes=None):
+    with _db_lock:
+        db = _read_db()
+        for d in db.get("downloads", []):
+            if d.get("info_hash") == info_hash:
+                if status is not None:
+                    d["status"] = status
+                if file_path is not None:
+                    d["file_path"] = file_path
+                if downloaded_bytes is not None:
+                    d["downloaded_bytes"] = downloaded_bytes
+                if total_bytes is not None:
+                    d["total_bytes"] = total_bytes
+                _write_db(db)
+                return
 
 def set_download_paused(info_hash, paused):
     with _db_lock:
