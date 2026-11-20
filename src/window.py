@@ -5436,6 +5436,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             sub_file_paths="sub:subs:subtitles:Sub:Subs:Subtitles:srt:srts:Srt:Srts",
             demuxer_mkv_subtitle_preroll="yes",
             demuxer_mkv_subtitle_preroll_secs=5.0,
+            sub_clear_on_seek=True,
             sub_border_size=2,
             sub_shadow_offset=0.6,
             sub_border_color="#B6000000",
@@ -7407,7 +7408,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             title = selected_track.get("title") if selected_track else None
             external_path = (selected_track.get("external-filename") or selected_track.get("external_filename")) if selected_track else None
             is_external = bool(selected_track and (selected_track.get("external") or external_path))
-            if is_external and external_path:
+            is_http_external = bool(external_path and external_path.startswith(("http://", "https://")))
+            if is_external and external_path and not is_http_external:
                 self._remember_external_subtitle(
                     external_path,
                     lang=lang,
@@ -17207,6 +17209,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             try:
                 self.mpv["network-timeout"] = 10.0
                 self.mpv["demuxer-lavf-o"] = "allowed_segment_extensions=ALL,extension_picky=0"
+                self.mpv["sub-clear-on-seek"] = "yes"
                 is_live_hls_channel = is_channel_context and str(url).split("?", 1)[0].lower().endswith(".m3u8")
                 if is_live_hls_channel:
                     # Live HLS playlists refresh continuously and benefit from
@@ -17303,6 +17306,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._user_selected_subtitle = False
         self._user_selected_audio = False
         self.pending_subtitles = []
+        self._extracted_hls_subtitles = []
         try:
             self.mpv["sub-files"] = []
         except Exception:
@@ -17323,7 +17327,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             # provider's full playlist round-trip to every first frame.
             fast_start = target_offset <= 5.0
 
-            def _on_hls_prepared(is_fmp4, session_id, playback_url, total_dur, actual_offset, is_blocked=False):
+            def _on_hls_prepared(is_fmp4, session_id, playback_url, total_dur, actual_offset, is_blocked=False, extracted_subtitles=None):
                 playback_trace("hls prepared", f"fmp4={is_fmp4} blocked={is_blocked} fast_start={fast_start}")
                 if req_id != getattr(self, "stream_request_id", 0):
                     return
@@ -17331,6 +17335,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 # previous candidate must not touch the stream now loading.
                 if getattr(self, "_hls_prep_url", None) != url:
                     return
+                self._hls_prep_url = None
+                if extracted_subtitles:
+                    self._extracted_hls_subtitles = list(extracted_subtitles)
+
                 if is_blocked or not playback_url:
                     if fast_start and getattr(self, "_stream_media_started", False):
                         # Direct playback is already actively running and rendering frames; keep it
@@ -17355,7 +17363,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     self._hls_total_duration = total_dur
                     if total_dur and total_dur > 0:
                         self._update_duration(total_dur)
-                    if fast_start:
+                    if fast_start and not self._extracted_hls_subtitles:
                         # Direct playback is already running; keep the session
                         # so the first seek switches to the sliced playlist.
                         playback_trace("hls proxy attached for seeks")
@@ -17371,17 +17379,29 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     self._hls_session_id = None
                     self._hls_time_offset = 0.0
                     self._hls_total_duration = None
-                    if fast_start:
-                        return
                     target_url = playback_url or url
-                    playback_trace("loadfile issue (hls)", str(target_url)[:100])
-                    if target_offset > 5.0:
-                        try:
-                            self.mpv.command("loadfile", target_url, "replace", -1, f"start={target_offset:.2f}")
-                        except Exception:
-                            self.mpv.loadfile(target_url, "replace")
+                    need_switch = bool(self._extracted_hls_subtitles and target_url != url)
+                    if fast_start and not need_switch:
+                        pass
                     else:
-                        self.mpv.loadfile(target_url, "replace")
+                        playback_trace("loadfile issue (hls)", str(target_url)[:100])
+                        try:
+                            curr_pos = float(getattr(self.mpv, "time_pos", 0.0) or 0.0)
+                        except Exception:
+                            curr_pos = 0.0
+                        pos = max(target_offset, curr_pos)
+                        if pos > 5.0:
+                            try:
+                                self.mpv.command("loadfile", target_url, "replace", -1, f"start={pos:.2f}")
+                            except Exception:
+                                self.mpv.loadfile(target_url, "replace")
+                        else:
+                            self.mpv.loadfile(target_url, "replace")
+
+                if self._extracted_hls_subtitles:
+                    self._apply_extracted_hls_subtitles(self._extracted_hls_subtitles)
+                elif not getattr(self, "_subtitles_configured_for_file", False):
+                    self._check_and_configure_subtitles()
 
             if fast_start:
                 self._seek_after_loaded = None
@@ -17540,7 +17560,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         self.mpv.sid = t_id
                         self.mpv["sub-visibility"] = "yes"
                         self._subtitles_configured_for_file = True
-                        self._pending_subtitle_request = None
+                        self._cancel_external_subtitle_fetch()
                         logger.info(f"[SUBS] Preferred inbuilt subtitle track found via track-list: id={t_id}, title={matched.get('title')}, lang={matched.get('lang')}. Skipping external download.")
                         return
                     except Exception as e:
@@ -17557,7 +17577,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         best_embedded = api.find_best_subtitle_track(track_list, only_embedded=True)
         if best_embedded:
             self._subtitles_configured_for_file = True
-            self._pending_subtitle_request = None  # Do NOT download!
+            self._cancel_external_subtitle_fetch()
             track_id = int(best_embedded.get("id", 0))
             is_sdh = api.is_sdh_track(best_embedded)
             logger.info(f"[SUBS] Preferred inbuilt subtitle track found via track-list: id={track_id}, title={best_embedded.get('title')}, lang={best_embedded.get('lang')}, sdh={is_sdh}. Skipping external download.")
@@ -17566,6 +17586,80 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self.mpv["sub-visibility"] = "yes"
             except Exception as e:
                 logger.error(f"[SUBS] Failed to set MPV sid to {track_id}: {e}")
+
+    def _cancel_external_subtitle_fetch(self):
+        self._subtitle_fetch_id = getattr(self, "_subtitle_fetch_id", 0) + 1
+        self.pending_subtitles = []
+        self._pending_subtitle_request = None
+
+    def _apply_extracted_hls_subtitles(self, subtitles):
+        if not subtitles or getattr(self, "_user_selected_subtitle", False) is True:
+            return
+
+        try:
+            is_idle = bool(getattr(self.mpv, "idle_active", False))
+        except Exception:
+            is_idle = True
+
+        if is_idle:
+            req_id = getattr(self, "stream_request_id", 0)
+            def _retry():
+                if getattr(self, "stream_request_id", 0) == req_id:
+                    self._apply_extracted_hls_subtitles(subtitles)
+                return False
+            GLib.timeout_add(200, _retry)
+            return
+
+        # Check if user has disabled subtitles for this media
+        sub_pref = self._get_saved_subtitle_preference()
+        if sub_pref and (sub_pref.get("disabled") or sub_pref.get("sub_visibility") == "no"):
+            try:
+                self.mpv.sid = "no"
+                self.mpv["sub-visibility"] = "no"
+            except Exception:
+                pass
+            self._subtitles_configured_for_file = True
+            self._cancel_external_subtitle_fetch()
+            for sub in subtitles:
+                try:
+                    self.mpv.command("sub-add", sub["url"], "auto", sub.get("title") or "Subtitles", sub.get("lang") or "und")
+                except Exception:
+                    pass
+            return
+
+        from . import api
+        best_track = None
+        if sub_pref and sub_pref.get("lang"):
+            p_lang = sub_pref.get("lang")
+            best_track = next((s for s in subtitles if api.languages_match(s.get("lang"), p_lang)), None)
+
+        if not best_track:
+            best_track = api.find_best_subtitle_track(subtitles)
+
+        if not best_track and subtitles:
+            best_track = subtitles[0]
+
+        applied_any = False
+        for sub in subtitles:
+            s_url = sub.get("url")
+            s_title = sub.get("title") or "Subtitles"
+            s_lang = sub.get("lang") or "und"
+            is_best = (sub == best_track)
+            mode = "select" if is_best else "auto"
+            try:
+                self.mpv.command("sub-add", s_url, mode, s_title, s_lang)
+                applied_any = True
+                logger.info(f"[HLS] Injected extracted subtitle: {s_title} ({s_lang}) mode={mode} url={s_url}")
+            except Exception as e:
+                logger.warning(f"[HLS] Failed to inject extracted subtitle {s_url}: {e}")
+
+        if applied_any:
+            self._subtitles_configured_for_file = True
+            self._cancel_external_subtitle_fetch()
+            try:
+                self.mpv["sub-visibility"] = "yes"
+            except Exception:
+                pass
 
     def _apply_pending_local_subtitle(self):
         pending = getattr(self, "_pending_local_subtitle", None)
@@ -17603,6 +17697,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if getattr(self, "_user_selected_subtitle", False) is True or getattr(self, "_subtitles_configured_for_file", False) is True:
             return
         if self._is_playing_trailer() or getattr(self.mpv, "idle_active", False):
+            return
+
+        if getattr(self, "_extracted_hls_subtitles", None):
+            self._apply_extracted_hls_subtitles(self._extracted_hls_subtitles)
+            return
+
+        if getattr(self, "_hls_prep_url", None):
+            logger.info("[SUBS] HLS manifest preparation in progress; deferring subtitle configuration.")
             return
 
         sub_pref = self._get_saved_subtitle_preference()
@@ -17692,14 +17794,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if getattr(self, "_pending_subtitle_request", None):
             req = self._pending_subtitle_request
             self._pending_subtitle_request = None
-            self._subtitles_configured_for_file = True
             logger.info(f"[SUBS] Downloading external subtitles (has_embedded={has_embedded})...")
             self.fetch_and_add_subtitles(**req)
         elif getattr(self, "_current_playing_item", None):
             item = self._current_playing_item
             imdb_id = item.get("imdb_id") or item.get("id")
             if imdb_id and not item.get("is_trailer"):
-                self._subtitles_configured_for_file = True
                 logger.info(f"[SUBS] Downloading external subtitles for item={imdb_id} (has_embedded={has_embedded})...")
                 stream_subs = item.get("selected_torrent", {}).get("subtitles") if isinstance(item.get("selected_torrent"), dict) else None
                 self.fetch_and_add_subtitles(
@@ -17875,10 +17975,17 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             
         try:
             added_count = 0
+            cur_sid = getattr(self.mpv, "sid", None)
+            has_active_sub = (cur_sid is not None and cur_sid not in ("no", False, 0))
+            sub_pref = self._get_saved_subtitle_preference()
+            user_disabled = bool(sub_pref and (sub_pref.get("disabled") or sub_pref.get("sub_visibility") == "no"))
+
             for path, lang, select in list(self.pending_subtitles):
-                mode = "select" if select else "auto"
-                if select:
+                should_select = (select and not has_active_sub and not user_disabled and not getattr(self, "_user_selected_subtitle", False))
+                mode = "select" if should_select else "auto"
+                if should_select:
                     self._apply_external_subtitle(path, lang=lang, title=f"External ({lang})", remember=True)
+                    self._subtitles_configured_for_file = True
                 else:
                     self.mpv.command("sub-add", path, mode, f"External ({lang})", lang)
                 added_count += 1
@@ -17886,10 +17993,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self.pending_subtitles.clear()
             if added_count > 0:
                 logger.info(f"[SUBS] Subtitles loaded ({added_count})")
-                try:
-                    self.mpv["sub-visibility"] = "yes"
-                except Exception:
-                    pass
+                if not user_disabled:
+                    try:
+                        self.mpv["sub-visibility"] = "yes"
+                    except Exception:
+                        pass
         except Exception as e:
             logger.error(f"[SUBS] Failed to add pending subtitles: {e}")
 
@@ -19783,6 +19891,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._hls_total_duration = None
 
         self._hls_prep_url = None
+        self._extracted_hls_subtitles = []
+        self._cancel_external_subtitle_fetch()
         self._current_playing_item = None
         from . import player
         # stop_player inspects torrent stats, hits the disk and may wait on the

@@ -69,6 +69,10 @@ class HlsSession:
         self.target_duration = 4.0
         self.media_sequence = 0
         self.is_ready = False
+        self.is_master_proxy = False
+        self.master_sanitized_text = ""
+        self.extracted_subtitles = []
+        self.variant_url = ""
         self.created_at = time.time()
 
     def fetch_and_parse(self, timeout: float = 15.0):
@@ -105,19 +109,32 @@ class HlsSession:
 
         # Check if master playlist (#EXT-X-STREAM-INF)
         if "#EXT-X-STREAM-INF" in text:
+            if "#EXT-X-MEDIA:" in text and re.search(r'#EXT-X-MEDIA:[^\n\r]*TYPE=SUBTITLES', text, re.IGNORECASE):
+                self.extracted_subtitles = self._extract_subtitles(text, current_url, req_headers)
+                logger.info(f"[HLSProxy] Extracted {len(self.extracted_subtitles)} subtitles from master playlist")
+
             # If the master playlist defines separate audio tracks (#EXT-X-MEDIA:TYPE=AUDIO),
             # following only a video variant strips the audio entirely and results in silent video.
             # Direct MPV playback handles multi-rendition master playlists with separate audio natively.
             if "#EXT-X-MEDIA:" in text and re.search(r'#EXT-X-MEDIA:[^\n\r]*TYPE=AUDIO', text, re.IGNORECASE):
-                logger.info(f"[HLSProxy] Master playlist has separate audio tracks (#EXT-X-MEDIA:TYPE=AUDIO), passing through for native MPV playback: {current_url}")
-                self.is_fmp4 = False
-                self.is_ready = True
-                return self
+                if self.extracted_subtitles:
+                    self.master_sanitized_text = self._strip_subtitles_from_master(text, current_url)
+                    self.is_master_proxy = True
+                    self.is_fmp4 = False
+                    self.is_ready = True
+                    logger.info(f"[HLSProxy] Master playlist has separate audio and subtitles; serving sanitized master without subtitles: {current_url}")
+                    return self
+                else:
+                    logger.info(f"[HLSProxy] Master playlist has separate audio tracks (#EXT-X-MEDIA:TYPE=AUDIO), passing through for native MPV playback: {current_url}")
+                    self.is_fmp4 = False
+                    self.is_ready = True
+                    return self
 
             variant_url = self._extract_best_variant_url(text, current_url)
             if variant_url:
                 logger.info(f"[HLSProxy] Master playlist detected, following variant: {variant_url}")
                 current_url = variant_url
+                self.variant_url = variant_url
                 self.url = current_url
                 req = urllib.request.Request(current_url, headers=req_headers)
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -227,6 +244,106 @@ class HlsSession:
             return variants[0][2]
         return ""
 
+    def _extract_subtitles(self, master_text: str, base_url: str, req_headers: dict) -> list[dict]:
+        lines = master_text.splitlines()
+        subtitles = []
+        track_id = 1
+        for line in lines:
+            line = line.strip()
+            if not line.startswith("#EXT-X-MEDIA:") or not re.search(r"TYPE=SUBTITLES", line, re.IGNORECASE):
+                continue
+
+            uri_m = re.search(r'URI="([^"]+)"', line)
+            if not uri_m:
+                continue
+            sub_uri = _resolve_relative_url(base_url, uri_m.group(1))
+
+            name_m = re.search(r'NAME="([^"]+)"', line)
+            name = name_m.group(1) if name_m else "Subtitles"
+
+            lang_m = re.search(r'LANGUAGE="([^"]+)"', line)
+            lang = lang_m.group(1) if lang_m else ""
+
+            def_m = re.search(r'DEFAULT=(YES|NO)', line, re.IGNORECASE)
+            is_default = bool(def_m and def_m.group(1).upper() == "YES")
+
+            auto_m = re.search(r'AUTOSELECT=(YES|NO)', line, re.IGNORECASE)
+            is_autoselect = bool(auto_m and auto_m.group(1).upper() == "YES")
+
+            forced_m = re.search(r'FORCED=(YES|NO)', line, re.IGNORECASE)
+            is_forced = bool(forced_m and forced_m.group(1).upper() == "YES")
+
+            clean_lang = re.sub(r'[\.\[].*', '', lang).strip() or lang
+
+            resolved_vtt = sub_uri
+            clean_path = sub_uri.split("?", 1)[0].lower()
+            if clean_path.endswith(".m3u8") or ".m3u8" in sub_uri.lower():
+                try:
+                    s_req = urllib.request.Request(sub_uri, headers=req_headers)
+                    with urllib.request.urlopen(s_req, timeout=5.0) as resp:
+                        s_text = resp.read().decode("utf-8", errors="ignore")
+                    for s_line in s_text.splitlines():
+                        s_line = s_line.strip()
+                        if not s_line or s_line.startswith("#"):
+                            continue
+                        resolved_vtt = _resolve_relative_url(sub_uri, s_line)
+                        break
+                except Exception as e:
+                    logger.warning(f"[HLSProxy] Could not fetch inner subtitle playlist {sub_uri}: {e}")
+                    resolved_vtt = sub_uri
+
+            subtitles.append({
+                "type": "sub",
+                "id": track_id,
+                "url": resolved_vtt,
+                "title": name,
+                "lang": clean_lang,
+                "raw_lang": lang,
+                "default": is_default,
+                "autoselect": is_autoselect,
+                "forced": is_forced,
+                "external": True,
+            })
+            track_id += 1
+        return subtitles
+
+    def _strip_subtitles_from_master(self, master_text: str, base_url: str) -> str:
+        lines = master_text.splitlines()
+        out = []
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if not line:
+                out.append("")
+                i += 1
+                continue
+            if line.startswith("#EXT-X-MEDIA:"):
+                if re.search(r"TYPE=SUBTITLES", line, re.IGNORECASE):
+                    i += 1
+                    continue
+                m = re.search(r'URI="([^"]+)"', line)
+                if m:
+                    resolved = _resolve_relative_url(base_url, m.group(1))
+                    line = line.replace(f'URI="{m.group(1)}"', f'URI="{resolved}"')
+                out.append(line)
+                i += 1
+                continue
+            if line.startswith("#EXT-X-STREAM-INF:"):
+                line = re.sub(r',?\s*SUBTITLES="[^"]*"', '', line)
+                line = re.sub(r'SUBTITLES="[^"]*",?\s*', '', line)
+                out.append(line)
+                i += 1
+                if i < len(lines):
+                    var_line = lines[i].strip()
+                    if var_line and not var_line.startswith("#"):
+                        resolved_var = _resolve_relative_url(base_url, var_line)
+                        out.append(resolved_var)
+                        i += 1
+                continue
+            out.append(line)
+            i += 1
+        return "\n".join(out)
+
     def slice_manifest(self, offset: float) -> tuple[bytes, float]:
         if not self.segments or offset <= 0:
             start_idx = 0
@@ -279,6 +396,16 @@ class _HlsProxyHandler(BaseHTTPRequestHandler):
             session_id = parts[1]
             session = _sessions.get(session_id)
             if session:
+                if session.is_master_proxy:
+                    body = session.master_sanitized_text.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
                 qs = urllib.parse.parse_qs(parsed.query)
                 offset = 0.0
                 try:
@@ -339,6 +466,12 @@ def get_sliced_url(session_id: str, offset: float = 0.0) -> str:
     return f"http://127.0.0.1:{port}/hls/{session_id}/playlist.m3u8?offset={offset:.2f}"
 
 
+def get_master_proxy_url(session_id: str) -> str:
+    """Get the local HTTP URL for a sanitized HLS master playlist."""
+    port = start_proxy_port()
+    return f"http://127.0.0.1:{port}/hls/{session_id}/master.m3u8"
+
+
 def start_proxy_port() -> int:
     return start_proxy_server()
 
@@ -359,7 +492,7 @@ def prepare_hls_stream_async(url: str, headers: dict = None, seek_target: float 
     into memory, registers a proxy session, and yields the sliced local URL.
     Otherwise yields is_fmp4=False so normal MPV playback can proceed.
     
-    callback(is_fmp4: bool, session_id: str | None, playback_url: str | None, total_duration: float | None, actual_offset: float, is_blocked: bool = False)
+    callback(is_fmp4: bool, session_id: str | None, playback_url: str | None, total_duration: float | None, actual_offset: float, is_blocked: bool = False, extracted_subtitles: list | None = None)
     """
     def _worker():
         try:
@@ -368,36 +501,44 @@ def prepare_hls_stream_async(url: str, headers: dict = None, seek_target: float 
                 rem = api.get_provider_cooldown_remaining(url)
                 logger.warning(f"[HLSProxy] Skipping HLS stream: host is in cooldown for {rem}s: {url}")
                 if callback:
-                    GLib.idle_add(callback, False, None, None, None, 0.0, True)
+                    GLib.idle_add(callback, False, None, None, None, 0.0, True, None)
                 return
 
             session_id = hashlib.md5(f"{url}_{time.time()}".encode()).hexdigest()[:12]
             session = HlsSession(session_id, url, headers=headers).fetch_and_parse(timeout=10.0)
-            if session.is_fmp4 and session.segments:
+            if session.is_master_proxy:
+                _sessions[session_id] = session
+                master_url = get_master_proxy_url(session_id)
+                logger.info(f"[HLSProxy] Prepared sanitized master HLS session {session_id}: {master_url}")
+                if callback:
+                    GLib.idle_add(callback, False, session_id, master_url, None, 0.0, False, session.extracted_subtitles)
+                return
+            elif session.is_fmp4 and session.segments:
                 _sessions[session_id] = session
                 sliced_url = get_sliced_url(session_id, offset=seek_target)
                 logger.info(f"[HLSProxy] Prepared fMP4 HLS session {session_id}: {len(session.segments)} segs, dur={session.total_duration:.1f}s")
                 if callback:
-                    GLib.idle_add(callback, True, session_id, sliced_url, session.total_duration, seek_target, False)
+                    GLib.idle_add(callback, True, session_id, sliced_url, session.total_duration, seek_target, False, session.extracted_subtitles)
                 return
             else:
-                logger.debug(f"[HLSProxy] Stream is not fMP4 or has no segments: {url}")
+                effective_playback_url = session.url or url
+                logger.debug(f"[HLSProxy] Stream is not fMP4 or has no segments: {effective_playback_url}")
                 if callback:
-                    GLib.idle_add(callback, False, None, url, session.total_duration if session.total_duration > 0 else None, 0.0, False)
+                    GLib.idle_add(callback, False, None, effective_playback_url, session.total_duration if session.total_duration > 0 else None, 0.0, False, session.extracted_subtitles)
                 return
         except urllib.error.HTTPError as he:
             logger.warning(f"[HLSProxy] HLS stream HTTP error {he.code}: {he.reason} ({url})")
             if callback:
                 # Any HTTP 4xx or 5xx error means the manifest cannot be fetched; do not pass dead URL to MPV
-                GLib.idle_add(callback, False, None, None, None, 0.0, True)
+                GLib.idle_add(callback, False, None, None, None, 0.0, True, None)
         except urllib.error.URLError as ue:
             logger.warning(f"[HLSProxy] Failed to connect to HLS stream ({ue.reason}) ({url})")
             if callback:
                 # Host not found, connection refused, or network unreachable
-                GLib.idle_add(callback, False, None, None, None, 0.0, True)
+                GLib.idle_add(callback, False, None, None, None, 0.0, True, None)
         except Exception as e:
             logger.warning(f"[HLSProxy] Failed to prepare HLS stream ({e}), falling back to direct URL")
             if callback:
-                GLib.idle_add(callback, False, None, url, None, 0.0, False)
+                GLib.idle_add(callback, False, None, url, None, 0.0, False, None)
 
     threading.Thread(target=_worker, daemon=True, name="HlsPrepareWorker").start()

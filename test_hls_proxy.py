@@ -171,5 +171,85 @@ class TestHlsProxy(unittest.TestCase):
         hls_proxy.close_session("test_http")
         self.assertNotIn("test_http", hls_proxy._sessions)
 
+    def test_extract_subtitles_from_master(self):
+        from unittest.mock import patch, MagicMock
+        master_with_subs = """#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English  [CC]",DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,LANGUAGE="en-us.[CC]",URI="subs/en.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Spanish",DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,LANGUAGE="es",URI="https://cdn.example.com/subs/es.vtt"
+#EXT-X-STREAM-INF:BANDWIDTH=4998400,RESOLUTION=1920x1080,SUBTITLES="subs"
+1080p.m3u8
+"""
+        sub_m3u8_content = """#EXTM3U
+#EXT-X-TARGETDURATION:99999
+#EXTINF:99999.0,
+en-us.[CC].vtt
+#EXT-X-ENDLIST
+"""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = sub_m3u8_content.encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = False
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            session = hls_proxy.HlsSession("test_subs", "https://cdn.example.com/hls/master.m3u8")
+            subs = session._extract_subtitles(master_with_subs, "https://cdn.example.com/hls/master.m3u8", {})
+            self.assertEqual(len(subs), 2)
+            self.assertEqual(subs[0]["title"], "English  [CC]")
+            self.assertEqual(subs[0]["lang"], "en-us")
+            self.assertEqual(subs[0]["url"], "https://cdn.example.com/hls/subs/en-us.%5BCC%5D.vtt")
+            self.assertEqual(subs[1]["title"], "Spanish")
+            self.assertEqual(subs[1]["lang"], "es")
+            self.assertEqual(subs[1]["url"], "https://cdn.example.com/subs/es.vtt")
+
+    def test_strip_subtitles_from_master(self):
+        master_with_both = """#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio/en.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English  [CC]",URI="subs/en.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=4998400,RESOLUTION=1920x1080,AUDIO="audio",SUBTITLES="subs"
+1080p.m3u8
+"""
+        session = hls_proxy.HlsSession("test_strip", "https://cdn.example.com/hls/master.m3u8")
+        sanitized = session._strip_subtitles_from_master(master_with_both, "https://cdn.example.com/hls/master.m3u8")
+        self.assertNotIn("TYPE=SUBTITLES", sanitized)
+        self.assertNotIn('SUBTITLES="subs"', sanitized)
+        self.assertIn('TYPE=AUDIO', sanitized)
+        self.assertIn('URI="https://cdn.example.com/hls/audio/en.m3u8"', sanitized)
+        self.assertIn('https://cdn.example.com/hls/1080p.m3u8', sanitized)
+
+    def test_master_playlist_with_subtitles_and_audio_uses_master_proxy(self):
+        from unittest.mock import patch, MagicMock
+        master_with_both = """#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",DEFAULT=YES,URI="audio/en.m3u8"
+#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",URI="https://cdn.example.com/sub.vtt"
+#EXT-X-STREAM-INF:BANDWIDTH=4998400,RESOLUTION=1920x1080,AUDIO="audio",SUBTITLES="subs"
+1080p.m3u8
+"""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = master_with_both.encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = False
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            session = hls_proxy.HlsSession("test_master_proxy", "https://cdn.example.com/hls/master.m3u8")
+            session.fetch_and_parse()
+            self.assertTrue(session.is_master_proxy)
+            self.assertEqual(len(session.extracted_subtitles), 1)
+            self.assertNotIn("TYPE=SUBTITLES", session.master_sanitized_text)
+
+        # Test serving the sanitized master proxy
+        hls_proxy._sessions["test_master_proxy"] = session
+        master_proxy_url = hls_proxy.get_master_proxy_url("test_master_proxy")
+        req = urllib.request.Request(master_proxy_url)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.headers.get("Content-Type"), "application/vnd.apple.mpegurl")
+            body = resp.read().decode("utf-8")
+            self.assertNotIn("TYPE=SUBTITLES", body)
+            self.assertIn("TYPE=AUDIO", body)
+        hls_proxy.close_session("test_master_proxy")
+
 if __name__ == "__main__":
     unittest.main()
