@@ -3597,6 +3597,10 @@ def get_available_catalogs(c_type="movie", cache_only=True, include_cloudstream=
     for addon in addons:
         addon_name = addon.get("name", "Unknown Addon")
         manifest_url = addon.get("manifest_url", "")
+        if manifest_url == "builtin://popcornbox-catalog" or addon.get("id") == "popcornbox.catalog":
+            from . import tmdb_helper
+            catalogs.extend(tmdb_helper.get_default_tmdb_catalogs(c_type))
+            continue
         if not manifest_url or manifest_url.startswith("builtin:"):
             continue
             
@@ -5276,6 +5280,16 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 expected_year=expected_year_value,
             )
             return saved
+
+        if orig_item_id.startswith("tt"):
+            # TMDb lookup had no match or failed: fall back to Cinemeta by exact IMDb ID
+            cinemeta_addon = next((a for a in database.get_addons() if a.get("id") == "cinemeta" or "cinemeta" in a.get("manifest_url", "").lower()), None)
+            if cinemeta_addon:
+                cm_fallback = dict(cinemeta_addon)
+                cm_fallback["enabled"] = True
+                cinemeta_res = fetch_addon_meta(cm_fallback, media_type, use_cache=use_cache, query_id=orig_item_id)
+                if cinemeta_res and is_valid_meta(cinemeta_res):
+                    return _save_and_return_meta(cinemeta_res, orig_item_id, media_type, title, poster=poster)
 
         # Keep the catalog card's own title/description visible when TMDB has no
         # safe match; do not fall through to an IMDb text search and replace it.

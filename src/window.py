@@ -1293,7 +1293,7 @@ class MovieDetailsPage(Gtk.Overlay):
             initial_meta["overview"] = desc
 
         self.build_ui(initial_meta)
-        self.load_details_async(force_refresh=True)
+        self.load_details_async(force_refresh=not is_complete)
 
     @property
     def is_collection(self):
@@ -2796,7 +2796,12 @@ class MovieDetailsPage(Gtk.Overlay):
             else:
                 self.catalog_source_label.set_visible(False)
 
-        self.desc_label.set_text(details.get("description") or details.get("overview") or "")
+        new_desc = str(details.get("description") or details.get("overview") or "").strip()
+        current_desc = self.desc_label.get_text().strip() if hasattr(self, "desc_label") and self.desc_label else ""
+        if not current_desc or current_desc in ("Loading...", "No synopsis available.", "Synopsis temporarily unavailable.", "HD"):
+            self.desc_label.set_text(new_desc)
+        elif new_desc and (not current_desc or (len(current_desc) < 30 and len(new_desc) > len(current_desc))):
+            self.desc_label.set_text(new_desc)
         
         cast_str = ", ".join(details.get("cast", []))
         if cast_str and not self.cast_section_box.get_visible():
@@ -13381,6 +13386,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         page=page_to_fetch,
                         limit=80,
                     )
+                    if not items:
+                        cinemeta_cat_id = "year" if cat_id == "new-on-streaming" else ("imdbRating" if cat_id == "top-rated" else "top")
+                        items = api.fetch_items(
+                            media_type=media_type,
+                            catalog_id=cinemeta_cat_id,
+                            catalog_url="https://v3-cinemeta.strem.io/manifest.json",
+                            page=page_to_fetch,
+                            is_cancelled=(lambda: _is_event_set(abort_ev))
+                        ) or []
                     catalog["tmdb_total_pages"] = total_pages
                 elif active_discover_type == "all" and (year or cur_sort_val == "Year" or cat_id == "year"):
                     def _fetch_sub(mt):
@@ -14050,6 +14064,23 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         type_priority = {'movie': 0, 'series': 1, 'anime': 2, 'tv': 3, 'channel': 4, 'live': 5, 'music': 6, 'radio': 7, 'podcast': 8}
         seen_row_keys = set()
 
+        # Built-in TMDb catalogs: primary movie and series catalogs (PopcornBox Catalog)
+        from . import tmdb_helper
+        popcorn_addon = next((a for a in addons if a.get("id") == tmdb_helper.TMDB_BUILTIN_ADDON_ID or a.get("manifest_url") == tmdb_helper.TMDB_BUILTIN_MANIFEST_URL), None)
+        popcorn_enabled = bool(
+            popcorn_addon
+            and popcorn_addon.get("enabled", True)
+            and popcorn_addon.get("catalogs_enabled", True)
+        )
+        if popcorn_enabled and (not filter_addon_url or filter_addon_url == tmdb_helper.TMDB_BUILTIN_MANIFEST_URL) and not (cur_genre or cur_year or cur_lang or cur_country or cur_network):
+            for cat in tmdb_helper.get_default_tmdb_catalogs(filter_media_type or "all"):
+                c_type = cat.get("media_type", "movie")
+                row_key = (cat.get("manifest_url"), cat.get("catalog_id"), c_type)
+                if row_key in seen_row_keys:
+                    continue
+                seen_row_keys.add(row_key)
+                rows.append(cat)
+
         for addon in sorted_addons:
             addon_name = addon.get('name', 'Addon')
             m_url = addon.get('manifest_url', '')
@@ -14172,7 +14203,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             else:
                                 row_title = f'{clean_name.title()} - {type_display}'
                     elif 'cinemeta' in addon_name.lower():
-                        row_title = f'{clean_name.title()} - {type_display}'
+                        if popcorn_enabled and not filter_addon_url:
+                            row_title = f'Cinemeta - {clean_name.title()} - {type_display}'
+                        else:
+                            row_title = f'{clean_name.title()} - {type_display}'
                     elif addon_name.lower() in clean_name.lower():
                         row_title = f'{clean_name} ({type_display})'
                     elif type_display.lower() == addon_name.lower() or type_display.lower() in clean_name.lower():
@@ -14387,7 +14421,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         # Prioritize rows matching current_sort
         def catalog_priority_key(row):
             if row.get("_source") == "tmdb_catalog":
-                return 0 if row.get("tmdb_sort") == "date" else 1
+                if cur_year or cur_sort in ("Recent", "New", "Last Added"):
+                    return 0 if row.get("tmdb_sort") == "date" else (1 if row.get("tmdb_sort") == "popular" else 2)
+                elif cur_sort == "Featured":
+                    return 0 if row.get("tmdb_sort") == "rating" else (1 if row.get("tmdb_sort") == "popular" else 2)
+                else:
+                    return 0 if row.get("tmdb_sort") == "popular" else (1 if row.get("tmdb_sort") == "date" else 2)
             cid = str(row.get("catalog_id", "")).lower()
             cname = str(row.get("catalog_name", "")).lower()
             if cur_year or cur_sort in ("Recent", "New", "Last Added"):
@@ -15148,6 +15187,16 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                     limit=DISCOVER_ROW_CARD_LIMIT,
                                 )
                                 total_pages = max(total_pages, int(page_total or 0))
+                                if not items:
+                                    # Fallback to Cinemeta if TMDb is unreachable
+                                    cinemeta_cat_id = "year" if c_id == "new-on-streaming" else ("imdbRating" if c_id == "top-rated" else "top")
+                                    items = api.fetch_items(
+                                        media_type=m_type,
+                                        catalog_id=cinemeta_cat_id,
+                                        catalog_url="https://v3-cinemeta.strem.io/manifest.json",
+                                        page=req_page,
+                                        is_cancelled=(lambda: _is_event_set(abort_ev))
+                                    ) or []
                                 if items and not _is_event_set(abort_ev):
                                     database.save_cached_catalog(tmdb_key, items)
                             row_info["tmdb_total_pages"] = total_pages
@@ -16096,6 +16145,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     "cat_id": cat_id,
                 })
             result_addons.append((addon_name, m_url, addon_cat_items))
+
+        def menu_addon_sort_key(item):
+            name = str(item[0]).lower()
+            if 'popcorn' in name or 'tmdb' in name or 'movie database' in name: return 0
+            if 'kitsu' in name or 'animestream' in name or 'onlyanimes' in name or 'anime' in name: return 1
+            if 'cinemeta' in name: return 2
+            if 'iptv' in name or 'channel' in name: return 8
+            return 5
+        result_addons.sort(key=menu_addon_sort_key)
             
         return result_addons
 
@@ -16125,7 +16183,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         def addon_sort_key(addon):
             name = addon.get('name', '').lower()
-            if 'tmdb' in name or 'movie database' in name: return 0
+            if 'popcorn' in name or 'tmdb' in name or 'movie database' in name: return 0
             if 'kitsu' in name or 'animestream' in name or 'onlyanimes' in name or 'anime' in name: return 1
             if 'cinemeta' in name: return 2
             if 'iptv' in name or 'channel' in name: return 8
@@ -16150,6 +16208,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 continue
             seen_urls.add(m_url)
             result_addons.append((addon_name, m_url))
+        from . import tmdb_helper
+        popcorn_addon = next((a for a in addons if a.get("id") == tmdb_helper.TMDB_BUILTIN_ADDON_ID or a.get("manifest_url") == tmdb_helper.TMDB_BUILTIN_MANIFEST_URL), None)
+        popcorn_enabled = bool(
+            popcorn_addon
+            and popcorn_addon.get("enabled", True)
+            and popcorn_addon.get("catalogs_enabled", True)
+        )
+        if popcorn_enabled:
+            result_addons.insert(0, ("PopcornBox Catalog", tmdb_helper.TMDB_BUILTIN_MANIFEST_URL))
         return result_addons
 
     def _build_discover_menu(self, catalog_addons=None):
@@ -20302,6 +20369,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         from . import database, api
         addons = database.get_addons()
+        addons = sorted(
+            addons,
+            key=lambda a: (
+                0 if a.get("id") == "popcornbox.catalog" else
+                1 if "cinemeta" in str(a.get("id", "")).lower() else 2
+            ),
+        )
         debug_log(f"_populate_installed_addons DB returned {len(addons)} addons")
         self._addon_status_widgets = {}
         target_row = None
@@ -20509,11 +20583,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             copy_btn.connect("clicked", on_copy)
             popover_box.append(copy_btn)
 
-            remove_btn = Gtk.Button(label=_("Delete"))
-            remove_btn.add_css_class("flat")
-            remove_btn.add_css_class("destructive-action")
-            remove_btn.connect("clicked", lambda btn, a=addon, pop=popover: (pop.popdown(), self._remove_addon(a)))
-            popover_box.append(remove_btn)
+            if not str(manifest_url or "").startswith("builtin:") and addon.get("id") != "popcornbox.catalog":
+                remove_btn = Gtk.Button(label=_("Delete"))
+                remove_btn.add_css_class("flat")
+                remove_btn.add_css_class("destructive-action")
+                remove_btn.connect("clicked", lambda btn, a=addon, pop=popover: (pop.popdown(), self._remove_addon(a)))
+                popover_box.append(remove_btn)
 
             box.append(menu_btn)
 

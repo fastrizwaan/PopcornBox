@@ -52,9 +52,8 @@ class TestAddonUpdates(unittest.TestCase):
     def tearDown(self):
         api.reset_addon_health_cache()
         api.clear_provider_cooldown()
-        database._json_cache = None
-        database._json_cache_valid = False
         self.patch_db.stop()
+        database.reset_json_cache()
         self.temp_dir.cleanup()
 
     def test_normalize_addon_url(self):
@@ -105,10 +104,12 @@ class TestAddonUpdates(unittest.TestCase):
         self.assertFalse(any(a["id"] == "custom.myaddon" for a in addons))
 
     def test_default_addons_not_resurrected_after_removal(self):
-        # By default, Cinemeta should be installed and enabled.
+        # By default, PopcornBox Catalog is enabled and Cinemeta is installed (disabled).
         addons = database.get_addons()
         cinemeta = next(a for a in addons if a["id"] == "cinemeta")
-        self.assertTrue(cinemeta.get("enabled"))
+        self.assertFalse(cinemeta.get("enabled"))
+        popcorn = next(a for a in addons if a["id"] == "popcornbox.catalog")
+        self.assertTrue(popcorn.get("enabled"))
 
         # Remove Cinemeta
         database.remove_addon(addon_id="cinemeta")
@@ -138,18 +139,18 @@ class TestAddonUpdates(unittest.TestCase):
         self.assertNotIn("cinemeta", removed_after_readd)
         self.assertTrue(any(a["id"] == "cinemeta" for a in database.get_addons()))
 
-    def test_legacy_builtin_catalog_is_removed_and_cinemeta_can_be_disabled(self):
+    def test_popcornbox_catalog_is_builtin_and_cinemeta_can_be_enabled(self):
         legacy_data = {
             "favorites": [],
             "watched": [],
             "history": [],
             "continue_watching": [],
             "downloads": [],
-            "settings": {"cinemeta_disabled_by_default_v1": True},
+            "settings": {},
             "addons": [
                 {
                     "id": "popcornbox.catalog",
-                    "name": "Popcorn Box Catalog",
+                    "name": "PopcornBox Catalog",
                     "manifest_url": "builtin://popcornbox-catalog",
                     "enabled": True,
                     "resources": ["catalog"],
@@ -170,14 +171,14 @@ class TestAddonUpdates(unittest.TestCase):
         database._json_cache_valid = False
 
         addons = database.get_addons()
-        self.assertFalse(any(a.get("id") == "popcornbox.catalog" for a in addons))
-        self.assertTrue(next(a for a in addons if a.get("id") == "cinemeta").get("enabled"))
+        self.assertTrue(any(a.get("id") == "popcornbox.catalog" for a in addons))
+        self.assertFalse(next(a for a in addons if a.get("id") == "cinemeta").get("enabled"))
 
-        database.set_addon_enabled("cinemeta", False)
+        database.set_addon_enabled("cinemeta", True)
         database._json_cache = None
         database._json_cache_valid = False
         reloaded = database.get_addons()
-        self.assertFalse(next(a for a in reloaded if a.get("id") == "cinemeta").get("enabled"))
+        self.assertTrue(next(a for a in reloaded if a.get("id") == "cinemeta").get("enabled"))
 
     def test_cache_invalidation_on_addon_mutation(self):
         # Cache dummy streams in database

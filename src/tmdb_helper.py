@@ -1748,14 +1748,15 @@ def get_default_tmdb_catalogs(media_type="all"):
     catalogs = []
     for kind, label in kinds:
         for catalog_id, catalog_name, tmdb_sort in (
-            ("new-on-streaming", "New on streaming", "date"),
             ("popular", "Popular", "popular"),
+            ("new-on-streaming", "New on streaming", "date"),
+            ("top-rated", "Top Rated", "rating"),
         ):
-            display_name = f"TMDB — {catalog_name} — {label}"
+            display_name = f"{catalog_name} - {label}"
             catalogs.append({
                 "_source": "tmdb_catalog",
                 "addon_id": TMDB_BUILTIN_ADDON_ID,
-                "addon_name": "TMDB",
+                "addon_name": "PopcornBox Catalog",
                 "media_type": kind,
                 "catalog_id": catalog_id,
                 "catalog_name": catalog_name,
@@ -1777,9 +1778,11 @@ def fetch_default_tmdb_catalog_page(catalog_id, media_type="movie", page=1, limi
     """
     catalog_key = str(catalog_id or "").strip().lower().replace("_", "-")
     if catalog_key in ("new", "new-on-streaming", "new-on-streaming-movies", "new-on-streaming-series"):
-        is_streaming = True
+        sort_mode = "streaming"
+    elif catalog_key in ("top-rated", "top_rated", "toprated", "featured"):
+        sort_mode = "rating"
     elif catalog_key in ("popular", "popular-movies", "popular-series"):
-        is_streaming = False
+        sort_mode = "popular"
     else:
         return [], 0
 
@@ -1805,22 +1808,28 @@ def fetch_default_tmdb_catalog_page(catalog_id, media_type="movie", page=1, limi
     from datetime import date
     today = date.today().isoformat()
     watch_region = str(region or database.get_setting("tmdb_watch_region", "IN") or "IN").strip().upper()
+    sort_by_param = "popularity.desc"
+    if sort_mode == "streaming":
+        sort_by_param = "primary_release_date.desc" if kind == "movie" else "first_air_date.desc"
+    elif sort_mode == "rating":
+        sort_by_param = "vote_average.desc"
     params = {
         "api_key": api_key,
         "include_adult": "false",
         "page": page,
-        "sort_by": ("primary_release_date.desc" if kind == "movie" else "first_air_date.desc") if is_streaming
-                   else "popularity.desc",
+        "sort_by": sort_by_param,
     }
     params["primary_release_date.lte" if kind == "movie" else "first_air_date.lte"] = today
     if kind == "movie":
         params["with_runtime.gte"] = MIN_TMDB_MOVIE_RUNTIME_MINUTES
-    if is_streaming:
+    if sort_mode == "streaming":
         params["watch_region"] = watch_region
         params["with_watch_monetization_types"] = "flatrate|free|ads"
         if kind == "movie":
             params["region"] = watch_region
             params["with_release_type"] = "4"
+    elif sort_mode == "rating":
+        params["vote_count.gte"] = 300 if kind == "movie" else 100
     if database.is_kids_safe_mode():
         params["certification_country"] = "US"
         if kind == "movie":
@@ -1883,6 +1892,7 @@ def fetch_default_tmdb_catalog_page(catalog_id, media_type="movie", page=1, limi
             "popularity": entry.get("popularity", 0.0),
             "release_date": release_date,
             "overview": (entry.get("overview") or "").strip(),
+            "description": (entry.get("overview") or "").strip(),
             "country": "",
             "countries": [],
             "language": database.LANGUAGE_CODE_MAP.get(str(entry.get("original_language") or "").lower()) or "",
@@ -1891,8 +1901,10 @@ def fetch_default_tmdb_catalog_page(catalog_id, media_type="movie", page=1, limi
             "original_language": entry.get("original_language") or "",
         })
 
-    if is_streaming:
+    if sort_mode == "streaming":
         items.sort(key=lambda item: str(item.get("release_date") or ""), reverse=True)
+    elif sort_mode == "rating":
+        items.sort(key=lambda item: (item.get("rating") or 0.0, item.get("vote_count", 0)), reverse=True)
     else:
         items.sort(key=lambda item: (item.get("popularity", 0.0), item.get("vote_count", 0)), reverse=True)
     return items[:limit], total_pages
