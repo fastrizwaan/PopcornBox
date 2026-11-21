@@ -232,6 +232,52 @@ class Scraper:
         self.assertEqual(api_items[0]["id"], "tt9999999")
         self.assertIn("Sci-Fi", api_items[0]["title"])
 
+    def test_youtube_custom_scraper(self):
+        p_dir = custom_plugins.get_custom_plugins_dir()
+        root_plugin = Path(__file__).parent / "plugins" / "youtube_scraper.py"
+        self.assertTrue(root_plugin.exists(), "plugins/youtube_scraper.py must exist")
+
+        shutil.copy2(root_plugin, p_dir / "youtube_scraper.py")
+        scrapers = custom_plugins.load_all_custom_scrapers(force_reload=True)
+        yt_scrapers = [s for s in scrapers if s.id == "custom.youtube"]
+        self.assertEqual(len(yt_scrapers), 1)
+        yt = yt_scrapers[0]
+        self.assertEqual(yt.name, "YouTube")
+        self.assertIn("movie", yt.media_types)
+        self.assertIn("series", yt.media_types)
+
+        # Test classic catalog
+        classic_items = yt.get_catalog_items(catalog_id="classic_movies", media_type="movie")
+        self.assertGreater(len(classic_items), 0)
+        self.assertTrue(any("night of the living dead" in it["title"].lower() for it in classic_items))
+
+        # Test movie stream parsing / scoring
+        movie_streams = custom_plugins.execute_custom_scraper(
+            yt,
+            imdb_id="tt0063350",
+            media_type="movie",
+            title="Night of the Living Dead",
+            year="1968"
+        )
+        self.assertGreater(len(movie_streams), 0)
+        top_stream = movie_streams[0]
+        self.assertTrue(top_stream["url"].startswith("https://www.youtube.com/watch?v="))
+        self.assertTrue(top_stream["is_custom_plugin"])
+        self.assertEqual(top_stream["custom_plugin_id"], "custom.youtube")
+        self.assertEqual(top_stream["addon_name"], "YouTube")
+
+        # Test series stream parsing / scoring
+        series_streams = custom_plugins.execute_custom_scraper(
+            yt,
+            imdb_id="tt0096657",
+            media_type="series",
+            season=1,
+            episode=1,
+            title="Mr. Bean"
+        )
+        self.assertGreater(len(series_streams), 0)
+        self.assertTrue(series_streams[0]["url"].startswith("https://www.youtube.com/watch?v="))
+
 
 if __name__ == "__main__":
     unittest.main()

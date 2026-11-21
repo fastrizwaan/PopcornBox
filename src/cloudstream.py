@@ -1665,13 +1665,97 @@ def _extract_youtube_id(data_or_url):
 class YoutubeCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/recloudstream/extensions/builds/YoutubeProvider.cs3#YoutubeProvider"
     name = "YoutubeProvider"
-    supported_types = ["other", "live", "clip"]
+    supported_types = ["movie", "series", "tvseries", "documentary", "other", "live", "clip", "all"]
+
+    @classmethod
+    def _search_innertube(cls, query, timeout=6.0):
+        if not query or not query.strip():
+            return []
+        url = "https://www.youtube.com/youtubei/v1/search"
+        payload = {
+            "context": {
+                "client": {
+                    "clientName": "WEB",
+                    "clientVersion": "2.20240101.00.00",
+                    "hl": "en",
+                    "gl": "US",
+                }
+            },
+            "query": query.strip(),
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            },
+        )
+        results = []
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                contents = data.get("contents", {}).get("twoColumnSearchResultsRenderer", {}).get("primaryContents", {}).get("sectionListRenderer", {}).get("contents", [])
+                for s in contents:
+                    for it in s.get("itemSectionRenderer", {}).get("contents", []):
+                        vr = it.get("videoRenderer")
+                        if not vr:
+                            continue
+                        vid = vr.get("videoId")
+                        if not vid or not re.fullmatch(r"^[a-zA-Z0-9_-]{11}$", vid):
+                            continue
+                        title = "".join(r.get("text", "") for r in vr.get("title", {}).get("runs", []))
+                        length = vr.get("lengthText", {}).get("simpleText") or "".join(r.get("text", "") for r in vr.get("lengthText", {}).get("runs", []))
+                        channel = "".join(r.get("text", "") for r in vr.get("ownerText", {}).get("runs", []))
+                        views = vr.get("viewCountText", {}).get("simpleText") or "".join(r.get("text", "") for r in vr.get("viewCountText", {}).get("runs", []))
+                        badges = [b.get("metadataBadgeRenderer", {}).get("label") for b in vr.get("badges", [])]
+                        thumbs = vr.get("thumbnail", {}).get("thumbnails", [])
+                        poster = thumbs[-1].get("url") if thumbs else f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+                        # Parse duration seconds
+                        dur = 0
+                        parts = length.split(":")
+                        try:
+                            if len(parts) == 3: dur = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2])
+                            elif len(parts) == 2: dur = int(parts[0])*60 + int(parts[1])
+                            elif len(parts) == 1: dur = int(parts[0])
+                        except Exception:
+                            pass
+                        results.append({
+                            "id": vid,
+                            "title": title,
+                            "length_str": length,
+                            "duration": dur,
+                            "channel": channel,
+                            "views": views,
+                            "badges": badges,
+                            "poster": poster,
+                        })
+        except Exception as e:
+            logger.debug(f"YouTube InnerTube search failed for '{query}': {e}")
+        return results
 
     def search(self, query):
         if not query or not query.strip():
             return []
 
-        # 1. Try yt-dlp first for reliable search
+        # 1. Try InnerTube first (fastest, most reliable)
+        inner_items = self._search_innertube(query)
+        if inner_items:
+            return [
+                {
+                    "provider_id": self.id,
+                    "data": f"yt:{v['id']}",
+                    "name": v.get("title") or "YouTube Video",
+                    "type": CloudStreamTvType.Other,
+                    "poster_url": v.get("poster") or f"https://i.ytimg.com/vi/{v['id']}/hqdefault.jpg",
+                    "background_url": f"https://i.ytimg.com/vi/{v['id']}/maxresdefault.jpg",
+                    "description": f"{v.get('channel', 'YouTube')} • {v.get('length_str', '')}",
+                    "year": None,
+                }
+                for v in inner_items
+            ]
+
+        # 2. Try yt-dlp
         yt_dlp_bin = shutil.which("yt-dlp")
         if not yt_dlp_bin:
             for p in ["/app/bin/yt-dlp", "/usr/bin/yt-dlp", "/usr/local/bin/yt-dlp"]:
@@ -1719,7 +1803,7 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
             except Exception as e:
                 logger.debug(f"yt-dlp search for YouTube failed: {e}")
 
-        # 2. Invidious fallback
+        # 3. Invidious fallback
         encoded = urllib.parse.quote(query.strip())
         for inv_host in ["https://inv.nadeko.net", "https://invidious.nerdvpn.de", "https://yewtu.be"]:
             url = f"{inv_host}/api/v1/search?q={encoded}&type=video"
@@ -1749,6 +1833,124 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
                 continue
 
         return []
+
+    def get_streams_for_media(self, title, media_type="movie", year=None, season=None, episode=None, imdb_id=None):
+        """Searches YouTube specifically for full movies or TV series episodes."""
+        if not title or not str(title).strip():
+            return []
+
+        clean_title = str(title).strip()
+        is_series = (str(media_type or "").lower() in ("series", "show", "shows", "tv", "anime")) or (season is not None and episode is not None)
+
+        queries = []
+        if is_series:
+            s_num = int(season) if season is not None else 1
+            e_num = int(episode) if episode is not None else 1
+            queries = [
+                f"{clean_title} S{s_num:02d}E{e_num:02d}",
+                f"{clean_title} Season {s_num} Episode {e_num} full episode",
+                f"{clean_title} Episode {e_num} full",
+            ]
+        else:
+            if year:
+                queries.append(f"{clean_title} {year} full movie")
+            queries.append(f"{clean_title} full movie")
+            queries.append(f'"{clean_title}" full length')
+
+        neg_movie = [
+            "trailer", "teaser", "review", "reaction", "recap", "explained",
+            "ending explained", "kill count", "breakdown", "easter egg", "scene",
+            "scenes", "clip", "clips", "soundtrack", "ost", "interview",
+            "behind the scenes", "b-roll", "analysis", "cast then and now"
+        ]
+        neg_series = [
+            "trailer", "teaser", "preview", "promo", "review", "reaction",
+            "recap", "explained", "ending explained", "interview", "behind the scenes"
+        ]
+
+        seen_ids = set()
+        candidates = []
+        for q in queries:
+            vids = self._search_innertube(q)
+            for v in vids:
+                if v["id"] not in seen_ids:
+                    seen_ids.add(v["id"])
+                    candidates.append(v)
+            if len(candidates) >= 15:
+                break
+
+        scored = []
+        if is_series:
+            s_num = int(season) if season is not None else 1
+            e_num = int(episode) if episode is not None else 1
+            for v in candidates:
+                vt = v["title"].lower()
+                dur = v["duration"]
+                if 0 < dur < 180:
+                    continue
+                if any(re.search(r"\b" + re.escape(n) + r"\b", vt) for n in neg_series if n not in clean_title.lower()):
+                    continue
+                ep_pattern = rf"(?:ep|episode|part|e)[\s\._-]*0*{e_num}\b"
+                other_ep = rf"(?:ep|episode|e)[\s\._-]*0*(\d+)\b"
+                found_eps = [int(x) for x in re.findall(other_ep, vt) if x.isdigit()]
+                if not re.search(ep_pattern, vt) and found_eps and e_num not in found_eps:
+                    continue
+                score = 50 if re.search(ep_pattern, vt) else 10
+                if re.search(rf"(?:s|season)[\s\._-]*0*{s_num}\b", vt):
+                    score += 30
+                if any(k in vt for k in ["full episode", "full ep", "complete episode"]):
+                    score += 20
+                if dur >= 600:
+                    score += 15
+                scored.append((score, v))
+        else:
+            t_words = set(re.findall(r"\b[a-z0-9]+\b", clean_title.lower())) - {"a", "an", "the", "and", "or", "of", "in", "to"}
+            for v in candidates:
+                vt = v["title"].lower()
+                dur = v["duration"]
+                if 0 < dur < 1800:
+                    continue
+                v_words = set(re.findall(r"\b[a-z0-9]+\b", vt))
+                overlap = len(t_words.intersection(v_words))
+                if t_words and (overlap / len(t_words)) < 0.35:
+                    continue
+                score = int(40 * (overlap / len(t_words))) if t_words else 0
+                has_neg = any(re.search(r"\b" + re.escape(n) + r"\b", vt) for n in neg_movie if n not in clean_title.lower())
+                if has_neg:
+                    if dur >= 3600:
+                        score -= 30
+                    else:
+                        continue
+                if year and str(year) in vt:
+                    score += 25
+                if any(k in vt for k in ["full movie", "full length", "complete movie"]):
+                    score += 20
+                if dur >= 3600:
+                    score += 20
+                scored.append((score, v))
+
+        scored.sort(key=lambda x: -x[0])
+        sources = []
+        for _score, v in scored[:8]:
+            quality = "1080p"
+            if any("4k" in str(b).lower() for b in v.get("badges", [])) or "4k" in v["title"].lower():
+                quality = "4K"
+            elif "720" in v["title"].lower():
+                quality = "720p"
+
+            length_str = v.get("length_str") or "Full Video"
+            channel = v.get("channel") or "YouTube"
+            sources.append({
+                "name": f"YouTube [{quality}]",
+                "title": f"YouTube • {channel} • {length_str}\n{v['title']}",
+                "url": f"https://www.youtube.com/watch?v={v['id']}",
+                "quality": quality,
+                "headers": {"Referer": "https://www.youtube.com/"},
+                "subtitles": [],
+                "is_hls": False,
+                "is_dash": False,
+            })
+        return sources
 
     def load(self, data_str):
         vid = _extract_youtube_id(data_str)
