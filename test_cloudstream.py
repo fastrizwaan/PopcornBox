@@ -1579,6 +1579,152 @@ class TestCloudStream(unittest.TestCase):
         self.assertIsInstance(prov, cloudstream.CineVoodCloudStreamProvider)
         self.assertTrue(cloudstream.is_provider_runnable({"id": "CineVoodProvider"}))
 
+    def test_castletv_provider(self):
+        prov = cloudstream.get_provider("CastleTvProvider")
+        self.assertIsNotNone(prov)
+        self.assertIsInstance(prov, cloudstream.CastleTvCloudStreamProvider)
+        self.assertEqual(prov.name, "Castle TV")
+        self.assertTrue(cloudstream.is_provider_runnable({"id": "CastleTvProvider"}))
+        self.assertTrue(cloudstream.is_provider_runnable({
+            "id": "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CastleTvProvider"
+        }))
+
+        # Title matching with subtitle/tagline separator
+        self.assertTrue(cloudstream._is_strict_title_match("Love Ka Panga", "Love Ka Panga - Emotion Ka Danga"))
+        self.assertTrue(cloudstream._is_strict_title_match("Love Ka Panga", "Love Ka Panga: Season 1"))
+        self.assertFalse(cloudstream._is_strict_title_match("Love Ka Panga", "Completely Unrelated Show"))
+
+        # Decryption test
+        sec_key_b64 = base64.b64encode(b"0123456789").decode("utf-8")
+        key = (base64.b64decode(sec_key_b64) + b"T!BgJB")[:16]
+
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.primitives import padding
+        padder = padding.PKCS7(128).padder()
+        sample_plain = json.dumps({"code": 200, "data": {"videoUrl": "https://example.com/test.m3u8"}})
+        padded = padder.update(sample_plain.encode("utf-8")) + padder.finalize()
+        cipher = Cipher(algorithms.AES(key), modes.CBC(key))
+        encryptor = cipher.encryptor()
+        enc_payload = base64.b64encode(encryptor.update(padded) + encryptor.finalize()).decode("utf-8")
+
+        decrypted = prov._decrypt(enc_payload, sec_key_b64)
+        self.assertEqual(decrypted, sample_plain)
+
+        # Mocked get_streams_for_media test for 'Love Ka Panga'
+        def enc(data_str):
+            pad = padding.PKCS7(128).padder()
+            p = pad.update(data_str.encode("utf-8")) + pad.finalize()
+            c = Cipher(algorithms.AES(key), modes.CBC(key)).encryptor()
+            return base64.b64encode(c.update(p) + c.finalize()).decode("utf-8")
+
+        search_data = json.dumps({
+            "code": 200,
+            "data": {
+                "rows": [
+                    {
+                        "id": 5873624429832192,
+                        "title": "Love Ka Panga - Emotion Ka Danga",
+                        "movieType": 1,
+                        "coverVerticalImage": "https://example.com/poster.jpg"
+                    }
+                ]
+            }
+        })
+        details_data = json.dumps({
+            "code": 200,
+            "data": {
+                "id": 5873624429832192,
+                "title": "Love Ka Panga - Emotion Ka Danga",
+                "movieType": 1,
+                "seasons": [{"number": 1, "movieId": "5873624429832192"}],
+                "episodes": [
+                    {"id": 10001, "episodeNo": 1, "title": "Episode 1"},
+                    {"id": 10002, "episodeNo": 2, "title": "Episode 2"}
+                ]
+            }
+        })
+        stream_url = "https://img1.hscow.com/hls/test/720/index.m3u8"
+        video_data = json.dumps({
+            "code": 200,
+            "data": {
+                "videoUrl": stream_url
+            }
+        })
+
+        enc_search = enc(search_data)
+        enc_details = enc(details_data)
+        enc_video = enc(video_data)
+
+        class MockResp:
+            def __init__(self, data):
+                self._data = data if isinstance(data, bytes) else data.encode("utf-8")
+            def read(self):
+                return self._data
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+
+        def mock_fetch(req, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "getSecurityKey" in url:
+                return MockResp(json.dumps({"data": sec_key_b64}))
+            if "searchByKeyword" in url:
+                return MockResp(enc_search)
+            if "movie?" in url:
+                return MockResp(enc_details)
+            if "getVideo2" in url:
+                return MockResp(enc_video)
+            return MockResp("{}")
+
+        with patch("urllib.request.urlopen", side_effect=mock_fetch):
+            prov._cached_sec_key = None
+            prov._stream_cache.clear()
+            streams = prov.get_streams_for_media(
+                "Love Ka Panga",
+                media_type="series",
+                year=2020,
+                season=1,
+                episode=1,
+                imdb_id="tt13187966"
+            )
+            self.assertEqual(len(streams), 1)
+            st = streams[0]
+            self.assertEqual(st["url"], stream_url)
+            self.assertTrue(st["is_hls"])
+            self.assertFalse(st["is_torrent"])
+            self.assertIn("720P", st["title"])
+
+            st_dict = cloudstream.playback_source_to_stream_dict(st, "Castle TV", prov.id)
+            self.assertIsNotNone(st_dict)
+            self.assertEqual(st_dict["stream_type"], "hls")
+            self.assertEqual(st_dict["url"], stream_url)
+            self.assertEqual(st_dict["stream_title"], st["title"])
+
+    def test_preview_and_teaser_clips_filtered_out(self):
+        fake_preview = {
+            "title": "🎬CineStream 😮‍💨 Auto • CNCVerse Bridge",
+            "name": "🎬CineStream 😮‍💨 Auto • CNCVerse Bridge",
+            "url": "https://img1.hscow.com/hls_mps/65f408f937e4aae272042ebc/480/index_preview_287.m3u8?Expires=1795280602",
+            "is_hls": True,
+            "is_http": True,
+            "behaviorHints": {
+                "filename": "Raita.Phail.Gaya.2020.S01E01.WEB-DL-CineTmdb"
+            }
+        }
+        res = api.process_raw_streams([fake_preview], season=1, episode=1, title="Raita Phail Gaya")
+        self.assertEqual(len(res), 0)
+
+        real_stream = {
+            "title": "Raita Phail Gaya S01E01 [1080P]",
+            "name": "Direct Provider",
+            "url": "https://cdn.example.com/hls/raita/1080/index_287.m3u8",
+            "is_hls": True,
+            "is_http": True,
+        }
+        res2 = api.process_raw_streams([real_stream], season=1, episode=1, title="Raita Phail Gaya")
+        self.assertEqual(len(res2), 1)
+
     def test_multicloudlinks_extractor(self):
         page_html = """
         <html><head>

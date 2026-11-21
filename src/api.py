@@ -6326,9 +6326,15 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
         is_external = bool(s.get("is_external") or (external_url and not raw_stream_url))
         stream_url = raw_stream_url or external_url
         
-        # Filter out non-media external HTML pages and embeds (not playable in MPV)
-        is_embed_or_html = any(d in stream_url.lower() for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "/embed/"])
-        if not info_hash and not yt_id and (is_external or is_embed_or_html):
+        # Filter out non-media external HTML pages, embeds, and preview/teaser sample clips
+        stream_url_lower = stream_url.lower()
+        is_embed_or_html = any(d in stream_url_lower for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "/embed/"])
+        is_preview_clip = (
+            "index_preview" in stream_url_lower
+            or "/hls_mps/" in stream_url_lower
+            or "_preview_" in stream_url_lower
+        )
+        if not info_hash and not yt_id and (is_external or is_embed_or_html or is_preview_clip):
             continue
 
         if stream_url.startswith("magnet:") and not info_hash:

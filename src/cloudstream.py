@@ -5631,6 +5631,28 @@ def _is_strict_title_match(query, candidate):
     if q_norm == c_norm:
         return True
 
+    for text in (candidate, c_clean):
+        if not text:
+            continue
+        for sep in (" - ", " : ", " | ", " – ", " — "):
+            if sep in text:
+                prefix = text.split(sep, 1)[0].strip()
+                p_clean, _ = clean_cloudstream_title(prefix)
+                prefix_norm = re.sub(r"[^\w\s]", "", (p_clean or prefix).lower()).strip()
+                if prefix_norm == q_norm:
+                    return True
+
+    for text in (query, q_clean):
+        if not text:
+            continue
+        for sep in (" - ", " : ", " | ", " – ", " — "):
+            if sep in text:
+                q_prefix = text.split(sep, 1)[0].strip()
+                qp_clean, _ = clean_cloudstream_title(q_prefix)
+                qp_norm = re.sub(r"[^\w\s]", "", (qp_clean or q_prefix).lower()).strip()
+                if qp_norm == c_norm:
+                    return True
+
     q_words = [w for w in q_norm.split() if w not in _STOP_WORDS] or q_norm.split()
     c_words = [w for w in c_norm.split() if w not in _STOP_WORDS] or c_norm.split()
 
@@ -6048,6 +6070,431 @@ class CNCVerseCloudStreamProvider(CloudStreamProvider):
                 }]
         except Exception:
             pass
+        return []
+
+
+class CastleTvCloudStreamProvider(CloudStreamProvider):
+    id = "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CastleTvProvider"
+    name = "Castle TV"
+    supported_types = ["movie", "series", "tv", "all"]
+    catalog_sections = (
+        {"id": "featured", "name": "Featured", "section": "Featured", "type": "all", "supports_pagination": False},
+    )
+
+    _MAIN_URL = "https://api.hlowb.com"
+    _KEY_SUFFIX = b"T!BgJB"
+    _cached_sec_key = None
+    _cached_sec_key_time = 0
+    _stream_cache = {}
+
+    def _get_security_key(self):
+        now = time.time()
+        if self._cached_sec_key and (now - self._cached_sec_key_time) < 3600:
+            return self._cached_sec_key
+        url = f"{self._MAIN_URL}/v0.1/system/getSecurityKey/1?channel=IndiaA&clientType=1&lang=en-US"
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Accept": "application/json, text/plain, */*",
+        }
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=5.0, context=_SSL_CONTEXT) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            key = data.get("data")
+            if key:
+                self._cached_sec_key = key
+                self._cached_sec_key_time = now
+                return self._cached_sec_key
+        except Exception as e:
+            logger.debug(f"Castle TV security key fetch failed: {e}")
+        return self._cached_sec_key or ""
+
+    def _derive_key(self, api_key_b64):
+        api_bytes = base64.b64decode(api_key_b64)
+        key_mat = api_bytes + self._KEY_SUFFIX
+        if len(key_mat) < 16:
+            key_mat = key_mat + bytes(16 - len(key_mat))
+        elif len(key_mat) > 16:
+            key_mat = key_mat[:16]
+        return key_mat
+
+    def _decrypt(self, encrypted_b64, api_key_b64):
+        if not encrypted_b64 or not api_key_b64:
+            return ""
+        try:
+            key = self._derive_key(api_key_b64)
+            iv = key
+            enc_data = base64.b64decode(encrypted_b64)
+            try:
+                from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+                from cryptography.hazmat.primitives import padding
+                cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+                decryptor = cipher.decryptor()
+                dec = decryptor.update(enc_data) + decryptor.finalize()
+                unpadder = padding.PKCS7(128).unpadder()
+                unpadded = unpadder.update(dec) + unpadder.finalize()
+                return unpadded.decode("utf-8", errors="ignore")
+            except ImportError:
+                from Crypto.Cipher import AES
+                cipher = AES.new(key, AES.MODE_CBC, iv)
+                dec = cipher.decrypt(enc_data)
+                pad_len = dec[-1]
+                if 1 <= pad_len <= 16:
+                    dec = dec[:-pad_len]
+                return dec.decode("utf-8", errors="ignore")
+        except Exception as e:
+            logger.debug(f"Castle TV decrypt failed: {e}")
+            return ""
+
+    def _request_and_decrypt(self, url, data=None, method="GET", timeout=6.0, retried=False):
+        sec_key = self._get_security_key()
+        if not sec_key:
+            return None
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Accept": "application/json, text/plain, */*",
+        }
+        req_data = None
+        if data is not None:
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            req_data = json.dumps(data).encode("utf-8") if isinstance(data, dict) else data
+
+        req = urllib.request.Request(url, data=req_data, headers=headers, method=method)
+        raw = None
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as r:
+                raw = r.read().decode("utf-8", errors="ignore").strip()
+        except Exception as e:
+            try:
+                from .api import _doh_fetch
+            except Exception:
+                from src.api import _doh_fetch
+            doh_data = _doh_fetch(url, headers=headers, timeout=timeout, data=req_data, method=method)
+            if doh_data:
+                raw = doh_data.decode("utf-8", errors="ignore").strip()
+            else:
+                logger.debug(f"Castle TV request failed for {url}: {e}")
+
+        if not raw:
+            if not retried:
+                self._cached_sec_key = None
+                return self._request_and_decrypt(url, data=data, method=method, timeout=timeout, retried=True)
+            return None
+
+        if raw.startswith("{") and '"code":' in raw:
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj.get("data"), str):
+                    dec = self._decrypt(obj["data"], sec_key)
+                    if dec:
+                        return json.loads(dec)
+                return obj
+            except Exception:
+                pass
+        dec = self._decrypt(raw, sec_key)
+        if dec:
+            try:
+                return json.loads(dec)
+            except Exception:
+                pass
+        if not retried:
+            self._cached_sec_key = None
+            return self._request_and_decrypt(url, data=data, method=method, timeout=timeout, retried=True)
+        return None
+
+    def get_main_page(self, page=1):
+        url = f"{self._MAIN_URL}/film-api/v0.1/category/home?channel=IndiaA&clientType=1&clientType=1&lang=en-US&locationId=1001&mode=1&packageName=com.external.castle&page={page}"
+        res = self._request_and_decrypt(url)
+        if not res or res.get("code") != 200:
+            return []
+        sections = []
+        rows = (res.get("data") or {}).get("rows") or []
+        for row in rows:
+            sec_name = row.get("categoryName") or "Featured"
+            items = []
+            for c in row.get("contents") or []:
+                m_id = c.get("id")
+                title = c.get("title")
+                m_type = c.get("movieType")
+                if m_id and title:
+                    items.append({
+                        "provider_id": self.id,
+                        "data": json.dumps({"movieId": str(m_id), "title": title, "movieType": m_type}),
+                        "name": title,
+                        "type": CloudStreamTvType.Movie if m_type == 2 else CloudStreamTvType.TvSeries,
+                        "poster_url": c.get("coverVerticalImage"),
+                        "background_url": c.get("coverHorizontalImage"),
+                        "description": f"{title} on Castle TV",
+                        "year": None,
+                        "rating_percent": None,
+                        "tags": ["Castle TV"],
+                        "episodes": [],
+                    })
+            if items:
+                sections.append((sec_name, items))
+        return sections
+
+    def search(self, query):
+        if not query or not query.strip():
+            return []
+        clean_q = query.strip()
+        url = (
+            f"{self._MAIN_URL}/film-api/v1.1.0/movie/searchByKeyword"
+            f"?channel=IndiaA&clientType=1&clientType=1&keyword={urllib.parse.quote(clean_q)}"
+            f"&lang=en-US&mode=1&packageName=com.external.castle&page=1&size=30"
+        )
+        res = self._request_and_decrypt(url)
+        if not res or res.get("code") != 200:
+            return []
+        items = []
+        rows = (res.get("data") or {}).get("rows") or []
+        for r in rows:
+            m_id = r.get("id")
+            title = r.get("title")
+            m_type = r.get("movieType")
+            if m_id and title:
+                items.append({
+                    "provider_id": self.id,
+                    "data": json.dumps({"movieId": str(m_id), "title": title, "movieType": m_type}),
+                    "name": f"{title} (Castle TV)",
+                    "type": CloudStreamTvType.Movie if m_type == 2 else CloudStreamTvType.TvSeries,
+                    "poster_url": r.get("coverVerticalImage"),
+                    "background_url": r.get("coverHorizontalImage"),
+                    "description": f"{title} on Castle TV",
+                    "year": None,
+                    "rating_percent": None,
+                    "tags": ["Castle TV"],
+                    "episodes": [],
+                })
+        return items
+
+    def load(self, data_str):
+        try:
+            data = json.loads(data_str) if isinstance(data_str, str) and data_str.startswith("{") else {"movieId": data_str}
+        except Exception:
+            data = {"movieId": data_str}
+        movie_id = str(data.get("movieId") or data.get("id") or "").strip()
+        if not movie_id:
+            return {}
+
+        url = f"{self._MAIN_URL}/film-api/v1.9.9/movie?channel=IndiaA&clientType=1&clientType=1&lang=en-US&movieId={movie_id}&packageName=com.external.castle"
+        res = self._request_and_decrypt(url)
+        if not res or res.get("code") != 200:
+            return {}
+        details = res.get("data") or {}
+        title = details.get("title") or data.get("title") or "Castle TV Media"
+        movie_type = details.get("movieType") or data.get("movieType")
+        poster = details.get("coverVerticalImage")
+        backdrop = details.get("coverHorizontalImage")
+        desc = details.get("briefIntroduction") or ""
+
+        episodes_out = []
+        if movie_type == 2:  # Movie
+            eps = details.get("episodes") or []
+            ep_id = eps[0].get("id") if eps else movie_id
+            episodes_out.append({
+                "name": title,
+                "season": 1,
+                "episode": 1,
+                "data": f"{movie_id}_{ep_id}",
+                "poster_url": poster,
+            })
+        else:  # Series
+            seasons = details.get("seasons") or []
+            if len(seasons) > 1:
+                for s_idx, s in enumerate(seasons):
+                    s_num = s.get("number", s_idx + 1)
+                    s_movie_id = str(s.get("movieId") or movie_id)
+                    if s_movie_id == movie_id:
+                        s_eps = details.get("episodes") or []
+                    else:
+                        s_url = f"{self._MAIN_URL}/film-api/v1.9.9/movie?channel=IndiaA&clientType=1&clientType=1&lang=en-US&movieId={s_movie_id}&packageName=com.external.castle"
+                        s_res = self._request_and_decrypt(s_url)
+                        s_eps = ((s_res or {}).get("data") or {}).get("episodes") or []
+                    for e_idx, ep in enumerate(s_eps):
+                        e_num = ep.get("episodeNo") or ep.get("number") or (e_idx + 1)
+                        episodes_out.append({
+                            "name": ep.get("title") or f"Episode {e_num}",
+                            "season": s_num,
+                            "episode": e_num,
+                            "data": f"{s_movie_id}_{ep.get('id')}",
+                            "poster_url": ep.get("coverImage") or poster,
+                        })
+            else:
+                eps = details.get("episodes") or []
+                for e_idx, ep in enumerate(eps):
+                    e_num = ep.get("episodeNo") or ep.get("number") or (e_idx + 1)
+                    episodes_out.append({
+                        "name": ep.get("title") or f"Episode {e_num}",
+                        "season": 1,
+                        "episode": e_num,
+                        "data": f"{movie_id}_{ep.get('id')}",
+                        "poster_url": ep.get("coverImage") or poster,
+                    })
+
+        return {
+            "provider_id": self.id,
+            "data": data_str,
+            "name": f"{title} (Castle TV)",
+            "type": CloudStreamTvType.Movie if movie_type == 2 else CloudStreamTvType.TvSeries,
+            "poster_url": poster,
+            "background_url": backdrop,
+            "description": desc,
+            "year": None,
+            "rating_percent": None,
+            "tags": ["Castle TV"],
+            "episodes": episodes_out,
+        }
+
+    def load_links(self, data_str):
+        parts = str(data_str).split("_")
+        if len(parts) >= 2:
+            movie_id, episode_id = parts[0], parts[1]
+        else:
+            movie_id, episode_id = parts[0], parts[0]
+
+        payload = {
+            "mode": "1",
+            "appMarket": "GuanWang",
+            "clientType": "1",
+            "woolUser": "false",
+            "apkSignKey": "ED0955EB04E67A1D9F3305B95454FED485261475",
+            "androidVersion": "13",
+            "movieId": str(movie_id),
+            "episodeId": str(episode_id),
+            "isNewUser": "true",
+            "resolution": "1080",
+            "packageName": "com.external.castle"
+        }
+        url = f"{self._MAIN_URL}/film-api/v2.0.1/movie/getVideo2?clientType=1&packageName=com.external.castle&channel=IndiaA&lang=en-US"
+        res = self._request_and_decrypt(url, data=payload, method="POST")
+        if not res or res.get("code") != 200:
+            return []
+        vlink = (res.get("data") or {}).get("videoUrl")
+        if not vlink or not vlink.startswith("http"):
+            return []
+        if "index_preview" in vlink or "/hls_mps/" in vlink or "_preview_" in vlink:
+            logger.debug(f"[Castle TV] Rejected preview-only clip: {vlink}")
+            return []
+        quality = "1080p" if "1080" in vlink else "720p" if "720" in vlink else "480p" if "480" in vlink else "HD"
+        return [{
+            "name": f"Castle TV [{quality.upper()} HLS]",
+            "url": vlink,
+            "is_hls": True,
+            "is_http": True,
+            "quality": quality,
+            "headers": {
+                "User-Agent": DEFAULT_USER_AGENT,
+            }
+        }]
+
+    def get_streams_for_media(self, title, media_type="movie", year=None, season=None, episode=None, imdb_id=None):
+        if not title or not title.strip():
+            return []
+        clean_title = title.strip()
+        norm_type = (media_type or "movie").lower()
+        target_s = season if season is not None else 1
+        target_e = episode if episode is not None else 1
+
+        cache_key = (clean_title.lower(), norm_type, str(year or ""), target_s, target_e)
+        now = time.time()
+        cached = self._stream_cache.get(cache_key)
+        if cached:
+            ts, cached_streams = cached
+            if (now - ts) < 1800:
+                return cached_streams
+
+        search_q = re.sub(r"\s*\(\d{4}\)$", "", clean_title).strip()
+        search_res = self.search(search_q)
+        if not search_res:
+            self._stream_cache[cache_key] = (now, [])
+            return []
+
+        target_item = None
+        for cand in search_res:
+            cand_raw = json.loads(cand.get("data", "{}")).get("title") if cand.get("data") else cand.get("name")
+            if cand_raw and _is_strict_title_match(clean_title, cand_raw):
+                target_item = json.loads(cand.get("data"))
+                break
+
+        if not target_item:
+            self._stream_cache[cache_key] = (now, [])
+            return []
+
+        movie_id = target_item.get("movieId")
+        m_type = target_item.get("movieType")
+        if not movie_id:
+            self._stream_cache[cache_key] = (now, [])
+            return []
+
+        d_url = f"{self._MAIN_URL}/film-api/v1.9.9/movie?channel=IndiaA&clientType=1&clientType=1&lang=en-US&movieId={movie_id}&packageName=com.external.castle"
+        d_res = self._request_and_decrypt(d_url)
+        if not d_res or d_res.get("code") != 200:
+            self._stream_cache[cache_key] = (now, [])
+            return []
+
+        details = d_res.get("data") or {}
+        seasons = details.get("seasons") or []
+        episodes = details.get("episodes") or []
+
+        chosen_movie_id = movie_id
+        target_ep_id = None
+
+        if norm_type == "movie" or m_type == 2:
+            if episodes:
+                target_ep_id = episodes[0].get("id")
+            else:
+                target_ep_id = movie_id
+        else:
+            if len(seasons) > 1 and target_s > 1:
+                for s in seasons:
+                    if s.get("number") == target_s:
+                        s_movie_id = str(s.get("movieId") or "")
+                        if s_movie_id and s_movie_id != movie_id:
+                            chosen_movie_id = s_movie_id
+                            s_url = f"{self._MAIN_URL}/film-api/v1.9.9/movie?channel=IndiaA&clientType=1&clientType=1&lang=en-US&movieId={s_movie_id}&packageName=com.external.castle"
+                            s_res = self._request_and_decrypt(s_url)
+                            episodes = ((s_res or {}).get("data") or {}).get("episodes") or []
+                        break
+
+            for idx, ep in enumerate(episodes):
+                ep_no = ep.get("episodeNo") or ep.get("number")
+                if ep_no is not None and str(ep_no) == str(target_e):
+                    target_ep_id = ep.get("id")
+                    break
+            if not target_ep_id and episodes:
+                if 1 <= target_e <= len(episodes):
+                    target_ep_id = episodes[target_e - 1].get("id")
+
+        if not target_ep_id:
+            self._stream_cache[cache_key] = (now, [])
+            return []
+
+        links = self.load_links(f"{chosen_movie_id}_{target_ep_id}")
+        if links:
+            out_streams = []
+            for lnk in links:
+                q = lnk.get("quality", "720p")
+                if norm_type == "movie" or m_type == 2:
+                    st_title = f"{clean_title} · Castle TV [{q.upper()}]"
+                else:
+                    st_title = f"{clean_title} S{target_s:02d}E{target_e:02d} · Castle TV [{q.upper()}]"
+                out_streams.append({
+                    "name": lnk.get("name") or f"Castle TV [{q.upper()} HLS]",
+                    "title": st_title,
+                    "url": lnk.get("url"),
+                    "is_hls": True,
+                    "is_http": True,
+                    "is_torrent": False,
+                    "quality": q,
+                    "headers": lnk.get("headers") or {
+                        "User-Agent": DEFAULT_USER_AGENT,
+                    }
+                })
+            self._stream_cache[cache_key] = (now, out_streams)
+            return out_streams
+
+        self._stream_cache[cache_key] = (now, [])
         return []
 
 
@@ -7689,14 +8136,12 @@ _PROVIDERS["Torrentio"] = torrentio_prov
 cncverse_prov = CNCVerseCloudStreamProvider()
 register_provider(cncverse_prov)
 _PROVIDERS["https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CNC Verse Mobile"] = cncverse_prov
-_PROVIDERS["https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CastleTvProvider"] = cncverse_prov
 _PROVIDERS["https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#MovieBoxProviderIN"] = cncverse_prov
 _PROVIDERS["https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#MovieBoxProvider"] = cncverse_prov
 _PROVIDERS["https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#Rtally"] = cncverse_prov
 _PROVIDERS["https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#HDOProvider"] = cncverse_prov
 _PROVIDERS["CNC Verse"] = cncverse_prov
 _PROVIDERS["CNC Verse Mobile"] = cncverse_prov
-_PROVIDERS["CastleTvProvider"] = cncverse_prov
 _PROVIDERS["MovieBoxProviderIN"] = cncverse_prov
 _PROVIDERS["MovieBoxProvider"] = cncverse_prov
 _PROVIDERS["Rtally"] = cncverse_prov
@@ -7704,6 +8149,14 @@ _PROVIDERS["HDOProvider"] = cncverse_prov
 _PROVIDERS["https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CineTvProvider"] = cncverse_prov
 _PROVIDERS["CineTvProvider"] = cncverse_prov
 _PROVIDERS["CineTv"] = cncverse_prov
+
+castle_prov = CastleTvCloudStreamProvider()
+register_provider(castle_prov)
+_PROVIDERS["https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CastleTvProvider"] = castle_prov
+_PROVIDERS["CastleTvProvider"] = castle_prov
+_PROVIDERS["CastleTv"] = castle_prov
+_PROVIDERS["Castle TV"] = castle_prov
+_PROVIDERS["Castle"] = castle_prov
 
 cinedoze_prov = CineDozeCloudStreamProvider()
 register_provider(cinedoze_prov)
@@ -8538,8 +8991,12 @@ def playback_source_to_stream_dict(source, provider_name, provider_id):
     quality_str = f"{quality}p" if quality in (144, 240, 360, 480, 720, 1080, 1440, 2160) else (str(quality) if quality else "")
 
     name = source.get("name") or provider_name
-    title_parts = [p for p in [name, quality_str] if p and p not in name]
-    full_title = " · ".join(title_parts) if title_parts else name
+    explicit_title = source.get("stream_title") or source.get("title")
+    if explicit_title:
+        full_title = explicit_title
+    else:
+        title_parts = [p for p in [name, quality_str] if p and p.lower() not in name.lower()]
+        full_title = " · ".join(title_parts) if title_parts else name
 
     is_torrent = bool(
         source.get("is_torrent")
@@ -8583,6 +9040,7 @@ def playback_source_to_stream_dict(source, provider_name, provider_id):
     stream_dict = {
         "name": name,
         "title": full_title,
+        "stream_title": full_title,
         "url": clean_url,
         "quality": quality_str,
         "headers": headers,
