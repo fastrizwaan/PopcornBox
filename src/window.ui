@@ -499,14 +499,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                       <object class="GtkDropDown" id="section_dropdown">
                                         <property name="valign">3</property>
                                         <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Section</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkDropDown" id="sort_dropdown">
-                                        <property name="valign">3</property>
-                                        <property name="enable-search">false</property>
-                                        <property name="tooltip-text" translatable="yes">Sort By</property>
+                                        <property name="tooltip-text" translatable="yes">Sort by</property>
                                       </object>
                                     </child>
                                     <child>

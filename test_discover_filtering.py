@@ -67,14 +67,12 @@ class TestDiscoverFiltering(unittest.TestCase):
         self.win.type_dropdown = Gtk.DropDown()
         self.win.catalog_dropdown = Gtk.DropDown()
         self.win.section_dropdown = Gtk.DropDown()
-        self.win.sort_dropdown = Gtk.DropDown()
         self.win.genre_dropdown = Gtk.DropDown()
         self.win.year_dropdown = Gtk.DropDown()
         self.win.language_dropdown = Gtk.DropDown()
         self.win.country_dropdown = Gtk.DropDown()
         self.win.network_dropdown = Gtk.DropDown()
         self.win.current_sort = "Popular"
-        self.win.current_sort_by = "Sort By"
         self.win._syncing_discover_toolbar = False
 
         self.win._is_unique_mode_active = lambda: False
@@ -140,18 +138,41 @@ class TestDiscoverFiltering(unittest.TestCase):
         PopcornBoxWindow._populate_discover_section_dropdown(self.win, addon=None, chosen_type="movie", catalog_item=None)
         items = self.win._discover_section_items
         display_names = [it["display_name"] for it in items]
-        self.assertEqual(display_names[0], "Section")
+        self.assertEqual(display_names[0], "Sort by")
         self.assertIn("Popular", display_names)
         self.assertIn("Trending", display_names)
         self.assertIn("Top Rated", display_names)
         self.assertIn("New on Streaming", display_names)
+        self.assertTrue(self.win.section_dropdown.get_sensitive())
+        self.assertTrue(self.win.section_dropdown.get_visible())
 
-    def test_discover_sort_dropdown_options(self):
-        PopcornBoxWindow._populate_discover_sort_dropdown(self.win)
-        options = self.win._discover_sort_items
-        self.assertEqual(options, ["Sort By", "Popularity", "Release Date", "Rating", "Title"])
-        self.assertTrue(self.win.sort_dropdown.get_sensitive())
-        self.assertTrue(self.win.sort_dropdown.get_visible())
+    def test_discover_section_dropdown_hides_when_single_or_zero_sections(self):
+        # 0 sections:
+        empty_addon = {"name": "EmptyAddon", "catalogs": []}
+        PopcornBoxWindow._populate_discover_section_dropdown(self.win, addon=empty_addon, chosen_type="movie", catalog_item=None)
+        self.assertFalse(self.win.section_dropdown.get_visible())
+        self.assertFalse(self.win.section_dropdown.get_sensitive())
+
+        # 1 section:
+        single_addon = {
+            "name": "SingleAddon",
+            "catalogs": [{"id": "single", "name": "Featured", "type": "movie"}]
+        }
+        PopcornBoxWindow._populate_discover_section_dropdown(self.win, addon=single_addon, chosen_type="movie", catalog_item=None)
+        self.assertFalse(self.win.section_dropdown.get_visible())
+        self.assertFalse(self.win.section_dropdown.get_sensitive())
+
+        # Multiple sections:
+        multi_addon = {
+            "name": "MultiAddon",
+            "catalogs": [
+                {"id": "cat1", "name": "Section 1", "type": "movie"},
+                {"id": "cat2", "name": "Section 2", "type": "movie"}
+            ]
+        }
+        PopcornBoxWindow._populate_discover_section_dropdown(self.win, addon=multi_addon, chosen_type="movie", catalog_item=None)
+        self.assertTrue(self.win.section_dropdown.get_visible())
+        self.assertTrue(self.win.section_dropdown.get_sensitive())
 
     def test_catalog_capability_checking_hides_unsupported_filters(self):
         cinemeta_mock = {
@@ -218,38 +239,36 @@ class TestDiscoverFiltering(unittest.TestCase):
         w1._is_empty_box = False
         w2._is_empty_box = False
 
-        w1.movie_data = {"title": "Avatar", "popularity": 50.0, "rating": 7.8, "release_date": "2009-12-18"}
-        w2.movie_data = {"title": "Zootopia", "popularity": 90.0, "rating": 8.0, "release_date": "2016-03-04"}
-
-        # Sort by Popularity: w2 (90.0) should come before w1 (50.0)
-        self.win.current_sort_by = "Popularity"
+        w1._load_index = 0
+        w2._load_index = 1
         res = PopcornBoxWindow._discover_flowbox_sort_func(self.win, c1, c2)
-        self.assertEqual(res, 1)  # c1 > c2 (c2 comes first)
+        self.assertEqual(res, -1)  # c1 precedes c2
 
         res_rev = PopcornBoxWindow._discover_flowbox_sort_func(self.win, c2, c1)
-        self.assertEqual(res_rev, -1)  # c2 < c1 (c2 comes first)
+        self.assertEqual(res_rev, 1)  # c2 comes after c1
 
-        # Sort by Rating: w2 (8.0) before w1 (7.8)
-        self.win.current_sort_by = "Rating"
-        res = PopcornBoxWindow._discover_flowbox_sort_func(self.win, c1, c2)
-        self.assertEqual(res, 1)
-
-        # Sort by Title: "Avatar" before "Zootopia"
-        self.win.current_sort_by = "Title"
-        res = PopcornBoxWindow._discover_flowbox_sort_func(self.win, c1, c2)
-        self.assertEqual(res, -1)  # c1 comes before c2
-
-    def test_get_current_discover_filter_dict_includes_sort_by(self):
-        PopcornBoxWindow._populate_discover_sort_dropdown(self.win)
-        self.win.sort_dropdown.set_selected(1)  # "Popularity"
-
+    def test_get_current_discover_filter_dict_section_and_sort(self):
         self.win._discover_type_items = [("Type", "all")]
         self.win._discover_catalog_items = [{"manifest_url": None}]
-        self.win._discover_section_items = [{"catalog_id": "popular", "display_name": "Popular"}]
+        self.win._discover_section_items = [
+            {"catalog_id": None, "display_name": "Sort by"},
+            {"catalog_id": "popular", "display_name": "Popular"}
+        ]
+        self.win.section_dropdown.set_model(Gtk.StringList.new(["Sort by", "Popular"]))
 
+        # When "Sort by" placeholder is selected:
+        self.win.section_dropdown.set_selected(0)
         filters = PopcornBoxWindow._get_current_discover_filter_dict(self.win)
-        self.assertIn("sort_by", filters)
-        self.assertEqual(filters["sort_by"], "Popularity")
+        self.assertIsNone(filters["catalog_id"])
+        self.assertIsNone(filters["section"])
+        self.assertIsNone(filters["sort_by"])
+
+        # When "Popular" is selected:
+        self.win.section_dropdown.set_selected(1)
+        filters = PopcornBoxWindow._get_current_discover_filter_dict(self.win)
+        self.assertEqual(filters["catalog_id"], "popular")
+        self.assertEqual(filters["section"], "Popular")
+        self.assertIsNone(filters["sort_by"])
 
 
 if __name__ == "__main__":
