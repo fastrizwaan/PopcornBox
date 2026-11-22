@@ -237,6 +237,27 @@ class TestKidsSafeMode(unittest.TestCase):
         }
         self.assertTrue(api.is_mature_item(indian_adult_film, check_cache=False))
 
+    def test_cinemeta_fallback_and_type_auto_correction(self):
+        from unittest.mock import patch
+
+        # 1. Test Cinemeta fallback when TMDB returns None (must NOT raise UnboundLocalError)
+        with patch("src.api.fetch_tmdb_standalone_metadata", return_value=None):
+            try:
+                res = api.fetch_movie_details(
+                    "tt8421566", media_type="movie", title="Japani Toy", prefer_tmdb=True, use_cache=False, expected_year="2018"
+                )
+            except UnboundLocalError as e:
+                self.fail(f"fetch_movie_details raised UnboundLocalError: {e}")
+
+        # 2. Test TMDb standalone metadata auto-corrects media_type from movie to series for TV series IMDb ID
+        meta = tmdb_helper.fetch_tmdb_standalone_metadata(
+            "tt8421566", media_type="movie", title="Japani Toy", year="2018"
+        )
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.get("type"), "series")
+        self.assertEqual(meta.get("title"), "Japani Toy")
+        self.assertGreater(len(meta.get("videos", [])), 0)
+
     def test_database_hydrate_certifications(self):
         database.set_kids_safe_mode(True)
         database.save_cached_metadata("tt_test_hydrate", "movie", {

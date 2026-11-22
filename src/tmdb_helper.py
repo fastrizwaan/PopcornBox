@@ -2595,6 +2595,24 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
 
     api_key = get_tmdb_api_key()
     c_type = "tv" if media_type in ["series", "anime", "tv", "tvshow"] else "movie"
+
+    # If item_id is an IMDb ID, determine media type directly from TMDB /find results
+    str_item_id = str(item_id or "").strip()
+    clean_tt = str_item_id.split(":")[0] if str_item_id.startswith("tt") else None
+    if clean_tt and api_key:
+        try:
+            find_url = f"https://api.themoviedb.org/3/find/{clean_tt}?api_key={api_key}&external_source=imdb_id"
+            find_data = _get_cached_request(find_url, max_age_hours=168)
+            if isinstance(find_data, dict):
+                if not find_data.get("movie_results") and find_data.get("tv_results"):
+                    c_type = "tv"
+                    media_type = "series"
+                elif not find_data.get("tv_results") and find_data.get("movie_results"):
+                    c_type = "movie"
+                    media_type = "movie"
+        except Exception:
+            pass
+
     tmdb_id = resolve_to_tmdb_id(item_id, media_type, title, year=year)
     expected_year_match = re.search(r"\b((?:18|19|20)\d{2})\b", str(year or ""))
     expected_year = expected_year_match.group(1) if expected_year_match else None
@@ -2649,6 +2667,20 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
     def tmdb_data_year(tmdb_data):
         release_date = tmdb_data.get("release_date") or tmdb_data.get("first_air_date") or ""
         return str(release_date)[:4] if len(str(release_date)) >= 4 else ""
+
+    # If an IMDb ID resolves to a TMDB entry from a different year or missing data,
+    # try the alternative media type (movie vs tv) if this is an IMDb ID.
+    if (not data or (expected_year and tmdb_data_year(data) and tmdb_data_year(data) != expected_year)) and clean_tt and api_key:
+        try:
+            alt_c_type = "tv" if c_type == "movie" else "movie"
+            alt_url = f"https://api.themoviedb.org/3/{alt_c_type}/{tmdb_id}?api_key={api_key}&append_to_response=external_ids,credits,videos,content_ratings,release_dates"
+            alt_data = _get_cached_request(alt_url, max_age_hours=METADATA_CACHE_HOURS)
+            if alt_data and (not expected_year or not tmdb_data_year(alt_data) or tmdb_data_year(alt_data) == expected_year):
+                data = alt_data
+                c_type = alt_c_type
+                media_type = "series" if c_type == "tv" else "movie"
+        except Exception:
+            pass
 
     # If an IMDb ID resolves to a TMDB entry from a different year than the
     # selected card, retry by exact TMDB title/year search before using it.
