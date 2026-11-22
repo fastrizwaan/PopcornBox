@@ -1759,13 +1759,15 @@ ADULT_GENRES_TAGS = {
     "doggystyle", "face sitting", "facial", "gangbang", "handjob",
     "masturbation", "milf", "dilf", "pov", "squirt", "threesome", "foursome", "big dick",
     "bubble butt", "cowgirl", "mofos", "missionary", "piss", "pussy licking",
-    "pussy fingering", "pervert", "perverted", "sukebe", "jav", "uncensored"
+    "pussy fingering", "pervert", "perverted", "sukebe", "jav", "uncensored",
+    "sex comedy"
 }
 
 ADULT_RATINGS = {
     "18", "18+", "R18", "R-18", "R18+", "NC-17", "XXX", "XX", "X",
     "RX", "AV", "ADULT", "PORN", "R21", "OVER 18", "AO", "FSK 18", "18A",
-    "UNRATED (ADULT)", "NOT RATED (ADULT)", "RESTRICTED 18"
+    "UNRATED (ADULT)", "NOT RATED (ADULT)", "RESTRICTED 18",
+    "NR", "NOT RATED", "UNRATED"
 }
 
 MATURE_RATINGS = {
@@ -1783,13 +1785,15 @@ MATURE_RATINGS = {
 
 MATURE_GENRES = {
     "adult", "erotica", "erotic", "ecchi", "hentai", "softcore", "sexuality", "sexual",
-    "sploitation", "pinku eiga", "pink film", "porn", "porno", "pornography", "pornographic"
+    "sploitation", "pinku eiga", "pink film", "porn", "porno", "pornography", "pornographic",
+    "sex comedy"
 }
 
 ADULT_KEYWORD_REGEX = re.compile(
     r'\b('
     r'18\+|xxx+|hentai|ecchi|erotica?|erotism|softcore|pinku\s+eiga|pink\s+film|'
-    r'sex\s+(?:video|tape|movie|film|scenes|act|zanmai)|sexual|sexuality|'
+    r'sex\s+(?:video|tape|movie|film|scenes?|act|zanmai|comedy)|sexual|sexuality|sexed[- ]up|'
+    r'eating\s+out|full\s+frontal|'
     r'jav|adult\s+(?:movie|film|video|content|only)|nude|nudity|naked|topless|bare\s+breast|uncensored|'
     r'hatsuj[ôo]|dirty\s+(?:couple|movie)|horny\s+couple|groper(?:\s+train)?|'
     r'futariecch?i|incha\s+couple|blowjob|brazzers|bangbros|creampie|cum|cumshot|'
@@ -1845,6 +1849,8 @@ def is_mature_certification(cert):
     # Note: "A" in Spain, Mexico, Macau, Latin America stands for "Apto para todos los públicos" (All Ages).
     if c in ("A", "U", "UA", "U/A", "U/A 7+", "U/A 13+", "UA 7+", "UA 13+", "G", "PG", "PG-13", "PG13",
              "TV-Y", "TV-Y7", "TV-G", "TV-PG", "TV-14", "ATP", "TP", "L", "SU", "TE", "APTO"):
+        return False
+    if c in ("NR", "NOT RATED", "UNRATED"):
         return False
     if c in MATURE_RATINGS or c in ADULT_RATINGS:
         return True
@@ -2049,6 +2055,40 @@ def is_adult_item(item, check_cache=True, check_kids_mode=True):
 
     rating = str(item.get("certification") or item.get("contentRating") or item.get("rating") or item.get("mpaa") or "").strip().upper()
     if rating in ADULT_RATINGS or any(r in rating for r in ["R18", "NC-17", "XXX", "18+", "ADULT", "PORN"]):
+        if rating in ("NR", "NOT RATED", "UNRATED"):
+            # When rating is NR / UNRATED, it indicates the absence of an MPAA rating.
+            # Erotic films and sex comedies (e.g. Eating Out: Drama Camp) released unrated
+            # must be filtered as adult, while non-adult unrated genres (documentaries, musicals,
+            # concerts, family, kids, animation, biography, history, news) remain safe.
+            genres = item.get("genres") or item.get("genre") or []
+            if isinstance(genres, str):
+                genre_list = [g.strip().lower() for g in genres.split(",")]
+            elif isinstance(genres, list):
+                genre_list = [str(g).strip().lower() for g in genres]
+            else:
+                genre_list = []
+
+            safe_unrated_genres = {
+                "documentary", "music", "musical", "family", "kids", "children",
+                "animation", "biography", "history", "news"
+            }
+            title = str(item.get("name") or item.get("title") or "")
+            desc = str(item.get("description") or item.get("overview") or "")
+            genres_str = " ".join(genre_list)
+
+            has_adult_signal = bool(
+                ADULT_KEYWORD_REGEX.search(title)
+                or ADULT_KEYWORD_REGEX.search(desc)
+                or ADULT_KEYWORD_REGEX.search(genres_str)
+                or any(g in ADULT_GENRES_TAGS for g in genre_list)
+                or any(g in MATURE_GENRES for g in genre_list)
+            )
+
+            if has_adult_signal:
+                return True
+
+            if any(g in safe_unrated_genres for g in genre_list):
+                return False
         return True
 
     genres = item.get("genres") or item.get("genre") or []

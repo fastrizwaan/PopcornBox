@@ -237,6 +237,64 @@ class TestKidsSafeMode(unittest.TestCase):
         }
         self.assertTrue(api.is_mature_item(indian_adult_film, check_cache=False))
 
+    def test_nr_unrated_adult_handling(self):
+        # 1. NR, NOT RATED, UNRATED are present in ADULT_RATINGS
+        self.assertIn("NR", api.ADULT_RATINGS)
+        self.assertIn("NOT RATED", api.ADULT_RATINGS)
+        self.assertIn("UNRATED", api.ADULT_RATINGS)
+
+        # 2. Certification "NR" alone is not marked as mature certification
+        self.assertFalse(api.is_mature_certification("NR"))
+
+        # 3. Bare NR item (unclassified) is treated as adult
+        self.assertTrue(api.is_adult_item({"certification": "NR"}, check_cache=False))
+
+        # 4. Unrated sex comedies / erotic films (like Eating Out: Drama Camp) are adult & mature
+        eating_out_drama_camp = {
+            "id": "tt1833845",
+            "title": "Eating Out: Drama Camp",
+            "certification": "NR",
+            "genres": ["Comedy"],
+            "overview": "Zack and Casey's relationship is in a slump, but things are about to change at Dick Dickey's Drama Camp. Zack meets gorgeous Benji, and when they get cast as lovers in a sexed-up version of The Taming of the Shrew, their self-restraint is put to the test."
+        }
+        self.assertTrue(api.is_adult_item(eating_out_drama_camp, check_cache=False))
+        self.assertTrue(api.is_mature_item(eating_out_drama_camp, check_cache=False))
+
+        # 5. Non-adult unrated genres (documentaries, music, musicals, animation) are NOT adult
+        winter_k2 = {
+            "id": "tt39150288",
+            "title": "The Last First: Winter K2",
+            "certification": "NR",
+            "genres": ["Documentary"],
+            "overview": "A mountain climbing documentary."
+        }
+        self.assertFalse(api.is_adult_item(winter_k2, check_cache=False))
+
+        yanni_concert = {
+            "id": "tt2268653",
+            "title": "Yanni: Live at El Morro",
+            "certification": "NR",
+            "genres": ["Music"],
+            "overview": "Live music concert."
+        }
+        self.assertFalse(api.is_adult_item(yanni_concert, check_cache=False))
+
+        hadestown = {
+            "id": "tt36307021",
+            "title": "Hadestown: The Musical",
+            "certification": "NR",
+            "genres": ["Musical", "Drama"]
+        }
+        self.assertFalse(api.is_adult_item(hadestown, check_cache=False))
+
+        spiderman_doc = {
+            "id": "tt33049792",
+            "title": "Spider-Man: Across the Spider-Verse - Creating the Ultimate Spider-Man Movie",
+            "certification": "NR",
+            "genres": ["Documentary"]
+        }
+        self.assertFalse(api.is_adult_item(spiderman_doc, check_cache=False))
+
     def test_cinemeta_fallback_and_type_auto_correction(self):
         from unittest.mock import patch
 
