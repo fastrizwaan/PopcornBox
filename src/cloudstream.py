@@ -1815,12 +1815,20 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
 
         clean_q = str(query).strip()
         # Query with quotes first to prevent YouTube's search engine from returning fuzzy typos/recommendations
-        inner_items = self._search_innertube(f'"{clean_q}"')
+        inner_items = self._search_innertube(f'"{clean_q}" -review -trailer')
+        if not inner_items:
+            inner_items = self._search_innertube(f'"{clean_q}"')
         if not inner_items:
             inner_items = self._search_innertube(clean_q)
 
-        # Filter strictly by title match to avoid fuzzy results like 'Campus beats' or 'MrBeast' for 'betas'
-        filtered = [v for v in inner_items if _is_youtube_title_match(clean_q, v.get("title", ""))]
+        # Filter strictly by title match and exclude review/trailer keywords
+        clean_q_lower = clean_q.lower()
+        filtered = [
+            v for v in inner_items
+            if _is_youtube_title_match(clean_q, v.get("title", ""))
+            and not (re.search(r"\breview[a-z]*\b", v.get("title", "").lower()) and "review" not in clean_q_lower)
+            and not (re.search(r"\b(?:trailer|teaser)\b", v.get("title", "").lower()) and not any(k in clean_q_lower for k in ("trailer", "teaser")))
+        ]
 
         if filtered:
             return [
@@ -1929,12 +1937,17 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
             s_num = int(season) if season is not None else 1
             e_num = int(episode) if episode is not None else 1
             queries = [
+                f'"{clean_title}" S{s_num:02d}E{e_num:02d} -review -trailer',
+                f'"{clean_title}" Season {s_num} Episode {e_num} full episode -review',
+                f'"{clean_title}" Episode {e_num} full -review',
                 f'"{clean_title}" S{s_num:02d}E{e_num:02d}',
-                f'"{clean_title}" Season {s_num} Episode {e_num} full episode',
-                f'"{clean_title}" Episode {e_num} full',
                 f"{clean_title} S{s_num:02d}E{e_num:02d}",
             ]
         else:
+            if year:
+                queries.append(f'"{clean_title}" {year} full movie -review -trailer')
+            queries.append(f'"{clean_title}" full movie -review -trailer')
+            queries.append(f'"{clean_title}" full length -review')
             if year:
                 queries.append(f'"{clean_title}" {year} full movie')
             queries.append(f'"{clean_title}" full movie')
@@ -1944,21 +1957,29 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
             queries.append(f"{clean_title} full movie")
 
         neg_movie = [
-            "trailer", "teaser", "review", "reaction", "recap", "explained",
-            "ending explained", "kill count", "breakdown", "easter egg", "scene",
-            "scenes", "clip", "clips", "soundtrack", "ost", "interview",
-            "behind the scenes", "b-roll", "analysis", "cast then and now",
+            "trailer", "trailers", "teaser", "teasers", "preview", "previews", "promo",
+            "review", "reviews", "reviewer", "reviewers", "reviewing", "reviewed",
+            "reaction", "reactions", "recap", "recaps", "explained", "explanation", "explanations",
+            "ending explained", "kill count", "breakdown", "breakdowns", "easter egg", "easter eggs",
+            "scene", "scenes", "clip", "clips", "soundtrack", "soundtracks", "ost",
+            "interview", "interviews", "behind the scenes", "b-roll", "analysis", "cast then and now",
             "gameplay", "walkthrough", "theme song", "first impression", "first impressions",
-            "worth the watch", "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
-            "supercut", "after show", "lyric", "lyrics", "lyrical", "audio song", "video song"
+            "worth the watch", "thoughts on", "critique", "critiques", "discussion", "discussions",
+            "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
+            "supercut", "supercuts", "after show", "aftershow", "talk", "talks",
+            "lyric", "lyrics", "lyrical", "audio song", "video song"
         ]
         neg_series = [
-            "trailer", "teaser", "preview", "promo", "review", "reaction",
-            "recap", "explained", "ending explained", "interview", "behind the scenes",
-            "b-roll", "breakdown", "analysis", "theme song", "first impression", "first impressions",
-            "scene", "scenes", "clip", "clips", "soundtrack", "ost", "kill count",
-            "worth the watch", "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
-            "supercut", "after show", "lyric", "lyrics", "lyrical", "audio song", "video song"
+            "trailer", "trailers", "teaser", "teasers", "preview", "previews", "promo",
+            "review", "reviews", "reviewer", "reviewers", "reviewing", "reviewed",
+            "reaction", "reactions", "recap", "recaps", "explained", "explanation", "explanations",
+            "ending explained", "interview", "interviews", "behind the scenes",
+            "b-roll", "breakdown", "breakdowns", "analysis", "theme song", "first impression", "first impressions",
+            "scene", "scenes", "clip", "clips", "soundtrack", "soundtracks", "ost", "kill count",
+            "worth the watch", "thoughts on", "critique", "critiques", "discussion", "discussions",
+            "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
+            "supercut", "supercuts", "after show", "aftershow", "talk", "talks",
+            "lyric", "lyrics", "lyrical", "audio song", "video song"
         ]
 
         seen_ids = set()
@@ -1985,6 +2006,9 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
                 # STRICT TITLE CHECK
                 if not _is_youtube_title_match(clean_title, vt):
                     continue
+                # Explicit review filter
+                if re.search(r"\breview[a-z]*\b", vt_lower) and "review" not in clean_title.lower():
+                    continue
                 if any(re.search(r"\b" + re.escape(n) + r"\b", vt_lower) for n in neg_series if n not in clean_title.lower()):
                     continue
                 ep_pattern = rf"(?:ep|episode|part|e)[\s\._-]*0*{e_num}\b"
@@ -2010,12 +2034,12 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
                 # STRICT TITLE CHECK
                 if not _is_youtube_title_match(clean_title, vt):
                     continue
+                # Explicit review filter
+                if re.search(r"\breview[a-z]*\b", vt_lower) and "review" not in clean_title.lower():
+                    continue
                 has_neg = any(re.search(r"\b" + re.escape(n) + r"\b", vt_lower) for n in neg_movie if n not in clean_title.lower())
                 if has_neg:
-                    if dur >= 3600:
-                        score -= 30
-                    else:
-                        continue
+                    continue
                 t_words = set(re.findall(r"\b[a-z0-9]+\b", clean_title.lower())) - {"a", "an", "the", "and", "or", "of", "in", "to"}
                 v_words = set(re.findall(r"\b[a-z0-9]+\b", vt_lower))
                 overlap = len(t_words.intersection(v_words))

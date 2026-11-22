@@ -669,7 +669,8 @@ class TestCloudStream(unittest.TestCase):
             "cloudstream_provider_id": "hdhub4u",
         }]
 
-        with patch("src.cloudstream.is_cloudstream_enabled", return_value=True), \
+        with patch("src.custom_plugins.is_custom_plugins_enabled", return_value=False), \
+             patch("src.cloudstream.is_cloudstream_enabled", return_value=True), \
              patch("src.cloudstream.get_all_plugins", return_value=[{"id": "hdhub4u", "enabled": True}]), \
              patch("src.cloudstream.is_provider_runnable", return_value=True), \
              patch("src.cloudstream.fetch_cloudstream_streams_for_media", return_value=mock_stream):
@@ -972,9 +973,9 @@ class TestCloudStream(unittest.TestCase):
         self.assertIsInstance(yt, cloudstream.YoutubeCloudStreamProvider)
         self.assertEqual(yt.name, "YoutubeProvider")
 
-        # YouTube must not intercept standard movie or series playback
-        self.assertNotIn("movie", yt.supported_types)
-        self.assertNotIn("series", yt.supported_types)
+        # YouTube supports movies and series
+        self.assertIn("movie", yt.supported_types)
+        self.assertIn("series", yt.supported_types)
 
         # Test ID extraction
         self.assertEqual(cloudstream._extract_youtube_id("yt:6MTk5Fr5_h4"), "6MTk5Fr5_h4")

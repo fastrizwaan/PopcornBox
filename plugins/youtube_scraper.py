@@ -61,22 +61,30 @@ class Scraper:
     ]
 
     NEGATIVE_MOVIE_KEYWORDS = [
-        "trailer", "teaser", "review", "reaction", "recap", "explained",
-        "ending explained", "kill count", "breakdown", "easter egg", "scene",
-        "scenes", "clip", "clips", "soundtrack", "ost", "interview",
-        "behind the scenes", "b-roll", "analysis", "cast then and now",
+        "trailer", "trailers", "teaser", "teasers", "preview", "previews", "promo",
+        "review", "reviews", "reviewer", "reviewers", "reviewing", "reviewed",
+        "reaction", "reactions", "recap", "recaps", "explained", "explanation", "explanations",
+        "ending explained", "kill count", "breakdown", "breakdowns", "easter egg", "easter eggs",
+        "scene", "scenes", "clip", "clips", "soundtrack", "soundtracks", "ost",
+        "interview", "interviews", "behind the scenes", "b-roll", "analysis", "cast then and now",
         "gameplay", "walkthrough", "theme song", "first impression", "first impressions",
-        "worth the watch", "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
-        "supercut", "after show", "lyric", "lyrics", "lyrical", "audio song", "video song"
+        "worth the watch", "thoughts on", "critique", "critiques", "discussion", "discussions",
+        "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
+        "supercut", "supercuts", "after show", "aftershow", "talk", "talks",
+        "lyric", "lyrics", "lyrical", "audio song", "video song"
     ]
 
     NEGATIVE_SERIES_KEYWORDS = [
-        "trailer", "teaser", "preview", "promo", "review", "reaction",
-        "recap", "explained", "ending explained", "interview", "behind the scenes",
-        "b-roll", "breakdown", "analysis", "theme song", "first impression", "first impressions",
-        "scene", "scenes", "clip", "clips", "soundtrack", "ost", "kill count",
-        "worth the watch", "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
-        "supercut", "after show", "lyric", "lyrics", "lyrical", "audio song", "video song"
+        "trailer", "trailers", "teaser", "teasers", "preview", "previews", "promo",
+        "review", "reviews", "reviewer", "reviewers", "reviewing", "reviewed",
+        "reaction", "reactions", "recap", "recaps", "explained", "explanation", "explanations",
+        "ending explained", "interview", "interviews", "behind the scenes",
+        "b-roll", "breakdown", "breakdowns", "analysis", "theme song", "first impression", "first impressions",
+        "scene", "scenes", "clip", "clips", "soundtrack", "soundtracks", "ost", "kill count",
+        "worth the watch", "thoughts on", "critique", "critiques", "discussion", "discussions",
+        "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
+        "supercut", "supercuts", "after show", "aftershow", "talk", "talks",
+        "lyric", "lyrics", "lyrical", "audio song", "video song"
     ]
 
     @staticmethod
@@ -337,9 +345,12 @@ class Scraper:
         if query:
             clean_q = str(query).strip()
             is_series = (media_type in ("series", "show", "shows", "tv", "anime")) or "series" in str(catalog_id)
-            # Quote query to prevent YouTube's search engine from returning fuzzy typos/recommendations
-            search_query = f'"{clean_q}" full episode' if is_series else f'"{clean_q}" full movie'
+            # Quote query and append negative search operators to block reviews, trailers, and fuzzy typos
+            search_query = f'"{clean_q}" full episode -review -trailer' if is_series else f'"{clean_q}" full movie -review -trailer'
             videos = self._query_videos(search_query)
+            if not videos:
+                search_query = f'"{clean_q}" full episode' if is_series else f'"{clean_q}" full movie'
+                videos = self._query_videos(search_query)
             if not videos:
                 search_query = f"{clean_q} full episode" if is_series else f"{clean_q} full movie"
                 videos = self._query_videos(search_query)
@@ -350,10 +361,16 @@ class Scraper:
                 if not self._is_title_match(clean_q, v_title):
                     continue
 
-                neg_list = self.NEGATIVE_SERIES_KEYWORDS if is_series else self.NEGATIVE_MOVIE_KEYWORDS
+                v_title_lower = v_title.lower()
                 clean_q_lower = clean_q.lower()
+
+                # Explicit review filter
+                if re.search(r"\breview[a-z]*\b", v_title_lower) and "review" not in clean_q_lower:
+                    continue
+
+                neg_list = self.NEGATIVE_SERIES_KEYWORDS if is_series else self.NEGATIVE_MOVIE_KEYWORDS
                 neg_in_q = {w for w in neg_list if w in clean_q_lower}
-                if any(re.search(r"\b" + re.escape(n) + r"\b", v_title.lower()) for n in neg_list if n not in neg_in_q):
+                if any(re.search(r"\b" + re.escape(n) + r"\b", v_title_lower) for n in neg_list if n not in neg_in_q):
                     continue
 
                 min_dur = 300 if is_series else 1200
@@ -440,9 +457,10 @@ class Scraper:
             s_num = int(season) if season is not None else 1
             e_num = int(episode) if episode is not None else 1
             queries = [
+                f'"{clean_title}" S{s_num:02d}E{e_num:02d} -review -trailer',
+                f'"{clean_title}" Season {s_num} Episode {e_num} full episode -review',
+                f'"{clean_title}" Episode {e_num} full -review',
                 f'"{clean_title}" S{s_num:02d}E{e_num:02d}',
-                f'"{clean_title}" Season {s_num} Episode {e_num} full episode',
-                f'"{clean_title}" Episode {e_num} full',
                 f"{clean_title} S{s_num:02d}E{e_num:02d}",
             ]
             for q in queries:
@@ -464,6 +482,10 @@ class Scraper:
 
                 # STRICT TITLE CHECK: Video must match the series title!
                 if not self._is_title_match(clean_title, v_title):
+                    continue
+
+                # Explicit review filter
+                if re.search(r"\breview[a-z]*\b", v_title_lower) and "review" not in clean_title.lower():
                     continue
 
                 neg_in_target = {w for w in self.NEGATIVE_SERIES_KEYWORDS if w in clean_title.lower()}
@@ -504,6 +526,10 @@ class Scraper:
             # Movie search
             queries = []
             if target_year:
+                queries.append(f'"{clean_title}" {target_year} full movie -review -trailer')
+            queries.append(f'"{clean_title}" full movie -review -trailer')
+            queries.append(f'"{clean_title}" full length -review')
+            if target_year:
                 queries.append(f'"{clean_title}" {target_year} full movie')
             queries.append(f'"{clean_title}" full movie')
             queries.append(f'"{clean_title}" full length')
@@ -534,12 +560,18 @@ class Scraper:
                 if not self._is_title_match(clean_title, v_title):
                     continue
 
+                # Explicit review filter
+                if re.search(r"\breview[a-z]*\b", v_title_lower) and "review" not in clean_title.lower():
+                    continue
+
                 neg_in_target = {w for w in self.NEGATIVE_MOVIE_KEYWORDS if w in clean_title.lower()}
                 has_neg = any(
                     re.search(r"\b" + re.escape(neg) + r"\b", v_title_lower)
                     for neg in self.NEGATIVE_MOVIE_KEYWORDS
                     if neg not in neg_in_target
                 )
+                if has_neg:
+                    continue
 
                 v_words = set(re.findall(r"\b[a-z0-9]+\b", v_title_lower))
                 overlap = len(t_word_set.intersection(v_words))
@@ -547,11 +579,6 @@ class Scraper:
                     continue
 
                 score = int(40 * (overlap / len(t_word_set))) if len(t_word_set) > 0 else 0
-                if has_neg:
-                    if dur >= 3600:
-                        score -= 30
-                    else:
-                        continue
 
                 if target_year and str(target_year) in v_title:
                     score += 25

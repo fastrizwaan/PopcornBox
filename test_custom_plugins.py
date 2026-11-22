@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import unittest.mock
 import tempfile
 import shutil
 from pathlib import Path
@@ -293,6 +294,42 @@ class Scraper:
             self.assertNotIn("campus beats", s_title)
             self.assertNotIn("mrbeast", s_title)
             self.assertNotIn("beast games", s_title)
+
+        # Verify review/critique variants are strictly rejected even for long videos (> 3600s)
+        mock_series_videos = [
+            {"id": "rev1", "title": "Betas Season 1 Episode 1 Review", "duration": 4200, "badges": []},
+            {"id": "rev2", "title": "Betas Season 1 Episode 1 - Reviews and Breakdown", "duration": 5000, "badges": []},
+            {"id": "rev3", "title": "Reviewing Betas Season 1 Episode 1", "duration": 3600, "badges": []},
+            {"id": "rev4", "title": "Betas Episode 1: Reviewer Discussion", "duration": 4000, "badges": []},
+            {"id": "rev5", "title": "Betas Season 1 Episode 1 Critique and Talk", "duration": 3700, "badges": []},
+            {"id": "rev6", "title": "Betas S01E01 Reaction & Discussion", "duration": 4500, "badges": []},
+            {"id": "valid1", "title": "Betas Season 1 Episode 1 Full Episode", "duration": 1800, "badges": ["HD"]},
+        ]
+        with unittest.mock.patch.object(yt, "_query_videos", return_value=mock_series_videos):
+            filtered_series = yt.get_streams(title="Betas", media_type="series", season=1, episode=1)
+            self.assertEqual(len(filtered_series), 1)
+            self.assertEqual(filtered_series[0]["url"], "https://www.youtube.com/watch?v=valid1")
+
+        mock_movie_videos = [
+            {"id": "mrev1", "title": "Betas The Movie Review", "duration": 5400, "badges": []},
+            {"id": "mrev2", "title": "Betas 2013 - Reviews and In-depth Critique", "duration": 7200, "badges": []},
+            {"id": "mrev3", "title": "Reviewing Betas 2013 Full Movie", "duration": 6000, "badges": []},
+            {"id": "mrev4", "title": "Betas 2013 Movie Reviewer Discussion & Talk", "duration": 4500, "badges": []},
+            {"id": "mvalid", "title": "Betas 2013 Full Movie", "duration": 5400, "badges": ["HD"]},
+        ]
+        with unittest.mock.patch.object(yt, "_query_videos", return_value=mock_movie_videos):
+            filtered_movie = yt.get_streams(title="Betas", media_type="movie", year="2013")
+            self.assertEqual(len(filtered_movie), 1)
+            self.assertEqual(filtered_movie[0]["url"], "https://www.youtube.com/watch?v=mvalid")
+
+        # Verify movies legitimately titled with 'Review' are preserved
+        mock_legit_review_movie = [
+            {"id": "rev_legit", "title": "The Review 2020 Full Movie", "duration": 5400, "badges": ["HD"]},
+        ]
+        with unittest.mock.patch.object(yt, "_query_videos", return_value=mock_legit_review_movie):
+            legit_movie = yt.get_streams(title="The Review", media_type="movie", year="2020")
+            self.assertEqual(len(legit_movie), 1)
+            self.assertEqual(legit_movie[0]["url"], "https://www.youtube.com/watch?v=rev_legit")
 
 
 if __name__ == "__main__":
