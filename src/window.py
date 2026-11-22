@@ -10476,7 +10476,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._populate_discover_year_dropdown(None, "all", None)
             self._populate_discover_language_dropdown(None, "all", None)
             self._populate_discover_country_dropdown(None, "all", None)
-            self._populate_discover_network_dropdown("all")
+            self._populate_discover_network_dropdown(None, "all", None)
 
             if hasattr(self, "type_dropdown") and self.type_dropdown:
                 self.type_dropdown.connect("notify::selected", self._on_discover_type_changed)
@@ -10850,13 +10850,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     def _populate_discover_catalog_dropdown(self, chosen_type):
         from . import api, tmdb_helper
         all_addons = api.database.get_addons()
-        items = [{
-            "display_name": "Catalog",
-            "addon": None,
-            "manifest_url": tmdb_helper.TMDB_BUILTIN_MANIFEST_URL,
-            "addon_name": "Catalog",
-            "_source": "tmdb_catalog"
-        }]
+        items = []
+        if chosen_type in ("all", "movie_series", "movie", "series"):
+            items.append({
+                "display_name": "Catalog",
+                "addon": None,
+                "manifest_url": tmdb_helper.TMDB_BUILTIN_MANIFEST_URL,
+                "addon_name": "Catalog",
+                "_source": "tmdb_catalog"
+            })
 
         seen_urls = set()
         for addon in all_addons:
@@ -10937,6 +10939,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
     def _populate_discover_section_dropdown(self, addon, chosen_type, catalog_item=None):
         from . import api
+        if catalog_item is None:
+            catalog_item = PopcornBoxWindow._get_selected_discover_catalog_item(self)
+        if addon is None and isinstance(catalog_item, dict) and isinstance(catalog_item.get("addon"), dict):
+            addon = catalog_item["addon"]
         items = [{
             "display_name": "Section",
             "cat": None,
@@ -11000,7 +11006,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     "cat": c,
                     "catalog_id": cid
                 })
-        else:
+        elif not (catalog_item is None and isinstance(getattr(self, "_discover_catalog_items", None), list)):
             # Default TMDb provider sections: Popular, Trending, Top Rated, New on Streaming
             tmdb_sections = [
                 ("Popular", "popular"),
@@ -11014,8 +11020,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     "cat": {
                         "id": s_id,
                         "name": s_name,
-                        "type": chosen_type if chosen_type != "all" else "movie",
+                        "type": "all" if chosen_type in ("all", "movie_series") else chosen_type,
                         "extraSupported": ["genre", "year", "language", "country", "network", "skip"],
+                        "_source": "tmdb_catalog",
+                        "tmdb_sort": {
+                            "popular": "popular",
+                            "trending": "trending",
+                            "top-rated": "rating",
+                            "new-on-streaming": "date",
+                        }.get(s_id, "popular"),
                     },
                     "catalog_id": s_id,
                     "_source": "tmdb_catalog",
@@ -11036,6 +11049,66 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self.sort_dropdown.set_selected(0)
             self.sort_dropdown.set_sensitive(True)
             self.sort_dropdown.set_visible(True)
+
+    def _get_selected_discover_catalog_item(self):
+        items = getattr(self, "_discover_catalog_items", []) or []
+        dropdown = getattr(self, "catalog_dropdown", None)
+        selected = dropdown.get_selected() if dropdown and hasattr(dropdown, "get_selected") else 0
+        if 0 <= selected < len(items):
+            return items[selected]
+        return None
+
+    def _get_discover_capability_catalogs(self, addon, active_cat=None):
+        """Return whether the selection is TMDb and its catalog declarations."""
+        if isinstance(active_cat, dict):
+            if active_cat.get("_source") == "tmdb_catalog":
+                return True, []
+            return False, [active_cat]
+
+        if isinstance(addon, dict):
+            if addon.get("_source") == "tmdb_catalog":
+                return True, []
+            from . import api
+            catalogs = api.get_addon_catalogs(addon, cache_only=True) or addon.get("catalogs", [])
+            if isinstance(active_cat, str) and active_cat:
+                catalogs = [c for c in catalogs if isinstance(c, dict) and str(c.get("id") or c.get("catalog_id") or "") == active_cat]
+            else:
+                chosen_type = PopcornBoxWindow._get_current_discover_type(self)
+                if chosen_type not in (None, "all", "movie_series"):
+                    catalogs = [
+                        c for c in catalogs
+                        if isinstance(c, dict) and api.is_catalog_type_match(c, chosen_type, addon.get("name"))
+                    ]
+            return False, [c for c in catalogs if isinstance(c, dict)]
+
+        catalog_item = PopcornBoxWindow._get_selected_discover_catalog_item(self)
+        if not catalog_item:
+            if isinstance(getattr(self, "_discover_catalog_items", None), list):
+                return False, []
+            # Keep direct helper calls and the initial empty toolbar on TMDb.
+            return True, []
+
+        source = catalog_item.get("_source")
+        manifest_url = str(catalog_item.get("manifest_url") or "")
+        from . import tmdb_helper
+        if source == "tmdb_catalog" or manifest_url == tmdb_helper.TMDB_BUILTIN_MANIFEST_URL:
+            return True, []
+
+        chosen_type = PopcornBoxWindow._get_current_discover_type(self) if hasattr(self, "type_dropdown") else "all"
+        catalogs = []
+        if source == "cloudstream" or manifest_url.startswith("cloudstream://"):
+            from . import cloudstream
+            catalogs = cloudstream.get_catalogs(chosen_type)
+        elif source == "custom_plugin" or manifest_url.startswith("custom://"):
+            from . import custom_plugins
+            catalogs = custom_plugins.get_catalogs(chosen_type)
+        catalogs = [
+            c for c in catalogs
+            if isinstance(c, dict) and str(c.get("manifest_url") or "") == manifest_url
+        ]
+        if isinstance(active_cat, str) and active_cat:
+            catalogs = [c for c in catalogs if str(c.get("id") or c.get("catalog_id") or "") == active_cat]
+        return False, catalogs
 
     def _discover_flowbox_sort_func(self, child1, child2, _user_data=None):
         sort_by = getattr(self, "current_sort_by", "Sort By")
@@ -11100,8 +11173,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         return 0
 
     def _sort_discover_row_boxes(self, sort_str):
-        if not sort_str or sort_str in ("Sort By", "Default"):
-            return
         root = getattr(self, "discover_box", None)
         if root is None or not hasattr(root, "get_first_child"):
             return
@@ -11141,22 +11212,37 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         cards.append(ch)
                     ch = ch.get_next_sibling()
                 if len(cards) > 1:
-                    def _card_k(c):
-                        d = getattr(c, "movie_data", {}) or {}
-                        if sort_str == "Popularity":
-                            try: return -float(d.get("popularity") or d.get("item_popularity") or 0.0)
-                            except (ValueError, TypeError): return 0.0
-                        elif sort_str in ("Release Date", "Recent"):
-                            return str(d.get("release_date") or d.get("first_air_date") or d.get("released") or d.get("year") or d.get("releaseInfo") or "")
-                        elif sort_str in ("Rating", "Featured"):
-                            try: return -float(d.get("rating") or d.get("vote_average") or d.get("imdbRating") or 0.0)
-                            except (ValueError, TypeError): return 0.0
-                        elif sort_str in ("Title", "Name"):
-                            return str(d.get("title") or d.get("name") or "").casefold()
-                        return getattr(c, "_load_index", 0)
+                    previous_order = list(getattr(card_box, "_discover_base_card_order", []) or [])
+                    previous_rank = {id(card): i for i, card in enumerate(previous_order)}
+                    current_rank = {id(card): i for i, card in enumerate(cards)}
+                    base_order = sorted(
+                        cards,
+                        key=lambda card: getattr(
+                            card,
+                            "_discover_base_index",
+                            previous_rank.get(id(card), current_rank[id(card)]),
+                        ),
+                    )
+                    card_box._discover_base_card_order = base_order
+                    if not sort_str or sort_str in ("Sort By", "Default"):
+                        cards_sorted = base_order
+                    else:
+                        def _card_k(c):
+                            d = getattr(c, "movie_data", {}) or {}
+                            if sort_str == "Popularity":
+                                try: return -float(d.get("popularity") or d.get("item_popularity") or 0.0)
+                                except (ValueError, TypeError): return 0.0
+                            elif sort_str in ("Release Date", "Recent"):
+                                return str(d.get("release_date") or d.get("first_air_date") or d.get("released") or d.get("year") or d.get("releaseInfo") or "")
+                            elif sort_str in ("Rating", "Featured"):
+                                try: return -float(d.get("rating") or d.get("vote_average") or d.get("imdbRating") or 0.0)
+                                except (ValueError, TypeError): return 0.0
+                            elif sort_str in ("Title", "Name"):
+                                return str(d.get("title") or d.get("name") or "").casefold()
+                            return base_order.index(c)
 
-                    rev = (sort_str in ("Release Date", "Recent"))
-                    cards_sorted = sorted(cards, key=_card_k, reverse=rev)
+                        rev = (sort_str in ("Release Date", "Recent"))
+                        cards_sorted = sorted(base_order, key=_card_k, reverse=rev)
                     prev = None
                     for card in cards_sorted:
                         if hasattr(card_box, "reorder_child_after"):
@@ -11172,7 +11258,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             return
         sort_str = self._discover_sort_items[sel]
         self.current_sort_by = sort_str
-        self.current_sort = sort_str
 
         for flowbox_name in ("content_flowbox", "unique_flowbox"):
             flowbox = getattr(self, flowbox_name, None)
@@ -11181,31 +11266,16 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         self._sort_discover_row_boxes(sort_str)
 
-        stack = getattr(self, "library_stack", None)
-        visible_page = stack.get_visible_child_name() if stack else ""
-        if visible_page == "content":
-            self.reload_catalog_grid()
-        elif visible_page == "unique":
-            self._refresh_unique_combined_view()
-
     def _catalog_supports_extra(self, addon, active_cat, extra_names):
         """Check whether the given active_cat or addon declares support for any of extra_names."""
-        if addon is None or (isinstance(addon, dict) and addon.get("_source") == "tmdb_catalog"):
-            # Default TMDb provider supports all primary filters
+        is_tmdb, catalogs = PopcornBoxWindow._get_discover_capability_catalogs(self, addon, active_cat)
+        if is_tmdb:
+            # The built-in TMDb provider supports all primary filters.
             return True, None
-        if isinstance(active_cat, dict) and active_cat.get("_source") == "tmdb_catalog":
-            return True, None
-        cats = []
-        if isinstance(active_cat, dict):
-            cats = [active_cat]
-        elif isinstance(active_cat, str) and addon and isinstance(addon.get("catalogs"), list):
-            cats = [c for c in addon["catalogs"] if isinstance(c, dict) and c.get("id") == active_cat]
-        if not cats and addon and isinstance(addon.get("catalogs"), list):
-            cats = addon.get("catalogs") or []
-        for c in cats:
+        for c in catalogs:
             if not isinstance(c, dict):
                 continue
-            extra_sup = [str(x).lower() for x in (c.get("extraSupported") or [])]
+            extra_sup = [str(x).strip().lower() for x in (c.get("extraSupported") or [])]
             for target in extra_names:
                 if target.lower() in extra_sup:
                     return True, None
@@ -11225,7 +11295,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             active_type = str(active_cat.get("type") or "").strip().lower()
             if active_type in ("tv", "channel", "channels", "tvchannel", "live", "music", "radio", "podcast"):
                 return True
-        if normalized_type != "all" or not addon:
+        if normalized_type != "all" or not isinstance(addon, dict):
             return False
 
         from . import api
@@ -11256,10 +11326,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
     def _populate_discover_genre_dropdown(self, addon, chosen_type, active_cat=None):
         from . import database
-        # Unique mode aggregates provider catalogs through local metadata, so
-        # genre filtering stays meaningful even for catalogs that declare no
-        # genres of their own (or for audio/live-TV providers).
-        if addon is None or self._is_unique_mode_active():
+        is_tmdb, capability_catalogs = PopcornBoxWindow._get_discover_capability_catalogs(self, addon, active_cat)
+        if is_tmdb:
             genres = database.get_available_genres(chosen_type)
             self._discover_genre_items = ["Genre"] + genres
             if hasattr(self, "genre_dropdown") and self.genre_dropdown:
@@ -11278,13 +11346,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self.genre_dropdown.set_visible(False)
             return
 
-        cats = [active_cat] if active_cat else [s.get("cat") for s in getattr(self, "_discover_section_items", []) if s.get("cat")]
+        cats = capability_catalogs
         supports_genre = False
         declared_genres = []
 
         for c in cats:
             if not isinstance(c, dict):
-                if addon and isinstance(addon.get("catalogs"), list):
+                if isinstance(addon, dict) and isinstance(addon.get("catalogs"), list):
                     matching = [cat for cat in addon["catalogs"] if isinstance(cat, dict) and cat.get("id") == c]
                     c = matching[0] if matching else {"id": str(c or "")}
                 else:
@@ -11292,7 +11360,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             cid = str(c.get("id") or "").lower()
             if cid in ("year", "years"):
                 continue
-            extra_sup = c.get("extraSupported") or []
+            extra_sup = {str(x).strip().lower() for x in (c.get("extraSupported") or [])}
             if "genre" in extra_sup:
                 supports_genre = True
             c_genres = c.get("genres") or []
@@ -11304,7 +11372,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             declared_genres.append(g)
             for ex in (c.get("extra") or []):
                 ex_name = ex.get("name") if isinstance(ex, dict) else ex
-                if ex_name == "genre":
+                if str(ex_name or "").strip().lower() == "genre":
                     if isinstance(ex, dict) and ex.get("options"):
                         for opt in ex["options"]:
                             if not (str(opt).isdigit() and len(str(opt)) == 4):
@@ -11331,10 +11399,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
     def _populate_discover_year_dropdown(self, addon, chosen_type, active_cat=None):
         from . import database
-        # Unique mode aggregates provider catalogs through local metadata, so
-        # year filtering stays meaningful even for catalogs that declare no
-        # year support of their own (or for audio/live-TV providers).
-        if addon is None or self._is_unique_mode_active():
+        is_tmdb, capability_catalogs = PopcornBoxWindow._get_discover_capability_catalogs(self, addon, active_cat)
+        if is_tmdb:
             years = database.get_available_years(chosen_type)
             self._discover_year_items = ["Year"] + years
             if hasattr(self, "year_dropdown") and self.year_dropdown:
@@ -11353,22 +11419,22 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self.year_dropdown.set_visible(False)
             return
 
-        cats = [active_cat] if active_cat else [s.get("cat") for s in getattr(self, "_discover_section_items", []) if s.get("cat")]
+        cats = capability_catalogs
         supports_year = False
         for c in cats:
             if not isinstance(c, dict):
-                if addon and isinstance(addon.get("catalogs"), list):
+                if isinstance(addon, dict) and isinstance(addon.get("catalogs"), list):
                     matching = [cat for cat in addon["catalogs"] if isinstance(cat, dict) and cat.get("id") == c]
                     c = matching[0] if matching else {"id": str(c or "")}
                 else:
                     c = {"id": str(c or "")}
-            extra_sup = c.get("extraSupported") or []
+            extra_sup = {str(x).strip().lower() for x in (c.get("extraSupported") or [])}
             if "year" in extra_sup:
                 supports_year = True
                 break
             for ex in (c.get("extra") or []):
                 ex_name = ex.get("name") if isinstance(ex, dict) else ex
-                if ex_name == "year":
+                if str(ex_name or "").strip().lower() == "year":
                     supports_year = True
                     break
             cid = str(c.get("id") or "").lower()
@@ -11553,9 +11619,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_discover_type_items") or sel < 0 or sel >= len(self._discover_type_items):
             return
         chosen_type = self._discover_type_items[sel][1]
-        c_sel = self.catalog_dropdown.get_selected() if hasattr(self, "catalog_dropdown") else 0
-        addon = self._discover_catalog_items[c_sel].get("addon") if hasattr(self, "_discover_catalog_items") and c_sel < len(self._discover_catalog_items) else None
-        cat_info = self._discover_catalog_items[c_sel] if hasattr(self, "_discover_catalog_items") and c_sel < len(self._discover_catalog_items) else None
         prior = {}
         for key, dd_name in (("genre", "genre_dropdown"), ("year", "year_dropdown"),
                              ("language", "language_dropdown"), ("country", "country_dropdown"),
@@ -11566,6 +11629,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._syncing_discover_toolbar = True
         try:
             self._populate_discover_catalog_dropdown(chosen_type)
+            c_sel = self.catalog_dropdown.get_selected() if hasattr(self, "catalog_dropdown") else 0
+            cat_info = self._discover_catalog_items[c_sel] if hasattr(self, "_discover_catalog_items") and c_sel < len(self._discover_catalog_items) else None
+            addon = cat_info.get("addon") if isinstance(cat_info, dict) else None
             self._populate_discover_section_dropdown(addon, chosen_type, cat_info)
             active_cat = self._discover_section_items[0].get("cat") if getattr(self, "_discover_section_items", None) else None
             self._populate_discover_genre_dropdown(addon, chosen_type, active_cat)
@@ -11812,18 +11878,25 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         # concrete media type. Preserve it for fetching (notably Plavio's TV
         # channel catalogs) instead of defaulting every section to movies.
         selected_catalog_type = None
+        selected_section_info = None
         if catalog_id:
             for section_info in getattr(self, "_discover_section_items", []):
                 if str(section_info.get("catalog_id") or "") == str(catalog_id):
+                    selected_section_info = section_info
                     selected_cat = section_info.get("cat")
                     if isinstance(selected_cat, dict):
                         selected_catalog_type = selected_cat.get("type")
                     break
-        effective_media_type = (
-            selected_catalog_type
-            if m_type in ("all", "movie_series") and selected_catalog_type
-            else (m_type if m_type not in ("all", "movie_series") else "movie")
-        )
+        if m_type in ("all", "movie_series") and selected_catalog_type:
+            if (
+                isinstance(selected_section_info, dict)
+                and selected_section_info.get("_source") == "tmdb_catalog"
+            ):
+                effective_media_type = "all"
+            else:
+                effective_media_type = selected_catalog_type
+        else:
+            effective_media_type = m_type if m_type not in ("all", "movie_series") else "movie"
 
         sec_name = str(section or "").lower()
         sec_id = str(catalog_id or "").lower()
@@ -11862,12 +11935,16 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             return
 
         if catalog_id and addon_url:
-            self.current_catalog = {
+            selected_cat = selected_section_info.get("cat") if isinstance(selected_section_info, dict) else None
+            self.current_catalog = dict(selected_cat) if isinstance(selected_cat, dict) else {}
+            self.current_catalog.update({
                 "manifest_url": addon_url,
                 "catalog_id": catalog_id,
                 "media_type": effective_media_type,
                 "display_name": section or catalog_id.title()
-            }
+            })
+            if isinstance(selected_section_info, dict) and selected_section_info.get("_source"):
+                self.current_catalog.setdefault("_source", selected_section_info["_source"])
             disp_title = section or catalog_id.title()
             if query:
                 disp_title += f" · 🔍 {query}"
@@ -12802,10 +12879,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             from . import tmdb_helper
                             if page > tmdb_helper._MAX_DISCOVER_PAGES:
                                 return (key, page, [], 0, False)
-                            cur_sort_by = getattr(self, "current_sort_by", None)
                             tmdb_cache_key = (
                                 f"tmdb-default-unique:{c_id}:{m_type}:p{page}:"
-                                f"{cur_genre}:{cur_year}:{cur_lang}:{cur_country}:{cur_network}:{cur_sort_by}"
+                                f"{cur_genre}:{cur_year}:{cur_lang}:{cur_country}:{cur_network}"
                             )
                             items = database.get_cached_catalog(
                                 tmdb_cache_key,
@@ -12823,7 +12899,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                     language=cur_lang,
                                     country=cur_country,
                                     network=cur_network,
-                                    sort_by=cur_sort_by,
                                 )
                                 cat_info["tmdb_total_pages"] = max(
                                     int(cat_info.get("tmdb_total_pages") or 0),
@@ -13064,13 +13139,17 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         if cur_lang and not api.catalog_supports_filter(cat_info, cur_lang):
                             return (key, page, [], 0, False)
 
-                        country_lang = None
-                        if cur_country and not api.catalog_supports_genre(cat_info, cur_country):
+                        supports_country_extra, _country_options = api.catalog_supports_extra(
+                            cat_info, ["country", "origin_country", "countries"]
+                        )
+                        if cur_country and not (supports_country_extra or api.catalog_supports_genre(cat_info, cur_country)):
                             # Same as the discover rows: a country is served by the
                             # catalogs of its languages, which manifests do declare.
                             country_lang = api.catalog_language_for_country(cat_info, cur_country)
                             if not country_lang and not cur_lang:
                                 return (key, page, [], 0, False)
+                        else:
+                            country_lang = None
 
                         effective_lang = cur_lang or country_lang
 
@@ -13078,7 +13157,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         if not cur_genre and effective_lang:
                             if api.catalog_supports_filter(cat_info, effective_lang):
                                 fetch_genre = effective_lang
-                        elif not cur_genre and cur_country:
+                        elif not cur_genre and cur_country and not supports_country_extra:
                             if api.catalog_supports_genre(cat_info, cur_country):
                                 fetch_genre = cur_country
                         elif not cur_genre and cur_year and c_id in ("year", "years", "acc85513", "tmdb.year"):
@@ -13088,11 +13167,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         year_suffix = f":y{cur_year}" if cur_year else ""
                         lang_suffix = f":l{cur_lang}" if cur_lang else ""
                         country_suffix = f":c{cur_country}" if cur_country else ""
+                        network_suffix = f":n{cur_network}" if cur_network else ""
                         # Unique requests fetch 50 cards, while discover-row
                         # requests cache 20-card pages under the legacy key.
                         # Keep the cache entries separate so Unique cannot
                         # mistake that shorter page for the section's full set.
-                        cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}{country_suffix}:unique50:p{page}"
+                        cache_key = f"discover:{m_url}:{c_id}:{m_type}{genre_suffix}{year_suffix}{lang_suffix}{country_suffix}{network_suffix}:unique50:p{page}"
 
                         cached = database.get_cached_catalog(cache_key, max_age_hours=database.CATALOG_CACHE_HOURS)
 
@@ -13112,7 +13192,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             if effective_lang and api.catalog_supports_filter(cat_info, effective_lang):
                                 for it in cached:
                                     it.setdefault("language", effective_lang)
-                            if cur_country and (api.catalog_supports_genre(cat_info, cur_country) or country_lang):
+                            if cur_country and (supports_country_extra or api.catalog_supports_genre(cat_info, cur_country) or country_lang):
                                 for it in cached:
                                     it.setdefault("country", cur_country)
                             filtered = cached
@@ -13122,7 +13202,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
                             if filtered and effective_lang:
                                 filtered = api.filter_items_by_genre(filtered, effective_lang, media_type=m_type)
-                            if filtered and cur_country:
+                            if filtered and cur_country and not supports_country_extra:
                                 filtered = api.filter_items_by_country(filtered, cur_country, media_type=m_type)
                             if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
                                 filtered = [it for it in filtered if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(cur_year)]
@@ -13142,7 +13222,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 page=page,
                                 limit=50,
                                 timeout=cat_timeout,
-                                is_cancelled=(lambda: _is_event_set(abort_ev))
+                                is_cancelled=(lambda: _is_event_set(abort_ev)),
+                                extra_filters={"year": cur_year, "language": cur_lang, "country": cur_country, "network": cur_network},
                             )
                             if _is_event_set(abort_ev):
                                 return None
@@ -13160,7 +13241,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 if effective_lang and api.catalog_supports_filter(cat_info, effective_lang):
                                     for it in items:
                                         it.setdefault("language", effective_lang)
-                                if cur_country and (api.catalog_supports_genre(cat_info, cur_country) or country_lang):
+                                if cur_country and (supports_country_extra or api.catalog_supports_genre(cat_info, cur_country) or country_lang):
                                     for it in items:
                                         it.setdefault("country", cur_country)
                                 if not _is_event_set(abort_ev):
@@ -13172,7 +13253,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 filtered = [it for it in filtered if api.is_item_type_compatible(it, m_type)]
                             if filtered and effective_lang:
                                 filtered = api.filter_items_by_genre(filtered, effective_lang, media_type=m_type)
-                            if filtered and cur_country:
+                            if filtered and cur_country and not supports_country_extra:
                                 filtered = api.filter_items_by_country(filtered, cur_country, media_type=m_type)
                             if filtered and cur_year and c_id not in ("year", "years", "acc85513", "tmdb.year"):
                                 filtered = [it for it in filtered if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(cur_year)]
@@ -13213,7 +13294,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             # bounded wait outside the Unique state lock so the
                             # GTK callbacks and other catalog results stay responsive.
                             cat_info = self.unique_catalogs_by_key.get(cat_key, {})
-                            if cur_network and cat_info.get("_source") != "tmdb_network":
+                            if (
+                                cur_network
+                                and cat_info.get("_source") != "tmdb_network"
+                                and not api.catalog_supports_extra(cat_info, ["network", "networks", "provider", "providers"])[0]
+                            ):
                                 network_media_type = (
                                     cat_info.get("media_type")
                                     or getattr(self, "_current_unique_media_type", None)
@@ -13443,6 +13528,22 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 cur_country = getattr(self, "current_country", None)
                 if not isinstance(cur_country, str) or cur_country in ("All Countries", _("All Countries"), "Country", _("Country"), "All"):
                     cur_country = None
+                cur_network = getattr(self, "current_network", None)
+                if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "Network", _("Network"), "All"):
+                    cur_network = None
+                supports_country_extra = (
+                    api.catalog_supports_extra(catalog, ["country", "origin_country", "countries"])[0]
+                    if catalog.get("_source") != "tmdb_catalog" else False
+                )
+                supports_network_extra = (
+                    api.catalog_supports_extra(catalog, ["network", "networks", "provider", "providers"])[0]
+                    if catalog.get("_source") != "tmdb_catalog" else False
+                )
+                supports_year_filter = bool(
+                    year
+                    and catalog.get("_source") != "tmdb_catalog"
+                    and api.catalog_supports_genre(catalog, year)
+                )
 
                 genre_unsupported = bool(genre and not api.catalog_supports_genre(catalog, genre))
 
@@ -13450,7 +13551,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     fetch_genre = str(year) if year and str(year) not in ("All Years", "All", _("All Years"), "Year", _("Year")) else ""
                 elif not genre and cur_lang:
                     fetch_genre = cur_lang if api.catalog_supports_genre(catalog, cur_lang) else ""
-                elif not genre and cur_country:
+                elif not genre and cur_country and not supports_country_extra:
                     fetch_genre = cur_country if api.catalog_supports_genre(catalog, cur_country) else ""
                 elif not genre and cur_sort_val == "Language":
                     fetch_genre = getattr(self, "current_language", None)
@@ -13459,7 +13560,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 year_suffix = f":y{year}" if year else ""
                 lang_suffix = f":l{cur_lang}" if cur_lang else ""
                 country_suffix = f":c{cur_country}" if cur_country else ""
-                cache_key = f"discover:{cat_url}:{cat_id}:{active_discover_type}{genre_suffix}{year_suffix}{lang_suffix}{country_suffix}:p{page_to_fetch}"
+                network_suffix = f":n{cur_network}" if cur_network else ""
+                cache_key = f"discover:{cat_url}:{cat_id}:{active_discover_type}{genre_suffix}{year_suffix}{lang_suffix}{country_suffix}{network_suffix}:p{page_to_fetch}"
 
                 # 1. DB-first: instant results from SQLite cache
                 db_first_items = []
@@ -13645,7 +13747,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     if cur_lang and api.catalog_supports_genre(catalog, cur_lang):
                         for it in cached:
                             it.setdefault("language", cur_lang)
-                    if cur_country and api.catalog_supports_genre(catalog, cur_country):
+                    if cur_country and (supports_country_extra or api.catalog_supports_genre(catalog, cur_country)):
                         for it in cached:
                             it.setdefault("country", cur_country)
                     if genre:
@@ -13654,9 +13756,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         cached = [it for it in cached if api.is_item_type_compatible(it, media_type)]
                     if cached and cur_lang:
                         cached = api.filter_items_by_genre(cached, cur_lang, media_type=media_type)
-                    if cached and cur_country:
+                    if cached and cur_country and not supports_country_extra:
                         cached = api.filter_items_by_country(cached, cur_country, media_type=media_type)
-                    if cached and year and cat_id != "year":
+                    if cached and cur_network and not supports_network_extra:
+                        cached = api.filter_items_by_network(cached, cur_network, media_type=media_type)
+                    if cached and year and cat_id != "year" and not supports_year_filter:
                         cached = [it for it in cached if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(year))]
                     if cached and database.is_adult_content_hidden():
                         cached = api.prefilter_kids_safe_items(cached, media_type=media_type)
@@ -13702,28 +13806,60 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 yr_str = str(year) if year and str(year) not in ("All Years", "All", _("All Years"), "Year", _("Year")) else ""
                 if catalog.get("_source") == "tmdb_catalog":
                     from . import tmdb_helper
-                    cur_sort_by = getattr(self, "current_sort_by", None)
-                    items, total_pages = tmdb_helper.fetch_default_tmdb_catalog_page(
-                        catalog_id=cat_id,
-                        media_type=media_type,
-                        page=page_to_fetch,
-                        limit=80,
-                        genre=genre,
-                        year=year,
-                        language=language,
-                        country=country,
-                        network=network,
-                        sort_by=cur_sort_by,
-                    )
+                    if media_type in ("all", "movie_series", "discover"):
+                        items_by_type = []
+                        total_pages = 0
+                        for catalog_type in ("movie", "series"):
+                            typed_items, typed_pages = tmdb_helper.fetch_default_tmdb_catalog_page(
+                                catalog_id=cat_id,
+                                media_type=catalog_type,
+                                page=page_to_fetch,
+                                limit=40,
+                                genre=genre,
+                                year=year,
+                                language=language,
+                                country=country,
+                                network=network,
+                            )
+                            items_by_type.append(typed_items or [])
+                            total_pages = max(total_pages, int(typed_pages or 0))
+                        items = []
+                        max_items = max((len(typed_items) for typed_items in items_by_type), default=0)
+                        for index in range(max_items):
+                            for typed_items in items_by_type:
+                                if index < len(typed_items):
+                                    items.append(typed_items[index])
+                    else:
+                        items, total_pages = tmdb_helper.fetch_default_tmdb_catalog_page(
+                            catalog_id=cat_id,
+                            media_type=media_type,
+                            page=page_to_fetch,
+                            limit=80,
+                            genre=genre,
+                            year=year,
+                            language=language,
+                            country=country,
+                            network=network,
+                        )
                     if not items:
                         cinemeta_cat_id = "year" if cat_id == "new-on-streaming" else ("imdbRating" if cat_id == "top-rated" else "top")
-                        items = api.fetch_items(
-                            media_type=media_type,
-                            catalog_id=cinemeta_cat_id,
-                            catalog_url="https://v3-cinemeta.strem.io/manifest.json",
-                            page=page_to_fetch,
-                            is_cancelled=(lambda: _is_event_set(abort_ev))
-                        ) or []
+                        fallback_types = ("movie", "series") if media_type in ("all", "movie_series", "discover") else (media_type,)
+                        fallback_by_type = [
+                            api.fetch_items(
+                                media_type=fallback_type,
+                                catalog_id=cinemeta_cat_id,
+                                catalog_url="https://v3-cinemeta.strem.io/manifest.json",
+                                page=page_to_fetch,
+                                is_cancelled=(lambda: _is_event_set(abort_ev))
+                            ) or []
+                            for fallback_type in fallback_types
+                        ]
+                        items = []
+                        max_fallback_items = max((len(fallback_items) for fallback_items in fallback_by_type), default=0)
+                        for index in range(max_fallback_items):
+                            for fallback_items in fallback_by_type:
+                                if index < len(fallback_items):
+                                    items.append(fallback_items[index])
                     catalog["tmdb_total_pages"] = total_pages
                 elif active_discover_type == "all" and (year or cur_sort_val == "Year" or cat_id == "year"):
                     def _fetch_sub(mt):
@@ -13735,7 +13871,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             catalog_url=cat_url or "https://v3-cinemeta.strem.io/manifest.json",
                             genre=yr_str,
                             page=page_to_fetch,
-                            is_cancelled=(lambda: _is_event_set(abort_ev))
+                            is_cancelled=(lambda: _is_event_set(abort_ev)),
+                            extra_filters={"year": year, "language": cur_lang, "country": cur_country, "network": cur_network},
                         ) or []
 
                     try:
@@ -13816,7 +13953,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         catalog_url=cat_url,
                         genre=fetch_genre or "",
                         page=page_to_fetch,
-                        is_cancelled=(lambda: _is_event_set(abort_ev))
+                        is_cancelled=(lambda: _is_event_set(abort_ev)),
+                        extra_filters={"year": year, "language": cur_lang, "country": cur_country, "network": cur_network},
                     )
 
                 if _is_event_set(abort_ev):
@@ -13829,7 +13967,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     if cur_lang and api.catalog_supports_genre(catalog, cur_lang):
                         for it in items:
                             it.setdefault("language", cur_lang)
-                    if cur_country and api.catalog_supports_genre(catalog, cur_country):
+                    if cur_country and (supports_country_extra or api.catalog_supports_genre(catalog, cur_country)):
                         for it in items:
                             it.setdefault("country", cur_country)
                     if not _is_event_set(abort_ev):
@@ -13840,9 +13978,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     items = [it for it in items if api.is_item_type_compatible(it, media_type)]
                 if items and cur_lang:
                     items = api.filter_items_by_genre(items, cur_lang, media_type=media_type)
-                if items and cur_country:
+                if items and cur_country and not supports_country_extra:
                     items = api.filter_items_by_country(items, cur_country, media_type=media_type)
-                if items and year and cat_id != "year":
+                if items and cur_network and not supports_network_extra:
+                    items = api.filter_items_by_network(items, cur_network, media_type=media_type)
+                if items and year and cat_id != "year" and not supports_year_filter:
                     items = [it for it in items if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(str(year))]
                 if items and database.is_adult_content_hidden():
                     items = api.prefilter_kids_safe_items(items, media_type=media_type)
@@ -14401,7 +14541,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             and popcorn_addon.get("enabled", True)
             and popcorn_addon.get("catalogs_enabled", True)
         )
-        if popcorn_enabled and (not filter_addon_url or filter_addon_url == tmdb_helper.TMDB_BUILTIN_MANIFEST_URL) and not (cur_genre or cur_year or cur_lang or cur_country or cur_network):
+        is_builtin_tmdb_selection = filter_addon_url == tmdb_helper.TMDB_BUILTIN_MANIFEST_URL
+        if (
+            (popcorn_enabled or is_builtin_tmdb_selection)
+            and (not filter_addon_url or is_builtin_tmdb_selection)
+            and (is_builtin_tmdb_selection or not (cur_genre or cur_year or cur_lang or cur_country or cur_network))
+        ):
             for cat in tmdb_helper.get_default_tmdb_catalogs(filter_media_type or "all"):
                 c_type = cat.get("media_type", "movie")
                 row_key = (cat.get("manifest_url"), cat.get("catalog_id"), c_type)
@@ -14449,7 +14594,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 if cur_lang and not filter_addon_url and not api.catalog_supports_filter(cat, cur_lang):
                     continue
 
-                if cur_country and not filter_addon_url and not api.catalog_supports_genre(cat, cur_country) and not api.catalog_language_for_country(cat, cur_country):
+                if cur_country and not filter_addon_url and not (
+                    api.catalog_supports_extra(cat, ["country", "origin_country", "countries"])[0]
+                    or api.catalog_supports_genre(cat, cur_country)
+                    or api.catalog_language_for_country(cat, cur_country)
+                ):
                     continue
 
                 if cur_year and cur_year not in ("All Years", _("All Years"), "Year", _("Year"), "All"):
@@ -14701,7 +14850,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         # A selected Network gets its own TMDb catalog row. TV results are
         # queried by network and movie results by the matching production
         # company, mirroring the catalogs shown by the detail dialog.
-        if cur_network and (filter_media_type or "all") in (
+        if cur_network and not filter_addon_url and (filter_media_type or "all") in (
             "all", "movie_series", "movie", "series"
         ):
             network_label = f"{cur_network} · TMDb"
@@ -14719,7 +14868,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 "title": network_label,
             })
 
-        if cur_network:
+        if cur_network and not filter_addon_url:
             # A network selection is answered by the TMDb network catalog above.
             # Most addon pages lack network metadata, so retaining them here only
             # creates empty rows and repeats expensive metadata work.
@@ -15505,10 +15654,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             r_lang = row_info.get("language") or getattr(self, "current_language", None)
                             r_country = row_info.get("country") or getattr(self, "current_country", None)
                             r_network = row_info.get("network") or getattr(self, "current_network", None)
-                            r_sort = row_info.get("sort_by") or getattr(self, "current_sort_by", None)
                             tmdb_key = (
                                 f"tmdb-default:{c_id}:{m_type}:p{req_page}:"
-                                f"row{DISCOVER_ROW_CARD_LIMIT}:{r_genre}:{r_year}:{r_lang}:{r_country}:{r_network}:{r_sort}"
+                                f"row{DISCOVER_ROW_CARD_LIMIT}:{r_genre}:{r_year}:{r_lang}:{r_country}:{r_network}"
                             )
                             items = database.get_cached_catalog(
                                 tmdb_key, max_age_hours=database.CATALOG_CACHE_HOURS
@@ -15525,7 +15673,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                     language=r_lang,
                                     country=r_country,
                                     network=r_network,
-                                    sort_by=r_sort,
                                 )
                                 total_pages = max(total_pages, int(page_total or 0))
                                 if not items:
@@ -15726,8 +15873,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             debug_log(f"discover row SKIPPED: '{row_title}' — language '{current_l}' not supported")
                             return (row_info, [])
 
+                        supports_country_extra, _country_options = api.catalog_supports_extra(
+                            row_info, ["country", "origin_country", "countries"]
+                        )
+                        supports_network_extra, _network_options = api.catalog_supports_extra(
+                            row_info, ["network", "networks", "provider", "providers"]
+                        )
                         country_lang = None
-                        if current_c and not api.catalog_supports_genre(row_info, current_c):
+                        if current_c and not (supports_country_extra or api.catalog_supports_genre(row_info, current_c)):
                             # Manifests expose sections per cinema (Hindi, Tamil,
                             # Telugu…) but almost never a country, so the country is
                             # fetched through its own languages instead of dropped.
@@ -15745,7 +15898,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             # metadata after the response arrives.
                             if api.catalog_supports_filter(row_info, effective_lang):
                                 fetch_genre = effective_lang
-                        elif not current_g and current_c:
+                        elif not current_g and current_c and not supports_country_extra:
                             if api.catalog_supports_genre(row_info, current_c):
                                 fetch_genre = current_c
                         elif not current_g and current_y and (c_id in ("year", "years", "acc85513", "tmdb.year") or api.catalog_supports_genre(row_info, current_y)):
@@ -15774,7 +15927,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             if effective_lang and api.catalog_supports_filter(row_info, effective_lang):
                                 for it in cached:
                                     it.setdefault("language", effective_lang)
-                            if current_c and (api.catalog_supports_genre(row_info, current_c) or country_lang):
+                            if current_c and (supports_country_extra or api.catalog_supports_genre(row_info, current_c) or country_lang):
                                 for it in cached:
                                     it.setdefault("country", current_c)
                             if current_g:
@@ -15783,9 +15936,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 cached = [it for it in cached if api.is_item_type_compatible(it, m_type)]
                             if cached and effective_lang:
                                 cached = api.filter_items_by_genre(cached, effective_lang, media_type=m_type)
-                            if cached and current_c:
+                            if cached and current_c and not supports_country_extra:
                                 cached = api.filter_items_by_country(cached, current_c, media_type=m_type)
-                            if cached and cur_network:
+                            if cached and cur_network and not supports_network_extra:
                                 cached = api.filter_items_by_network(cached, cur_network, media_type=m_type)
                             if cached and current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
                                 cached = [it for it in cached if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(current_y)]
@@ -15803,6 +15956,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                                 page=1,
                                                 limit=DISCOVER_ROW_CARD_LIMIT,
                                                 timeout=4.0,
+                                                extra_filters={"year": current_y, "language": current_l, "country": current_c, "network": cur_network},
                                             )
                                             if fresh_items:
                                                 database.save_cached_catalog(cache_key, fresh_items)
@@ -15830,7 +15984,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             page=1,
                             limit=DISCOVER_ROW_CARD_LIMIT,
                             timeout=8.0 if is_cs_row else 2.5,
-                            is_cancelled=(lambda: _is_event_set(abort_ev))
+                            is_cancelled=(lambda: _is_event_set(abort_ev)),
+                            extra_filters={"year": current_y, "language": current_l, "country": current_c, "network": cur_network},
                         )
                         if _is_event_set(abort_ev):
                             return None
@@ -15840,7 +15995,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             if effective_lang and api.catalog_supports_filter(row_info, effective_lang):
                                 for it in items:
                                     it.setdefault("language", effective_lang)
-                            if current_c and (api.catalog_supports_genre(row_info, current_c) or country_lang):
+                            if current_c and (supports_country_extra or api.catalog_supports_genre(row_info, current_c) or country_lang):
                                 for it in items:
                                     it.setdefault("country", current_c)
                             if not _is_event_set(abort_ev):
@@ -15851,9 +16006,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 items = [it for it in items if api.is_item_type_compatible(it, m_type)]
                             if effective_lang:
                                 items = api.filter_items_by_genre(items, effective_lang, media_type=m_type)
-                            if current_c:
+                            if current_c and not supports_country_extra:
                                 items = api.filter_items_by_country(items, current_c, media_type=m_type)
-                            if cur_network:
+                            if cur_network and not supports_network_extra:
                                 items = api.filter_items_by_network(items, cur_network, media_type=m_type)
                             if current_y and c_id not in ("year", "years", "acc85513", "tmdb.year") and not api.catalog_supports_genre(row_info, current_y):
                                 items = [it for it in items if str(it.get("year") or it.get("releaseInfo") or "").strip().startswith(current_y)]
@@ -16191,6 +16346,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         sec_row.add_css_class("discover-row-box")
+        sec_row._is_discover_row_box = True
 
         sort_mode = str(getattr(self, "current_sort", "") or "").strip().lower()
         items = [it for it in (items or []) if not api.is_future_item(it)]
@@ -16204,6 +16360,27 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             items = sorted(items, key=lambda item: str(item.get("release_date") or ""), reverse=True)
         elif is_date_row and sort_mode in ("recent", "new", "latest", "last added"):
             items = sorted(items, key=_discover_item_release_sort_key, reverse=True)
+
+        base_item_order = {id(item): index for index, item in enumerate(items)}
+        sort_by = getattr(self, "current_sort_by", "Sort By")
+        if sort_by == "Popularity":
+            def popularity(item):
+                try:
+                    return float(item.get("popularity") or item.get("item_popularity") or 0.0)
+                except (TypeError, ValueError):
+                    return 0.0
+            items = sorted(items, key=popularity, reverse=True)
+        elif sort_by == "Release Date":
+            items = sorted(items, key=_discover_item_release_sort_key, reverse=True)
+        elif sort_by == "Rating":
+            def rating(item):
+                try:
+                    return float(item.get("rating") or item.get("vote_average") or item.get("imdbRating") or 0.0)
+                except (TypeError, ValueError):
+                    return 0.0
+            items = sorted(items, key=rating, reverse=True)
+        elif sort_by == "Title":
+            items = sorted(items, key=lambda item: str(item.get("title") or item.get("name") or "").casefold())
 
         display_items = items[:DISCOVER_ROW_CARD_LIMIT]
         if row_info.get("_source") == "tmdb_country" and target_box is not None:
@@ -16231,6 +16408,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             if not it.get("addon_name"):
                 it["addon_name"] = row_info.get("addon_name") or ""
             card = MovieWidget(it, self._on_movie_clicked)
+            card._discover_base_index = base_item_order.get(id(it), len(base_item_order))
             card.set_hexpand(False)
             self._fit_discover_row_card(card)
             card.set_visible(self._discover_result_matches_item(it))

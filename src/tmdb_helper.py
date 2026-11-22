@@ -1896,8 +1896,16 @@ def fetch_default_tmdb_catalog_page(
                 params["watch_region"] = "IN"
             elif kind == "tv" and net_id:
                 params["with_networks"] = net_id
-            elif net_id:
-                params["with_companies"] = net_id
+            else:
+                company_id = _NETWORK_COMPANY_IDS.get(folded)
+                if not company_id:
+                    company_names = _NETWORK_COMPANY_SEARCH_NAMES.get(folded, (str(network).strip(),))
+                    for company_name in company_names:
+                        company_id = _search_tmdb_entity_id("company", company_name)
+                        if company_id:
+                            break
+                if company_id:
+                    params["with_companies"] = company_id
 
         if database.is_kids_safe_mode():
             params["certification_country"] = "US"

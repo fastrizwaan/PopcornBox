@@ -3016,6 +3016,30 @@ def catalog_supports_pagination(cat):
     return False
 
 
+def catalog_supports_extra(cat, names):
+    """Return whether a catalog declares one of the requested extras and its options."""
+    if not isinstance(cat, dict):
+        return False, None
+    targets = {str(name or "").strip().casefold() for name in (names or [])}
+    targets.discard("")
+    if not targets:
+        return False, None
+
+    supported = {
+        str(name or "").strip().casefold()
+        for name in (cat.get("extraSupported") or [])
+        if name
+    }
+    for extra in cat.get("extra") or []:
+        extra_dict = extra if isinstance(extra, dict) else {"name": extra}
+        extra_name = str(extra_dict.get("name") or "").strip().casefold()
+        if extra_name in targets:
+            return True, extra_dict.get("options")
+    if supported & targets:
+        return True, None
+    return False, None
+
+
 def catalog_supports_genre(cat, genre):
     """
     Check if a Stremio catalog supports filtering by the specified genre.
@@ -3044,10 +3068,10 @@ def catalog_supports_genre(cat, genre):
     extra = cat.get("extra") or []
     had_restricted_opts = False
     for ex in extra:
-        ex_name = ex.get("name") if isinstance(ex, dict) else ex
+        ex_name = str(ex.get("name") if isinstance(ex, dict) else ex).strip().casefold()
         if is_yr and ex_name not in ("year", "genre"):
             continue
-        if is_lang and ex_name not in ("language", "genre"):
+        if is_lang and ex_name not in ("language", "lang", "languages", "genre"):
             continue
         if not is_yr and not is_lang and ex_name != "genre":
             continue
@@ -3069,8 +3093,14 @@ def catalog_supports_genre(cat, genre):
         return False
 
     # 3. Check "extraSupported"
-    extra_sup = cat.get("extraSupported") or []
+    extra_sup = {
+        str(name or "").strip().casefold()
+        for name in (cat.get("extraSupported") or [])
+        if name
+    }
     if is_yr and "year" in extra_sup:
+        return True
+    if is_lang and extra_sup.intersection({"language", "lang", "languages"}):
         return True
     if not is_lang and not is_yr and "genre" in extra_sup:
         return True
@@ -3743,7 +3773,7 @@ def get_available_search_catalogs(c_type="movie", only_working=True):
     return catalogs
 
 
-def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None, target_manifest_url=None, target_catalog_id=None, is_cancelled=None, timeout=3.5, title_only=False):
+def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalog_url=None, limit=50, page=1, cache_only=False, on_item_found=None, target_manifest_url=None, target_catalog_id=None, is_cancelled=None, timeout=3.5, title_only=False, extra_filters=None):
     from . import database
     c_type = "series" if media_type == "series" else media_type
     page_limit = limit if (limit and limit > 0) else 50
@@ -4068,31 +4098,36 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         target_extra = None
         g_str = str(genre).strip() if genre else ""
         is_yr = bool(g_str.isdigit() and len(g_str) == 4)
+        is_lang = database.is_language_genre(g_str.lower())
 
         if cat_obj:
             extra = cat_obj.get("extra") or []
             year_extra = None
             genre_extra = None
             lang_extra = None
+            extra_supported = {
+                str(name or "").strip().casefold()
+                for name in (cat_obj.get("extraSupported") or [])
+                if name
+            }
             for ex in extra:
                 ex_dict = ex if isinstance(ex, dict) else {"name": ex}
-                ex_name = ex_dict.get("name")
+                ex_name = str(ex_dict.get("name") or "").strip().casefold()
                 if ex_name == "skip":
                     server_supports_skip = True
                 elif ex_name == "year":
                     year_extra = ex_dict
                 elif ex_name == "genre":
                     genre_extra = ex_dict
-                elif ex_name == "language":
+                elif ex_name in ("language", "lang", "languages"):
                     lang_extra = ex_dict
             if catalog_supports_pagination(cat_obj):
                 server_supports_skip = True
 
-            is_lang = database.is_language_genre(g_str.lower())
             if is_yr:
-                target_extra = year_extra or genre_extra
+                target_extra = year_extra or (genre_extra if "year" not in extra_supported else None)
             elif is_lang:
-                target_extra = lang_extra or genre_extra
+                target_extra = lang_extra or (genre_extra if "language" not in extra_supported else None)
             else:
                 target_extra = genre_extra
 
@@ -4107,7 +4142,11 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                         server_genre = next((opt for opt in opts if does_genre_match_filter(opt, genre)), None)
                     else:
                         server_genre = g_str
-                elif "genre" in (cat_obj.get("extraSupported") or []) or "year" in (cat_obj.get("extraSupported") or []):
+                elif (
+                    (is_yr and ("year" in extra_supported or "genre" in extra_supported))
+                    or (is_lang and (extra_supported.intersection({"language", "lang", "languages", "genre"})))
+                    or (not is_yr and not is_lang and "genre" in extra_supported)
+                ):
                     server_genre = g_str
         else:
             server_supports_skip = True
@@ -4125,8 +4164,51 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         
         extras = []
         if genre and genre != "All" and server_genre:
-            extra_param_name = target_extra.get("name") if target_extra else ("year" if is_yr else "genre")
-            extras.append(f"{extra_param_name}={urllib.parse.quote(server_genre)}")
+            if target_extra:
+                extra_param_name = target_extra.get("name")
+            elif is_yr and cat_obj and "year" in extra_supported:
+                extra_param_name = "year"
+            elif is_lang and cat_obj and extra_supported.intersection({"language", "lang", "languages"}):
+                extra_param_name = next(name for name in ("language", "lang", "languages") if name in extra_supported)
+            else:
+                extra_param_name = "year" if is_yr and not cat_obj else "genre"
+            extras.append(f"{extra_param_name}={urllib.parse.quote(server_genre, safe='')}")
+
+        if cat_obj and isinstance(extra_filters, dict):
+            extra_aliases = {
+                "year": ("year",),
+                "language": ("language", "lang", "languages"),
+                "country": ("country", "origin_country", "countries"),
+                "network": ("network", "networks", "provider", "providers"),
+            }
+            declared_extras = {}
+            for ex in cat_obj.get("extra") or []:
+                ex_dict = ex if isinstance(ex, dict) else {"name": ex}
+                ex_name = str(ex_dict.get("name") or "").strip().casefold()
+                if ex_name:
+                    declared_extras[ex_name] = ex_dict
+            extra_supported = {
+                str(name or "").strip().casefold()
+                for name in (cat_obj.get("extraSupported") or [])
+                if name
+            }
+            extra_param_names = {part.split("=", 1)[0].casefold() for part in extras}
+            for filter_name, value in extra_filters.items():
+                if value is None or not str(value).strip():
+                    continue
+                normalized_filter = str(filter_name).strip().casefold()
+                aliases = extra_aliases.get(normalized_filter, {normalized_filter})
+                declared_name = next((name for name in aliases if name in declared_extras), None)
+                if declared_name is None:
+                    declared_name = next((name for name in aliases if name in extra_supported), None)
+                if declared_name is None or declared_name in extra_param_names:
+                    continue
+                extra_def = declared_extras.get(declared_name) or {}
+                options = extra_def.get("options") or []
+                if options and str(value).casefold() not in {str(option).casefold() for option in options}:
+                    continue
+                extras.append(f"{declared_name}={urllib.parse.quote(str(value), safe='')}")
+                extra_param_names.add(declared_name)
         if skip > 0 and server_supports_skip:
             extras.append(f"skip={skip}")
             
