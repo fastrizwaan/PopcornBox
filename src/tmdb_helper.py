@@ -1,3 +1,5 @@
+import os
+import time
 import re
 import urllib.parse
 import json
@@ -2265,52 +2267,164 @@ def fetch_collection_details(cid, title=None, poster=None):
     }
 
 
-def extract_tmdb_certification(details_dict, c_type="movie"):
+_USER_COUNTRY_CODE = None
+
+def get_user_country_code():
+    """
+    Detect user's 2-letter ISO 3166-1 country code from system timezone, locale, or settings.
+    Defaults to 'US' if undetected.
+    """
+    global _USER_COUNTRY_CODE
+    if _USER_COUNTRY_CODE:
+        return _USER_COUNTRY_CODE
+
+    code = None
+    # 1. Check system timezone target (most accurate for geographic location)
+    try:
+        real_path = os.path.realpath('/etc/localtime')
+        if 'zoneinfo/' in real_path:
+            tz_name = real_path.split('zoneinfo/')[-1]
+            for tab_path in ['/usr/share/zoneinfo/zone1970.tab', '/usr/share/zoneinfo/zone.tab']:
+                if os.path.exists(tab_path):
+                    with open(tab_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith('#'):
+                                continue
+                            parts = line.split('\t')
+                            if len(parts) >= 3 and parts[2] == tz_name:
+                                tz_country = parts[0].split(',')[0].strip().upper()
+                                if len(tz_country) == 2:
+                                    code = tz_country
+                                    break
+                if code:
+                    break
+    except Exception:
+        pass
+
+    # 2. Check time.tzname / timezone abbreviations
+    if not code:
+        try:
+            tz_str = " ".join(time.tzname).upper()
+            if "IST" in tz_str:
+                code = "IN"
+            elif "BST" in tz_str or "GMT" in tz_str:
+                code = "GB"
+            elif "JST" in tz_str:
+                code = "JP"
+            elif "KST" in tz_str:
+                code = "KR"
+            elif "AEST" in tz_str or "ACST" in tz_str or "AWST" in tz_str:
+                code = "AU"
+        except Exception:
+            pass
+
+    # 3. Check environment locale (LC_ALL, LC_MESSAGES, LANG)
+    if not code:
+        for loc_var in [os.environ.get('LC_ALL'), os.environ.get('LC_MESSAGES'), os.environ.get('LANG')]:
+            if loc_var:
+                m = re.search(r'^[a-z]{2,3}_([A-Z]{2})\b', loc_var)
+                if m:
+                    code = m.group(1).upper()
+                    break
+
+    # Fallback to US
+    if not code or len(code) != 2:
+        code = "US"
+
+    _USER_COUNTRY_CODE = code
+    return _USER_COUNTRY_CODE
+
+
+def extract_tmdb_certification(details_dict, c_type="movie", preferred_country=None):
     """
     Extract age rating / certification from a TMDB details response
     (content_ratings for TV, release_dates for movies).
     Scans worldwide ratings: if any country rates the title mature (R, NC-17, TV-MA, 15, 16, 18, etc.),
     returns that mature rating so it can be filtered under Kids Safe Mode.
-    Otherwise returns the primary US/international rating.
+    Otherwise returns the user's local country rating (e.g. 'U/A 7+', 'U/A', 'U' in India),
+    or primary US/international rating.
     """
     if not isinstance(details_dict, dict):
         return ""
     from . import api
 
     all_certs = []
-    us_cert = ""
+    certs_by_country = {}
 
     if c_type in ("tv", "series", "anime"):
         cr_results = details_dict.get("content_ratings", {}).get("results", [])
         if isinstance(cr_results, list):
             for r in cr_results:
                 if isinstance(r, dict) and r.get("rating"):
+                    iso = str(r.get("iso_3166_1") or "").strip().upper()
                     val = str(r["rating"]).strip().upper()
                     if val:
                         all_certs.append(val)
-                        if r.get("iso_3166_1") == "US" and not us_cert:
-                            us_cert = val
+                        if iso:
+                            certs_by_country.setdefault(iso, []).append(val)
     else:
         rd_results = details_dict.get("release_dates", {}).get("results", [])
         if isinstance(rd_results, list):
             for entry in rd_results:
                 if isinstance(entry, dict):
-                    iso = entry.get("iso_3166_1")
+                    iso = str(entry.get("iso_3166_1") or "").strip().upper()
                     for rd in entry.get("release_dates", []):
                         if isinstance(rd, dict) and rd.get("certification"):
                             val = str(rd["certification"]).strip().upper()
                             if val:
                                 all_certs.append(val)
-                                if iso == "US" and not us_cert:
-                                    us_cert = val
+                                if iso:
+                                    certs_by_country.setdefault(iso, []).append(val)
 
-    # 1. If ANY country worldwide rates this title mature, return that mature certification!
-    for c in all_certs:
-        if api.is_mature_certification(c):
-            return c
+    # Save list of all worldwide certifications onto details_dict for downstream filtering
+    if not details_dict.get("all_certifications"):
+        details_dict["all_certifications"] = list(all_certs)
 
-    # 2. Otherwise return US certification if available, or first available certification
-    return us_cert or (all_certs[0] if all_certs else "")
+    # Mature ratings: ignore bare 'A' from Spanish/Latin/Macau/Portuguese regions where A means Apto (All Ages)
+    mature_certs = []
+    for iso, clist in certs_by_country.items():
+        for c in clist:
+            if iso in ("MO", "ES", "MX", "CO", "AR", "CL", "PT", "IT") and c == "A":
+                continue
+            if api.is_mature_certification(c):
+                mature_certs.append(c)
+
+    user_iso = (preferred_country or get_user_country_code() or "US").strip().upper()
+    user_certs = certs_by_country.get(user_iso, [])
+
+    # 1. If any country worldwide rates this title mature, return the mature certification
+    # (so Kids Safe Mode properly filters it).
+    # If user's local country has its own mature rating (e.g. CBFC 'A' in India), prefer local mature rating.
+    if mature_certs:
+        for uc in user_certs:
+            if uc in mature_certs or (user_iso == "IN" and uc == "A"):
+                return uc
+        return mature_certs[0]
+
+    # 2. Prefer the user's local country certification!
+    if user_certs:
+        return user_certs[0]
+
+    # 3. US certification
+    if "US" in certs_by_country and certs_by_country["US"]:
+        return certs_by_country["US"][0]
+
+    # 4. UK certification
+    if "GB" in certs_by_country and certs_by_country["GB"]:
+        return certs_by_country["GB"][0]
+
+    # 5. Major English/international certifications
+    for k in ("CA", "AU", "NZ", "IE"):
+        if k in certs_by_country and certs_by_country[k]:
+            return certs_by_country[k][0]
+
+    # 6. Remaining certifications, preferring non-'A' over bare 'A' from Macau/Spain
+    non_bare_a = [c for c in all_certs if c != "A"]
+    if non_bare_a:
+        return non_bare_a[0]
+
+    return all_certs[0] if all_certs else ""
 
 
 def fetch_title_language_and_genres(item_id, media_type="movie", title=None, force_refresh=False):
@@ -2417,6 +2531,7 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None, for
     production_companies = []
     networks = []
     certification = ""
+    details = None
     tmdb_id = result_item.get("id")
     if tmdb_id:
         try:
@@ -2449,6 +2564,7 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None, for
         "networks": networks,
         "adult": bool(result_item.get("adult", False)),
         "certification": certification,
+        "all_certifications": details.get("all_certifications", []) if isinstance(details, dict) else [],
         "tmdb_id": result_item.get("id")
     }
 
@@ -2458,9 +2574,11 @@ def fetch_title_language_and_genres(item_id, media_type="movie", title=None, for
             if isinstance(cached_meta, dict):
                 cached_meta["certification"] = certification
                 cached_meta["adult"] = res_dict["adult"]
+                if res_dict.get("all_certifications"):
+                    cached_meta["all_certifications"] = res_dict["all_certifications"]
                 if tmdb_genres and not cached_meta.get("genres"):
                     cached_meta["genres"] = list(tmdb_genres)
-                database.save_cached_metadata(str(item_id), cached_meta, media_type=media_type)
+                database.save_cached_metadata(str(item_id), media_type or "movie", cached_meta)
         except Exception:
             pass
 
@@ -2713,6 +2831,7 @@ def fetch_tmdb_standalone_metadata(item_id, media_type="movie", title=None, post
         "language": lang_name,
         "imdbRating": rating_str,
         "certification": certification,
+        "all_certifications": data.get("all_certifications", []) if isinstance(data, dict) else [],
         "adult": bool(data.get("adult", False)),
         "cast": cast_list,
         "director": director_name,

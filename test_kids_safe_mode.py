@@ -175,6 +175,68 @@ class TestKidsSafeMode(unittest.TestCase):
         }
         self.assertEqual(tmdb_helper.extract_tmdb_certification(family_tv, c_type="tv"), "TV-Y")
 
+        # Kids animated movie (Swapped 2026) with Macau 'A', India 'U/A 7+', and US 'PG'
+        swapped_tmdb = {
+            "release_dates": {
+                "results": [
+                    {"iso_3166_1": "AR", "release_dates": [{"certification": "ATP"}]},
+                    {"iso_3166_1": "IN", "release_dates": [{"certification": "U/A 7+"}]},
+                    {"iso_3166_1": "MO", "release_dates": [{"certification": "A"}]},
+                    {"iso_3166_1": "US", "release_dates": [{"certification": "PG"}]},
+                    {"iso_3166_1": "GB", "release_dates": [{"certification": "PG"}]}
+                ]
+            }
+        }
+        # India user preference: should return U/A 7+, not Macau's 'A'
+        self.assertEqual(tmdb_helper.extract_tmdb_certification(swapped_tmdb, c_type="movie", preferred_country="IN"), "U/A 7+")
+        # US user preference: should return PG, not Macau's 'A'
+        self.assertEqual(tmdb_helper.extract_tmdb_certification(swapped_tmdb, c_type="movie", preferred_country="US"), "PG")
+
+    def test_cbfc_and_latin_ratings_safety(self):
+        # Indian CBFC kids safe ratings
+        self.assertTrue(api.is_kids_safe_certification("U/A 7+"))
+        self.assertTrue(api.is_kids_safe_certification("U/A 13+"))
+        self.assertTrue(api.is_kids_safe_certification("U/A"))
+        self.assertTrue(api.is_kids_safe_certification("UA"))
+        self.assertTrue(api.is_kids_safe_certification("U"))
+        self.assertFalse(api.is_mature_certification("U/A 7+"))
+        self.assertFalse(api.is_mature_certification("U/A"))
+        self.assertFalse(api.is_mature_certification("UA"))
+
+        # Bare 'A' (Apto in Spain/Mexico/Macau) is not an adult or mature rating by default
+        self.assertFalse(api.is_mature_certification("A"))
+        self.assertNotIn("A", api.ADULT_RATINGS)
+
+        # Kids animated movie with 'A' or 'U/A 7+' is never adult or mature
+        swapped_movie = {
+            "id": "tt29552248",
+            "title": "Swapped",
+            "genres": ["Adventure", "Animation", "Family", "Fantasy"],
+            "certification": "U/A 7+"
+        }
+        self.assertFalse(api.is_adult_item(swapped_movie, check_cache=False))
+        self.assertFalse(api.is_mature_item(swapped_movie, check_cache=False))
+
+        swapped_legacy_a = {
+            "id": "tt29552248",
+            "title": "Swapped",
+            "genres": ["Adventure", "Animation", "Family", "Fantasy"],
+            "certification": "A"
+        }
+        self.assertFalse(api.is_adult_item(swapped_legacy_a, check_cache=False))
+        self.assertFalse(api.is_mature_item(swapped_legacy_a, check_cache=False))
+
+        # Indian mature movie with CBFC 'A' and action/crime (non-kids) genres IS mature
+        indian_adult_film = {
+            "id": "tt781732",
+            "title": "Animal",
+            "country": "India",
+            "language": "Hindi",
+            "genres": ["Action", "Crime", "Drama"],
+            "certification": "A"
+        }
+        self.assertTrue(api.is_mature_item(indian_adult_film, check_cache=False))
+
     def test_database_hydrate_certifications(self):
         database.set_kids_safe_mode(True)
         database.save_cached_metadata("tt_test_hydrate", "movie", {

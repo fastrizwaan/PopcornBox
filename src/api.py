@@ -1764,7 +1764,7 @@ ADULT_GENRES_TAGS = {
 
 ADULT_RATINGS = {
     "18", "18+", "R18", "R-18", "R18+", "NC-17", "XXX", "XX", "X",
-    "RX", "AV", "ADULT", "PORN", "R21", "OVER 18", "A", "AO", "FSK 18", "18A",
+    "RX", "AV", "ADULT", "PORN", "R21", "OVER 18", "AO", "FSK 18", "18A",
     "UNRATED (ADULT)", "NOT RATED (ADULT)", "RESTRICTED 18"
 }
 
@@ -1812,7 +1812,9 @@ KIDS_SAFE_RATINGS = {
     "U", "PG", "12", "12A", "12+", "PG12", "FSK 0", "FSK 6", "FSK 12", "FSK0", "FSK6", "FSK12",
     "6", "6+", "0", "0+", "7", "7+", "10", "10+", "14", "14+", "14A", "ALL", "FAMILY",
     # India CBFC
-    "U", "UA", "U/A", "U/A 7+", "U/A 13+"
+    "U", "UA", "U/A", "U/A 7+", "U/A 13+", "UA 7+", "UA 13+",
+    # Latin America / Europe (Apto / Tous publics / All ages)
+    "ATP", "TP", "L", "SU", "TE", "APTO"
 }
 
 def is_kids_safe_certification(cert):
@@ -1826,7 +1828,7 @@ def is_kids_safe_certification(cert):
         return False
     if c in KIDS_SAFE_RATINGS:
         return True
-    if any(k in c for k in ("PG-13", "TV-14", "TV-PG", "TV-G", "TV-Y", "PG", "FSK 12", "FSK 6", "FSK 0", "U/A")):
+    if any(k in c for k in ("PG-13", "TV-14", "TV-PG", "TV-G", "TV-Y", "PG", "FSK 12", "FSK 6", "FSK 0", "U/A", "UA")):
         return True
     return False
 
@@ -1838,6 +1840,11 @@ def is_mature_certification(cert):
         return False
     c = str(cert).strip().upper()
     if not c:
+        return False
+    # Explicit kids / general audience safe ratings are never mature.
+    # Note: "A" in Spain, Mexico, Macau, Latin America stands for "Apto para todos los públicos" (All Ages).
+    if c in ("A", "U", "UA", "U/A", "U/A 7+", "U/A 13+", "UA 7+", "UA 13+", "G", "PG", "PG-13", "PG13",
+             "TV-Y", "TV-Y7", "TV-G", "TV-PG", "TV-14", "ATP", "TP", "L", "SU", "TE", "APTO"):
         return False
     if c in MATURE_RATINGS or c in ADULT_RATINGS:
         return True
@@ -1874,6 +1881,24 @@ def is_mature_item(item, check_cache=True):
     ).strip().upper()
     if is_mature_certification(cert):
         return True
+
+    # If certification is "A" (CBFC A in India = 18+), only classify as mature if
+    # origin is Indian and it is NOT an animated/family/kids title.
+    if cert in ("A", "CBFC A", "CBFC: A"):
+        genres = item.get("genres") or item.get("genre") or []
+        if isinstance(genres, str):
+            genre_list = [g.strip().lower() for g in genres.split(",")]
+        elif isinstance(genres, list):
+            genre_list = [str(g).strip().lower() for g in genres]
+        else:
+            genre_list = []
+        is_family_or_kids = any(g in ("animation", "family", "kids", "children") for g in genre_list)
+        if not is_family_or_kids:
+            country = str(item.get("country") or "").lower()
+            lang = str(item.get("language") or item.get("language_code") or "").lower()
+            is_indian = "india" in country or lang in ("hindi", "hi", "tamil", "ta", "telugu", "te", "malayalam", "ml", "kannada", "kn", "bengali", "bn", "marathi", "mr")
+            if is_indian:
+                return True
 
     for ac in (item.get("all_certifications") or []):
         if is_mature_certification(ac):

@@ -2837,6 +2837,15 @@ def get_cached_metadata(item_id, media_type=None):
                 if str(item_id).startswith("ctmdb."):
                     if not data.get("videos") or len(data.get("videos", [])) == 0 or str(data.get("title", "")).lower() == "media item":
                         return None
+                # Sanitize legacy misclassified 'A' certification for kids/animation/family items
+                if data.get("certification") == "A":
+                    genres = data.get("genres") or data.get("genre") or []
+                    if isinstance(genres, str):
+                        glist = [g.strip().lower() for g in genres.split(",")]
+                    else:
+                        glist = [str(g).strip().lower() for g in genres]
+                    if any(g in ("animation", "family", "kids", "children") for g in glist):
+                        data["certification"] = ""
                 return data
     except Exception as e:
         print(f"Error reading metadata cache: {e}")
@@ -3039,6 +3048,14 @@ def hydrate_items_from_metadata(items, media_type=None):
                             it["videos"] = meta["videos"]
                             it_updated = True
                         cert = meta.get("certification") or meta.get("contentRating") or meta.get("rating") or meta.get("mpaa") or meta.get("ageRating")
+                        if cert == "A":
+                            genres = it.get("genres") or meta.get("genres") or it.get("genre") or meta.get("genre") or []
+                            if isinstance(genres, str):
+                                glist = [g.strip().lower() for g in genres.split(",")]
+                            else:
+                                glist = [str(g).strip().lower() for g in genres]
+                            if any(g in ("animation", "family", "kids", "children") for g in glist):
+                                cert = ""
                         if cert and not it.get("certification"):
                             it["certification"] = cert
                             it_updated = True
@@ -3120,8 +3137,12 @@ def hydrate_items_from_metadata(items, media_type=None):
 
     return len(updated_items)
 
-def save_cached_metadata(item_id, media_type, details):
-    if not item_id or not details:
+def save_cached_metadata(item_id, media_type, details=None):
+    if not item_id:
+        return
+    if isinstance(media_type, dict) and details is None:
+        details, media_type = media_type, media_type.get("type") or "movie"
+    if not details:
         return
     try:
         with _cache_db_lock:
