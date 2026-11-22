@@ -6045,11 +6045,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         from . import api
 
         # 1. Subtitles Menu
-        self.subtitles_menu.remove_all()
+        new_subtitles_menu = Gio.Menu.new()
         actions_section = Gio.Menu.new()
         actions_section.append(_("Add Subtitle Track"), "win.add-sub-tracks")
         actions_section.append(_("Search Subtitle"), "win.search-subtitles")
-        self.subtitles_menu.append_section(None, actions_section)
+        new_subtitles_menu.append_section(None, actions_section)
 
         tracks_section = Gio.Menu.new()
         item_none_sub = Gio.MenuItem.new(_("None"), None)
@@ -6116,13 +6116,36 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 other_sub_section.append_item(item)
             tracks_section.append_submenu(_("Other Languages"), other_sub_section)
 
-        self.subtitles_menu.append_section(None, tracks_section)
+        new_subtitles_menu.append_section(None, tracks_section)
+
+        def _apply_sub_menu(model):
+            self.subtitles_menu = model
+            if hasattr(self, "subtitles_menu_btn"):
+                self.subtitles_menu_btn.set_menu_model(model)
+
+        if hasattr(self, "subtitles_menu_btn") and self.subtitles_menu_btn.get_active():
+            self._pending_subtitles_menu = new_subtitles_menu
+            if not getattr(self, "_sub_menu_close_connected", False):
+                self._sub_menu_close_connected = True
+                def on_sub_closed(b, _pspec):
+                    if not b.get_active():
+                        try:
+                            b.disconnect_by_func(on_sub_closed)
+                        except Exception:
+                            pass
+                        self._sub_menu_close_connected = False
+                        pending = getattr(self, "_pending_subtitles_menu", None)
+                        if pending:
+                            _apply_sub_menu(pending)
+                self.subtitles_menu_btn.connect("notify::active", on_sub_closed)
+        else:
+            _apply_sub_menu(new_subtitles_menu)
 
         # 2. Audio Tracks Menu
-        self.audio_tracks_menu.remove_all()
+        new_audio_tracks_menu = Gio.Menu.new()
         audio_actions_section = Gio.Menu.new()
         audio_actions_section.append(_("Add Audio Track"), "win.add-audio-tracks")
-        self.audio_tracks_menu.append_section(None, audio_actions_section)
+        new_audio_tracks_menu.append_section(None, audio_actions_section)
 
         audio_tracks_section = Gio.Menu.new()
         item_none_audio = Gio.MenuItem.new(_("None"), None)
@@ -6189,10 +6212,33 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 other_audio_section.append_item(item)
             audio_tracks_section.append_submenu(_("Other Languages"), other_audio_section)
 
-        self.audio_tracks_menu.append_section(None, audio_tracks_section)
+        new_audio_tracks_menu.append_section(None, audio_tracks_section)
+
+        def _apply_audio_menu(model):
+            self.audio_tracks_menu = model
+            if hasattr(self, "audio_tracks_menu_btn"):
+                self.audio_tracks_menu_btn.set_menu_model(model)
+
+        if hasattr(self, "audio_tracks_menu_btn") and self.audio_tracks_menu_btn.get_active():
+            self._pending_audio_menu = new_audio_tracks_menu
+            if not getattr(self, "_audio_menu_close_connected", False):
+                self._audio_menu_close_connected = True
+                def on_audio_closed(b, _pspec):
+                    if not b.get_active():
+                        try:
+                            b.disconnect_by_func(on_audio_closed)
+                        except Exception:
+                            pass
+                        self._audio_menu_close_connected = False
+                        pending = getattr(self, "_pending_audio_menu", None)
+                        if pending:
+                            _apply_audio_menu(pending)
+                self.audio_tracks_menu_btn.connect("notify::active", on_audio_closed)
+        else:
+            _apply_audio_menu(new_audio_tracks_menu)
 
         # 3. Video Tracks Menu
-        self.video_tracks_menu.remove_all()
+        new_video_tracks_menu = Gio.Menu.new()
         video_tracks = [t for t in (track_list or []) if t.get("type") == "video" and not t.get("albumart")]
         video_tracks_section = Gio.Menu.new()
         for track in video_tracks:
@@ -6202,8 +6248,33 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             item.set_action_and_target_value("win.select-video", GLib.Variant("i", track_id))
             video_tracks_section.append_item(item)
 
-        self.video_tracks_menu.append_section(None, video_tracks_section)
-        self.video_tracks_menu_btn.set_visible(len(video_tracks) > 1)
+        new_video_tracks_menu.append_section(None, video_tracks_section)
+
+        is_visible = len(video_tracks) > 1
+
+        def _apply_video_menu(model, visible):
+            self.video_tracks_menu = model
+            if hasattr(self, "video_tracks_menu_btn"):
+                self.video_tracks_menu_btn.set_menu_model(model)
+                self.video_tracks_menu_btn.set_visible(visible)
+
+        if hasattr(self, "video_tracks_menu_btn") and self.video_tracks_menu_btn.get_active():
+            self._pending_video_menu = (new_video_tracks_menu, is_visible)
+            if not getattr(self, "_video_menu_close_connected", False):
+                self._video_menu_close_connected = True
+                def on_video_closed(b, _pspec):
+                    if not b.get_active():
+                        try:
+                            b.disconnect_by_func(on_video_closed)
+                        except Exception:
+                            pass
+                        self._video_menu_close_connected = False
+                        pending = getattr(self, "_pending_video_menu", None)
+                        if pending:
+                            _apply_video_menu(pending[0], pending[1])
+                self.video_tracks_menu_btn.connect("notify::active", on_video_closed)
+        else:
+            _apply_video_menu(new_video_tracks_menu, is_visible)
 
     def _create_action(self, name, callback):
         action = Gio.SimpleAction.new(name, None)

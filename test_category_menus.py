@@ -431,6 +431,43 @@ class TestCategoryMenus(unittest.TestCase):
             self.assertFalse(win.anime_supported)
             self.assertNotIn("anime", win.media_type_keys)
 
+    def test_update_track_menus_replaces_models_cleanly(self):
+        from src.window import PopcornBoxWindow
+        win = PopcornBoxWindow.__new__(PopcornBoxWindow)
+        win.subtitles_menu_btn = Gtk.MenuButton()
+        win.audio_tracks_menu_btn = Gtk.MenuButton()
+        win.video_tracks_menu_btn = Gtk.MenuButton()
+        win.mpv = MagicMock()
+        win.mpv.sid = 1
+        win.mpv.aid = 1
+        win._format_sub_label = lambda t, c: f"Sub {t.get('id')}"
+        win._format_audio_label = lambda t, c: f"Audio {t.get('id')}"
+        win._format_video_label = lambda t: f"Video {t.get('id')}"
+
+        track_list = [
+            {"id": 1, "type": "sub", "lang": "en", "selected": True},
+            {"id": 2, "type": "sub", "lang": "fr"},
+            {"id": 3, "type": "sub", "lang": "de"},
+            {"id": 4, "type": "sub", "lang": "es"},
+            {"id": 5, "type": "sub", "lang": "it"},
+            {"id": 6, "type": "sub", "lang": "ja"},
+            {"id": 7, "type": "sub", "lang": "ko"},
+            {"id": 8, "type": "audio", "lang": "en", "selected": True},
+            {"id": 9, "type": "audio", "lang": "fr"},
+            {"id": 10, "type": "video"},
+            {"id": 11, "type": "video"},
+        ]
+
+        # Call multiple times to verify no duplicate child name warnings and clean model replacement
+        for _ in range(5):
+            PopcornBoxWindow._update_track_menus(win, track_list)
+            self.assertIsNotNone(win.subtitles_menu)
+            self.assertIsNotNone(win.audio_tracks_menu)
+            self.assertIsNotNone(win.video_tracks_menu)
+            self.assertEqual(win.subtitles_menu_btn.get_menu_model(), win.subtitles_menu)
+            self.assertEqual(win.audio_tracks_menu_btn.get_menu_model(), win.audio_tracks_menu)
+            self.assertEqual(win.video_tracks_menu_btn.get_menu_model(), win.video_tracks_menu)
+
 
 if __name__ == "__main__":
     unittest.main()
