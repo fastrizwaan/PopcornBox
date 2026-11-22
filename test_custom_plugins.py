@@ -278,6 +278,22 @@ class Scraper:
         self.assertGreater(len(series_streams), 0)
         self.assertTrue(series_streams[0]["url"].startswith("https://www.youtube.com/watch?v="))
 
+        # Test strict title matching: fuzzy results like 'Campus beats' or 'MrBeast' must be rejected for 'betas'
+        self.assertFalse(yt._is_title_match("betas", "Campus Beats Season 1 Episode 1"))
+        self.assertFalse(yt._is_title_match("betas", "Beast Games | Episode 1 (MrBeast)"))
+        self.assertFalse(yt._is_title_match("betas", "Workout Video Day 1 | Zumba Fitness With Unique Beats"))
+        self.assertFalse(yt._is_title_match("betas", "Alpha Betas I FULL MOVIE"))
+        self.assertTrue(yt._is_title_match("betas", "Betas Season 1 Episode 1"))
+        self.assertTrue(yt._is_title_match("betas", "The Betas S01E01"))
+
+        # Verify series stream extraction for 'betas' never returns 'Campus beats' or 'MrBeast'
+        betas_streams = yt.get_streams(title="betas", media_type="series", season=1, episode=1)
+        for s in betas_streams:
+            s_title = s.get("title", "").lower()
+            self.assertNotIn("campus beats", s_title)
+            self.assertNotIn("mrbeast", s_title)
+            self.assertNotIn("beast games", s_title)
+
 
 if __name__ == "__main__":
     unittest.main()

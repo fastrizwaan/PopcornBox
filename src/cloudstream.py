@@ -1662,6 +1662,81 @@ def _extract_youtube_id(data_or_url):
     return ""
 
 
+def _is_youtube_title_match(target_title, candidate_title, min_ratio=0.75):
+    """Strictly validates that candidate_title contains the target_title words.
+    Prevents YouTube's fuzzy search from returning unrelated videos (e.g. 'Campus beats'
+    or 'MrBeast' when querying 'betas')."""
+    if not target_title or not candidate_title:
+        return False
+
+    stop_words = {
+        "a", "an", "the", "and", "or", "of", "in", "on", "at", "to", "for",
+        "with", "by", "from", "as", "is", "it", "its", "part", "vol", "volume"
+    }
+
+    t_raw_words = re.findall(r"\b[a-z0-9]+\b", str(target_title).lower())
+    t_words = [w for w in t_raw_words if w not in stop_words]
+    if not t_words:
+        t_words = t_raw_words
+    if not t_words:
+        return False
+
+    c_text = str(candidate_title).lower()
+    c_words = set(re.findall(r"\b[a-z0-9]+\b", c_text))
+
+    clean_target_phrase = " ".join(t_words)
+    if clean_target_phrase and re.search(r"\b" + re.escape(clean_target_phrase) + r"\b", c_text):
+        if len(t_words) == 1:
+            allowed_prefixes = {
+                "the", "a", "an", "series", "serie", "show", "watch", "stream",
+                "season", "episode", "full", "hd", "4k", "official"
+            }
+            tw = t_words[0]
+            pat = (
+                rf"(?:^|[\s\-_:\|\(\)\[\]•]+)([a-z0-9]+)?\s*({re.escape(tw)}s?|{re.escape(tw[:-1])}s?)\b"
+                if tw.endswith("s")
+                else rf"(?:^|[\s\-_:\|\(\)\[\]•]+)([a-z0-9]+)?\s*({re.escape(tw)}s?)\b"
+            )
+            matches = list(re.finditer(pat, c_text))
+            if matches:
+                return any((not m.group(1)) or (m.group(1) in allowed_prefixes) for m in matches)
+        return True
+
+    def _word_matches(tw):
+        if tw in c_words:
+            return True
+        if len(tw) >= 4 and tw.endswith("s") and tw[:-1] in c_words:
+            return True
+        if len(tw) >= 3 and (tw + "s") in c_words:
+            return True
+        return False
+
+    matched = sum(1 for w in t_words if _word_matches(w))
+
+    if len(t_words) == 1:
+        if matched != 1:
+            return False
+        allowed_prefixes = {
+            "the", "a", "an", "series", "serie", "show", "watch", "stream",
+            "season", "episode", "full", "hd", "4k", "official"
+        }
+        tw = t_words[0]
+        pat = (
+            rf"(?:^|[\s\-_:\|\(\)\[\]•]+)([a-z0-9]+)?\s*({re.escape(tw)}s?|{re.escape(tw[:-1])}s?)\b"
+            if tw.endswith("s")
+            else rf"(?:^|[\s\-_:\|\(\)\[\]•]+)([a-z0-9]+)?\s*({re.escape(tw)}s?)\b"
+        )
+        matches = list(re.finditer(pat, c_text))
+        if matches:
+            return any((not m.group(1)) or (m.group(1) in allowed_prefixes) for m in matches)
+        return True
+
+    if len(t_words) == 2:
+        return matched == 2
+
+    return (matched / len(t_words)) >= min_ratio and matched >= 2
+
+
 class YoutubeCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/recloudstream/extensions/builds/YoutubeProvider.cs3#YoutubeProvider"
     name = "YoutubeProvider"
@@ -1738,9 +1813,16 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
         if not query or not query.strip():
             return []
 
-        # 1. Try InnerTube first (fastest, most reliable)
-        inner_items = self._search_innertube(query)
-        if inner_items:
+        clean_q = str(query).strip()
+        # Query with quotes first to prevent YouTube's search engine from returning fuzzy typos/recommendations
+        inner_items = self._search_innertube(f'"{clean_q}"')
+        if not inner_items:
+            inner_items = self._search_innertube(clean_q)
+
+        # Filter strictly by title match to avoid fuzzy results like 'Campus beats' or 'MrBeast' for 'betas'
+        filtered = [v for v in inner_items if _is_youtube_title_match(clean_q, v.get("title", ""))]
+
+        if filtered:
             return [
                 {
                     "provider_id": self.id,
@@ -1752,7 +1834,7 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
                     "description": f"{v.get('channel', 'YouTube')} • {v.get('length_str', '')}",
                     "year": None,
                 }
-                for v in inner_items
+                for v in filtered
             ]
 
         # 2. Try yt-dlp
@@ -1847,25 +1929,36 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
             s_num = int(season) if season is not None else 1
             e_num = int(episode) if episode is not None else 1
             queries = [
+                f'"{clean_title}" S{s_num:02d}E{e_num:02d}',
+                f'"{clean_title}" Season {s_num} Episode {e_num} full episode',
+                f'"{clean_title}" Episode {e_num} full',
                 f"{clean_title} S{s_num:02d}E{e_num:02d}",
-                f"{clean_title} Season {s_num} Episode {e_num} full episode",
-                f"{clean_title} Episode {e_num} full",
             ]
         else:
             if year:
+                queries.append(f'"{clean_title}" {year} full movie')
+            queries.append(f'"{clean_title}" full movie')
+            queries.append(f'"{clean_title}" full length')
+            if year:
                 queries.append(f"{clean_title} {year} full movie")
             queries.append(f"{clean_title} full movie")
-            queries.append(f'"{clean_title}" full length')
 
         neg_movie = [
             "trailer", "teaser", "review", "reaction", "recap", "explained",
             "ending explained", "kill count", "breakdown", "easter egg", "scene",
             "scenes", "clip", "clips", "soundtrack", "ost", "interview",
-            "behind the scenes", "b-roll", "analysis", "cast then and now"
+            "behind the scenes", "b-roll", "analysis", "cast then and now",
+            "gameplay", "walkthrough", "theme song", "first impression", "first impressions",
+            "worth the watch", "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
+            "supercut", "after show", "lyric", "lyrics", "lyrical", "audio song", "video song"
         ]
         neg_series = [
             "trailer", "teaser", "preview", "promo", "review", "reaction",
-            "recap", "explained", "ending explained", "interview", "behind the scenes"
+            "recap", "explained", "ending explained", "interview", "behind the scenes",
+            "b-roll", "breakdown", "analysis", "theme song", "first impression", "first impressions",
+            "scene", "scenes", "clip", "clips", "soundtrack", "ost", "kill count",
+            "worth the watch", "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
+            "supercut", "after show", "lyric", "lyrics", "lyrical", "audio song", "video song"
         ]
 
         seen_ids = set()
@@ -1884,46 +1977,52 @@ class YoutubeCloudStreamProvider(CloudStreamProvider):
             s_num = int(season) if season is not None else 1
             e_num = int(episode) if episode is not None else 1
             for v in candidates:
-                vt = v["title"].lower()
+                vt = v["title"]
+                vt_lower = vt.lower()
                 dur = v["duration"]
                 if 0 < dur < 180:
                     continue
-                if any(re.search(r"\b" + re.escape(n) + r"\b", vt) for n in neg_series if n not in clean_title.lower()):
+                # STRICT TITLE CHECK
+                if not _is_youtube_title_match(clean_title, vt):
+                    continue
+                if any(re.search(r"\b" + re.escape(n) + r"\b", vt_lower) for n in neg_series if n not in clean_title.lower()):
                     continue
                 ep_pattern = rf"(?:ep|episode|part|e)[\s\._-]*0*{e_num}\b"
                 other_ep = rf"(?:ep|episode|e)[\s\._-]*0*(\d+)\b"
-                found_eps = [int(x) for x in re.findall(other_ep, vt) if x.isdigit()]
-                if not re.search(ep_pattern, vt) and found_eps and e_num not in found_eps:
+                found_eps = [int(x) for x in re.findall(other_ep, vt_lower) if x.isdigit()]
+                if not re.search(ep_pattern, vt_lower) and found_eps and e_num not in found_eps:
                     continue
-                score = 50 if re.search(ep_pattern, vt) else 10
-                if re.search(rf"(?:s|season)[\s\._-]*0*{s_num}\b", vt):
+                score = 50 if re.search(ep_pattern, vt_lower) else 10
+                if re.search(rf"(?:s|season)[\s\._-]*0*{s_num}\b", vt_lower):
                     score += 30
-                if any(k in vt for k in ["full episode", "full ep", "complete episode"]):
+                if any(k in vt_lower for k in ["full episode", "full ep", "complete episode"]):
                     score += 20
                 if dur >= 600:
                     score += 15
                 scored.append((score, v))
         else:
-            t_words = set(re.findall(r"\b[a-z0-9]+\b", clean_title.lower())) - {"a", "an", "the", "and", "or", "of", "in", "to"}
             for v in candidates:
-                vt = v["title"].lower()
+                vt = v["title"]
+                vt_lower = vt.lower()
                 dur = v["duration"]
                 if 0 < dur < 1800:
                     continue
-                v_words = set(re.findall(r"\b[a-z0-9]+\b", vt))
-                overlap = len(t_words.intersection(v_words))
-                if t_words and (overlap / len(t_words)) < 0.35:
+                # STRICT TITLE CHECK
+                if not _is_youtube_title_match(clean_title, vt):
                     continue
-                score = int(40 * (overlap / len(t_words))) if t_words else 0
-                has_neg = any(re.search(r"\b" + re.escape(n) + r"\b", vt) for n in neg_movie if n not in clean_title.lower())
+                has_neg = any(re.search(r"\b" + re.escape(n) + r"\b", vt_lower) for n in neg_movie if n not in clean_title.lower())
                 if has_neg:
                     if dur >= 3600:
                         score -= 30
                     else:
                         continue
-                if year and str(year) in vt:
+                t_words = set(re.findall(r"\b[a-z0-9]+\b", clean_title.lower())) - {"a", "an", "the", "and", "or", "of", "in", "to"}
+                v_words = set(re.findall(r"\b[a-z0-9]+\b", vt_lower))
+                overlap = len(t_words.intersection(v_words))
+                score = int(40 * (overlap / len(t_words))) if t_words else 0
+                if year and str(year) in vt_lower:
                     score += 25
-                if any(k in vt for k in ["full movie", "full length", "complete movie"]):
+                if any(k in vt_lower for k in ["full movie", "full length", "complete movie"]):
                     score += 20
                 if dur >= 3600:
                     score += 20

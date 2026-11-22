@@ -65,14 +65,89 @@ class Scraper:
         "ending explained", "kill count", "breakdown", "easter egg", "scene",
         "scenes", "clip", "clips", "soundtrack", "ost", "interview",
         "behind the scenes", "b-roll", "analysis", "cast then and now",
-        "gameplay", "walkthrough", "theme song"
+        "gameplay", "walkthrough", "theme song", "first impression", "first impressions",
+        "worth the watch", "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
+        "supercut", "after show", "lyric", "lyrics", "lyrical", "audio song", "video song"
     ]
 
     NEGATIVE_SERIES_KEYWORDS = [
         "trailer", "teaser", "preview", "promo", "review", "reaction",
         "recap", "explained", "ending explained", "interview", "behind the scenes",
-        "b-roll", "breakdown", "analysis", "theme song"
+        "b-roll", "breakdown", "analysis", "theme song", "first impression", "first impressions",
+        "scene", "scenes", "clip", "clips", "soundtrack", "ost", "kill count",
+        "worth the watch", "spoiler", "spoilers", "bloopers", "deleted scene", "deleted scenes",
+        "supercut", "after show", "lyric", "lyrics", "lyrical", "audio song", "video song"
     ]
+
+    @staticmethod
+    def _is_title_match(target_title, candidate_title, min_ratio=0.75):
+        """Strictly validates that candidate_title contains the target_title words.
+        Prevents YouTube's fuzzy search from returning unrelated videos (e.g. 'Campus beats'
+        or 'MrBeast' when querying 'betas')."""
+        if not target_title or not candidate_title:
+            return False
+
+        t_raw_words = re.findall(r"\b[a-z0-9]+\b", str(target_title).lower())
+        t_words = [w for w in t_raw_words if w not in _STOP_WORDS]
+        if not t_words:
+            t_words = t_raw_words
+        if not t_words:
+            return False
+
+        c_text = str(candidate_title).lower()
+        c_words = set(re.findall(r"\b[a-z0-9]+\b", c_text))
+
+        clean_target_phrase = " ".join(t_words)
+        if clean_target_phrase and re.search(r"\b" + re.escape(clean_target_phrase) + r"\b", c_text):
+            if len(t_words) == 1:
+                allowed_prefixes = {
+                    "the", "a", "an", "series", "serie", "show", "watch", "stream",
+                    "season", "episode", "full", "hd", "4k", "official"
+                }
+                tw = t_words[0]
+                pat = (
+                    rf"(?:^|[\s\-_:\|\(\)\[\]•]+)([a-z0-9]+)?\s*({re.escape(tw)}s?|{re.escape(tw[:-1])}s?)\b"
+                    if tw.endswith("s")
+                    else rf"(?:^|[\s\-_:\|\(\)\[\]•]+)([a-z0-9]+)?\s*({re.escape(tw)}s?)\b"
+                )
+                matches = list(re.finditer(pat, c_text))
+                if matches:
+                    return any((not m.group(1)) or (m.group(1) in allowed_prefixes) for m in matches)
+            return True
+
+        def _word_matches(tw):
+            if tw in c_words:
+                return True
+            if len(tw) >= 4 and tw.endswith("s") and tw[:-1] in c_words:
+                return True
+            if len(tw) >= 3 and (tw + "s") in c_words:
+                return True
+            return False
+
+        matched = sum(1 for w in t_words if _word_matches(w))
+
+        if len(t_words) == 1:
+            if matched != 1:
+                return False
+            allowed_prefixes = {
+                "the", "a", "an", "series", "serie", "show", "watch", "stream",
+                "season", "episode", "full", "hd", "4k", "official"
+            }
+            tw = t_words[0]
+            pat = (
+                rf"(?:^|[\s\-_:\|\(\)\[\]•]+)([a-z0-9]+)?\s*({re.escape(tw)}s?|{re.escape(tw[:-1])}s?)\b"
+                if tw.endswith("s")
+                else rf"(?:^|[\s\-_:\|\(\)\[\]•]+)([a-z0-9]+)?\s*({re.escape(tw)}s?)\b"
+            )
+            matches = list(re.finditer(pat, c_text))
+            if matches:
+                return any((not m.group(1)) or (m.group(1) in allowed_prefixes) for m in matches)
+            return True
+
+        if len(t_words) == 2:
+            return matched == 2
+
+        return (matched / len(t_words)) >= min_ratio and matched >= 2
 
     @staticmethod
     def _parse_duration(duration_str):
@@ -262,11 +337,29 @@ class Scraper:
         if query:
             clean_q = str(query).strip()
             is_series = (media_type in ("series", "show", "shows", "tv", "anime")) or "series" in str(catalog_id)
-            search_query = f"{clean_q} full episode" if is_series else f"{clean_q} full movie"
+            # Quote query to prevent YouTube's search engine from returning fuzzy typos/recommendations
+            search_query = f'"{clean_q}" full episode' if is_series else f'"{clean_q}" full movie'
             videos = self._query_videos(search_query)
+            if not videos:
+                search_query = f"{clean_q} full episode" if is_series else f"{clean_q} full movie"
+                videos = self._query_videos(search_query)
+
             items = []
-            for v in videos[:limit]:
+            for v in videos:
                 v_title = v["title"]
+                if not self._is_title_match(clean_q, v_title):
+                    continue
+
+                neg_list = self.NEGATIVE_SERIES_KEYWORDS if is_series else self.NEGATIVE_MOVIE_KEYWORDS
+                clean_q_lower = clean_q.lower()
+                neg_in_q = {w for w in neg_list if w in clean_q_lower}
+                if any(re.search(r"\b" + re.escape(n) + r"\b", v_title.lower()) for n in neg_list if n not in neg_in_q):
+                    continue
+
+                min_dur = 300 if is_series else 1200
+                if 0 < v.get("duration", 0) < min_dur:
+                    continue
+
                 year_match = re.search(r"\b((?:19|20)\d{2})\b", v_title)
                 extracted_year = year_match.group(1) if year_match else ""
                 clean_name = re.sub(r"\[.*?\]|\(.*?\)|\|.*", "", v_title).strip()
@@ -280,6 +373,8 @@ class Scraper:
                     "genres": ["YouTube"],
                     "rating": "",
                 })
+                if len(items) >= limit:
+                    break
             return items
 
         cid = str(catalog_id or "").lower()
@@ -345,9 +440,10 @@ class Scraper:
             s_num = int(season) if season is not None else 1
             e_num = int(episode) if episode is not None else 1
             queries = [
+                f'"{clean_title}" S{s_num:02d}E{e_num:02d}',
+                f'"{clean_title}" Season {s_num} Episode {e_num} full episode',
+                f'"{clean_title}" Episode {e_num} full',
                 f"{clean_title} S{s_num:02d}E{e_num:02d}",
-                f"{clean_title} Season {s_num} Episode {e_num} full episode",
-                f"{clean_title} Episode {e_num} full",
             ]
             for q in queries:
                 items = self._query_videos(q)
@@ -360,14 +456,19 @@ class Scraper:
 
             scored = []
             for it in raw_items:
-                v_title = it["title"].lower()
+                v_title = it["title"]
+                v_title_lower = v_title.lower()
                 dur = it["duration"]
                 if 0 < dur < 180:
                     continue
 
+                # STRICT TITLE CHECK: Video must match the series title!
+                if not self._is_title_match(clean_title, v_title):
+                    continue
+
                 neg_in_target = {w for w in self.NEGATIVE_SERIES_KEYWORDS if w in clean_title.lower()}
                 has_neg = any(
-                    re.search(r"\b" + re.escape(neg) + r"\b", v_title)
+                    re.search(r"\b" + re.escape(neg) + r"\b", v_title_lower)
                     for neg in self.NEGATIVE_SERIES_KEYWORDS
                     if neg not in neg_in_target
                 )
@@ -377,21 +478,21 @@ class Scraper:
                 # Episode check
                 ep_pattern = rf"(?:ep|episode|part|e)[\s\._-]*0*{e_num}\b"
                 other_ep_pattern = rf"(?:ep|episode|e)[\s\._-]*0*(\d+)\b"
-                found_eps = [int(x) for x in re.findall(other_ep_pattern, v_title) if x.isdigit()]
-                if not re.search(ep_pattern, v_title) and found_eps and e_num not in found_eps:
+                found_eps = [int(x) for x in re.findall(other_ep_pattern, v_title_lower) if x.isdigit()]
+                if not re.search(ep_pattern, v_title_lower) and found_eps and e_num not in found_eps:
                     continue
 
                 # Season check
                 s_pattern = rf"(?:s|season)[\s\._-]*0*{s_num}\b"
                 other_s_pattern = rf"(?:s|season)[\s\._-]*0*(\d+)\b"
-                found_seasons = [int(x) for x in re.findall(other_s_pattern, v_title) if x.isdigit()]
-                if not re.search(s_pattern, v_title) and found_seasons and s_num not in found_seasons:
+                found_seasons = [int(x) for x in re.findall(other_s_pattern, v_title_lower) if x.isdigit()]
+                if not re.search(s_pattern, v_title_lower) and found_seasons and s_num not in found_seasons:
                     continue
 
-                score = 50 if re.search(ep_pattern, v_title) else 10
-                if re.search(s_pattern, v_title):
+                score = 50 if re.search(ep_pattern, v_title_lower) else 10
+                if re.search(s_pattern, v_title_lower):
                     score += 30
-                if any(k in v_title for k in ["full episode", "full ep", "complete episode"]):
+                if any(k in v_title_lower for k in ["full episode", "full ep", "complete episode"]):
                     score += 20
                 if dur >= 600:
                     score += 15
@@ -403,9 +504,12 @@ class Scraper:
             # Movie search
             queries = []
             if target_year:
+                queries.append(f'"{clean_title}" {target_year} full movie')
+            queries.append(f'"{clean_title}" full movie')
+            queries.append(f'"{clean_title}" full length')
+            if target_year:
                 queries.append(f"{clean_title} {target_year} full movie")
             queries.append(f"{clean_title} full movie")
-            queries.append(f'"{clean_title}" full length')
             for q in queries:
                 items = self._query_videos(q)
                 for it in items:
@@ -420,19 +524,24 @@ class Scraper:
             t_word_set = set(t_words) if t_words else set(re.findall(r"\b[a-z0-9]+\b", clean_title.lower()))
 
             for it in raw_items:
-                v_title = it["title"].lower()
+                v_title = it["title"]
+                v_title_lower = v_title.lower()
                 dur = it["duration"]
                 if 0 < dur < 1800:
                     continue
 
+                # STRICT TITLE CHECK: Video must match the movie title!
+                if not self._is_title_match(clean_title, v_title):
+                    continue
+
                 neg_in_target = {w for w in self.NEGATIVE_MOVIE_KEYWORDS if w in clean_title.lower()}
                 has_neg = any(
-                    re.search(r"\b" + re.escape(neg) + r"\b", v_title)
+                    re.search(r"\b" + re.escape(neg) + r"\b", v_title_lower)
                     for neg in self.NEGATIVE_MOVIE_KEYWORDS
                     if neg not in neg_in_target
                 )
 
-                v_words = set(re.findall(r"\b[a-z0-9]+\b", v_title))
+                v_words = set(re.findall(r"\b[a-z0-9]+\b", v_title_lower))
                 overlap = len(t_word_set.intersection(v_words))
                 if len(t_word_set) > 0 and (overlap / len(t_word_set)) < 0.35:
                     continue
