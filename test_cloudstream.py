@@ -2054,6 +2054,61 @@ class TestCloudStream(unittest.TestCase):
             cloudstream.on_adult_content_toggled(True)
             mock_toggle.assert_called_once_with("p1", False)
 
+    def test_matches_all_query_terms_and_filtering(self):
+        # 1. matches_all_query_terms directly
+        self.assertTrue(cloudstream.matches_all_query_terms("American Greed", "American Greed (2007)"))
+        self.assertTrue(cloudstream.matches_all_query_terms("American Greed", "American Greed: Scams and Schemes"))
+        self.assertFalse(cloudstream.matches_all_query_terms("American Greed", "Game of Greed"))
+        self.assertFalse(cloudstream.matches_all_query_terms("American Greed", "All American"))
+        self.assertFalse(cloudstream.matches_all_query_terms("American Greed", "American Primeval"))
+        self.assertTrue(cloudstream.matches_all_query_terms("Breaking Bad", "Breaking Bad (2008)"))
+        self.assertFalse(cloudstream.matches_all_query_terms("Breaking Bad", "Breaking Boundaries"))
+
+        # 2. CastleTvCloudStreamProvider.search filtering
+        castle = cloudstream.get_provider("CastleTvProvider")
+        self.assertIsNotNone(castle)
+        fake_castle_res = {
+            "code": 200,
+            "data": {
+                "rows": [
+                    {"id": "1", "title": "Game of Greed", "movieType": 3},
+                    {"id": "2", "title": "All American", "movieType": 1},
+                    {"id": "3", "title": "American Greed", "movieType": 1},
+                ]
+            }
+        }
+        with patch.object(castle, "_request_and_decrypt", return_value=fake_castle_res):
+            items = castle.search("American Greed")
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["name"], "American Greed (Castle TV)")
+
+        # 3. CNCVerseCloudStreamProvider.search filtering
+        cnc = cloudstream.get_provider("CNC Verse")
+        self.assertIsNotNone(cnc)
+        fake_cnc_res = {
+            "status": "y",
+            "searchResult": [
+                {"id": "10", "t": "American Underdog", "y": "2021"},
+                {"id": "11", "t": "American Greed", "y": "2007"},
+                {"id": "12", "t": "Game of Greed", "y": "2020"},
+            ]
+        }
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(fake_cnc_res).encode("utf-8")
+            mock_resp.__enter__.return_value = mock_resp
+            mock_url.return_value = mock_resp
+            cnc_items = cnc.search("American Greed")
+            self.assertEqual(len(cnc_items), 1)
+            self.assertEqual(cnc_items[0]["name"], "American Greed (2007)")
+
+        # 4. Stream release filename mismatch check in api
+        from src.api import check_movie_title_mismatch
+        self.assertTrue(check_movie_title_mismatch("American Greed", "Game.of.Greed.2023.1080p.WEB-DL.mkv"))
+        self.assertTrue(check_movie_title_mismatch("American Greed", "All.American.S01E01.1080p.mkv"))
+        self.assertFalse(check_movie_title_mismatch("American Greed", "American.Greed.S01E01.720p.mkv"))
+        self.assertFalse(check_movie_title_mismatch("Inception", "inception_1080p.mkv"))
+
 
 if __name__ == "__main__":
     unittest.main()

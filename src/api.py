@@ -3991,12 +3991,25 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                             continue
                         title = m.get("name") or m.get("title") or ""
                         desc = m.get("description") or m.get("overview") or ""
+                        title_clean = str(title).lower()
+                        desc_clean = str(desc).lower()
+                        q_words = [w for w in re.findall(r"\w+", q_lower) if w not in MOVIE_STOP_WORDS and len(w) >= 2]
+                        if not q_words:
+                            q_words = [w for w in re.findall(r"\w+", q_lower) if len(w) >= 1]
+
+                        if q_words:
+                            title_matches_all = all(re.search(r"\b" + re.escape(w) + r"\b", title_clean) or (len(w) >= 4 and w in title_clean) for w in q_words)
+                        else:
+                            title_matches_all = q_lower in title_clean
+
                         if title_only:
-                            if q_lower not in str(title).lower():
+                            if not title_matches_all:
                                 continue
                         else:
-                            if q_lower not in str(title).lower() and q_lower not in str(desc).lower():
-                                continue
+                            if not title_matches_all:
+                                desc_matches_all = all(w in desc_clean for w in q_words) if q_words else (q_lower in desc_clean)
+                                if not desc_matches_all:
+                                    continue
 
                         imdb_id = m.get("imdb_id") or m.get("id")
                         if not imdb_id or imdb_id in seen_ids:
@@ -6311,6 +6324,23 @@ def check_movie_title_mismatch(target_title, filename):
 
     # Check whole word matches
     matched = set(w for w in title_words if w in fn_words or re.search(r'\b' + re.escape(w) + r'\b', clean_fn))
+
+    # Check scene release title mismatch:
+    # If the filename begins with a clear scene title followed by year/season/quality tags,
+    # and that release title is missing significant words of target_title, it's a mismatch.
+    is_file_like = ('.' in filename) or any(ext in filename.lower() for ext in ('.mkv', '.mp4', '.avi'))
+    scene_match = re.search(r'[\.\s\-_]((?:19|20)\d{2}|S\d{1,2}E\d{1,2}|S\d{1,2}|1080p|720p|4k|2160p|WEB-DL|WEBRip|BluRay|HDTV)\b', fn, re.I)
+    if is_file_like and scene_match:
+        prefix = fn[:scene_match.start()].strip(' .-_')
+        prefix_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', prefix).lower()
+        prefix_words = set(prefix_clean.split())
+        sig_prefix_words = [w for w in prefix_words if w not in MOVIE_STOP_WORDS and len(w) >= 2]
+        # Only check if prefix looks like an actual multi-word movie title (>= 2 significant words)
+        # to avoid discarding single-word provider tags like 'HDhub4u'
+        if len(sig_prefix_words) >= 2:
+            for tw in title_words:
+                if len(tw) >= 3 and tw not in prefix_words and not re.search(r'\b' + re.escape(tw) + r'\b', prefix_clean):
+                    return True
 
     # Check for false positive substring match:
     # A target title word (especially short words like 'musk') is present ONLY as a

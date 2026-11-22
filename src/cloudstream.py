@@ -6263,6 +6263,37 @@ _RELEASE_TAG_WORDS = {
 }
 
 
+def matches_all_query_terms(query, candidate_title):
+    """
+    Returns True if ALL significant query terms are present in candidate_title
+    (case-insensitive, equivalent to piping multiple grep -i commands:
+    e.g. query 'American Greed' requires candidate to match 'American' AND 'Greed').
+    """
+    if not query or not candidate_title:
+        return False
+    q_clean, _ = clean_cloudstream_title(query)
+    c_clean, _ = clean_cloudstream_title(candidate_title)
+
+    raw_q_words = re.findall(r"\w+", (q_clean or query).lower())
+    q_words = [w for w in raw_q_words if w not in _STOP_WORDS and len(w) >= 2]
+    if not q_words:
+        q_words = [w for w in raw_q_words if len(w) >= 1]
+    if not q_words:
+        return False
+
+    c_text = (c_clean or candidate_title).lower()
+    c_norm = re.sub(r"[^\w\s]", " ", c_text)
+
+    for word in q_words:
+        pattern = r"\b" + re.escape(word) + r"\b"
+        if not re.search(pattern, c_norm):
+            if len(word) >= 4 and word in c_norm:
+                continue
+            return False
+
+    return True
+
+
 def _is_strict_title_match(query, candidate):
     if not query or not candidate:
         return False
@@ -6306,6 +6337,9 @@ def _is_strict_title_match(query, candidate):
 
     q_set = set(q_filtered)
     c_set = set(c_filtered)
+
+    if not matches_all_query_terms(query, candidate):
+        return False
 
     if q_set == c_set:
         return True
@@ -6461,7 +6495,7 @@ class CNCVerseCloudStreamProvider(CloudStreamProvider):
                 for item in res.get("searchResult", []):
                     item_id = item.get("id")
                     item_title = item.get("t")
-                    if item_id and item_title:
+                    if item_id and item_title and matches_all_query_terms(clean_q, item_title):
                         items.append({
                             "provider_id": self.id,
                             "data": json.dumps({"id": str(item_id), "title": item_title, "ott": ott, "year": item.get("y")}),
@@ -6897,7 +6931,7 @@ class CastleTvCloudStreamProvider(CloudStreamProvider):
             m_id = r.get("id")
             title = r.get("title")
             m_type = r.get("movieType")
-            if m_id and title:
+            if m_id and title and matches_all_query_terms(clean_q, title):
                 items.append({
                     "provider_id": self.id,
                     "data": json.dumps({"movieId": str(m_id), "title": title, "movieType": m_type}),
@@ -7940,7 +7974,7 @@ class CineStreamCloudStreamProvider(CloudStreamProvider):
             try:
                 res = p.search(query)
                 if res:
-                    results.extend(res)
+                    results.extend([it for it in res if matches_all_query_terms(query, it.get("name") or "")])
             except Exception:
                 pass
         return results
@@ -9867,7 +9901,10 @@ def search_all_enabled_providers(query, timeout=10.0):
             return []
         try:
             items = provider.search(query.strip())
-            cards = [search_item_to_card_dict(it) for it in items]
+            cards = [
+                search_item_to_card_dict(it) for it in items
+                if matches_all_query_terms(query, it.get("name") or "")
+            ]
             if hide_adult:
                 try:
                     from . import api
@@ -10082,6 +10119,11 @@ def fetch_cloudstream_streams_for_media(
                         not _normalized_type(item.get("type"))
                         or _normalized_type(item.get("type")) in (norm_type, "other")
                     )
+                    and (
+                        matches_all_query_terms(title, item.get("name") or "")
+                        or (catalog_title and matches_all_query_terms(str(catalog_title), item.get("name") or ""))
+                        or (imdb_id and str(imdb_id).startswith("tt") and str(imdb_id) in str(item.get("data") or ""))
+                    )
                 ]
                 candidate_items = typed_items if norm_type in ("movie", "series") else (typed_items or list(search_items))
                 scored = []
@@ -10109,12 +10151,8 @@ def fetch_cloudstream_streams_for_media(
                         # provider. Keep year-verified localized titles as a
                         # fallback only when there is genuine title word overlap.
                         if requested_year and candidate_year == requested_year:
-                            q_words = [w for w in re.sub(r"[^\w\s]", "", (title or "").lower()).split() if w not in _STOP_WORDS]
-                            c_words = [w for w in re.sub(r"[^\w\s]", "", candidate_name.lower()).split() if w not in _STOP_WORDS]
-                            if q_words and c_words:
-                                overlap = len(set(q_words).intersection(set(c_words)))
-                                if overlap >= max(1, len(set(q_words))):
-                                    ranked_fallbacks.append((order, item))
+                            if matches_all_query_terms(title, candidate_name):
+                                ranked_fallbacks.append((order, item))
                         continue
 
                     score = 100 if has_imdb_match else (60 if candidate_name.casefold() == title.casefold() else 40)
