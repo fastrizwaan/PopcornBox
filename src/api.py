@@ -6246,6 +6246,32 @@ def is_direct_stream(stream):
     return False
 
 
+def is_youtube_stream(stream):
+    """Determine if a stream dictionary represents a YouTube video/stream."""
+    if not isinstance(stream, dict):
+        return False
+    if stream.get("is_youtube") is True:
+        return True
+    if stream.get("custom_plugin_id") == "custom.youtube":
+        return True
+    if stream.get("ytId") or stream.get("youtube_id"):
+        return True
+    url = str(stream.get("url") or stream.get("stream_url") or stream.get("externalUrl") or "").strip().lower()
+    if url and ("youtube.com" in url or "youtu.be" in url or "googlevideo.com" in url):
+        return True
+    addon_names = list(stream.get("addon_names") or [])
+    if stream.get("addon_name"):
+        addon_names.append(stream.get("addon_name"))
+    for an in addon_names:
+        an_lower = str(an).strip().lower()
+        if an_lower in ("youtube", "youtubeprovider", "custom.youtube") or an_lower.startswith("youtube "):
+            return True
+    s_name = str(stream.get("name") or "").strip().lower()
+    if s_name == "youtube" or s_name.startswith("youtube [") or s_name.startswith("youtube •") or s_name.startswith("youtube/"):
+        return True
+    return False
+
+
 _known_torrent_addons = set()
 
 def mark_addon_as_torrent(addon_identifier):
@@ -6529,6 +6555,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
             "cloudstream_provider_id": s.get("cloudstream_provider_id"),
             "is_custom_plugin": bool(s.get("is_custom_plugin")),
             "custom_plugin_id": s.get("custom_plugin_id"),
+            "is_youtube": bool(s.get("is_youtube") or is_youtube_stream(s) or yt_id or ("youtube.com" in stream_url_lower or "youtu.be" in stream_url_lower or "googlevideo.com" in stream_url_lower)),
             "stream_type": "torrent" if is_torrent else (s.get("stream_type") or ("direct" if is_http else "")),
             "headers": s.get("headers"),
             "subtitles": s.get("subtitles") or [],
@@ -6553,6 +6580,8 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
         valid_streams.append(stream_entry)
     
     def _rank_key(x):
+        is_yt = 1 if (x.get("is_youtube") or is_youtube_stream(x)) else 0
+        not_yt = 1 - is_yt
         is_torrent = is_torrent_stream(x)
         is_http = not is_torrent and (is_direct_stream(x) or bool(x.get("is_http")))
         seeds = int(x.get("seeders") or x.get("seeds") or 0)
@@ -6565,7 +6594,16 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
         is_720p = (q_val == 2) or ("720" in quality)
         is_4k = (q_val == 4) or ("4K" in quality) or ("2160" in quality)
 
-        if is_1080p:
+        if is_yt:
+            if is_1080p:
+                tier = 14
+            elif is_720p:
+                tier = 13
+            elif not is_4k:
+                tier = 12
+            else:
+                tier = 11
+        elif is_1080p:
             if is_http:
                 tier = 120
             elif seeds > 50:
@@ -6603,8 +6641,8 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
                 tier = 5
 
         size_gb = float(x.get("size_gb") or 0.0)
-        seeders = seeds if not is_http else 100
-        return (has_seeds, ep_m, tier, seeders, size_gb)
+        seeders = seeds if not is_http else (1 if is_yt else 100)
+        return (not_yt, has_seeds, ep_m, tier, seeders, size_gb)
 
     valid_streams.sort(key=_rank_key, reverse=True)
     return valid_streams
@@ -7448,6 +7486,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             "addon_name": "YouTube",
             "addon_names": ["YouTube"],
             "is_http": True,
+            "is_youtube": True,
             "quality": "1080p",
             "behaviorHints": {"filename": f"{stream_title}.mp4"}
         }]
@@ -7648,7 +7687,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     from . import custom_plugins
     enabled_custom_scrapers = (
         custom_plugins.get_enabled_scrapers_for_type(actual_media)
-        if custom_plugins.is_custom_plugins_enabled()
+        if custom_plugins.is_custom_plugins_enabled() and source_scope != "torrent"
         else []
     )
     if provider_scope:
@@ -7935,6 +7974,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 "plugin_scraper_tmdb_id": c.get("plugin_scraper_tmdb_id"),
                 "is_custom_plugin": bool(c.get("is_custom_plugin")),
                 "custom_plugin_id": c.get("custom_plugin_id"),
+                "is_youtube": bool(c.get("is_youtube") or is_youtube_stream(c)),
             }
             all_raw_streams.append(raw)
 

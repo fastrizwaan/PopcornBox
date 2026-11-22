@@ -313,6 +313,11 @@ def is_direct_stream(stream):
     return False
 
 
+def is_youtube_stream(stream):
+    """Determine if a stream dictionary represents a YouTube video/stream."""
+    return api.is_youtube_stream(stream)
+
+
 def _fresh_stream_candidates(refreshed, fresh_queue, previous, failed_identities=None):
     """Return newly fetched playable links, excluding known dead links."""
     previous_identity = _stream_identity(previous)
@@ -436,11 +441,25 @@ def get_stream_priority_tier(stream):
     More -> torrents <= 50 seeds (tier 20)
     4K -> torrents <= 50 seeds (tier 15)
 
+    YouTube streams (ranked below other stream results):
+    1080p (tier 14), 720p (tier 13), More (tier 12), 4K (tier 11)
+
     Dead / zero-seed torrents:
     1080p (tier 10), 720p (tier 9), More (tier 8), 4K (tier 5)
     """
     if not isinstance(stream, dict):
         return 0
+
+    if is_youtube_stream(stream):
+        q = _normalize_stream_quality(stream)
+        if q == "1080p":
+            return 14
+        elif q == "720p":
+            return 13
+        elif q != "4K":
+            return 12
+        else:
+            return 11
 
     is_direct = is_direct_stream(stream)
     seeds = int(stream.get("seeders") or stream.get("seeds") or 0)
@@ -488,6 +507,8 @@ def get_stream_priority_tier(stream):
 
 def stream_sort_key_all(t, sel_s=None, sel_e=None, ep_t=None, pref_prov=None, rem_st=None):
     from . import api
+    is_yt = 1 if is_youtube_stream(t) else 0
+    not_yt = 1 - is_yt
     is_http = 1 if is_direct_stream(t) or t.get('is_http') else 0
     seeds = int(t.get('seeders') or t.get('seeds') or 0)
     has_seeds = 1 if (is_http or seeds > 0) else 0
@@ -498,7 +519,7 @@ def stream_sort_key_all(t, sel_s=None, sel_e=None, ep_t=None, pref_prov=None, re
     is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
     size = float(t.get('size_gb') or 0.0)
     is_under_4gb = 1 if ((0 < size < 4.0) or (size == 0.0)) else 0
-    return (has_seeds, ep_m, is_remembered, tier, ping_ok, is_pref, is_under_4gb, seeds, size)
+    return (is_remembered, not_yt, has_seeds, ep_m, tier, ping_ok, is_pref, is_under_4gb, seeds, size)
 
 
 
@@ -1671,7 +1692,10 @@ class MovieDetailsPage(Gtk.Overlay):
                 if hasattr(self, 'check_live_btn'):
                     self.check_live_btn.set_sensitive(True)
                     self.check_live_btn.set_label("⚡ Check Direct")
-                t_list.sort(key=lambda x: (0 if (x.get('is_http') and x.get('ping_status') is True) else (1 if x.get('is_http') and x.get('ping_status') is None else (2 if x.get('is_http') else 3))))
+                t_list.sort(key=lambda x: (
+                    1 if is_youtube_stream(x) else 0,
+                    0 if (x.get('is_http') and x.get('ping_status') is True) else (1 if x.get('is_http') and x.get('ping_status') is None else (2 if x.get('is_http') else 3))
+                ))
                 self.render_streams_list()
                 return False
 
@@ -4523,6 +4547,7 @@ class MovieDetailsPage(Gtk.Overlay):
             t_http = bool(t.get("is_http"))
             t_q = _normalize_stream_quality(t)
             from . import api
+            is_yt = 1 if is_youtube_stream(t) else 0
             same_bg = 1 if (active_bg and api.stream_matches_binge_group(t, active_bg)) else 0
             same_q = 1 if (pref_q and t_q == pref_q) else 0
             same_prov = 1 if (t_http and pref_prov and _stream_matches_provider(t, pref_prov)) else 0
@@ -4540,7 +4565,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     tier = 2
                 else:
                     tier = 3
-                return (tier, -int(t.get("ping_status") is True), -float(t.get("size_gb") or 0.0))
+                return (is_yt, tier, -int(t.get("ping_status") is True), -float(t.get("size_gb") or 0.0))
             else:
                 seeds = int(t.get("seeders") or 0)
                 if same_bg:
@@ -4549,7 +4574,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     tier = 4 if same_q else 5
                 else:
                     tier = 8 if same_q else 9
-                return (tier, -seeds, -float(t.get("size_gb") or 0.0))
+                return (is_yt, tier, -seeds, -float(t.get("size_gb") or 0.0))
 
         sel_ident = _stream_identity(self.selected_torrent)
         candidates = []
@@ -19627,6 +19652,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         def _rank(stream):
             score = 0
+            if api.is_youtube_stream(stream):
+                score += 100
             if binge_group and api.stream_matches_binge_group(stream, binge_group):
                 score -= 10
             if provider and _stream_matches_provider(stream, provider):

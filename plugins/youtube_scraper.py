@@ -493,6 +493,7 @@ class Scraper:
                 "size": length_str,
                 "is_http": True,
                 "is_torrent": False,
+                "is_youtube": True,
                 "behaviorHints": {
                     "filename": fn,
                     "notWebReady": False,
