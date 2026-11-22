@@ -1049,6 +1049,86 @@ class TestCloudStream(unittest.TestCase):
                 p_url = item.get("poster_url") or ""
                 self.assertNotIn("://yts.gg/assets/images/", p_url)
 
+    def test_yts_genre_support_and_catalogs(self):
+        yts = cloudstream.get_provider("YTS")
+        self.assertIsNotNone(yts)
+        self.assertIn("series", yts.supported_types)
+        self.assertIn("movie", yts.supported_types)
+
+        # Check sections declare POPULAR_GENRES
+        for sec in yts.catalog_sections:
+            self.assertIn("genres", sec)
+            self.assertGreater(len(sec["genres"]), 10)
+            self.assertIn("Action", sec["genres"])
+            self.assertIn("Comedy", sec["genres"])
+
+        # Check cloudstream.get_catalogs exposes genre capability
+        mock_plugins = [
+            {"id": yts.id, "name": "YTS", "enabled": True},
+        ]
+        with patch("src.cloudstream.is_cloudstream_enabled", return_value=True), \
+             patch("src.cloudstream.get_all_plugins", return_value=mock_plugins):
+            cats = cloudstream.get_catalogs("all")
+            yts_cats = [c for c in cats if "yts" in c.get("addon_name", "").lower()]
+            self.assertGreater(len(yts_cats), 0)
+            for c in yts_cats:
+                self.assertIn("genre", c.get("extraSupported", []))
+                self.assertIn("Action", c.get("genres", []))
+                self.assertTrue(any(ex.get("name") == "genre" for ex in c.get("extra", [])))
+
+            # Test genre filtering via fetch_catalog_items
+            fake_movies_action = {
+                "status": "ok",
+                "data": {
+                    "movies": [
+                        {
+                            "id": 1,
+                            "title": "Action Hero",
+                            "title_long": "Action Hero (2022)",
+                            "year": 2022,
+                            "rating": 8.0,
+                            "genres": ["Action", "Thriller"],
+                            "torrents": [{"hash": "aabbcc112233", "quality": "1080p", "seeds": 50}],
+                        }
+                    ]
+                }
+            }
+            with patch.object(yts, "_request_json", return_value=fake_movies_action):
+                items = cloudstream.fetch_catalog_items(yts.id, "trending", genre="Action")
+                self.assertEqual(len(items), 1)
+                self.assertEqual(items[0]["title"], "Action Hero")
+                self.assertEqual(items[0]["year"], "2022")
+                self.assertIn("Action", items[0]["genres"])
+
+        # Test series stream extraction via load_links
+        fake_show_details = {
+            "title": "Test Show",
+            "episodes": [
+                {
+                    "season": 1,
+                    "episode": 2,
+                    "torrents": {
+                        "1080p": {
+                            "url": "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&amp;dn=TestShow.S01E02",
+                            "seed": 25,
+                            "filesize": "1.2 GB"
+                        }
+                    }
+                }
+            ]
+        }
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = json.dumps(fake_show_details).encode("utf-8")
+            mock_resp.__enter__.return_value = mock_resp
+            mock_url.return_value = mock_resp
+
+            streams = yts.get_streams_for_media("Test Show", "series", season=1, episode=2, imdb_id="tt9999999")
+            self.assertEqual(len(streams), 1)
+            self.assertEqual(streams[0]["info_hash"], "0123456789abcdef0123456789abcdef01234567")
+            self.assertIn("YTS 1080p", streams[0]["name"])
+            self.assertTrue(streams[0]["is_torrent"])
+
     def test_clean_cloudstream_title(self):
         clean, year = cloudstream.clean_cloudstream_title(
             "Duplicity (2009) BluRay [Hindi (DD5.1) & English] 1080p 720p & 480p Dual Audio [x264] | Full Movie"

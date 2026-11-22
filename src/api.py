@@ -3862,6 +3862,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             page=page,
             limit=page_limit,
             is_cancelled=is_cancelled,
+            genre=genre,
+            query=query,
         )
         if items and on_item_found and not (is_cancelled and is_cancelled()):
             on_item_found(items)

@@ -209,7 +209,7 @@ class Scraper:
 
         # 2. Popcorn Time API (fusme.link) fallback for movies and series
         try:
-            actual_media = "shows" if media_type in ("series", "show", "tv") else "movie"
+            actual_media = "show" if media_type in ("series", "show", "tv") else "movie"
             fusme_url = f"https://fusme.link/{actual_media}/{clean_imdb}?locale=en&contentLocale=en"
             req = urllib.request.Request(fusme_url, headers=self._HEADERS)
             with urllib.request.urlopen(req, timeout=6.0) as resp:

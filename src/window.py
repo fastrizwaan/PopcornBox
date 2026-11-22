@@ -14553,8 +14553,17 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         # CloudStream adapters expose their own main-page sections instead of
         # Stremio catalog manifests. List them on selection only (do not list them with all).
-        if filter_addon_url and cloudstream_catalogs and not (cur_genre or cur_lang or cur_country or cur_network):
+        if filter_addon_url and cloudstream_catalogs:
             for cat in cloudstream_catalogs:
+                if cur_genre and not api.catalog_supports_filter(cat, cur_genre):
+                    continue
+                if cur_lang and not api.catalog_supports_filter(cat, cur_lang):
+                    continue
+                if cur_country and not (
+                    api.catalog_supports_extra(cat, ["country", "origin_country", "countries"])[0]
+                    or api.catalog_supports_genre(cat, cur_country)
+                ):
+                    continue
                 c_type = str(cat.get("type") or "movie").strip().lower()
                 if (
                     is_home

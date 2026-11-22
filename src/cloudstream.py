@@ -5502,11 +5502,21 @@ DEFAULT_TRACKERS = [
 class YTSCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#YTS"
     name = "YTS"
-    supported_types = ["movie", "torrent", "all"]
+    supported_types = ["movie", "series", "tv", "torrent", "all"]
+
+    POPULAR_GENRES = [
+        "Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary",
+        "Drama", "Family", "Fantasy", "History", "Horror", "Music",
+        "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western"
+    ]
+
     catalog_sections = (
-        {"id": "popular-movies", "name": "Popular Movies", "section": "Popular Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "top-rated", "name": "Top Rated", "section": "Top Rated", "type": "movie", "supports_pagination": True},
+        {"id": "trending", "name": "Trending Movies", "section": "Trending Movies", "type": "movie", "genres": POPULAR_GENRES, "supports_pagination": True},
+        {"id": "popular-movies", "name": "Popular Movies", "section": "Popular Movies", "type": "movie", "genres": POPULAR_GENRES, "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": POPULAR_GENRES, "supports_pagination": True},
+        {"id": "top-rated", "name": "Top Rated Movies", "section": "Top Rated Movies", "type": "movie", "genres": POPULAR_GENRES, "supports_pagination": True},
+        {"id": "shows_trending", "name": "Trending Series", "section": "Trending Series", "type": "series", "genres": POPULAR_GENRES, "supports_pagination": True},
+        {"id": "shows_popular", "name": "Popular Series", "section": "Popular Series", "type": "series", "genres": POPULAR_GENRES, "supports_pagination": True},
     )
 
     _BASE_URLS = [
@@ -5537,26 +5547,37 @@ class YTSCloudStreamProvider(CloudStreamProvider):
         return None
 
     def get_streams_for_media(self, title, media_type, year=None, season=None, episode=None, imdb_id=None):
-        norm_type = media_type.lower() if media_type else "movie"
-        if norm_type not in ("movie", "all"):
+        clean_imdb = str(imdb_id).strip() if (imdb_id and str(imdb_id).startswith("tt")) else None
+        is_series = (media_type in ("series", "show", "shows", "tv", "anime")) or (season is not None and episode is not None)
+
+        if is_series:
+            if clean_imdb and season is not None and episode is not None:
+                return self.load_links(clean_imdb, season=season, episode=episode)
             return []
+
+        # Movie streams
         items = self.search(title, imdb_id=imdb_id)
-        if not items:
-            return []
-        target_year = str(year).strip()[:4] if (year and str(year).strip()[:4].isdigit()) else None
-        best_data = None
-        for it in items:
-            it_name = it.get("name") or ""
-            if not _is_strict_title_match(title, it_name):
-                continue
-            it_year = str(it.get("year") or "").strip()[:4]
-            if target_year and it_year and it_year.isdigit() and it_year != target_year:
-                continue
-            best_data = it.get("data")
-            if target_year and it_year == target_year:
-                break
-        if best_data:
-            return self.load_links(best_data)
+        if items:
+            target_year = str(year).strip()[:4] if (year and str(year).strip()[:4].isdigit()) else None
+            best_data = None
+            for it in items:
+                it_name = it.get("name") or ""
+                if not _is_strict_title_match(title, it_name):
+                    continue
+                it_year = str(it.get("year") or "").strip()[:4]
+                if target_year and it_year and it_year.isdigit() and it_year != target_year:
+                    continue
+                best_data = it.get("data")
+                if target_year and it_year == target_year:
+                    break
+            if best_data:
+                res = self.load_links(best_data)
+                if res:
+                    return res
+
+        # Fallback to IMDb lookup if search returned nothing
+        if clean_imdb:
+            return self.load_links(clean_imdb)
         return []
 
     def search(self, query, imdb_id=None):
@@ -5663,6 +5684,7 @@ class YTSCloudStreamProvider(CloudStreamProvider):
         }
 
     def load_links(self, data_str, season=None, episode=None):
+        sources = []
         payload = None
         try:
             if isinstance(data_str, str) and data_str.strip().startswith("{"):
@@ -5687,6 +5709,108 @@ class YTSCloudStreamProvider(CloudStreamProvider):
                     m = resp["data"].get("movie") or {}
                     torrents = m.get("torrents") or []
                     movie_title = m.get("title_long") or m.get("title") or movie_title
+
+        if not torrents:
+            clean_str = str(data_str or "").strip()
+            imdb_match = re.search(r"\b(tt\d{7,8})\b", clean_str)
+            clean_imdb = imdb_match.group(1) if imdb_match else None
+
+            # Series episode playback via Popcorn Time API (fusme.link)
+            if clean_imdb and season is not None and episode is not None:
+                try:
+                    s_int = int(season)
+                    e_int = int(episode)
+                    fusme_url = f"https://fusme.link/show/{clean_imdb}?locale=en&contentLocale=en"
+                    req = urllib.request.Request(fusme_url, headers={"User-Agent": DEFAULT_USER_AGENT})
+                    with urllib.request.urlopen(req, timeout=6.0) as resp:
+                        s_data = json.loads(resp.read().decode("utf-8"))
+                    episodes = s_data.get("episodes") or []
+                    for ep in episodes:
+                        if int(ep.get("season") or 0) == s_int and int(ep.get("episode") or 0) == e_int:
+                            ep_torrents = ep.get("torrents") or {}
+                            series_title = s_data.get("title") or "Series"
+                            for q, tinfo in ep_torrents.items():
+                                if not isinstance(tinfo, dict):
+                                    continue
+                                mag = (tinfo.get("url") or "").replace("&amp;", "&")
+                                if not mag.startswith("magnet:"):
+                                    continue
+                                h_match = re.search(r"xt=urn:btih:([a-fA-F0-9]{40})", mag, re.IGNORECASE)
+                                info_hash = h_match.group(1).lower() if h_match else ""
+                                seeds = int(tinfo.get("seed") or 0)
+                                peers = int(tinfo.get("peer") or 0)
+                                q_str = "1080p" if "1080" in q else ("720p" if "720" in q else "HD")
+                                sources.append({
+                                    "name": f"YTS {q_str}",
+                                    "title": f"{series_title} S{s_int:02d}E{e_int:02d} [{q_str}] | 👤 {seeds}",
+                                    "url": mag,
+                                    "magnet": mag,
+                                    "quality": 1080 if "1080" in q else 720,
+                                    "is_torrent": True,
+                                    "is_http": False,
+                                    "info_hash": info_hash,
+                                    "infoHash": info_hash,
+                                    "hash": info_hash,
+                                    "seeds": seeds,
+                                    "seeders": seeds,
+                                    "peers": peers,
+                                    "size": tinfo.get("filesize"),
+                                })
+                            break
+                    if sources:
+                        return sources
+                except Exception as e:
+                    logger.debug(f"YTS fusme show load_links failed: {e}")
+
+            # Movie playback fallback via clean_imdb
+            if clean_imdb:
+                resp = self._request_json("list_movies.json", {"query_term": clean_imdb})
+                if resp and isinstance(resp.get("data"), dict):
+                    movies = resp["data"].get("movies") or []
+                    if movies:
+                        m = movies[0]
+                        torrents = m.get("torrents") or []
+                        movie_title = m.get("title_long") or m.get("title") or movie_title
+
+                if not torrents:
+                    try:
+                        fusme_url = f"https://fusme.link/movie/{clean_imdb}?locale=en&contentLocale=en"
+                        req = urllib.request.Request(fusme_url, headers={"User-Agent": DEFAULT_USER_AGENT})
+                        with urllib.request.urlopen(req, timeout=6.0) as resp:
+                            m_data = json.loads(resp.read().decode("utf-8"))
+                        t_dict = m_data.get("torrents", {}).get("en", {})
+                        m_title = m_data.get("title") or movie_title
+                        for qual, tinfo in t_dict.items():
+                            if not isinstance(tinfo, dict):
+                                continue
+                            mag = (tinfo.get("url") or "").replace("&amp;", "&")
+                            if not mag.startswith("magnet:"):
+                                continue
+                            h_match = re.search(r"xt=urn:btih:([a-fA-F0-9]{40})", mag, re.IGNORECASE)
+                            info_hash = h_match.group(1).lower() if h_match else ""
+                            seeds = int(tinfo.get("seed") or 0)
+                            peers = int(tinfo.get("peer") or 0)
+                            q_num = 2160 if "2160" in qual or "4k" in qual.lower() else (1080 if "1080" in qual else 720)
+                            sources.append({
+                                "name": f"YTS {qual}",
+                                "title": f"{m_title} [{qual}] | 👤 {seeds}",
+                                "url": mag,
+                                "magnet": mag,
+                                "quality": q_num,
+                                "is_torrent": True,
+                                "is_http": False,
+                                "info_hash": info_hash,
+                                "infoHash": info_hash,
+                                "hash": info_hash,
+                                "seeds": seeds,
+                                "seeders": seeds,
+                                "peers": peers,
+                                "size": tinfo.get("filesize"),
+                            })
+                        if sources:
+                            return sources
+                    except Exception as e:
+                        logger.debug(f"YTS fusme movie load_links failed: {e}")
 
         if not torrents:
             return []
@@ -5743,42 +5867,236 @@ class YTSCloudStreamProvider(CloudStreamProvider):
             })
         return sources
 
+    def get_catalog_items(self, catalog_id="trending", media_type="movie", genre=None, page=1, query=None, limit=50):
+        """Fetch catalog rows or search results from YTS REST API with fusme.link fallback."""
+        is_series = (media_type in ("series", "show", "shows", "tv", "anime")) or str(catalog_id).startswith("shows_")
+        endpoint = "shows" if is_series else "movies"
+        norm_type = CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie
+
+        cid = str(catalog_id or "trending").lower().replace("-", "_")
+        clean_g = str(genre).strip() if (genre and str(genre).strip().lower() not in ("all", "all genres", "genre", "genres")) else None
+        p = int(page or 1)
+        lim = int(limit or 50)
+
+        # 1. For series: query fusme.link/shows
+        if is_series:
+            sort_map = {
+                "shows_popular": ("seeds", -1),
+                "shows_trending": ("trending", -1),
+                "shows_top_rated": ("rating", -1),
+            }
+            sort, order = sort_map.get(cid, ("trending", -1))
+            if query:
+                url = f"https://fusme.link/{endpoint}/{p}?keywords={urllib.parse.quote(query.strip())}&showAll=1&locale=en&contentLocale=en"
+            else:
+                url = f"https://fusme.link/{endpoint}/{p}?sort={sort}&order={order}&showAll=1&locale=en&contentLocale=en"
+                if clean_g:
+                    fg = clean_g.lower()
+                    if fg in ("sci-fi", "science-fiction"):
+                        fg = "science fiction"
+                    url += f"&genre={urllib.parse.quote(fg)}"
+
+            try:
+                headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"}
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=6.0) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+
+                items = data if isinstance(data, list) else data.get("results", [])
+                out = []
+                for m in items:
+                    if not isinstance(m, dict):
+                        continue
+                    imdb_id = m.get("imdb_id") or m.get("imdb") or m.get("id")
+                    if not imdb_id:
+                        continue
+                    images = m.get("images") or {}
+                    locale_data = m.get("locale") or {}
+                    poster = images.get("poster") or images.get("fanart") or locale_data.get("poster") or ""
+                    title = locale_data.get("title") or m.get("title") or "Untitled"
+                    rating_data = m.get("rating") or {}
+                    rating_pct = int(rating_data.get("percentage") or 0) if isinstance(rating_data, dict) else None
+                    year_val = m.get("year")
+                    genres_list = m.get("genres") or []
+                    if isinstance(genres_list, list):
+                        genres_list = [g.title() for g in genres_list if isinstance(g, str)]
+
+                    payload = {
+                        "id": str(imdb_id),
+                        "imdb_code": str(imdb_id),
+                        "title": title,
+                        "year": year_val,
+                        "cover": poster,
+                        "summary": m.get("synopsis") or m.get("description"),
+                        "type": "series",
+                    }
+                    out.append({
+                        "name": title,
+                        "title": title,
+                        "url": f"https://www.imdb.com/title/{imdb_id}/",
+                        "data": json.dumps(payload),
+                        "imdb_code": str(imdb_id),
+                        "imdb_id": str(imdb_id),
+                        "poster_url": poster,
+                        "year": year_val,
+                        "rating_percent": rating_pct,
+                        "type": norm_type,
+                        "genres": genres_list,
+                    })
+                    if len(out) >= lim:
+                        break
+                if out:
+                    return out
+            except Exception as e:
+                logger.debug(f"YTSCloudStreamProvider series catalog {cid} failed: {e}")
+            return []
+
+        # 2. For movies: Query YTS REST API
+        sort_map = {
+            "popular_movies": "download_count",
+            "popular": "download_count",
+            "latest_movies": "date_added",
+            "last_added": "date_added",
+            "top_rated": "rating",
+            "trending": "like_count",
+            "trending_movies": "like_count",
+        }
+        sort_key = sort_map.get(cid, "download_count")
+        params = {"sort_by": sort_key, "limit": min(lim, 50), "page": p}
+        if query:
+            params["query_term"] = query.strip()
+        if clean_g:
+            params["genre"] = clean_g
+
+        resp = self._request_json("list_movies.json", params)
+        if resp and isinstance(resp.get("data"), dict):
+            movies = resp["data"].get("movies") or []
+            out = []
+            for m in movies:
+                if not isinstance(m, dict):
+                    continue
+                t = m.get("title_long") or m.get("title") or "Unknown"
+                cover = m.get("large_cover_image") or m.get("medium_cover_image")
+                if cover and "://yts.gg/assets/images/" in cover:
+                    cover = cover.replace("://yts.gg/assets/images/", "://img.yts.gg/assets/images/")
+                payload = {
+                    "id": m.get("id"),
+                    "imdb_code": m.get("imdb_code"),
+                    "title": t,
+                    "year": m.get("year"),
+                    "cover": cover,
+                    "summary": m.get("summary") or m.get("description_full"),
+                    "torrents": m.get("torrents") or [],
+                }
+                rating_val = m.get("rating")
+                rating_pct = int(float(rating_val) * 10) if rating_val else None
+                out.append({
+                    "name": t,
+                    "title": t,
+                    "url": m.get("url") or f"https://yts.mx/movies/{m.get('slug', m.get('id'))}",
+                    "data": json.dumps(payload),
+                    "imdb_code": m.get("imdb_code"),
+                    "imdb_id": m.get("imdb_code"),
+                    "poster_url": cover,
+                    "year": m.get("year"),
+                    "rating_percent": rating_pct,
+                    "type": CloudStreamTvType.Movie,
+                    "genres": m.get("genres") or [],
+                })
+                if len(out) >= lim:
+                    break
+            if out:
+                return out
+
+        # 3. Fallback to fusme.link for movies if YTS API failed or returned empty
+        try:
+            fusme_sort_map = {
+                "popular_movies": ("seeds", -1),
+                "popular": ("seeds", -1),
+                "latest_movies": ("updated", -1),
+                "last_added": ("updated", -1),
+                "top_rated": ("rating", -1),
+                "trending": ("trending", -1),
+                "trending_movies": ("trending", -1),
+            }
+            sort, order = fusme_sort_map.get(cid, ("trending", -1))
+            if query:
+                url = f"https://fusme.link/movies/{p}?keywords={urllib.parse.quote(query.strip())}&showAll=1&locale=en&contentLocale=en"
+            else:
+                url = f"https://fusme.link/movies/{p}?sort={sort}&order={order}&showAll=1&locale=en&contentLocale=en"
+                if clean_g:
+                    fg = clean_g.lower()
+                    if fg in ("sci-fi", "science-fiction"):
+                        fg = "science fiction"
+                    url += f"&genre={urllib.parse.quote(fg)}"
+
+            headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"}
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=6.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            items = data if isinstance(data, list) else data.get("results", [])
+            out = []
+            for m in items:
+                if not isinstance(m, dict):
+                    continue
+                imdb_id = m.get("imdb_id") or m.get("imdb") or m.get("id")
+                if not imdb_id:
+                    continue
+                images = m.get("images") or {}
+                locale_data = m.get("locale") or {}
+                poster = images.get("poster") or images.get("fanart") or locale_data.get("poster") or ""
+                title = locale_data.get("title") or m.get("title") or "Untitled"
+                rating_data = m.get("rating") or {}
+                rating_pct = int(rating_data.get("percentage") or 0) if isinstance(rating_data, dict) else None
+                year_val = m.get("year")
+                genres_list = m.get("genres") or []
+                if isinstance(genres_list, list):
+                    genres_list = [g.title() for g in genres_list if isinstance(g, str)]
+
+                payload = {
+                    "id": str(imdb_id),
+                    "imdb_code": str(imdb_id),
+                    "title": title,
+                    "year": year_val,
+                    "cover": poster,
+                    "summary": m.get("synopsis") or m.get("description"),
+                    "type": "movie",
+                }
+                out.append({
+                    "name": title,
+                    "title": title,
+                    "url": f"https://www.imdb.com/title/{imdb_id}/",
+                    "data": json.dumps(payload),
+                    "imdb_code": str(imdb_id),
+                    "imdb_id": str(imdb_id),
+                    "poster_url": poster,
+                    "year": year_val,
+                    "rating_percent": rating_pct,
+                    "type": CloudStreamTvType.Movie,
+                    "genres": genres_list,
+                })
+                if len(out) >= lim:
+                    break
+            return out
+        except Exception as e:
+            logger.debug(f"YTSCloudStreamProvider movie fusme fallback failed: {e}")
+
+        return []
+
     def get_main_page(self, page=1):
         sections = []
-        for title, sort in [("Popular Movies", "download_count"), ("Latest Movies", "date_added"), ("Top Rated", "rating")]:
+        p = int(page or 1)
+        for sec in self.catalog_sections:
+            title = sec["section"]
+            sec_id = sec["id"]
+            sec_type = sec["type"]
             try:
-                resp = self._request_json("list_movies.json", {"sort_by": sort, "limit": 20, "page": page})
-                if resp and isinstance(resp.get("data"), dict):
-                    movies = resp["data"].get("movies") or []
-                    items = []
-                    for m in movies:
-                        t = m.get("title_long") or m.get("title")
-                        cover = m.get("large_cover_image") or m.get("medium_cover_image")
-                        if cover and "://yts.gg/assets/images/" in cover:
-                            cover = cover.replace("://yts.gg/assets/images/", "://img.yts.gg/assets/images/")
-                        payload = {
-                            "id": m.get("id"),
-                            "imdb_code": m.get("imdb_code"),
-                            "title": t,
-                            "year": m.get("year"),
-                            "cover": cover,
-                            "summary": m.get("summary"),
-                            "torrents": m.get("torrents") or [],
-                        }
-                        items.append({
-                            "name": t,
-                            "url": m.get("url"),
-                            "data": json.dumps(payload),
-                            "imdb_code": m.get("imdb_code"),
-                            "poster_url": cover,
-                            "year": m.get("year"),
-                            "rating_percent": int(float(m.get("rating") or 0) * 10),
-                            "type": CloudStreamTvType.Movie,
-                        })
-                    if items:
-                        sections.append((title, items))
+                items = self.get_catalog_items(catalog_id=sec_id, media_type=sec_type, page=p, limit=20)
+                if items:
+                    sections.append((title, items))
             except Exception as e:
-                logger.debug(f"YTS main page '{title}' failed: {e}")
+                logger.debug(f"YTS main page section '{title}' failed: {e}")
         return sections
 
 
@@ -8691,6 +9009,7 @@ def get_catalogs(media_type="all"):
             provider_name = str(plugin.get("name") or provider.name or "CloudStream").strip()
             base_p_name = re.sub(r"\s*\((?:cloudstream|cs)\)$", "", provider_name, flags=re.IGNORECASE).strip()
             provider_display_name = f"{base_p_name} (CloudStream)"
+            genres = list(section.get("genres") or [])
             catalogs.append({
                 "addon_name": provider_display_name,
                 "manifest_url": catalog_url(plugin_id),
@@ -8698,9 +9017,9 @@ def get_catalogs(media_type="all"):
                 "catalog_id": catalog_id,
                 "catalog_name": catalog_name,
                 "display_name": f"{provider_display_name} - {catalog_name}",
-                "genres": list(section.get("genres") or []),
-                "extra": [],
-                "extraSupported": [],
+                "genres": genres,
+                "extra": [{"name": "genre", "isRequired": False, "options": genres}] if genres else [],
+                "extraSupported": ["genre", "skip", "search"] if genres else ["skip", "search"],
                 "type": catalog_type,
                 "supports_pagination": bool(section.get("supports_pagination", False)),
                 "_source": "cloudstream",
@@ -8795,7 +9114,7 @@ def _get_provider_main_page(provider, page):
     return sections
 
 
-def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=None):
+def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=None, genre=None, query=None):
     """Load one declared CloudStream section and normalize it to Discover cards."""
     if is_cancelled and is_cancelled():
         return []
@@ -8812,30 +9131,72 @@ def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=
         return []
 
     provider = get_provider(provider_id)
+    if not provider:
+        return []
+
     section = next((
         item for item in (getattr(provider, "catalog_sections", ()) or [])
         if isinstance(item, dict) and str(item.get("id") or "") == str(catalog_id)
     ), None)
     if not section:
+        norm_cid = str(catalog_id or "").lower().replace("-", "_")
+        section = next((
+            item for item in (getattr(provider, "catalog_sections", ()) or [])
+            if isinstance(item, dict) and str(item.get("id") or "").lower().replace("-", "_") == norm_cid
+        ), None)
+    if not section:
         return []
     if hide_adult and is_section_nsfw(section):
         return []
 
+    sec_type = str(section.get("type") or "movie")
     wanted_section = str(section.get("section") or section.get("name") or "").strip().casefold()
     raw_items = []
-    for entry in _get_provider_main_page(provider, page):
-        if is_cancelled and is_cancelled():
-            return []
-        if isinstance(entry, (tuple, list)) and len(entry) >= 2:
-            section_name, items = str(entry[0] or "").strip().casefold(), entry[1]
-        elif isinstance(entry, dict):
-            section_name = str(entry.get("title") or entry.get("name") or "").strip().casefold()
-            items = entry.get("items") or entry.get("results") or []
-        else:
-            continue
-        if section_name == wanted_section:
-            raw_items = items if isinstance(items, list) else []
-            break
+
+    # 1. Direct provider catalog support (with genre and search query support)
+    if hasattr(provider, "get_catalog_items"):
+        try:
+            raw_items = provider.get_catalog_items(
+                catalog_id=catalog_id,
+                media_type=sec_type,
+                genre=genre,
+                page=page,
+                query=query,
+                limit=limit,
+            ) or []
+        except Exception as e:
+            logger.debug(f"Provider {provider.name} get_catalog_items failed: {e}")
+            raw_items = []
+
+    # 2. Fallback to main page parsing if not handled
+    if not raw_items and not query and (not genre or genre in ("All", "All Genres", "Genre", "all")):
+        for entry in _get_provider_main_page(provider, page):
+            if is_cancelled and is_cancelled():
+                return []
+            if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+                section_name, items = str(entry[0] or "").strip().casefold(), entry[1]
+            elif isinstance(entry, dict):
+                section_name = str(entry.get("title") or entry.get("name") or "").strip().casefold()
+                items = entry.get("items") or entry.get("results") or []
+            else:
+                continue
+            if section_name == wanted_section:
+                raw_items = items if isinstance(items, list) else []
+                break
+
+    # 3. Client-side genre filtering if raw_items were extracted from main page
+    if raw_items and genre and str(genre).strip().lower() not in ("all", "all genres", "genre", "genres"):
+        g_clean = str(genre).strip().lower()
+        if any(it.get("genres") for it in raw_items if isinstance(it, dict)):
+            filtered = []
+            for it in raw_items:
+                if not isinstance(it, dict):
+                    continue
+                it_genres = [str(x).strip().lower() for x in (it.get("genres") or [])]
+                if any(g_clean in g or g in g_clean for g in it_genres):
+                    filtered.append(it)
+            if filtered:
+                raw_items = filtered
 
     cards = []
     for item in raw_items:
@@ -8874,6 +9235,7 @@ def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=
         imdb_code = str(item.get("imdb_code") or item.get("imdb_id") or "").strip()
         if imdb_code and re.fullmatch(r"tt\d{7,8}", imdb_code):
             card["alias_ids"] = [imdb_code, card["id"]]
+            card["imdb_id"] = imdb_code
         else:
             card["alias_ids"] = [card["id"]]
         for key in ("genres", "description", "overview", "imdbRating", "runtime", "background", "videos", "trailer"):
