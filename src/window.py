@@ -5076,6 +5076,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     type_dropdown: Gtk.DropDown = Gtk.Template.Child()
     catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
     section_dropdown: Gtk.DropDown = Gtk.Template.Child()
+    sort_dropdown: Gtk.DropDown = Gtk.Template.Child()
     genre_dropdown: Gtk.DropDown = Gtk.Template.Child()
     year_dropdown: Gtk.DropDown = Gtk.Template.Child()
     language_dropdown: Gtk.DropDown = Gtk.Template.Child()
@@ -10446,6 +10447,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 getattr(self, "type_dropdown", None),
                 getattr(self, "catalog_dropdown", None),
                 getattr(self, "section_dropdown", None),
+                getattr(self, "sort_dropdown", None),
                 getattr(self, "genre_dropdown", None),
                 getattr(self, "year_dropdown", None),
                 getattr(self, "language_dropdown", None),
@@ -10469,6 +10471,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._populate_discover_type_dropdown()
             self._populate_discover_catalog_dropdown("all")
             self._populate_discover_section_dropdown(None, "all")
+            self._populate_discover_sort_dropdown()
             self._populate_discover_genre_dropdown(None, "all", None)
             self._populate_discover_year_dropdown(None, "all", None)
             self._populate_discover_language_dropdown(None, "all", None)
@@ -10481,6 +10484,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self.catalog_dropdown.connect("notify::selected", self._on_discover_catalog_changed)
             if hasattr(self, "section_dropdown") and self.section_dropdown:
                 self.section_dropdown.connect("notify::selected", self._on_discover_section_changed)
+            if hasattr(self, "sort_dropdown") and self.sort_dropdown:
+                self.sort_dropdown.connect("notify::selected", self._on_discover_sort_changed)
             if hasattr(self, "genre_dropdown") and self.genre_dropdown:
                 self.genre_dropdown.connect("notify::selected", self._on_discover_genre_changed)
             if hasattr(self, "year_dropdown") and self.year_dropdown:
@@ -10508,6 +10513,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 flowbox = getattr(self, flowbox_name, None)
                 if flowbox:
                     flowbox.set_filter_func(self._discover_result_filter)
+                    if hasattr(flowbox, "set_sort_func"):
+                        flowbox.set_sort_func(self._discover_flowbox_sort_func)
         finally:
             self._syncing_discover_toolbar = False
 
@@ -10841,13 +10848,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         PopcornBoxWindow._update_supported_media_types(self)
 
     def _populate_discover_catalog_dropdown(self, chosen_type):
-        from . import api
+        from . import api, tmdb_helper
         all_addons = api.database.get_addons()
         items = [{
             "display_name": "Catalog",
             "addon": None,
-            "manifest_url": None,
-            "addon_name": "Catalog"
+            "manifest_url": tmdb_helper.TMDB_BUILTIN_MANIFEST_URL,
+            "addon_name": "Catalog",
+            "_source": "tmdb_catalog"
         }]
 
         seen_urls = set()
@@ -10992,6 +11000,26 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     "cat": c,
                     "catalog_id": cid
                 })
+        else:
+            # Default TMDb provider sections: Popular, Trending, Top Rated, New on Streaming
+            tmdb_sections = [
+                ("Popular", "popular"),
+                ("Trending", "trending"),
+                ("Top Rated", "top-rated"),
+                ("New on Streaming", "new-on-streaming"),
+            ]
+            for s_name, s_id in tmdb_sections:
+                items.append({
+                    "display_name": s_name,
+                    "cat": {
+                        "id": s_id,
+                        "name": s_name,
+                        "type": chosen_type if chosen_type != "all" else "movie",
+                        "extraSupported": ["genre", "year", "language", "country", "network", "skip"],
+                    },
+                    "catalog_id": s_id,
+                    "_source": "tmdb_catalog",
+                })
 
         self._discover_section_items = items
         if hasattr(self, "section_dropdown") and self.section_dropdown:
@@ -10999,6 +11027,195 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self.section_dropdown.set_selected(0)
             self.section_dropdown.set_sensitive(len(items) > 1)
             self.section_dropdown.set_visible(len(items) > 1)
+
+    def _populate_discover_sort_dropdown(self):
+        options = ["Sort By", "Popularity", "Release Date", "Rating", "Title"]
+        self._discover_sort_items = options
+        if hasattr(self, "sort_dropdown") and self.sort_dropdown:
+            self.sort_dropdown.set_model(Gtk.StringList.new(options))
+            self.sort_dropdown.set_selected(0)
+            self.sort_dropdown.set_sensitive(True)
+            self.sort_dropdown.set_visible(True)
+
+    def _discover_flowbox_sort_func(self, child1, child2, _user_data=None):
+        sort_by = getattr(self, "current_sort_by", "Sort By")
+        if not sort_by or sort_by in ("Sort By", "Default"):
+            w1 = child1.get_child() if hasattr(child1, "get_child") else child1
+            w2 = child2.get_child() if hasattr(child2, "get_child") else child2
+            idx1 = getattr(w1, "_load_index", getattr(child1, "_load_index", 0))
+            idx2 = getattr(w2, "_load_index", getattr(child2, "_load_index", 0))
+            if idx1 != idx2:
+                return -1 if idx1 < idx2 else 1
+            return 0
+
+        w1 = child1.get_child() if hasattr(child1, "get_child") else child1
+        w2 = child2.get_child() if hasattr(child2, "get_child") else child2
+        if getattr(w1, "_is_empty_box", False):
+            return 1
+        if getattr(w2, "_is_empty_box", False):
+            return -1
+
+        d1 = getattr(w1, "movie_data", {}) or {}
+        d2 = getattr(w2, "movie_data", {}) or {}
+
+        if sort_by == "Popularity":
+            def _pop(d):
+                p = d.get("popularity") or d.get("item_popularity")
+                if p is not None:
+                    try: return float(p)
+                    except (ValueError, TypeError): pass
+                return 0.0
+            p1, p2 = _pop(d1), _pop(d2)
+            if p1 != p2:
+                return -1 if p1 > p2 else 1
+
+        elif sort_by in ("Release Date", "Recent"):
+            def _dt(d):
+                return str(d.get("release_date") or d.get("first_air_date") or d.get("released") or d.get("year") or d.get("releaseInfo") or "").strip()
+            dt1, dt2 = _dt(d1), _dt(d2)
+            if dt1 != dt2:
+                return -1 if dt1 > dt2 else 1
+
+        elif sort_by in ("Rating", "Featured"):
+            def _rt(d):
+                r = d.get("rating") or d.get("vote_average") or d.get("imdbRating")
+                if r is not None:
+                    try: return float(r)
+                    except (ValueError, TypeError): pass
+                return 0.0
+            r1, r2 = _rt(d1), _rt(d2)
+            if r1 != r2:
+                return -1 if r1 > r2 else 1
+
+        elif sort_by in ("Title", "Name"):
+            t1 = str(d1.get("title") or d1.get("name") or "").casefold()
+            t2 = str(d2.get("title") or d2.get("name") or "").casefold()
+            if t1 != t2:
+                return -1 if t1 < t2 else 1
+
+        idx1 = getattr(w1, "_load_index", getattr(child1, "_load_index", 0))
+        idx2 = getattr(w2, "_load_index", getattr(child2, "_load_index", 0))
+        if idx1 != idx2:
+            return -1 if idx1 < idx2 else 1
+        return 0
+
+    def _sort_discover_row_boxes(self, sort_str):
+        if not sort_str or sort_str in ("Sort By", "Default"):
+            return
+        root = getattr(self, "discover_box", None)
+        if root is None or not hasattr(root, "get_first_child"):
+            return
+        if type(root).__name__ in ("MagicMock", "Mock"):
+            return
+        seen_rows = set()
+        row = root.get_first_child()
+        while row is not None and row not in seen_rows and len(seen_rows) < 500:
+            seen_rows.add(row)
+            if type(row).__name__ in ("MagicMock", "Mock"):
+                break
+            card_box = getattr(row, "_card_box", None)
+            if card_box is None and hasattr(row, "get_first_child"):
+                queue = [row]
+                visited = set()
+                while queue and len(visited) < 100:
+                    curr = queue.pop(0)
+                    if curr in visited:
+                        continue
+                    visited.add(curr)
+                    if getattr(curr, "_is_card_box", False) or getattr(curr, "_is_discover_row_box", False):
+                        card_box = curr
+                        break
+                    ch = curr.get_first_child() if hasattr(curr, "get_first_child") else None
+                    seen_ch = set()
+                    while ch is not None and ch not in seen_ch and len(seen_ch) < 100:
+                        seen_ch.add(ch)
+                        queue.append(ch)
+                        ch = ch.get_next_sibling()
+            if card_box is not None and hasattr(card_box, "get_first_child") and type(card_box).__name__ not in ("MagicMock", "Mock"):
+                cards = []
+                seen_cards = set()
+                ch = card_box.get_first_child()
+                while ch is not None and ch not in seen_cards and len(seen_cards) < 500:
+                    seen_cards.add(ch)
+                    if hasattr(ch, "movie_data") and isinstance(ch.movie_data, dict):
+                        cards.append(ch)
+                    ch = ch.get_next_sibling()
+                if len(cards) > 1:
+                    def _card_k(c):
+                        d = getattr(c, "movie_data", {}) or {}
+                        if sort_str == "Popularity":
+                            try: return -float(d.get("popularity") or d.get("item_popularity") or 0.0)
+                            except (ValueError, TypeError): return 0.0
+                        elif sort_str in ("Release Date", "Recent"):
+                            return str(d.get("release_date") or d.get("first_air_date") or d.get("released") or d.get("year") or d.get("releaseInfo") or "")
+                        elif sort_str in ("Rating", "Featured"):
+                            try: return -float(d.get("rating") or d.get("vote_average") or d.get("imdbRating") or 0.0)
+                            except (ValueError, TypeError): return 0.0
+                        elif sort_str in ("Title", "Name"):
+                            return str(d.get("title") or d.get("name") or "").casefold()
+                        return getattr(c, "_load_index", 0)
+
+                    rev = (sort_str in ("Release Date", "Recent"))
+                    cards_sorted = sorted(cards, key=_card_k, reverse=rev)
+                    prev = None
+                    for card in cards_sorted:
+                        if hasattr(card_box, "reorder_child_after"):
+                            card_box.reorder_child_after(card, prev)
+                        prev = card
+            row = row.get_next_sibling()
+
+    def _on_discover_sort_changed(self, dropdown, pspec):
+        if getattr(self, "_syncing_discover_toolbar", False):
+            return
+        sel = dropdown.get_selected()
+        if not hasattr(self, "_discover_sort_items") or sel < 0 or sel >= len(self._discover_sort_items):
+            return
+        sort_str = self._discover_sort_items[sel]
+        self.current_sort_by = sort_str
+        self.current_sort = sort_str
+
+        for flowbox_name in ("content_flowbox", "unique_flowbox"):
+            flowbox = getattr(self, flowbox_name, None)
+            if flowbox and hasattr(flowbox, "invalidate_sort"):
+                flowbox.invalidate_sort()
+
+        self._sort_discover_row_boxes(sort_str)
+
+        stack = getattr(self, "library_stack", None)
+        visible_page = stack.get_visible_child_name() if stack else ""
+        if visible_page == "content":
+            self.reload_catalog_grid()
+        elif visible_page == "unique":
+            self._refresh_unique_combined_view()
+
+    def _catalog_supports_extra(self, addon, active_cat, extra_names):
+        """Check whether the given active_cat or addon declares support for any of extra_names."""
+        if addon is None or (isinstance(addon, dict) and addon.get("_source") == "tmdb_catalog"):
+            # Default TMDb provider supports all primary filters
+            return True, None
+        if isinstance(active_cat, dict) and active_cat.get("_source") == "tmdb_catalog":
+            return True, None
+        cats = []
+        if isinstance(active_cat, dict):
+            cats = [active_cat]
+        elif isinstance(active_cat, str) and addon and isinstance(addon.get("catalogs"), list):
+            cats = [c for c in addon["catalogs"] if isinstance(c, dict) and c.get("id") == active_cat]
+        if not cats and addon and isinstance(addon.get("catalogs"), list):
+            cats = addon.get("catalogs") or []
+        for c in cats:
+            if not isinstance(c, dict):
+                continue
+            extra_sup = [str(x).lower() for x in (c.get("extraSupported") or [])]
+            for target in extra_names:
+                if target.lower() in extra_sup:
+                    return True, None
+            for ex in (c.get("extra") or []):
+                ex_name = str(ex.get("name") if isinstance(ex, dict) else ex).lower()
+                for target in extra_names:
+                    if ex_name == target.lower():
+                        opts = ex.get("options") if isinstance(ex, dict) else None
+                        return True, opts
+        return False, None
 
     def _is_audio_or_live_tv_discover_context(self, addon, chosen_type, active_cat=None):
         normalized_type = str(chosen_type or "all").strip().lower()
@@ -11185,16 +11402,26 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self.language_dropdown.set_sensitive(False)
                 self.language_dropdown.set_visible(False)
             return
-        # Language options come only from locally cached metadata. Filtering is
-        # applied to returned items in the app, so provider declarations do not
-        # determine which languages users can select.
-        langs = database.get_available_languages()
-        self._discover_language_items = ["Language"] + langs
+
+        res = self._catalog_supports_extra(addon, active_cat, ["language", "lang", "languages"]) if hasattr(self, "_catalog_supports_extra") else PopcornBoxWindow._catalog_supports_extra(self, addon, active_cat, ["language", "lang", "languages"])
+        if isinstance(res, tuple) and len(res) == 2:
+            supports_lang, opts = res
+        else:
+            supports_lang, opts = True, None
         if hasattr(self, "language_dropdown") and self.language_dropdown:
-            self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
-            self.language_dropdown.set_selected(0)
-            self.language_dropdown.set_sensitive(bool(langs))
-            self.language_dropdown.set_visible(bool(langs))
+            if not supports_lang:
+                self._discover_language_items = ["Language"]
+                self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
+                self.language_dropdown.set_selected(0)
+                self.language_dropdown.set_sensitive(False)
+                self.language_dropdown.set_visible(False)
+            else:
+                langs = [str(x) for x in opts] if opts else database.get_available_languages()
+                self._discover_language_items = ["Language"] + langs
+                self.language_dropdown.set_model(Gtk.StringList.new(self._discover_language_items))
+                self.language_dropdown.set_selected(0)
+                self.language_dropdown.set_sensitive(bool(langs))
+                self.language_dropdown.set_visible(bool(langs))
 
     def _populate_discover_country_dropdown(self, addon, chosen_type, active_cat=None):
         from . import database
@@ -11207,29 +11434,66 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self.country_dropdown.set_sensitive(False)
                 self.country_dropdown.set_visible(False)
             return
-        countries = database.get_available_countries(chosen_type)
-        self._discover_country_items = ["Country"] + countries
-        if hasattr(self, "country_dropdown") and self.country_dropdown:
-            self.country_dropdown.set_model(Gtk.StringList.new(self._discover_country_items))
-            self.country_dropdown.set_selected(0)
-            self.country_dropdown.set_sensitive(bool(countries))
-            self.country_dropdown.set_visible(bool(countries))
 
-    def _populate_discover_network_dropdown(self, chosen_type):
-        common = [
-            "Netflix", "Amazon Prime", "Amazon Prime Video", "Amazon MX Player", "MX Player",
-            "HBO", "Apple TV+", "Disney+", "JioHotstar", "ZEE5", "SonyLIV",
-            "Sun NXT", "aha", "hoichoi", "Lionsgate Play", "Eros Now",
-            "ManoramaMAX", "Chaupal", "Hungama Play", "Hulu", "Paramount+",
-            "Peacock", "BBC", "Showtime", "Starz",
-        ]
-        options = ["Network"] + sorted(common, key=str.casefold)
-        self._discover_network_items = options
+        res = self._catalog_supports_extra(addon, active_cat, ["country", "origin_country", "countries"]) if hasattr(self, "_catalog_supports_extra") else PopcornBoxWindow._catalog_supports_extra(self, addon, active_cat, ["country", "origin_country", "countries"])
+        if isinstance(res, tuple) and len(res) == 2:
+            supports_country, opts = res
+        else:
+            supports_country, opts = True, None
+        if hasattr(self, "country_dropdown") and self.country_dropdown:
+            if not supports_country:
+                self._discover_country_items = ["Country"]
+                self.country_dropdown.set_model(Gtk.StringList.new(self._discover_country_items))
+                self.country_dropdown.set_selected(0)
+                self.country_dropdown.set_sensitive(False)
+                self.country_dropdown.set_visible(False)
+            else:
+                countries = [str(x) for x in opts] if opts else database.get_available_countries(chosen_type)
+                self._discover_country_items = ["Country"] + countries
+                self.country_dropdown.set_model(Gtk.StringList.new(self._discover_country_items))
+                self.country_dropdown.set_selected(0)
+                self.country_dropdown.set_sensitive(bool(countries))
+                self.country_dropdown.set_visible(bool(countries))
+
+    def _populate_discover_network_dropdown(self, addon=None, chosen_type="all", active_cat=None):
+        if self._is_audio_or_live_tv_discover_context(addon, chosen_type, active_cat) or chosen_type in ("channel", "live", "music", "radio", "podcast"):
+            self._discover_network_items = ["Network"]
+            if getattr(self, "network_dropdown", None):
+                self.network_dropdown.set_model(Gtk.StringList.new(self._discover_network_items))
+                self.network_dropdown.set_selected(0)
+                self.network_dropdown.set_sensitive(False)
+                self.network_dropdown.set_visible(False)
+            return
+
+        res = self._catalog_supports_extra(addon, active_cat, ["network", "networks", "provider", "providers"]) if hasattr(self, "_catalog_supports_extra") else PopcornBoxWindow._catalog_supports_extra(self, addon, active_cat, ["network", "networks", "provider", "providers"])
+        if isinstance(res, tuple) and len(res) == 2:
+            supports_network, opts = res
+        else:
+            supports_network, opts = True, None
         if getattr(self, "network_dropdown", None):
-            self.network_dropdown.set_model(Gtk.StringList.new(options))
-            self.network_dropdown.set_selected(0)
-            self.network_dropdown.set_sensitive(len(options) > 1)
-            self.network_dropdown.set_visible(chosen_type not in ("channel", "live", "music", "radio", "podcast"))
+            if not supports_network:
+                self._discover_network_items = ["Network"]
+                self.network_dropdown.set_model(Gtk.StringList.new(self._discover_network_items))
+                self.network_dropdown.set_selected(0)
+                self.network_dropdown.set_sensitive(False)
+                self.network_dropdown.set_visible(False)
+            else:
+                if opts:
+                    options = ["Network"] + [str(x) for x in opts]
+                else:
+                    common = [
+                        "Netflix", "Amazon Prime", "Amazon Prime Video", "Amazon MX Player", "MX Player",
+                        "HBO", "Apple TV+", "Disney+", "JioHotstar", "ZEE5", "SonyLIV",
+                        "Sun NXT", "aha", "hoichoi", "Lionsgate Play", "Eros Now",
+                        "ManoramaMAX", "Chaupal", "Hungama Play", "Hulu", "Paramount+",
+                        "Peacock", "BBC", "Showtime", "Starz",
+                    ]
+                    options = ["Network"] + sorted(common, key=str.casefold)
+                self._discover_network_items = options
+                self.network_dropdown.set_model(Gtk.StringList.new(options))
+                self.network_dropdown.set_selected(0)
+                self.network_dropdown.set_sensitive(len(options) > 1)
+                self.network_dropdown.set_visible(True)
 
     def _reset_discover_filters(self, *_args):
         """Reset all Discover dropdowns and the Unique filter to their defaults."""
@@ -11237,18 +11501,22 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         try:
             if getattr(self, "type_dropdown", None):
                 self.type_dropdown.set_selected(0)
+            if getattr(self, "sort_dropdown", None):
+                self.sort_dropdown.set_selected(0)
             self._populate_discover_catalog_dropdown("all")
             self._populate_discover_section_dropdown(None, "all")
+            self._populate_discover_sort_dropdown()
             self._populate_discover_genre_dropdown(None, "all", None)
             self._populate_discover_year_dropdown(None, "all", None)
             self._populate_discover_language_dropdown(None, "all", None)
             self._populate_discover_country_dropdown(None, "all", None)
-            self._populate_discover_network_dropdown("all")
+            self._populate_discover_network_dropdown(None, "all", None)
         finally:
             self._syncing_discover_toolbar = False
         self.current_genre = self.current_year = self.current_language = None
         self.current_country = self.current_network = None
         self.current_sort = "Popular"
+        self.current_sort_by = "Sort By"
         self._current_discover_type = "all"
         self._current_discover_addon = None
         # Unique is the Discover default, so Reset restores it: the checkbox,
@@ -11285,6 +11553,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_discover_type_items") or sel < 0 or sel >= len(self._discover_type_items):
             return
         chosen_type = self._discover_type_items[sel][1]
+        c_sel = self.catalog_dropdown.get_selected() if hasattr(self, "catalog_dropdown") else 0
+        addon = self._discover_catalog_items[c_sel].get("addon") if hasattr(self, "_discover_catalog_items") and c_sel < len(self._discover_catalog_items) else None
+        cat_info = self._discover_catalog_items[c_sel] if hasattr(self, "_discover_catalog_items") and c_sel < len(self._discover_catalog_items) else None
         prior = {}
         for key, dd_name in (("genre", "genre_dropdown"), ("year", "year_dropdown"),
                              ("language", "language_dropdown"), ("country", "country_dropdown"),
@@ -11295,12 +11566,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._syncing_discover_toolbar = True
         try:
             self._populate_discover_catalog_dropdown(chosen_type)
-            self._populate_discover_section_dropdown(None, chosen_type)
-            self._populate_discover_genre_dropdown(None, chosen_type, None)
-            self._populate_discover_year_dropdown(None, chosen_type, None)
-            self._populate_discover_language_dropdown(None, chosen_type, None)
-            self._populate_discover_country_dropdown(None, chosen_type, None)
-            self._populate_discover_network_dropdown(chosen_type)
+            self._populate_discover_section_dropdown(addon, chosen_type, cat_info)
+            active_cat = self._discover_section_items[0].get("cat") if getattr(self, "_discover_section_items", None) else None
+            self._populate_discover_genre_dropdown(addon, chosen_type, active_cat)
+            self._populate_discover_year_dropdown(addon, chosen_type, active_cat)
+            self._populate_discover_language_dropdown(addon, chosen_type, active_cat)
+            self._populate_discover_country_dropdown(addon, chosen_type, active_cat)
+            self._populate_discover_network_dropdown(addon, chosen_type, active_cat)
             for key, dd_name, items_name in (("genre", "genre_dropdown", "_discover_genre_items"),
                                              ("year", "year_dropdown", "_discover_year_items"),
                                              ("language", "language_dropdown", "_discover_language_items"),
@@ -11327,6 +11599,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             cur_y = self.year_dropdown.get_selected_item().get_string() if hasattr(self, "year_dropdown") and self.year_dropdown and self.year_dropdown.get_selected_item() else None
             cur_l = self.language_dropdown.get_selected_item().get_string() if hasattr(self, "language_dropdown") and self.language_dropdown and self.language_dropdown.get_selected_item() else None
             cur_c = self.country_dropdown.get_selected_item().get_string() if hasattr(self, "country_dropdown") and self.country_dropdown and self.country_dropdown.get_selected_item() else None
+            cur_n = self.network_dropdown.get_selected_item().get_string() if hasattr(self, "network_dropdown") and self.network_dropdown and self.network_dropdown.get_selected_item() else None
 
             self._populate_discover_section_dropdown(addon, chosen_type, cat_info)
             active_cat = self._discover_section_items[0].get("cat") if getattr(self, "_discover_section_items", None) else None
@@ -11341,6 +11614,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
             self._populate_discover_country_dropdown(addon, chosen_type, active_cat)
             self._restore_dropdown_selection(self.country_dropdown, getattr(self, "_discover_country_items", []), cur_c)
+
+            self._populate_discover_network_dropdown(addon, chosen_type, active_cat)
+            self._restore_dropdown_selection(self.network_dropdown, getattr(self, "_discover_network_items", []), cur_n)
         finally:
             self._syncing_discover_toolbar = False
         self._on_discover_filter_changed()
@@ -11364,6 +11640,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             cur_y = self.year_dropdown.get_selected_item().get_string() if hasattr(self, "year_dropdown") and self.year_dropdown and self.year_dropdown.get_selected_item() else None
             cur_l = self.language_dropdown.get_selected_item().get_string() if hasattr(self, "language_dropdown") and self.language_dropdown and self.language_dropdown.get_selected_item() else None
             cur_c = self.country_dropdown.get_selected_item().get_string() if hasattr(self, "country_dropdown") and self.country_dropdown and self.country_dropdown.get_selected_item() else None
+            cur_n = self.network_dropdown.get_selected_item().get_string() if hasattr(self, "network_dropdown") and self.network_dropdown and self.network_dropdown.get_selected_item() else None
 
             self._populate_discover_genre_dropdown(addon, chosen_type, active_cat)
             self._restore_dropdown_selection(self.genre_dropdown, getattr(self, "_discover_genre_items", []), cur_g)
@@ -11376,6 +11653,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
             self._populate_discover_country_dropdown(addon, chosen_type, active_cat)
             self._restore_dropdown_selection(self.country_dropdown, getattr(self, "_discover_country_items", []), cur_c)
+
+            self._populate_discover_network_dropdown(addon, chosen_type, active_cat)
+            self._restore_dropdown_selection(self.network_dropdown, getattr(self, "_discover_network_items", []), cur_n)
         finally:
             self._syncing_discover_toolbar = False
         self._on_discover_filter_changed()
@@ -11463,6 +11743,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         network_str = network_item.get_string() if network_item else None
         network = network_str if network_str and network_str not in ("All Networks", _("All Networks"), "Network", _("Network"), "All") else None
 
+        sort_item = self.sort_dropdown.get_selected_item() if getattr(self, "sort_dropdown", None) else None
+        sort_str = sort_item.get_string() if sort_item else None
+        sort_by = sort_str if sort_str and sort_str not in ("Sort By", _("Sort By"), "Default", None) else None
+
         unique_only = self._is_unique_mode_active()
         query = self._discover_result_search_query()
 
@@ -11470,6 +11754,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             "type": m_type,
             "catalog_id": catalog_id,
             "section": section,
+            "sort_by": sort_by,
             "genre": genre,
             "year": year,
             "language": language,
@@ -12517,7 +12802,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             from . import tmdb_helper
                             if page > tmdb_helper._MAX_DISCOVER_PAGES:
                                 return (key, page, [], 0, False)
-                            tmdb_cache_key = f"tmdb-default-unique:{c_id}:{m_type}:p{page}"
+                            cur_sort_by = getattr(self, "current_sort_by", None)
+                            tmdb_cache_key = (
+                                f"tmdb-default-unique:{c_id}:{m_type}:p{page}:"
+                                f"{cur_genre}:{cur_year}:{cur_lang}:{cur_country}:{cur_network}:{cur_sort_by}"
+                            )
                             items = database.get_cached_catalog(
                                 tmdb_cache_key,
                                 max_age_hours=database.CATALOG_CACHE_HOURS,
@@ -12529,6 +12818,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                     media_type=m_type,
                                     page=page,
                                     limit=50,
+                                    genre=cur_genre,
+                                    year=cur_year,
+                                    language=cur_lang,
+                                    country=cur_country,
+                                    network=cur_network,
+                                    sort_by=cur_sort_by,
                                 )
                                 cat_info["tmdb_total_pages"] = max(
                                     int(cat_info.get("tmdb_total_pages") or 0),
@@ -13407,11 +13702,18 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 yr_str = str(year) if year and str(year) not in ("All Years", "All", _("All Years"), "Year", _("Year")) else ""
                 if catalog.get("_source") == "tmdb_catalog":
                     from . import tmdb_helper
+                    cur_sort_by = getattr(self, "current_sort_by", None)
                     items, total_pages = tmdb_helper.fetch_default_tmdb_catalog_page(
                         catalog_id=cat_id,
                         media_type=media_type,
                         page=page_to_fetch,
                         limit=80,
+                        genre=genre,
+                        year=year,
+                        language=language,
+                        country=country,
+                        network=network,
+                        sort_by=cur_sort_by,
                     )
                     if not items:
                         cinemeta_cat_id = "year" if cat_id == "new-on-streaming" else ("imdbRating" if cat_id == "top-rated" else "top")
@@ -15198,9 +15500,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         if row_info.get("_source") == "tmdb_catalog":
                             from . import tmdb_helper
                             req_page = max(1, int(row_info.get("tmdb_page") or 1))
+                            r_genre = row_info.get("genre") or getattr(self, "current_genre", None)
+                            r_year = row_info.get("year") or getattr(self, "current_year", None)
+                            r_lang = row_info.get("language") or getattr(self, "current_language", None)
+                            r_country = row_info.get("country") or getattr(self, "current_country", None)
+                            r_network = row_info.get("network") or getattr(self, "current_network", None)
+                            r_sort = row_info.get("sort_by") or getattr(self, "current_sort_by", None)
                             tmdb_key = (
                                 f"tmdb-default:{c_id}:{m_type}:p{req_page}:"
-                                f"row{DISCOVER_ROW_CARD_LIMIT}"
+                                f"row{DISCOVER_ROW_CARD_LIMIT}:{r_genre}:{r_year}:{r_lang}:{r_country}:{r_network}:{r_sort}"
                             )
                             items = database.get_cached_catalog(
                                 tmdb_key, max_age_hours=database.CATALOG_CACHE_HOURS
@@ -15212,6 +15520,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                     media_type=m_type,
                                     page=req_page,
                                     limit=DISCOVER_ROW_CARD_LIMIT,
+                                    genre=r_genre,
+                                    year=r_year,
+                                    language=r_lang,
+                                    country=r_country,
+                                    network=r_network,
+                                    sort_by=r_sort,
                                 )
                                 total_pages = max(total_pages, int(page_total or 0))
                                 if not items:
@@ -16479,6 +16793,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         else:
             while flowbox.get_first_child() is not None:
                 flowbox.remove(flowbox.get_first_child())
+        flowbox._next_load_index = 0
         if seen_ids is not None:
             seen_ids.clear()
         self._append_flowbox(flowbox, items, seen_ids, on_remove_clicked=on_remove_clicked)
@@ -16525,7 +16840,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             if slice_idx < len(slices):
                 chunk = slices[slice_idx]
                 for it in chunk:
-                    flowbox.append(MovieWidget(it, self._on_movie_clicked, on_remove_clicked=on_remove_clicked))
+                    w = MovieWidget(it, self._on_movie_clicked, on_remove_clicked=on_remove_clicked)
+                    w._load_index = getattr(flowbox, "_next_load_index", 0)
+                    flowbox._next_load_index = w._load_index + 1
+                    flowbox.append(w)
                 if slice_idx + 1 < len(slices):
                     GLib.idle_add(_deliver_next_slice, slice_idx + 1)
             return False

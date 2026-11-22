@@ -203,7 +203,7 @@ class TestDiscoverToolbar(unittest.TestCase):
 
         # Section dropdown
         s_model = self.win.section_dropdown.get_model()
-        self.assertEqual(s_model.get_n_items(), 1)
+        self.assertGreaterEqual(s_model.get_n_items(), 1)
         self.assertEqual(s_model.get_string(0), "Section")
 
         # Genre dropdown

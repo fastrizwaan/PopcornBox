@@ -1749,6 +1749,7 @@ def get_default_tmdb_catalogs(media_type="all"):
     for kind, label in kinds:
         for catalog_id, catalog_name, tmdb_sort in (
             ("popular", "Popular", "popular"),
+            ("trending", "Trending", "trending"),
             ("new-on-streaming", "New on streaming", "date"),
             ("top-rated", "Top Rated", "rating"),
         ):
@@ -1769,22 +1770,34 @@ def get_default_tmdb_catalogs(media_type="all"):
     return catalogs
 
 
-def fetch_default_tmdb_catalog_page(catalog_id, media_type="movie", page=1, limit=50, region=None):
-    """Fetch one page from the built-in TMDb Popular or New on streaming catalog.
+def fetch_default_tmdb_catalog_page(
+    catalog_id,
+    media_type="movie",
+    page=1,
+    limit=50,
+    region=None,
+    genre=None,
+    year=None,
+    language=None,
+    country=None,
+    network=None,
+    sort_by=None,
+):
+    """Fetch one page from the built-in TMDb Popular, Trending, Top Rated or New on streaming catalog.
 
-    TMDb's discover endpoint reports current watch availability rather than the
-    date a title was added to a streaming service. The streaming feed therefore
-    selects currently streamable titles and orders them by their release date.
+    Supports filtering by genre, year, language, country, network, and sorting by sort_by.
     """
     catalog_key = str(catalog_id or "").strip().lower().replace("_", "-")
     if catalog_key in ("new", "new-on-streaming", "new-on-streaming-movies", "new-on-streaming-series"):
         sort_mode = "streaming"
     elif catalog_key in ("top-rated", "top_rated", "toprated", "featured"):
         sort_mode = "rating"
+    elif catalog_key in ("trending", "trending-movies", "trending-series"):
+        sort_mode = "trending"
     elif catalog_key in ("popular", "popular-movies", "popular-series"):
         sort_mode = "popular"
     else:
-        return [], 0
+        sort_mode = "popular"
 
     try:
         page = max(1, int(page or 1))
@@ -1808,37 +1821,94 @@ def fetch_default_tmdb_catalog_page(catalog_id, media_type="movie", page=1, limi
     from datetime import date
     today = date.today().isoformat()
     watch_region = str(region or database.get_setting("tmdb_watch_region", "IN") or "IN").strip().upper()
-    sort_by_param = "popularity.desc"
-    if sort_mode == "streaming":
-        sort_by_param = "primary_release_date.desc" if kind == "movie" else "first_air_date.desc"
-    elif sort_mode == "rating":
-        sort_by_param = "vote_average.desc"
-    params = {
-        "api_key": api_key,
-        "include_adult": "false",
-        "page": page,
-        "sort_by": sort_by_param,
-    }
-    params["primary_release_date.lte" if kind == "movie" else "first_air_date.lte"] = today
-    if kind == "movie":
-        params["with_runtime.gte"] = MIN_TMDB_MOVIE_RUNTIME_MINUTES
-    if sort_mode == "streaming":
-        params["watch_region"] = watch_region
-        params["with_watch_monetization_types"] = "flatrate|free|ads"
-        if kind == "movie":
-            params["region"] = watch_region
-            params["with_release_type"] = "4"
-    elif sort_mode == "rating":
-        params["vote_count.gte"] = 300 if kind == "movie" else 100
-    if database.is_kids_safe_mode():
-        params["certification_country"] = "US"
-        if kind == "movie":
-            params["certification.lte"] = "PG-13"
-            params["without_genres"] = "27"
-        elif kind == "tv":
-            params["certification.lte"] = "TV-14"
 
-    url = f"https://api.themoviedb.org/3/discover/{kind}?" + urllib.parse.urlencode(params)
+    has_extra_filters = bool(genre or year or language or country or network or sort_by)
+
+    # Pure trending query with no extra filters can use the dedicated /trending endpoint
+    if sort_mode == "trending" and not has_extra_filters:
+        url = f"https://api.themoviedb.org/3/trending/{kind}/week?api_key={api_key}&page={page}"
+    else:
+        sort_by_param = "popularity.desc"
+        if sort_by:
+            s_clean = str(sort_by).strip().lower()
+            if s_clean in ("popularity", "popular"):
+                sort_by_param = "popularity.desc"
+            elif s_clean in ("release date", "release_date", "recent", "date", "year"):
+                sort_by_param = "primary_release_date.desc" if kind == "movie" else "first_air_date.desc"
+            elif s_clean in ("rating", "top rated", "top_rated", "featured"):
+                sort_by_param = "vote_average.desc"
+            elif s_clean in ("title", "name"):
+                sort_by_param = "title.asc" if kind == "movie" else "name.asc"
+        elif sort_mode == "streaming":
+            sort_by_param = "primary_release_date.desc" if kind == "movie" else "first_air_date.desc"
+        elif sort_mode == "rating":
+            sort_by_param = "vote_average.desc"
+
+        params = {
+            "api_key": api_key,
+            "include_adult": "false",
+            "page": page,
+            "sort_by": sort_by_param,
+        }
+        params["primary_release_date.lte" if kind == "movie" else "first_air_date.lte"] = today
+        if kind == "movie":
+            params["with_runtime.gte"] = MIN_TMDB_MOVIE_RUNTIME_MINUTES
+        if sort_mode == "streaming" and not sort_by:
+            params["watch_region"] = watch_region
+            params["with_watch_monetization_types"] = "flatrate|free|ads"
+            if kind == "movie":
+                params["region"] = watch_region
+                params["with_release_type"] = "4"
+        elif sort_mode == "rating" or (sort_by and str(sort_by).strip().lower() in ("rating", "top rated", "top_rated", "featured")):
+            params["vote_count.gte"] = 300 if kind == "movie" else 100
+
+        if genre:
+            gid = _tmdb_genre_id(genre, kind)
+            if gid:
+                params["with_genres"] = gid
+            else:
+                target_kw = str(genre).strip().lower()
+                kw_table = _TMDB_TV_KEYWORDS if kind == "tv" else _TMDB_EXTRA_KEYWORDS
+                if target_kw in kw_table:
+                    params["with_keywords"] = kw_table[target_kw]
+
+        if year:
+            y_str = str(year).strip()
+            if y_str.isdigit() and len(y_str) == 4:
+                params["primary_release_year" if kind == "movie" else "first_air_date_year"] = y_str
+
+        if language:
+            lang_code = database.get_language_code(language)
+            if lang_code:
+                params["with_original_language"] = lang_code
+
+        if country:
+            country_code = database.get_country_iso_code(country)
+            if country_code:
+                params["with_origin_country"] = country_code
+
+        if network:
+            folded = str(network).strip().lower()
+            net_id = _NETWORK_TMDB_IDS.get(folded)
+            watch_provider_id = _tmdb_india_watch_provider_id(network, kind)
+            if watch_provider_id:
+                params["with_watch_providers"] = watch_provider_id
+                params["watch_region"] = "IN"
+            elif kind == "tv" and net_id:
+                params["with_networks"] = net_id
+            elif net_id:
+                params["with_companies"] = net_id
+
+        if database.is_kids_safe_mode():
+            params["certification_country"] = "US"
+            if kind == "movie":
+                params["certification.lte"] = "PG-13"
+                params["without_genres"] = "27"
+            elif kind == "tv":
+                params["certification.lte"] = "TV-14"
+
+        url = f"https://api.themoviedb.org/3/discover/{kind}?" + urllib.parse.urlencode(params)
+
     try:
         page_data = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0) or {}
     except Exception:
@@ -1901,7 +1971,17 @@ def fetch_default_tmdb_catalog_page(catalog_id, media_type="movie", page=1, limi
             "original_language": entry.get("original_language") or "",
         })
 
-    if sort_mode == "streaming":
+    if sort_by:
+        s_clean = str(sort_by).strip().lower()
+        if s_clean in ("release date", "release_date", "recent", "date", "year"):
+            items.sort(key=lambda item: str(item.get("release_date") or ""), reverse=True)
+        elif s_clean in ("rating", "top rated", "top_rated", "featured"):
+            items.sort(key=lambda item: (item.get("rating") or 0.0, item.get("vote_count", 0)), reverse=True)
+        elif s_clean in ("title", "name"):
+            items.sort(key=lambda item: str(item.get("title") or "").casefold())
+        else:
+            items.sort(key=lambda item: (item.get("popularity", 0.0), item.get("vote_count", 0)), reverse=True)
+    elif sort_mode == "streaming":
         items.sort(key=lambda item: str(item.get("release_date") or ""), reverse=True)
     elif sort_mode == "rating":
         items.sort(key=lambda item: (item.get("rating") or 0.0, item.get("vote_count", 0)), reverse=True)

@@ -503,6 +503,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                       </object>
                                     </child>
                                     <child>
+                                      <object class="GtkDropDown" id="sort_dropdown">
+                                        <property name="valign">3</property>
+                                        <property name="enable-search">false</property>
+                                        <property name="tooltip-text" translatable="yes">Sort By</property>
+                                      </object>
+                                    </child>
+                                    <child>
                                       <object class="GtkDropDown" id="genre_dropdown">
                                         <property name="valign">3</property>
                                         <property name="enable-search">true</property>
