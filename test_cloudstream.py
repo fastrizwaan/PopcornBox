@@ -1679,8 +1679,11 @@ class TestCloudStream(unittest.TestCase):
         sec_key_b64 = base64.b64encode(b"0123456789").decode("utf-8")
         key = (base64.b64decode(sec_key_b64) + b"T!BgJB")[:16]
 
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-        from cryptography.hazmat.primitives import padding
+        try:
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+            from cryptography.hazmat.primitives import padding
+        except ImportError:
+            self.skipTest("cryptography not installed in current environment")
         padder = padding.PKCS7(128).padder()
         sample_plain = json.dumps({"code": 200, "data": {"videoUrl": "https://example.com/test.m3u8"}})
         padded = padder.update(sample_plain.encode("utf-8")) + padder.finalize()
@@ -2109,6 +2112,206 @@ class TestCloudStream(unittest.TestCase):
         self.assertFalse(check_movie_title_mismatch("American Greed", "American.Greed.S01E01.720p.mkv"))
         self.assertFalse(check_movie_title_mismatch("Inception", "inception_1080p.mkv"))
 
+    def test_cloudstream_catalogs_declare_genres_and_years(self):
+        """Verify CloudStream providers declare rich catalog sections, genres, and years in catalogs."""
+        from src import cloudstream
+        from unittest.mock import patch
+
+        mock_plugins = [
+            {"id": "Bollyflix", "name": "Bollyflix", "enabled": True, "is_installed": True},
+            {"id": "HDhub4u", "name": "HDhub4u", "enabled": True, "is_installed": True},
+            {"id": "FourKHDHub", "name": "FourKHDHub", "enabled": True, "is_installed": True},
+            {"id": "https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/builds/CNC.json#CineVoodProvider", "name": "CineVoodProvider", "enabled": True, "is_installed": True},
+            {"id": "YTS", "name": "YTS", "enabled": True, "is_installed": True},
+        ]
+
+        with patch.object(cloudstream, "get_all_plugins", return_value=mock_plugins):
+            catalogs = cloudstream.get_catalogs(media_type="all")
+            self.assertTrue(len(catalogs) > 0, "Expected registered CloudStream catalogs")
+
+            bolly_cats = [c for c in catalogs if "Bollyflix" in c.get("addon_name", "")]
+            self.assertTrue(len(bolly_cats) >= 10, f"Expected Bollyflix to declare rich categories, got {len(bolly_cats)}")
+
+            # Check section IDs in Bollyflix
+            bolly_sec_ids = {c["catalog_id"] for c in bolly_cats}
+            for expected_id in ["south-hindi", "bollywood", "hollywood", "dual-audio", "netflix", "korean-drama"]:
+                self.assertIn(expected_id, bolly_sec_ids, f"Expected Bollyflix section {expected_id}")
+
+            # Check genres, years, and extraSupported on Bollyflix
+            for c in bolly_cats:
+                extra_sup = c.get("extraSupported", [])
+                self.assertIn("genre", extra_sup)
+                self.assertIn("year", extra_sup)
+                self.assertTrue(len(c.get("genres", [])) > 0)
+                self.assertTrue(len(c.get("years", [])) > 0)
+                extra_names = [e.get("name") for e in c.get("extra", []) if isinstance(e, dict)]
+                self.assertIn("genre", extra_names)
+                self.assertIn("year", extra_names)
+
+            # Check HDhub4u sections
+            hdhub_cats = [c for c in catalogs if "HDhub4u" in c.get("addon_name", "")]
+            if hdhub_cats:
+                hdhub_sec_ids = {c["catalog_id"] for c in hdhub_cats}
+                self.assertIn("bollywood", hdhub_sec_ids)
+                self.assertIn("hollywood", hdhub_sec_ids)
+                for c in hdhub_cats:
+                    self.assertIn("year", c.get("extraSupported", []))
+
+            # Check FourKHDHub sections
+            fourk_cats = [c for c in catalogs if "FourKHDHub" in c.get("addon_name", "") or "4KHDHub" in c.get("addon_name", "")]
+            if fourk_cats:
+                fourk_sec_ids = {c["catalog_id"] for c in fourk_cats}
+                self.assertIn("hindi-movies", fourk_sec_ids)
+                self.assertIn("fourk-hdr", fourk_sec_ids)
+                self.assertIn("netflix", fourk_sec_ids)
+                for c in fourk_cats:
+                    self.assertIn("year", c.get("extraSupported", []))
+
+            # Check CineVood sections
+            cinevood_cats = [c for c in catalogs if "CineVood" in c.get("addon_name", "")]
+            if cinevood_cats:
+                cinevood_sec_ids = {c["catalog_id"] for c in cinevood_cats}
+                self.assertIn("bollywood", cinevood_sec_ids)
+                self.assertIn("hollywood", cinevood_sec_ids)
+                for c in cinevood_cats:
+                    self.assertIn("year", c.get("extraSupported", []))
+
+            # Check YTS sections
+            yts_cats = [c for c in catalogs if "YTS" in c.get("addon_name", "")]
+            if yts_cats:
+                for c in yts_cats:
+                    self.assertIn("year", c.get("extraSupported", []))
+                    self.assertIn("genre", c.get("extraSupported", []))
+
+    def test_fetch_catalog_items_with_year_and_genre_filtering(self):
+        """Verify fetch_catalog_items filters by year and genre and sets releaseInfo."""
+        from src import cloudstream
+        from unittest.mock import patch
+
+        mock_items = [
+            {
+                "provider_id": "mock_prov_id",
+                "data": "https://example.com/movie1",
+                "name": "Action Hero 2024",
+                "year": 2024,
+                "genres": ["Action", "Thriller"],
+                "type": cloudstream.CloudStreamTvType.Movie,
+            },
+            {
+                "provider_id": "mock_prov_id",
+                "data": "https://example.com/movie2",
+                "name": "Romantic Tale 2022",
+                "year": 2022,
+                "genres": ["Romance"],
+                "type": cloudstream.CloudStreamTvType.Movie,
+            },
+            {
+                "provider_id": "mock_prov_id",
+                "data": "https://example.com/movie3",
+                "name": "Space Voyage 2024",
+                "year": 2024,
+                "genres": ["Sci-Fi"],
+                "type": cloudstream.CloudStreamTvType.Movie,
+            },
+        ]
+
+        class MockProvider(cloudstream.CloudStreamProvider):
+            id = "mock_prov_id"
+            name = "Mock Provider"
+            catalog_sections = (
+                {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_year": True, "genres": ["Action", "Romance", "Sci-Fi"]},
+            )
+            def get_catalog_items(self, catalog_id="latest-movies", media_type="movie", genre=None, page=1, query=None, limit=50, year=None, extra_filters=None):
+                results = list(mock_items)
+                if year:
+                    results = [it for it in results if str(it.get("year")) == str(year)]
+                if genre:
+                    results = [it for it in results if genre.lower() in [g.lower() for g in it.get("genres", [])]]
+                return results
+
+        mock_prov = MockProvider()
+        cloudstream.register_provider(mock_prov)
+        mock_plugin = {
+            "id": "mock_prov_id",
+            "name": "Mock Provider",
+            "enabled": True,
+            "is_installed": True,
+        }
+
+        class NoFilterProvider(cloudstream.CloudStreamProvider):
+            id = "nofilter_prov_id"
+            name = "NoFilter Provider"
+            catalog_sections = (
+                {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_year": True},
+            )
+            def get_catalog_items(self, catalog_id="latest-movies", **kwargs):
+                return list(mock_items)
+
+        cloudstream.register_provider(NoFilterProvider())
+        nofilter_plugin = {
+            "id": "nofilter_prov_id",
+            "name": "NoFilter Provider",
+            "enabled": True,
+            "is_installed": True,
+        }
+
+        def mock_get_plugin(pid):
+            if pid == "mock_prov_id":
+                return mock_plugin
+            if pid == "nofilter_prov_id":
+                return nofilter_plugin
+            return None
+
+        with patch.object(cloudstream, "get_plugin", side_effect=mock_get_plugin):
+            # 1. Fetch with year=2024
+            cards = cloudstream.fetch_catalog_items(
+                "mock_prov_id",
+                "latest-movies",
+                page=1,
+                year="2024",
+            )
+            self.assertEqual(len(cards), 2)
+            for c in cards:
+                self.assertEqual(c["year"], "2024")
+                self.assertEqual(c["releaseInfo"], "2024")
+
+            # 2. Fetch with extra_filters={"year": "2022"}
+            cards_2022 = cloudstream.fetch_catalog_items(
+                "mock_prov_id",
+                "latest-movies",
+                page=1,
+                extra_filters={"year": "2022"},
+            )
+            self.assertEqual(len(cards_2022), 1)
+            self.assertEqual(cards_2022[0]["title"], "Romantic Tale")
+            self.assertEqual(cards_2022[0]["catalog_title"], "Romantic Tale 2022")
+            self.assertEqual(cards_2022[0]["year"], "2022")
+            self.assertEqual(cards_2022[0]["releaseInfo"], "2022")
+
+            # 3. Fetch with genre="Action" and year="2024"
+            cards_action_2024 = cloudstream.fetch_catalog_items(
+                "mock_prov_id",
+                "latest-movies",
+                page=1,
+                genre="Action",
+                year="2024",
+            )
+            self.assertEqual(len(cards_action_2024), 1)
+            self.assertEqual(cards_action_2024[0]["title"], "Action Hero")
+            self.assertEqual(cards_action_2024[0]["catalog_title"], "Action Hero 2024")
+
+            # 4. Client-side year fallback when provider does not filter
+            fallback_cards = cloudstream.fetch_catalog_items(
+                "nofilter_prov_id",
+                "latest-movies",
+                page=1,
+                year="2022",
+            )
+            self.assertEqual(len(fallback_cards), 1)
+            self.assertEqual(fallback_cards[0]["title"], "Romantic Tale")
+            self.assertEqual(fallback_cards[0]["catalog_title"], "Romantic Tale 2022")
+
 
 if __name__ == "__main__":
     unittest.main()
+

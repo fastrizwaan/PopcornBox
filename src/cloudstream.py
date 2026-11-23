@@ -846,6 +846,22 @@ def parse_archive_episodes(html):
 
 # --- Built-in CloudStream Provider Architecture ---
 
+CLOUDSTREAM_POPULAR_GENRES = [
+    "Action", "Adventure", "Animation", "Biography", "Comedy", "Crime", "Documentary",
+    "Drama", "Family", "Fantasy", "History", "Horror", "Music",
+    "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western"
+]
+
+CLOUDSTREAM_BOLLYFLIX_GENRES = [
+    "Action", "Adventure", "Animation", "Comedy", "Crime", "Drama",
+    "Fantasy", "Historical", "Horror", "Mystery", "Political",
+    "Romance", "Sci-Fi", "Thriller"
+]
+
+CLOUDSTREAM_POPULAR_YEARS = [str(y) for y in range(2026, 2014, -1)]
+CLOUDSTREAM_BOLLYFLIX_YEARS = [str(y) for y in range(2026, 2000, -1)] + ["1880-2000"]
+
+
 class CloudStreamProvider:
     id = ""
     name = ""
@@ -2197,9 +2213,59 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#Bollyflix"
     name = "Bollyflix"
     supported_types = ["movie", "series", "tv", "other"]
+    GENRES = CLOUDSTREAM_BOLLYFLIX_GENRES
+    YEARS = CLOUDSTREAM_BOLLYFLIX_YEARS
+
+    _SECTION_PATHS = {
+        "latest-movies": "/movies/",
+        "bollywood": "/movies/bollywood/",
+        "hollywood": "/movies/hollywood/",
+        "south-hindi": "/movies/south-hindi-dubbed/",
+        "dual-audio": "/movies/dual-audio-movies/",
+        "hindi-dubbed": "/movies/hindi-dubbed-movies-480p-720p/",
+        "multi-audio": "/movies/multi-audio/",
+        "punjabi": "/movies/punjabi/",
+        "bengali": "/movies/bengali/",
+        "adult-movies": "/adult-movies/",
+        "latest-series": "/web-series/",
+        "netflix": "/web-series/netflix/",
+        "amazon-prime": "/web-series/amazon-prime-video/",
+        "korean-drama": "/web-series/korean-drama/",
+        "hindi-dubbed-series": "/web-series/hindi-dubbed-web-series/",
+        "hotstar": "/web-series/hotstar/",
+        "hulu": "/web-series/hulu/",
+        "mx-player": "/web-series/mx-player-originals/",
+        "voot": "/web-series/voot-select/",
+        "ongoing-series": "/web-series/ongoing-series/",
+        "anime": "/anime/",
+        "tv-shows": "/tv-shows/",
+    }
+
     catalog_sections = (
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+        # Movies
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "bollywood", "name": "Bollywood", "section": "Bollywood Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hollywood", "name": "Hollywood", "section": "Hollywood Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "south-hindi", "name": "South Hindi Dubbed", "section": "South Hindi Dubbed", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "dual-audio", "name": "Dual Audio", "section": "Dual Audio Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hindi-dubbed", "name": "Hindi Dubbed", "section": "Hindi Dubbed Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "multi-audio", "name": "Multi Audio", "section": "Multi Audio Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "punjabi", "name": "Punjabi", "section": "Punjabi Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "bengali", "name": "Bengali", "section": "Bengali Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "adult-movies", "name": "Adult Movies", "section": "Adult Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True, "is_adult": True},
+        # Web Series / TV
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "netflix", "name": "Netflix", "section": "Netflix Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "amazon-prime", "name": "Amazon Prime Video", "section": "Amazon Prime Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "korean-drama", "name": "Korean Drama", "section": "Korean Drama", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hindi-dubbed-series", "name": "Hindi Dubbed Series", "section": "Hindi Dubbed Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hotstar", "name": "Hotstar", "section": "Hotstar Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hulu", "name": "Hulu", "section": "Hulu Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "mx-player", "name": "MX Player Originals", "section": "MX Player Originals", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "voot", "name": "Voot Select", "section": "Voot Select Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "ongoing-series", "name": "Ongoing Series", "section": "Ongoing Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "anime", "name": "Anime", "section": "Anime", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "tv-shows", "name": "TV Shows", "section": "TV Shows", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     DEFAULT_BASE = "https://bollyflix.church"
@@ -2207,16 +2273,10 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
     def _get_base_url(self):
         return get_dynamic_domain("bollyflix", self.DEFAULT_BASE)
 
-    def get_main_page(self, page=1):
-        base = self._get_base_url().rstrip("/")
-        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
-        try:
-            page_html = _http_get_text(page_url, timeout=8.0)
-        except Exception as e:
-            logger.debug(f"Bollyflix catalog page {page} failed: {e}")
-            return []
-
-        movies, series = [], []
+    def _parse_articles(self, page_html, base=None, genre=None):
+        if not base:
+            base = self._get_base_url().rstrip("/")
+        items = []
         seen = set()
         articles = re.findall(r"<article[^>]*>.*?</article>", page_html, re.DOTALL | re.IGNORECASE)
         for art in articles:
@@ -2262,7 +2322,7 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
             y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
             year = int(y_m.group(1)) if y_m else None
             is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
-            item = {
+            items.append({
                 "provider_id": self.id,
                 "data": f"bollyflix:{href}",
                 "name": title,
@@ -2271,8 +2331,69 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
                 "background_url": poster,
                 "description": title,
                 "year": year,
-            }
-            (series if is_series else movies).append(item)
+                "genres": [genre] if genre else [],
+            })
+        return items
+
+    def get_catalog_items(self, catalog_id="latest-movies", media_type="movie", genre=None, page=1, query=None, limit=50, year=None, extra_filters=None):
+        if query and query.strip():
+            return self.search(query.strip())
+
+        base = self._get_base_url().rstrip("/")
+        clean_g = str(genre).strip() if (genre and str(genre).strip().lower() not in ("all", "all genres", "genre", "genres")) else None
+        clean_y = None
+        if year and str(year).strip().lower() not in ("all", "all years", "year", "years"):
+            clean_y = str(year).strip()
+        elif isinstance(extra_filters, dict) and extra_filters.get("year"):
+            y_val = str(extra_filters["year"]).strip()
+            if y_val.lower() not in ("all", "all years", "year", "years"):
+                clean_y = y_val
+
+        p = int(page or 1)
+        cid = str(catalog_id or "latest-movies").lower().replace("_", "-")
+
+        # Determine target path
+        if clean_g and cid in ("latest-movies", "latest-series", "all", "trending", ""):
+            g_slug = clean_g.lower().replace(" ", "-")
+            path = f"/movies-by-genre/{g_slug}/"
+        elif clean_y and cid in ("latest-movies", "latest-series", "all", "trending", ""):
+            path = f"/movies-by-year/{clean_y}/"
+        else:
+            path = self._SECTION_PATHS.get(cid, "/movies/" if media_type == "movie" else "/web-series/")
+
+        if p <= 1:
+            page_url = f"{base}{path}"
+        else:
+            page_url = f"{base}{path.rstrip('/')}/page/{p}/"
+
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"Bollyflix get_catalog_items ({cid}, p={p}) failed: {e}")
+            return []
+
+        items = self._parse_articles(page_html, base=base, genre=clean_g)
+
+        # Apply secondary year filter if requested
+        if clean_y and not path.startswith("/movies-by-year/"):
+            filtered = [it for it in items if str(it.get("year") or "") == clean_y]
+            if filtered:
+                items = filtered
+
+        return items
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"Bollyflix catalog page {page} failed: {e}")
+            return []
+
+        items = self._parse_articles(page_html, base=base)
+        movies = [it for it in items if it.get("type") != CloudStreamTvType.TvSeries]
+        series = [it for it in items if it.get("type") == CloudStreamTvType.TvSeries]
 
         sections = []
         if movies:
@@ -2284,54 +2405,12 @@ class BollyflixCloudStreamProvider(CloudStreamProvider):
     def search(self, query):
         if not query or not query.strip():
             return []
-        base = self._get_base_url()
+        base = self._get_base_url().rstrip("/")
         encoded = urllib.parse.quote(query.strip())
         url = f"{base}/?s={encoded}"
         try:
             html = _http_get_text(url, timeout=8.0)
-            articles = re.findall(r"<article[^>]*>.*?</article>", html, re.DOTALL | re.IGNORECASE)
-            items = []
-            seen = set()
-            for art in articles:
-                link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
-                if not link_m:
-                    continue
-                href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_m.group(1)).strip())
-                if href in seen:
-                    continue
-                seen.add(href)
-
-                img_m = re.search(r'<img\b[^>]*>', art, re.I)
-                img_tag = img_m.group(0) if img_m else ""
-                poster = None
-                for attr in ("data-src", "data-lazy-src", "data-original", "src"):
-                    pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
-                    if pm and not pm.group(1).startswith("data:"):
-                        poster = html_lib.unescape(pm.group(1)).strip()
-                        break
-
-                t_m = re.search(r'<a\b[^>]*title=["\']([^"\']+)["\']', art, re.I)
-                h_m = re.search(r'<h[1-6]\b[^>]*>(.*?)</h[1-6]>', art, re.I | re.DOTALL)
-                raw_title = t_m.group(1) if t_m else (h_m.group(1) if h_m else "")
-                clean_title = html_lib.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
-                clean_title = re.sub(r"^Download\s+", "", clean_title, flags=re.I).strip()
-                if not clean_title:
-                    continue
-                y_match = re.search(r"\((\d{4})\)", clean_title)
-                year = int(y_match.group(1)) if y_match else None
-                is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", clean_title, re.I))
-
-                items.append({
-                    "provider_id": self.id,
-                    "data": f"bollyflix:{href}",
-                    "name": clean_title,
-                    "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
-                    "poster_url": poster,
-                    "background_url": poster,
-                    "description": clean_title,
-                    "year": year,
-                })
-            return items
+            return self._parse_articles(html, base=base)
         except Exception as e:
             logger.debug(f"Bollyflix search failed: {e}")
             return []
@@ -3839,9 +3918,27 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/phisher98/cloudstream-extensions-phisher/builds/repo.json#HDhub4u"
     name = "HDhub4u"
     supported_types = ["movie", "series", "tv", "all"]
+    GENRES = CLOUDSTREAM_POPULAR_GENRES
+    YEARS = CLOUDSTREAM_POPULAR_YEARS
+
+    _SECTION_PATHS = {
+        "latest-movies": "/",
+        "bollywood": "/category/bollywood-movies/",
+        "hollywood": "/category/hollywood-movies/",
+        "hindi-dubbed": "/category/hindi-dubbed/",
+        "south-hindi": "/category/south-hindi-movies/",
+        "adult-movies": "/category/adult/",
+        "latest-series": "/category/category/web-series/",
+    }
+
     catalog_sections = (
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "bollywood", "name": "Bollywood", "section": "Bollywood Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hollywood", "name": "Hollywood", "section": "Hollywood Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hindi-dubbed", "name": "Hindi Dubbed", "section": "Hindi Dubbed Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "south-hindi", "name": "South Hindi Dubbed", "section": "South Hindi Dubbed", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "adult-movies", "name": "18+ Adult", "section": "Adult Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True, "is_adult": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     DEFAULT_BASE = "https://new12.hdhub4u.cl"
@@ -3849,22 +3946,14 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
     def _get_base_url(self):
         return get_dynamic_domain("hdhub4u", self.DEFAULT_BASE)
 
-    def get_main_page(self, page=1):
-        base = self._get_base_url().rstrip("/")
-        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
-        try:
-            page_html = _http_get_text(page_url, timeout=8.0)
-        except Exception as e:
-            logger.debug(f"HDhub4u catalog page {page} failed: {e}")
-            return []
-
-        movies, series = [], []
+    def _parse_blocks(self, page_html, base=None, genre=None):
+        if not base:
+            base = self._get_base_url().rstrip("/")
+        items = []
         seen_hrefs = set()
-        # Themes can mix figure/article cards, release list items, and bare
-        # title links on the same page. Collect each shape, then deduplicate by
-        # destination instead of letting one unrelated figure hide the lists.
         blocks = []
         for pattern in (
+            r"<div\b[^>]*class=[\"'][^\"']*thumb[^\"']*[\"'][^>]*>.*?</div>\s*</div>",
             r"<figure\b[^>]*>.*?</figure>",
             r"<article\b[^>]*>.*?</article>",
             r"<li\b[^>]*>.*?</li>",
@@ -3925,14 +4014,12 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
             is_series = bool(
                 re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.IGNORECASE)
             )
-            # Ignore navigation links while retaining poster cards with no
-            # year in their label.
             if not poster and not year_match and not is_series:
                 continue
             seen_hrefs.add(href)
             year = int(year_match.group(1)) if year_match else None
             poster_url = urllib.parse.urljoin(f"{base}/", poster) if poster else None
-            item = {
+            items.append({
                 "provider_id": self.id,
                 "data": f"hdhub4u:{href}",
                 "name": title,
@@ -3941,14 +4028,72 @@ class HDhub4uCloudStreamProvider(CloudStreamProvider):
                 "background_url": poster_url,
                 "description": title,
                 "year": year,
-            }
-            (series if is_series else movies).append(item)
+                "genres": [genre] if genre else [],
+            })
+        return items
+
+    def get_catalog_items(self, catalog_id="latest-movies", media_type="movie", genre=None, page=1, query=None, limit=50, year=None, extra_filters=None):
+        if query and query.strip():
+            return self.search(query.strip())
+
+        base = self._get_base_url().rstrip("/")
+        clean_g = str(genre).strip() if (genre and str(genre).strip().lower() not in ("all", "all genres", "genre", "genres")) else None
+        clean_y = None
+        if year and str(year).strip().lower() not in ("all", "all years", "year", "years"):
+            clean_y = str(year).strip()
+        elif isinstance(extra_filters, dict) and extra_filters.get("year"):
+            y_val = str(extra_filters["year"]).strip()
+            if y_val.lower() not in ("all", "all years", "year", "years"):
+                clean_y = y_val
+
+        p = int(page or 1)
+        cid = str(catalog_id or "latest-movies").lower().replace("_", "-")
+
+        if clean_g and cid in ("latest-movies", "latest-series", "all", "trending", ""):
+            g_slug = clean_g.lower().replace(" ", "-")
+            path = f"/category/{g_slug}-movies/"
+        else:
+            path = self._SECTION_PATHS.get(cid, "/" if media_type == "movie" else "/category/category/web-series/")
+
+        if p <= 1:
+            page_url = f"{base}{path}"
+        else:
+            page_url = f"{base}{path.rstrip('/')}/page/{p}/"
+
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"HDhub4u get_catalog_items ({cid}, p={p}) failed: {e}")
+            return []
+
+        items = self._parse_blocks(page_html, base=base, genre=clean_g)
+
+        if clean_y:
+            filtered = [it for it in items if str(it.get("year") or "") == clean_y]
+            if filtered:
+                items = filtered
+
+        return items
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"HDhub4u catalog page {page} failed: {e}")
+            return []
+
+        items = self._parse_blocks(page_html, base=base)
+        movies = [it for it in items if it.get("type") != CloudStreamTvType.TvSeries]
+        series = [it for it in items if it.get("type") == CloudStreamTvType.TvSeries]
 
         sections = []
         if movies:
             sections.append(("Latest Movies", movies))
         if series:
             sections.append(("Latest Series", series))
+        return sections
         logger.debug(
             f"HDhub4u catalog page {page} parsed {len(movies)} movie(s) and {len(series)} series"
         )
@@ -4340,11 +4485,25 @@ class FourKHDHubCloudStreamProvider(CloudStreamProvider):
     name = "FourKHDHub"
     supported_types = ["movie", "series", "tv", "all"]
     catalog_sections = (
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
-        {"id": "fourk-hdr", "name": "4K HDR", "section": "4K HDR", "type": "movie", "supports_pagination": True},
-        {"id": "hindi-movies", "name": "Hindi Movies", "section": "Hindi Movies", "type": "movie", "supports_pagination": True},
-        {"id": "english-movies", "name": "English Movies", "section": "English Movies", "type": "movie", "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hindi-movies", "name": "Hindi Movies", "section": "Hindi Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "english-movies", "name": "English Movies", "section": "English Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "fourk-hdr", "name": "4K HDR", "section": "4K HDR", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "top-imdb", "name": "Top IMDb", "section": "Top IMDb", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "korean-series", "name": "Korean", "section": "Korean", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "drama-series", "name": "Drama", "section": "Drama", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hindi-series", "name": "Hindi Series", "section": "Hindi Series", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "english-series", "name": "English Series", "section": "English Series", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "netflix", "name": "Netflix", "section": "Netflix", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "amazon-prime", "name": "Amazon Prime Video", "section": "Amazon Prime Video", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "jiohotstar", "name": "JioHotstar", "section": "JioHotstar", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "disney", "name": "Disney+", "section": "Disney+", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "apple-tv", "name": "Apple TV+", "section": "Apple TV+", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hbo-max", "name": "HBO Max", "section": "HBO Max", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hulu", "name": "Hulu", "section": "Hulu", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "crave", "name": "Crave", "section": "Crave", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "anime", "name": "Anime", "section": "Anime", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     DEFAULT_BASE = "https://4khdhub.one"
@@ -4408,6 +4567,61 @@ class FourKHDHubCloudStreamProvider(CloudStreamProvider):
                 "description": title,
                 "year": year,
             })
+        return items
+
+    def get_catalog_items(self, catalog_id="latest-movies", media_type="movie", genre=None, page=1, query=None, limit=50, year=None, extra_filters=None):
+        if query and str(query).strip():
+            return self.search(query)
+        base = self._get_base_url().rstrip("/")
+        path_map = {
+            "latest-movies": "/category/movies/",
+            "latest-series": "/category/series/",
+            "fourk-hdr": "/category/2160p-HDR/",
+            "hindi-movies": "/category/hindi-movies/",
+            "english-movies": "/category/english-movies/",
+            "top-imdb": "/category/imdb/",
+            "korean-series": "/category/korean-series/",
+            "drama-series": "/category/drama-series/",
+            "hindi-series": "/category/hindi-series/",
+            "english-series": "/category/english-series/",
+            "netflix": "/category/netflix/",
+            "amazon-prime": "/category/amazon_prime_video/",
+            "jiohotstar": "/category/jiohotstar/",
+            "disney": "/category/disney/",
+            "apple-tv": "/category/apple_tv/",
+            "hbo-max": "/category/hbo_max/",
+            "hulu": "/category/hulu/",
+            "crave": "/category/crave/",
+            "anime": "/category/anime/",
+        }
+        sec_path = path_map.get(str(catalog_id or "").strip().lower(), "/category/movies/")
+        p = int(page or 1)
+        clean_g = str(genre).strip() if (genre and str(genre).strip().lower() not in ("all", "all genres", "genre", "genres")) else None
+        target_year = str(year).strip() if (year and str(year).strip().lower() not in ("all", "all years", "year", "years")) else None
+
+        if target_year and not clean_g and str(catalog_id).startswith("latest-"):
+            page_url = f"{base}/?s={urllib.parse.quote(target_year)}" if p <= 1 else f"{base}/page/{p}/?s={urllib.parse.quote(target_year)}"
+        else:
+            page_url = f"{base}{sec_path}" if p <= 1 else f"{base}{sec_path}?pagex={p}"
+
+        try:
+            html = _http_get_text(page_url, timeout=8.0)
+            items = self._parse_movie_cards(html, base)
+        except Exception as e:
+            logger.debug(f"FourKHDHub get_catalog_items failed: {e}")
+            items = []
+
+        if target_year:
+            filtered = [it for it in items if str(it.get("year") or "") == target_year or (target_year in str(it.get("name") or ""))]
+            if filtered:
+                items = filtered
+
+        if clean_g:
+            cg = clean_g.lower()
+            filtered = [it for it in items if cg in str(it.get("name") or "").lower() or (it.get("genres") and any(cg in str(x).lower() for x in it["genres"]))]
+            if filtered:
+                items = filtered
+
         return items
 
     def get_main_page(self, page=1):
@@ -4654,9 +4868,37 @@ class MoviesDriveCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#MoviesDrive"
     name = "MoviesDrive"
     supported_types = ["movie", "series", "tv", "all"]
+    GENRES = CLOUDSTREAM_POPULAR_GENRES
+    YEARS = CLOUDSTREAM_POPULAR_YEARS
+
+    _SECTION_PATHS = {
+        "latest-movies": "/",
+        "bollywood": "/category/bollywood/",
+        "hollywood": "/category/hollywood/",
+        "south": "/category/south/",
+        "dual-audio": "/category/dual-audio/",
+        "adult-movies": "/category/18/",
+        "latest-series": "/category/web-series/",
+        "amazon-prime": "/category/amzn-prime-video/",
+        "netflix": "/category/netflix/",
+        "hotstar": "/category/hotstar/",
+        "anime": "/category/anime/",
+        "korean-drama": "/category/k-drama/",
+    }
+
     catalog_sections = (
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "bollywood", "name": "Bollywood", "section": "Bollywood Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hollywood", "name": "Hollywood", "section": "Hollywood Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "south", "name": "South Indian", "section": "South Indian Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "dual-audio", "name": "Dual Audio", "section": "Dual Audio Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "adult-movies", "name": "18+ Adult", "section": "Adult Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True, "is_adult": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "amazon-prime", "name": "Prime Video", "section": "Prime Video Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "netflix", "name": "Netflix", "section": "Netflix Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hotstar", "name": "Hotstar", "section": "Hotstar Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "anime", "name": "Anime", "section": "Anime", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "korean-drama", "name": "K Drama", "section": "K Drama Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     DEFAULT_BASE = "https://new1.moviesdrive.cyou"
@@ -4664,16 +4906,10 @@ class MoviesDriveCloudStreamProvider(CloudStreamProvider):
     def _get_base_url(self):
         return get_dynamic_domain("moviesdrive", self.DEFAULT_BASE)
 
-    def get_main_page(self, page=1):
-        base = self._get_base_url().rstrip("/")
-        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
-        try:
-            page_html = _http_get_text(page_url, timeout=8.0)
-        except Exception as e:
-            logger.debug(f"MoviesDrive catalog page {page} failed: {e}")
-            return []
-
-        movies, series = [], []
+    def _parse_cards(self, page_html, base=None, genre=None):
+        if not base:
+            base = self._get_base_url().rstrip("/")
+        items = []
         seen = set()
         card_pattern = r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>\s*(?:<meta[^>]*>\s*)*<div class="poster-card"[^>]*>(.*?)</div>\s*</div>\s*</a>'
         matches = re.findall(card_pattern, page_html, re.DOTALL | re.IGNORECASE)
@@ -4703,7 +4939,7 @@ class MoviesDriveCloudStreamProvider(CloudStreamProvider):
             y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
             year = int(y_m.group(1)) if y_m else None
             is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
-            item = {
+            items.append({
                 "provider_id": self.id,
                 "data": f"moviesdrive:{href}",
                 "name": title,
@@ -4712,8 +4948,61 @@ class MoviesDriveCloudStreamProvider(CloudStreamProvider):
                 "background_url": poster,
                 "description": title,
                 "year": year,
-            }
-            (series if is_series else movies).append(item)
+                "genres": [genre] if genre else [],
+            })
+        return items
+
+    def get_catalog_items(self, catalog_id="latest-movies", media_type="movie", genre=None, page=1, query=None, limit=50, year=None, extra_filters=None):
+        if query and query.strip():
+            return self.search(query.strip())
+
+        base = self._get_base_url().rstrip("/")
+        clean_g = str(genre).strip() if (genre and str(genre).strip().lower() not in ("all", "all genres", "genre", "genres")) else None
+        clean_y = None
+        if year and str(year).strip().lower() not in ("all", "all years", "year", "years"):
+            clean_y = str(year).strip()
+        elif isinstance(extra_filters, dict) and extra_filters.get("year"):
+            y_val = str(extra_filters["year"]).strip()
+            if y_val.lower() not in ("all", "all years", "year", "years"):
+                clean_y = y_val
+
+        p = int(page or 1)
+        cid = str(catalog_id or "latest-movies").lower().replace("_", "-")
+
+        path = self._SECTION_PATHS.get(cid, "/" if media_type == "movie" else "/category/web-series/")
+
+        if p <= 1:
+            page_url = f"{base}{path}"
+        else:
+            page_url = f"{base}{path.rstrip('/')}/page/{p}/"
+
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"MoviesDrive get_catalog_items ({cid}, p={p}) failed: {e}")
+            return []
+
+        items = self._parse_cards(page_html, base=base, genre=clean_g)
+
+        if clean_y:
+            filtered = [it for it in items if str(it.get("year") or "") == clean_y]
+            if filtered:
+                items = filtered
+
+        return items
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"MoviesDrive catalog page {page} failed: {e}")
+            return []
+
+        items = self._parse_cards(page_html, base=base)
+        movies = [it for it in items if it.get("type") != CloudStreamTvType.TvSeries]
+        series = [it for it in items if it.get("type") == CloudStreamTvType.TvSeries]
 
         sections = []
         if movies:
@@ -4954,9 +5243,27 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#Moviesmod"
     name = "Moviesmod"
     supported_types = ["movie", "series", "tv", "all"]
+    GENRES = CLOUDSTREAM_POPULAR_GENRES
+    YEARS = CLOUDSTREAM_POPULAR_YEARS
+
+    _SECTION_PATHS = {
+        "latest-movies": "/movies/",
+        "hollywood": "/movies/hollywood/",
+        "latest-released": "/movies/latest-released/",
+        "dual-audio": "/dual-audio/",
+        "multi-audio": "/multi-audio/",
+        "latest-series": "/web-series/on-going/",
+        "anime": "/animated-web-series/",
+    }
+
     catalog_sections = (
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hollywood", "name": "Hollywood", "section": "Hollywood Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "latest-released", "name": "Latest Released", "section": "Latest Released", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "dual-audio", "name": "Dual Audio", "section": "Dual Audio Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "multi-audio", "name": "Multi Audio", "section": "Multi Audio Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "anime", "name": "Anime", "section": "Anime", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     DEFAULT_BASE = "https://moviesmod.tw"
@@ -4964,16 +5271,10 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
     def _get_base_url(self):
         return get_dynamic_domain("moviesmod", self.DEFAULT_BASE)
 
-    def get_main_page(self, page=1):
-        base = self._get_base_url().rstrip("/")
-        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
-        try:
-            page_html = _http_get_text(page_url, timeout=8.0)
-        except Exception as e:
-            logger.debug(f"Moviesmod catalog page {page} failed: {e}")
-            return []
-
-        movies, series = [], []
+    def _parse_articles(self, page_html, base=None, genre=None):
+        if not base:
+            base = self._get_base_url().rstrip("/")
+        items = []
         seen = set()
         articles = re.findall(r"<article[^>]*>.*?</article>", page_html, re.DOTALL | re.IGNORECASE)
         for art in articles:
@@ -5019,7 +5320,7 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
             y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
             year = int(y_m.group(1)) if y_m else None
             is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
-            item = {
+            items.append({
                 "provider_id": self.id,
                 "data": f"moviesmod:{href}",
                 "name": title,
@@ -5028,8 +5329,61 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
                 "background_url": poster,
                 "description": title,
                 "year": year,
-            }
-            (series if is_series else movies).append(item)
+                "genres": [genre] if genre else [],
+            })
+        return items
+
+    def get_catalog_items(self, catalog_id="latest-movies", media_type="movie", genre=None, page=1, query=None, limit=50, year=None, extra_filters=None):
+        if query and query.strip():
+            return self.search(query.strip())
+
+        base = self._get_base_url().rstrip("/")
+        clean_g = str(genre).strip() if (genre and str(genre).strip().lower() not in ("all", "all genres", "genre", "genres")) else None
+        clean_y = None
+        if year and str(year).strip().lower() not in ("all", "all years", "year", "years"):
+            clean_y = str(year).strip()
+        elif isinstance(extra_filters, dict) and extra_filters.get("year"):
+            y_val = str(extra_filters["year"]).strip()
+            if y_val.lower() not in ("all", "all years", "year", "years"):
+                clean_y = y_val
+
+        p = int(page or 1)
+        cid = str(catalog_id or "latest-movies").lower().replace("_", "-")
+
+        path = self._SECTION_PATHS.get(cid, "/movies/" if media_type == "movie" else "/web-series/on-going/")
+
+        if p <= 1:
+            page_url = f"{base}{path}"
+        else:
+            page_url = f"{base}{path.rstrip('/')}/page/{p}/"
+
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"Moviesmod get_catalog_items ({cid}, p={p}) failed: {e}")
+            return []
+
+        items = self._parse_articles(page_html, base=base, genre=clean_g)
+
+        if clean_y:
+            filtered = [it for it in items if str(it.get("year") or "") == clean_y]
+            if filtered:
+                items = filtered
+
+        return items
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"Moviesmod catalog page {page} failed: {e}")
+            return []
+
+        items = self._parse_articles(page_html, base=base)
+        movies = [it for it in items if it.get("type") != CloudStreamTvType.TvSeries]
+        series = [it for it in items if it.get("type") == CloudStreamTvType.TvSeries]
 
         sections = []
         if movies:
@@ -5041,55 +5395,13 @@ class MoviesmodCloudStreamProvider(CloudStreamProvider):
     def search(self, query):
         if not query or not query.strip():
             return []
-        base = self._get_base_url()
+        base = self._get_base_url().rstrip("/")
         clean_q = re.sub(r"[^\w\s-]", " ", query).strip()
         encoded = urllib.parse.quote(clean_q)
         url = f"{base}/?s={encoded}"
         try:
             html = _http_get_text(url, timeout=8.0)
-            articles = re.findall(r"<article[^>]*>.*?</article>", html, re.DOTALL | re.IGNORECASE)
-            items = []
-            seen = set()
-            for art in articles:
-                link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
-                if not link_m:
-                    continue
-                href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(link_m.group(1)).strip())
-                if href in seen:
-                    continue
-                seen.add(href)
-
-                img_m = re.search(r'<img\b[^>]*>', art, re.I)
-                img_tag = img_m.group(0) if img_m else ""
-                poster = None
-                for attr in ("data-src", "data-lazy-src", "data-original", "src"):
-                    pm = re.search(rf'\b{attr}\s*=\s*["\']([^"\']+)["\']', img_tag, re.I)
-                    if pm and not pm.group(1).startswith("data:"):
-                        poster = html_lib.unescape(pm.group(1)).strip()
-                        break
-
-                t_m = re.search(r'<a\b[^>]*title=["\']([^"\']+)["\']', art, re.I)
-                h_m = re.search(r'<h[1-6]\b[^>]*>(.*?)</h[1-6]>', art, re.I | re.DOTALL)
-                raw_title = t_m.group(1) if t_m else (h_m.group(1) if h_m else "")
-                clean_title = html_lib.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
-                clean_title = re.sub(r"^Download\s+", "", clean_title, flags=re.I).strip()
-                if not clean_title:
-                    continue
-                y_match = re.search(r"\((\d{4})\)", clean_title)
-                year = int(y_match.group(1)) if y_match else None
-                is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", clean_title, re.I))
-
-                items.append({
-                    "provider_id": self.id,
-                    "data": f"moviesmod:{href}",
-                    "name": clean_title,
-                    "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
-                    "poster_url": poster,
-                    "background_url": poster,
-                    "description": clean_title,
-                    "year": year,
-                })
-            return items
+            return self._parse_articles(html, base=base)
         except Exception as e:
             logger.debug(f"Moviesmod search failed: {e}")
             return []
@@ -5233,9 +5545,29 @@ class VegaMoviesCloudStreamProvider(CloudStreamProvider):
     id = "https://raw.githubusercontent.com/SaurabhKaperwan/CSX/builds/CS.json#VegaMovies"
     name = "VegaMovies"
     supported_types = ["movie", "series", "tv", "all"]
+    GENRES = CLOUDSTREAM_POPULAR_GENRES
+    YEARS = CLOUDSTREAM_POPULAR_YEARS
+
+    _SECTION_PATHS = {
+        "latest-movies": "/",
+        "latest-series": "/category/web-series/",
+        "netflix": "/category/web-series/netflix/",
+        "hotstar": "/category/web-series/disney-plus-hotstar/",
+        "amazon-prime": "/category/web-series/amazon-prime-video/",
+        "mx-original": "/category/web-series/mx-original/",
+        "anime": "/category/anime-series/",
+        "korean": "/category/korean-series/",
+    }
+
     catalog_sections = (
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "netflix", "name": "Netflix", "section": "Netflix Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hotstar", "name": "Disney+ Hotstar", "section": "Disney+ Hotstar Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "amazon-prime", "name": "Amazon Prime", "section": "Amazon Prime Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "mx-original", "name": "MX Original", "section": "MX Original Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "anime", "name": "Anime Series", "section": "Anime Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "korean", "name": "Korean Series", "section": "Korean Series", "type": "series", "genres": GENRES, "years": YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     DEFAULT_BASE = "https://vegamovies.lease"
@@ -5243,16 +5575,10 @@ class VegaMoviesCloudStreamProvider(CloudStreamProvider):
     def _get_base_url(self):
         return get_dynamic_domain("vegamovies", self.DEFAULT_BASE)
 
-    def get_main_page(self, page=1):
-        base = self._get_base_url().rstrip("/")
-        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
-        try:
-            page_html = _http_get_text(page_url, timeout=8.0)
-        except Exception as e:
-            logger.debug(f"VegaMovies catalog page {page} failed: {e}")
-            return []
-
-        movies, series = [], []
+    def _parse_cards(self, page_html, base=None, genre=None):
+        if not base:
+            base = self._get_base_url().rstrip("/")
+        items = []
         seen = set()
         card_pattern = r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>\s*(?:<meta[^>]*>\s*)*<div class="poster-card"[^>]*>(.*?)</div>\s*</div>\s*</a>'
         matches = re.findall(card_pattern, page_html, re.DOTALL | re.IGNORECASE)
@@ -5282,7 +5608,7 @@ class VegaMoviesCloudStreamProvider(CloudStreamProvider):
             y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
             year = int(y_m.group(1)) if y_m else None
             is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
-            item = {
+            items.append({
                 "provider_id": self.id,
                 "data": f"vegamovies:{href}",
                 "name": title,
@@ -5291,8 +5617,65 @@ class VegaMoviesCloudStreamProvider(CloudStreamProvider):
                 "background_url": poster,
                 "description": title,
                 "year": year,
-            }
-            (series if is_series else movies).append(item)
+                "genres": [genre] if genre else [],
+            })
+        return items
+
+    def get_catalog_items(self, catalog_id="latest-movies", media_type="movie", genre=None, page=1, query=None, limit=50, year=None, extra_filters=None):
+        if query and query.strip():
+            return self.search(query.strip())
+
+        base = self._get_base_url().rstrip("/")
+        clean_g = str(genre).strip() if (genre and str(genre).strip().lower() not in ("all", "all genres", "genre", "genres")) else None
+        clean_y = None
+        if year and str(year).strip().lower() not in ("all", "all years", "year", "years"):
+            clean_y = str(year).strip()
+        elif isinstance(extra_filters, dict) and extra_filters.get("year"):
+            y_val = str(extra_filters["year"]).strip()
+            if y_val.lower() not in ("all", "all years", "year", "years"):
+                clean_y = y_val
+
+        p = int(page or 1)
+        cid = str(catalog_id or "latest-movies").lower().replace("_", "-")
+
+        if clean_g and cid in ("latest-movies", "latest-series", "all", "trending", ""):
+            g_slug = clean_g.lower().replace(" ", "-")
+            path = f"/movies-by-genres/{g_slug}/"
+        else:
+            path = self._SECTION_PATHS.get(cid, "/" if media_type == "movie" else "/category/web-series/")
+
+        if p <= 1:
+            page_url = f"{base}{path}"
+        else:
+            page_url = f"{base}{path.rstrip('/')}/page/{p}/"
+
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"VegaMovies get_catalog_items ({cid}, p={p}) failed: {e}")
+            return []
+
+        items = self._parse_cards(page_html, base=base, genre=clean_g)
+
+        if clean_y:
+            filtered = [it for it in items if str(it.get("year") or "") == clean_y]
+            if filtered:
+                items = filtered
+
+        return items
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=8.0)
+        except Exception as e:
+            logger.debug(f"VegaMovies catalog page {page} failed: {e}")
+            return []
+
+        items = self._parse_cards(page_html, base=base)
+        movies = [it for it in items if it.get("type") != CloudStreamTvType.TvSeries]
+        series = [it for it in items if it.get("type") == CloudStreamTvType.TvSeries]
 
         sections = []
         if movies:
@@ -5511,12 +5894,12 @@ class YTSCloudStreamProvider(CloudStreamProvider):
     ]
 
     catalog_sections = (
-        {"id": "trending", "name": "Trending Movies", "section": "Trending Movies", "type": "movie", "genres": POPULAR_GENRES, "supports_pagination": True},
-        {"id": "popular-movies", "name": "Popular Movies", "section": "Popular Movies", "type": "movie", "genres": POPULAR_GENRES, "supports_pagination": True},
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": POPULAR_GENRES, "supports_pagination": True},
-        {"id": "top-rated", "name": "Top Rated Movies", "section": "Top Rated Movies", "type": "movie", "genres": POPULAR_GENRES, "supports_pagination": True},
-        {"id": "shows_trending", "name": "Trending Series", "section": "Trending Series", "type": "series", "genres": POPULAR_GENRES, "supports_pagination": True},
-        {"id": "shows_popular", "name": "Popular Series", "section": "Popular Series", "type": "series", "genres": POPULAR_GENRES, "supports_pagination": True},
+        {"id": "trending", "name": "Trending Movies", "section": "Trending Movies", "type": "movie", "genres": POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "popular-movies", "name": "Popular Movies", "section": "Popular Movies", "type": "movie", "genres": POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "top-rated", "name": "Top Rated Movies", "section": "Top Rated Movies", "type": "movie", "genres": POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "shows_trending", "name": "Trending Series", "section": "Trending Series", "type": "series", "genres": POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "shows_popular", "name": "Popular Series", "section": "Popular Series", "type": "series", "genres": POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     _BASE_URLS = [
@@ -5867,7 +6250,7 @@ class YTSCloudStreamProvider(CloudStreamProvider):
             })
         return sources
 
-    def get_catalog_items(self, catalog_id="trending", media_type="movie", genre=None, page=1, query=None, limit=50):
+    def get_catalog_items(self, catalog_id="trending", media_type="movie", genre=None, page=1, query=None, limit=50, year=None, extra_filters=None):
         """Fetch catalog rows or search results from YTS REST API with fusme.link fallback."""
         is_series = (media_type in ("series", "show", "shows", "tv", "anime")) or str(catalog_id).startswith("shows_")
         endpoint = "shows" if is_series else "movies"
@@ -5875,6 +6258,9 @@ class YTSCloudStreamProvider(CloudStreamProvider):
 
         cid = str(catalog_id or "trending").lower().replace("-", "_")
         clean_g = str(genre).strip() if (genre and str(genre).strip().lower() not in ("all", "all genres", "genre", "genres")) else None
+        if not year and isinstance(extra_filters, dict):
+            year = extra_filters.get("year")
+        target_year = str(year).strip() if (year and str(year).strip().lower() not in ("all", "all years", "year", "years")) else None
         p = int(page or 1)
         lim = int(limit or 50)
 
@@ -5907,6 +6293,9 @@ class YTSCloudStreamProvider(CloudStreamProvider):
                 for m in items:
                     if not isinstance(m, dict):
                         continue
+                    year_val = m.get("year")
+                    if target_year and str(year_val or "") != target_year:
+                        continue
                     imdb_id = m.get("imdb_id") or m.get("imdb") or m.get("id")
                     if not imdb_id:
                         continue
@@ -5916,7 +6305,6 @@ class YTSCloudStreamProvider(CloudStreamProvider):
                     title = locale_data.get("title") or m.get("title") or "Untitled"
                     rating_data = m.get("rating") or {}
                     rating_pct = int(rating_data.get("percentage") or 0) if isinstance(rating_data, dict) else None
-                    year_val = m.get("year")
                     genres_list = m.get("genres") or []
                     if isinstance(genres_list, list):
                         genres_list = [g.title() for g in genres_list if isinstance(g, str)]
@@ -5963,8 +6351,12 @@ class YTSCloudStreamProvider(CloudStreamProvider):
         }
         sort_key = sort_map.get(cid, "download_count")
         params = {"sort_by": sort_key, "limit": min(lim, 50), "page": p}
-        if query:
+        if query and target_year:
+            params["query_term"] = f"{query.strip()} {target_year}"
+        elif query:
             params["query_term"] = query.strip()
+        elif target_year:
+            params["query_term"] = target_year
         if clean_g:
             params["genre"] = clean_g
 
@@ -5974,6 +6366,8 @@ class YTSCloudStreamProvider(CloudStreamProvider):
             out = []
             for m in movies:
                 if not isinstance(m, dict):
+                    continue
+                if target_year and str(m.get("year") or "") != target_year:
                     continue
                 t = m.get("title_long") or m.get("title") or "Unknown"
                 cover = m.get("large_cover_image") or m.get("medium_cover_image")
@@ -6040,6 +6434,9 @@ class YTSCloudStreamProvider(CloudStreamProvider):
             for m in items:
                 if not isinstance(m, dict):
                     continue
+                year_val = m.get("year")
+                if target_year and str(year_val or "") != target_year:
+                    continue
                 imdb_id = m.get("imdb_id") or m.get("imdb") or m.get("id")
                 if not imdb_id:
                     continue
@@ -6049,7 +6446,6 @@ class YTSCloudStreamProvider(CloudStreamProvider):
                 title = locale_data.get("title") or m.get("title") or "Untitled"
                 rating_data = m.get("rating") or {}
                 rating_pct = int(rating_data.get("percentage") or 0) if isinstance(rating_data, dict) else None
-                year_val = m.get("year")
                 genres_list = m.get("genres") or []
                 if isinstance(genres_list, list):
                     genres_list = [g.title() for g in genres_list if isinstance(g, str)]
@@ -7194,8 +7590,8 @@ class NineKMoviesCloudStreamProvider(CloudStreamProvider):
     name = "9kMovies"
     supported_types = ["movie", "series", "tv", "all"]
     catalog_sections = (
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     DEFAULT_BASE = "https://the9kmovies.com"
@@ -7417,8 +7813,8 @@ class DudeFilmsCloudStreamProvider(CloudStreamProvider):
     name = "DudeFilms"
     supported_types = ["movie", "series", "tv", "all"]
     catalog_sections = (
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     DEFAULT_BASE = "https://new1.dudefilms.church"
@@ -7693,8 +8089,8 @@ class ZinkmoviesCloudStreamProvider(CloudStreamProvider):
     name = "Zinkmovies"
     supported_types = ["movie", "series", "tv", "all"]
     catalog_sections = (
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     DEFAULT_BASE = "https://new2.zinkmovies.tattoo"
@@ -8055,8 +8451,8 @@ class CineDozeCloudStreamProvider(CloudStreamProvider):
     name = "CineDozeProvider"
     supported_types = ["movie", "series", "tv", "all"]
     catalog_sections = (
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_POPULAR_YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     DEFAULT_BASE = "https://cinedoze.tv"
@@ -8306,8 +8702,20 @@ class CineVoodCloudStreamProvider(CloudStreamProvider):
     name = "CineVoodProvider"
     supported_types = ["movie", "series", "tv", "all"]
     catalog_sections = (
-        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "supports_pagination": True},
-        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
+        {"id": "latest-movies", "name": "Latest Movies", "section": "Latest Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "bollywood", "name": "Hindi Movies", "section": "Hindi Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hollywood", "name": "Hollywood Movies", "section": "Hollywood Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "south-hindi", "name": "South Movies", "section": "South Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "punjabi", "name": "Punjabi Movies", "section": "Punjabi Movies", "type": "movie", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "netflix", "name": "Netflix", "section": "Netflix", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "amazon-prime", "name": "Amazon Prime", "section": "Amazon Prime", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "hotstar", "name": "Disney+ Hotstar", "section": "Disney+ Hotstar", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "sonyliv", "name": "SonyLIV", "section": "SonyLIV", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "zee5", "name": "Zee5", "section": "Zee5", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "mx-original", "name": "MX Original", "section": "MX Original", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "apple-tv", "name": "Apple TV+", "section": "Apple TV+", "type": "series", "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
+        {"id": "adult-movies", "name": "18+ Adult Movies", "section": "18+ Adult Movies", "type": "movie", "is_adult": True, "genres": CLOUDSTREAM_POPULAR_GENRES, "years": CLOUDSTREAM_BOLLYFLIX_YEARS, "supports_year": True, "supports_pagination": True},
     )
 
     DEFAULT_BASE = "https://one.1cinevood.baby"
@@ -8336,33 +8744,10 @@ class CineVoodCloudStreamProvider(CloudStreamProvider):
         self._active_base_url_time = now
         return resolved
 
-    def get_main_page(self, page=1):
-        base = self._get_base_url().rstrip("/")
-        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
-        try:
-            page_html = _http_get_text(page_url, timeout=10.0)
-        except Exception as e:
-            logger.debug(f"CineVood catalog page {page} failed: {e}")
-            return []
-
+    def _parse_articles(self, page_html, base):
         articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
-        if len(articles) <= 1 and any("Brief Overview of CineVood" in a for a in articles):
-            view_full = re.search(r'<a\b[^>]*href=["\'](https?://[^"\']*1cinevood\.[^"\']+)["\'][^>]*>', page_html, re.I)
-            if view_full:
-                new_base = view_full.group(1).rstrip("/")
-                self._active_base_url = new_base
-                self._active_base_url_time = time.time()
-                base = new_base
-                page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
-                try:
-                    page_html = _http_get_text(page_url, timeout=10.0)
-                    articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
-                except Exception:
-                    pass
-
         movies, series = [], []
         seen = set()
-        articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
         for art in articles:
             link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
             if not link_m:
@@ -8412,7 +8797,87 @@ class CineVoodCloudStreamProvider(CloudStreamProvider):
                 "year": year,
             }
             (series if is_series else movies).append(item)
+        return movies, series
 
+    def get_catalog_items(self, catalog_id="latest-movies", media_type="movie", genre=None, page=1, query=None, limit=50, year=None, extra_filters=None):
+        if query and str(query).strip():
+            return self.search(query)
+        base = self._get_base_url().rstrip("/")
+        path_map = {
+            "latest-movies": "/",
+            "latest-series": "/",
+            "bollywood": "/category/dual-audio-movies/",
+            "hollywood": "/category/english/",
+            "south-hindi": "/category/telugu/",
+            "punjabi": "/category/punjabi/",
+            "netflix": "/category/netflix/",
+            "amazon-prime": "/category/amazon-prime-video/",
+            "hotstar": "/category/disney-plus-hotstar/",
+            "sonyliv": "/category/sonyliv/",
+            "zee5": "/category/zee5-originals/",
+            "mx-original": "/category/mx-original/",
+            "apple-tv": "/category/apple-tvplus/",
+            "adult-movies": "/category/18plus-adult/",
+        }
+        sec_path = path_map.get(str(catalog_id or "").strip().lower(), "/")
+        p = int(page or 1)
+        clean_g = str(genre).strip() if (genre and str(genre).strip().lower() not in ("all", "all genres", "genre", "genres")) else None
+        if not year and isinstance(extra_filters, dict):
+            year = extra_filters.get("year")
+        target_year = str(year).strip() if (year and str(year).strip().lower() not in ("all", "all years", "year", "years")) else None
+
+        if clean_g:
+            g_slug = clean_g.lower().replace(" ", "-")
+            sec_path = f"/category/{g_slug}/"
+
+        if target_year and not clean_g and str(catalog_id).startswith("latest-"):
+            page_url = f"{base}/?s={urllib.parse.quote(target_year)}" if p <= 1 else f"{base}/page/{p}/?s={urllib.parse.quote(target_year)}"
+        elif sec_path == "/":
+            page_url = f"{base}/" if p <= 1 else f"{base}/page/{p}/"
+        else:
+            page_url = f"{base}{sec_path}" if p <= 1 else f"{base}{sec_path}page/{p}/"
+
+        try:
+            page_html = _http_get_text(page_url, timeout=10.0)
+            movies, series = self._parse_articles(page_html, base)
+        except Exception as e:
+            logger.debug(f"CineVood get_catalog_items failed: {e}")
+            movies, series = [], []
+
+        norm_type = str(media_type or "movie").lower()
+        items = series if norm_type in ("series", "tv", "anime") or "series" in str(catalog_id) else (movies or series)
+
+        if target_year:
+            filtered = [it for it in items if str(it.get("year") or "") == target_year or (target_year in str(it.get("name") or ""))]
+            if filtered:
+                items = filtered
+
+        return items
+
+    def get_main_page(self, page=1):
+        base = self._get_base_url().rstrip("/")
+        page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+        try:
+            page_html = _http_get_text(page_url, timeout=10.0)
+        except Exception as e:
+            logger.debug(f"CineVood catalog page {page} failed: {e}")
+            return []
+
+        articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
+        if len(articles) <= 1 and any("Brief Overview of CineVood" in a for a in articles):
+            view_full = re.search(r'<a\b[^>]*href=["\'](https?://[^"\']*1cinevood\.[^"\']+)["\'][^>]*>', page_html, re.I)
+            if view_full:
+                new_base = view_full.group(1).rstrip("/")
+                self._active_base_url = new_base
+                self._active_base_url_time = time.time()
+                base = new_base
+                page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+                try:
+                    page_html = _http_get_text(page_url, timeout=10.0)
+                except Exception:
+                    pass
+
+        movies, series = self._parse_articles(page_html, base)
         sections = []
         if movies:
             sections.append(("Latest Movies", movies))
@@ -9108,6 +9573,19 @@ def get_catalogs(media_type="all"):
             base_p_name = re.sub(r"\s*\((?:cloudstream|cs)\)$", "", provider_name, flags=re.IGNORECASE).strip()
             provider_display_name = f"{base_p_name} (CloudStream)"
             genres = list(section.get("genres") or [])
+            years = list(section.get("years") or [])
+            supports_year = bool(section.get("supports_year", bool(years)))
+            extra = []
+            extra_supported = ["skip", "search"]
+            if genres:
+                extra.append({"name": "genre", "isRequired": False, "options": genres})
+                extra_supported.append("genre")
+            if supports_year:
+                if not years:
+                    years = CLOUDSTREAM_POPULAR_YEARS
+                extra.append({"name": "year", "isRequired": False, "options": years})
+                extra_supported.append("year")
+
             catalogs.append({
                 "addon_name": provider_display_name,
                 "manifest_url": catalog_url(plugin_id),
@@ -9116,8 +9594,9 @@ def get_catalogs(media_type="all"):
                 "catalog_name": catalog_name,
                 "display_name": f"{provider_display_name} - {catalog_name}",
                 "genres": genres,
-                "extra": [{"name": "genre", "isRequired": False, "options": genres}] if genres else [],
-                "extraSupported": ["genre", "skip", "search"] if genres else ["skip", "search"],
+                "years": years,
+                "extra": extra,
+                "extraSupported": extra_supported,
                 "type": catalog_type,
                 "supports_pagination": bool(section.get("supports_pagination", False)),
                 "_source": "cloudstream",
@@ -9212,7 +9691,7 @@ def _get_provider_main_page(provider, page):
     return sections
 
 
-def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=None, genre=None, query=None):
+def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=None, genre=None, query=None, year=None, extra_filters=None):
     """Load one declared CloudStream section and normalize it to Discover cards."""
     if is_cancelled and is_cancelled():
         return []
@@ -9251,17 +9730,34 @@ def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=
     wanted_section = str(section.get("section") or section.get("name") or "").strip().casefold()
     raw_items = []
 
-    # 1. Direct provider catalog support (with genre and search query support)
+    if not year and isinstance(extra_filters, dict):
+        year = extra_filters.get("year")
+    if not genre and isinstance(extra_filters, dict):
+        genre = extra_filters.get("genre")
+
+    # 1. Direct provider catalog support (with genre, year, and search query support)
     if hasattr(provider, "get_catalog_items"):
         try:
-            raw_items = provider.get_catalog_items(
-                catalog_id=catalog_id,
-                media_type=sec_type,
-                genre=genre,
-                page=page,
-                query=query,
-                limit=limit,
-            ) or []
+            try:
+                raw_items = provider.get_catalog_items(
+                    catalog_id=catalog_id,
+                    media_type=sec_type,
+                    genre=genre,
+                    page=page,
+                    query=query,
+                    limit=limit,
+                    year=year,
+                    extra_filters=extra_filters,
+                ) or []
+            except TypeError:
+                raw_items = provider.get_catalog_items(
+                    catalog_id=catalog_id,
+                    media_type=sec_type,
+                    genre=genre,
+                    page=page,
+                    query=query,
+                    limit=limit,
+                ) or []
         except Exception as e:
             logger.debug(f"Provider {provider.name} get_catalog_items failed: {e}")
             raw_items = []
@@ -9303,6 +9799,20 @@ def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=
                     filtered.append(it)
             if filtered:
                 raw_items = filtered
+
+    # 4. Client-side year filtering fallback if raw_items were extracted without direct provider filtering
+    if raw_items and year and str(year).strip().lower() not in ("all", "all years", "year", "years"):
+        y_str = str(year).strip()
+        filtered_by_year = [
+            it for it in raw_items
+            if isinstance(it, dict) and (
+                str(it.get("year") or "") == y_str
+                or y_str in str(it.get("name") or "")
+                or y_str in str(it.get("title") or "")
+            )
+        ]
+        if filtered_by_year:
+            raw_items = filtered_by_year
 
     cards = []
     for item in raw_items:
@@ -9347,6 +9857,12 @@ def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=
         for key in ("genres", "description", "overview", "imdbRating", "runtime", "background", "videos", "trailer"):
             if item.get(key) is not None:
                 card[key] = item[key]
+        year_str = str(item.get("year") or card.get("year") or "")
+        if year_str:
+            card["year"] = year_str
+            card["releaseInfo"] = year_str
+        elif card.get("releaseInfo"):
+            card["year"] = str(card.get("releaseInfo"))
         cards.append(card)
 
     page_limit = int(limit) if isinstance(limit, int) and limit > 0 else 50
@@ -9660,6 +10176,7 @@ def search_item_to_card_dict(item):
         "poster": item.get("poster_url"),
         "background": item.get("background_url"),
         "year": year_val,
+        "releaseInfo": year_val,
         "description": item.get("description") or "",
         "is_cloudstream": True,
         "cloudstream_provider_id": item["provider_id"],

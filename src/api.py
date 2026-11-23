@@ -3856,6 +3856,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         provider_id = cloudstream.provider_id_from_catalog_url(catalog_url)
         if not provider_id:
             return []
+        year_filter = None
+        if isinstance(extra_filters, dict):
+            year_filter = extra_filters.get("year")
         items = cloudstream.fetch_catalog_items(
             provider_id,
             target_catalog_id or catalog_id,
@@ -3864,6 +3867,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             is_cancelled=is_cancelled,
             genre=genre,
             query=query,
+            year=year_filter,
+            extra_filters=extra_filters,
         )
         if items and on_item_found and not (is_cancelled and is_cancelled()):
             on_item_found(items)
