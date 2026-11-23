@@ -83,7 +83,7 @@ def create_backup_data():
         "format": BACKUP_FORMAT_NAME,
         "version": BACKUP_FORMAT_VERSION,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "app_version": "2.4",
+        "app_version": "2.5",
         "addons": addons,
         "nuvio": {
             "enabled": bool(nuvio_enabled),

@@ -70,6 +70,14 @@
   </requires>
 
   <releases>
+    <release version="2.5" date="2026-11-24">
+      <description translate="no">
+        <ul>
+          <li>Added category sections, genre, and year filter capabilities for CloudStream providers</li>
+          <li>Updated the application version to 2.5</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.4" date="2026-11-21">
       <description translate="no">
         <ul>
