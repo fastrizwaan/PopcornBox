@@ -1,4 +1,7 @@
-# PopcornBox 2.5
+<div align="center">
+  <img src="data/icons/scalable/apps/io.github.fastrizwaan.PopcornBox.svg" alt="PopcornBox logo" width="128" height="128">
+  <h1>PopcornBox 2.5</h1>
+</div>
 
 A Linux media client for discovering and playing movies, series, anime, and other media through Stremio-compatible addons. PopcornBox combines catalog browsing, search, a local library, and an integrated MPV-based player in a GTK4 and Libadwaita desktop app.
 
