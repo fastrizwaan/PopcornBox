@@ -6758,6 +6758,12 @@ class CastleTvCloudStreamProvider(CloudStreamProvider):
     supported_types = ["movie", "series", "tv", "all"]
     catalog_sections = (
         {"id": "featured", "name": "Featured", "section": "Featured", "type": "all", "supports_pagination": False},
+        {"id": "popular-movies", "name": "Popular Movies", "section": "Watch Popular Movies", "type": "movie", "supports_pagination": False},
+        {"id": "popular-series", "name": "Popular Series", "section": "Popular WebSeries", "type": "series", "supports_pagination": False},
+        {"id": "trending", "name": "Trending Now", "section": "Most Watching Trending Now", "type": "all", "supports_pagination": False},
+        {"id": "upcoming", "name": "Upcoming", "section": "Upcoming", "type": "all", "supports_pagination": False},
+        {"id": "international", "name": "International Films", "section": "Hottest International Film 🔥", "type": "movie", "supports_pagination": False},
+        {"id": "marvel", "name": "Marvel Universe", "section": "Marvel Universe", "type": "all", "supports_pagination": False},
     )
 
     _MAIN_URL = "https://api.hlowb.com"
@@ -6888,29 +6894,35 @@ class CastleTvCloudStreamProvider(CloudStreamProvider):
             return []
         sections = []
         rows = (res.get("data") or {}).get("rows") or []
+        all_featured = []
         for row in rows:
-            sec_name = row.get("categoryName") or "Featured"
+            sec_name = row.get("name") or row.get("categoryName") or "Featured"
             items = []
             for c in row.get("contents") or []:
-                m_id = c.get("id")
+                m_id = c.get("redirectId") or c.get("id")
                 title = c.get("title")
                 m_type = c.get("movieType")
                 if m_id and title:
-                    items.append({
+                    item = {
                         "provider_id": self.id,
                         "data": json.dumps({"movieId": str(m_id), "title": title, "movieType": m_type}),
                         "name": title,
                         "type": CloudStreamTvType.Movie if m_type == 2 else CloudStreamTvType.TvSeries,
-                        "poster_url": c.get("coverVerticalImage"),
-                        "background_url": c.get("coverHorizontalImage"),
+                        "poster_url": c.get("coverImage") or c.get("coverVerticalImage"),
+                        "background_url": c.get("coverHorizontalImage") or c.get("coverImage"),
                         "description": f"{title} on Castle TV",
                         "year": None,
                         "rating_percent": None,
                         "tags": ["Castle TV"],
                         "episodes": [],
-                    })
+                    }
+                    items.append(item)
+                    if len(all_featured) < 30:
+                        all_featured.append(item)
             if items:
                 sections.append((sec_name, items))
+        if all_featured:
+            sections.insert(0, ("Featured", all_featured))
         return sections
 
     def search(self, query):
@@ -6928,7 +6940,7 @@ class CastleTvCloudStreamProvider(CloudStreamProvider):
         items = []
         rows = (res.get("data") or {}).get("rows") or []
         for r in rows:
-            m_id = r.get("id")
+            m_id = r.get("id") or r.get("redirectId")
             title = r.get("title")
             m_type = r.get("movieType")
             if m_id and title and matches_all_query_terms(clean_q, title):
@@ -6937,8 +6949,8 @@ class CastleTvCloudStreamProvider(CloudStreamProvider):
                     "data": json.dumps({"movieId": str(m_id), "title": title, "movieType": m_type}),
                     "name": f"{title} (Castle TV)",
                     "type": CloudStreamTvType.Movie if m_type == 2 else CloudStreamTvType.TvSeries,
-                    "poster_url": r.get("coverVerticalImage"),
-                    "background_url": r.get("coverHorizontalImage"),
+                    "poster_url": r.get("coverImage") or r.get("coverVerticalImage"),
+                    "background_url": r.get("coverHorizontalImage") or r.get("coverImage"),
                     "description": f"{title} on Castle TV",
                     "year": None,
                     "rating_percent": None,
@@ -6963,8 +6975,8 @@ class CastleTvCloudStreamProvider(CloudStreamProvider):
         details = res.get("data") or {}
         title = details.get("title") or data.get("title") or "Castle TV Media"
         movie_type = details.get("movieType") or data.get("movieType")
-        poster = details.get("coverVerticalImage")
-        backdrop = details.get("coverHorizontalImage")
+        poster = details.get("coverImage") or details.get("coverVerticalImage")
+        backdrop = details.get("coverHorizontalImage") or details.get("coverImage")
         desc = details.get("briefIntroduction") or ""
 
         episodes_out = []
@@ -8298,13 +8310,31 @@ class CineVoodCloudStreamProvider(CloudStreamProvider):
         {"id": "latest-series", "name": "Latest Series", "section": "Latest Series", "type": "series", "supports_pagination": True},
     )
 
-    DEFAULT_BASE = "https://one.1cinevood.beer"
+    DEFAULT_BASE = "https://one.1cinevood.baby"
+    _active_base_url = None
+    _active_base_url_time = 0
 
     def _get_base_url(self):
+        now = time.time()
+        if self._active_base_url and (now - self._active_base_url_time) < 3600:
+            return self._active_base_url
         dyn = get_dynamic_domain("cinevood", self.DEFAULT_BASE)
-        if dyn and "cinevood.loan" not in dyn:
-            return dyn
-        return self.DEFAULT_BASE
+        candidate = dyn if (dyn and "cinevood.loan" not in dyn) else self.DEFAULT_BASE
+        resolved = candidate
+        try:
+            html = _http_get_text(f"{candidate.rstrip('/')}/", timeout=4.0)
+            view_full = re.search(r'<a\b[^>]*href=["\'](https?://[^"\']*1cinevood\.[^"\']+)["\'][^>]*>(?:View Full Site|CineVood)', html, re.I)
+            if view_full:
+                resolved = view_full.group(1).rstrip("/")
+            elif "<article" not in html or "Brief Overview of CineVood" in html:
+                m = re.search(r'https?://(?:one\.)?1cinevood\.[a-z0-9]+', html)
+                if m:
+                    resolved = m.group(0).rstrip("/")
+        except Exception:
+            pass
+        self._active_base_url = resolved
+        self._active_base_url_time = now
+        return resolved
 
     def get_main_page(self, page=1):
         base = self._get_base_url().rstrip("/")
@@ -8314,6 +8344,21 @@ class CineVoodCloudStreamProvider(CloudStreamProvider):
         except Exception as e:
             logger.debug(f"CineVood catalog page {page} failed: {e}")
             return []
+
+        articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
+        if len(articles) <= 1 and any("Brief Overview of CineVood" in a for a in articles):
+            view_full = re.search(r'<a\b[^>]*href=["\'](https?://[^"\']*1cinevood\.[^"\']+)["\'][^>]*>', page_html, re.I)
+            if view_full:
+                new_base = view_full.group(1).rstrip("/")
+                self._active_base_url = new_base
+                self._active_base_url_time = time.time()
+                base = new_base
+                page_url = f"{base}/" if int(page or 1) <= 1 else f"{base}/page/{int(page)}/"
+                try:
+                    page_html = _http_get_text(page_url, timeout=10.0)
+                    articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
+                except Exception:
+                    pass
 
         movies, series = [], []
         seen = set()
@@ -8386,9 +8431,23 @@ class CineVoodCloudStreamProvider(CloudStreamProvider):
             logger.debug(f"CineVood search failed: {e}")
             return []
 
+        articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
+        if len(articles) <= 1 and any("Brief Overview of CineVood" in a for a in articles):
+            view_full = re.search(r'<a\b[^>]*href=["\'](https?://[^"\']*1cinevood\.[^"\']+)["\'][^>]*>', page_html, re.I)
+            if view_full:
+                new_base = view_full.group(1).rstrip("/")
+                self._active_base_url = new_base
+                self._active_base_url_time = time.time()
+                base = new_base
+                search_url = f"{base}/?s={urllib.parse.quote(str(query).strip())}"
+                try:
+                    page_html = _http_get_text(search_url, timeout=10.0)
+                    articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
+                except Exception:
+                    pass
+
         results = []
         seen = set()
-        articles = re.findall(r'<article\b[^>]*>(.*?)</article>', page_html, re.DOTALL | re.I)
         for art in articles:
             link_m = re.search(r'<a\b[^>]*href=["\']([^"\']+)["\']', art, re.I)
             if not link_m:
@@ -8470,6 +8529,9 @@ class CineVoodCloudStreamProvider(CloudStreamProvider):
         year = int(y_m.group(1)) if y_m else None
         is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}(?:E\d{1,2})?\b", title, re.I))
 
+        imdb_m = re.search(r'https?://(?:www\.)?imdb\.com/title/(tt\d+)', page_html, re.I)
+        imdb_id = imdb_m.group(1) if imdb_m else None
+
         return {
             "provider_id": self.id,
             "data": data_str,
@@ -8482,6 +8544,8 @@ class CineVoodCloudStreamProvider(CloudStreamProvider):
             "rating_percent": None,
             "tags": [],
             "episodes": [],
+            "imdb_id": imdb_id,
+            "alias_ids": [imdb_id, data_str] if imdb_id else [data_str],
         }
 
     def load_links(self, data_str, season=None, episode=None):
@@ -9204,7 +9268,8 @@ def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=
 
     # 2. Fallback to main page parsing if not handled
     if not raw_items and not query and (not genre or genre in ("All", "All Genres", "Genre", "all")):
-        for entry in _get_provider_main_page(provider, page):
+        all_main_entries = _get_provider_main_page(provider, page)
+        for entry in all_main_entries:
             if is_cancelled and is_cancelled():
                 return []
             if isinstance(entry, (tuple, list)) and len(entry) >= 2:
@@ -9214,9 +9279,16 @@ def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=
                 items = entry.get("items") or entry.get("results") or []
             else:
                 continue
-            if section_name == wanted_section:
+            if section_name == wanted_section or (wanted_section and (wanted_section in section_name or section_name in wanted_section)):
                 raw_items = items if isinstance(items, list) else []
-                break
+                if section_name == wanted_section:
+                    break
+        if not raw_items and all_main_entries and wanted_section in ("featured", "all", "popular", "home", "default", "main"):
+            first_entry = all_main_entries[0]
+            if isinstance(first_entry, (tuple, list)) and len(first_entry) >= 2 and isinstance(first_entry[1], list):
+                raw_items = first_entry[1]
+            elif isinstance(first_entry, dict) and isinstance(first_entry.get("items") or first_entry.get("results"), list):
+                raw_items = first_entry.get("items") or first_entry.get("results")
 
     # 3. Client-side genre filtering if raw_items were extracted from main page
     if raw_items and genre and str(genre).strip().lower() not in ("all", "all genres", "genre", "genres"):
