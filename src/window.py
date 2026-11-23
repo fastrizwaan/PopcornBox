@@ -23010,6 +23010,16 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 self._refresh_cloudstream_catalog_views()
                             if hasattr(self, "_ensure_all_menus_built"):
                                 self._ensure_all_menus_built()
+                            if hasattr(self, "_update_continue_watching_section"):
+                                self._update_continue_watching_section()
+                            if hasattr(self, "main_stack"):
+                                curr_page = self.main_stack.get_visible_child_name()
+                                if curr_page in ("continue_watching", "favorites", "history") and hasattr(self, "_populate_local_db_page"):
+                                    self._populate_local_db_page(curr_page)
+                            if hasattr(self, "_refresh_active_library_view"):
+                                self._refresh_active_library_view()
+                            if hasattr(self, "update_category_buttons_visibility"):
+                                self.update_category_buttons_visibility()
                         return False
                     GLib.idle_add(_apply)
 

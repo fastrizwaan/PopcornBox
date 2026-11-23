@@ -5,7 +5,9 @@
 #   - Stremio Addons (installed addons, custom URLs, manifests, default addon state)
 #   - Nuvio Plugins (repositories, scrapers, settings, enabled state)
 #   - CloudStream (repositories, plugins, installed/enabled status, and .cs3 packages)
-#   - Key playback/scraper settings (timeout, retries, adult filtering)
+#   - Library data: Favorites, Watched items, Watch history, Continue Watching
+#   - Downloads queue and history
+#   - User playback preferences, stream info, and application settings
 
 import datetime
 import json
@@ -20,7 +22,7 @@ from pathlib import Path
 logger = logging.getLogger("PopcornBox.Backup")
 
 BACKUP_FORMAT_NAME = "popcornbox_backup"
-BACKUP_FORMAT_VERSION = 1
+BACKUP_FORMAT_VERSION = 2
 
 
 def get_default_backup_filename():
@@ -31,8 +33,8 @@ def get_default_backup_filename():
 
 def create_backup_data():
     """
-    Gather all addons, plugins, CloudStream repositories, and settings
-    into a clean dictionary.
+    Gather all addons, plugins, CloudStream repositories, library data (favorites,
+    watched, history, continue watching), downloads, and settings into a clean dictionary.
     """
     from . import database
 
@@ -51,15 +53,31 @@ def create_backup_data():
     installed_cs_ids = [p["id"] for p in cs_plugins if p.get("is_installed")]
     enabled_cs_ids = [p["id"] for p in cs_plugins if p.get("enabled")]
 
-    settings_to_backup = {
-        "hide_adult_content": database.get_setting("hide_adult_content", False),
-        "stream_provider_timeout": database.get_setting("stream_provider_timeout", 20),
-        "stream_provider_retries": database.get_setting("stream_provider_retries", 1),
-        "removed_default_addons": database.get_setting("removed_default_addons", []),
-        "show_movies_button": database.get_setting("show_movies_button", True),
-        "show_series_button": database.get_setting("show_series_button", True),
-        "show_anime_button": database.get_setting("show_anime_button", True),
+    favorites = database.get_favorites()
+    watched = database.get_watched()
+    history = database.get_history()
+    continue_watching = database.get_continue_watching()
+    dismissed_cw = list(database.get_continue_watching_dismissals())
+    downloads = database.get_downloads()
+
+    # Get all settings excluding sensitive keys (like Stremio session auth tokens)
+    all_settings = database.get_all_settings()
+    sensitive_keys = {"stremio_auth_key"}
+    settings_to_backup = {k: v for k, v in all_settings.items() if k not in sensitive_keys}
+
+    # Ensure baseline settings keys are explicitly present with defaults
+    baseline_defaults = {
+        "hide_adult_content": False,
+        "stream_provider_timeout": 20,
+        "stream_provider_retries": 1,
+        "removed_default_addons": [],
+        "show_movies_button": True,
+        "show_series_button": True,
+        "show_anime_button": True,
     }
+    for k, v in baseline_defaults.items():
+        if k not in settings_to_backup:
+            settings_to_backup[k] = database.get_setting(k, v)
 
     payload = {
         "format": BACKUP_FORMAT_NAME,
@@ -82,6 +100,12 @@ def create_backup_data():
             "installed_plugin_ids": installed_cs_ids,
             "enabled_plugin_ids": enabled_cs_ids,
         },
+        "favorites": favorites,
+        "watched": watched,
+        "history": history,
+        "continue_watching": continue_watching,
+        "user_dismissed_continue_watching": dismissed_cw,
+        "downloads": downloads,
         "settings": settings_to_backup,
     }
     return payload
@@ -135,15 +159,29 @@ def create_backup(output_path):
             "nuvio_scrapers_count": len(data.get("nuvio", {}).get("scrapers", [])),
             "cloudstream_repos_count": len(data.get("cloudstream", {}).get("repositories", [])),
             "cloudstream_installed_count": len(data.get("cloudstream", {}).get("installed_plugin_ids", [])),
+            "favorites_count": len(data.get("favorites", [])),
+            "watched_count": len(data.get("watched", [])),
+            "history_count": len(data.get("history", [])),
+            "continue_watching_count": len(data.get("continue_watching", [])),
+            "downloads_count": len(data.get("downloads", [])),
             "path": str(output_path),
             "is_zip": is_zip,
         }
-        msg = (
-            f"Backup created: {summary['addons_count']} addons, "
-            f"{summary['nuvio_repos_count']} Nuvio repos, "
-            f"{summary['cloudstream_repos_count']} CloudStream repos "
-            f"({summary['cloudstream_installed_count']} installed)"
-        )
+
+        parts = [f"{summary['addons_count']} addons"]
+        if summary['favorites_count']:
+            parts.append(f"{summary['favorites_count']} favorites")
+        if summary['continue_watching_count']:
+            parts.append(f"{summary['continue_watching_count']} continue watching")
+        if summary['history_count']:
+            parts.append(f"{summary['history_count']} history")
+        if summary['watched_count']:
+            parts.append(f"{summary['watched_count']} watched")
+        if summary['nuvio_repos_count']:
+            parts.append(f"{summary['nuvio_repos_count']} Nuvio repos")
+        if summary['cloudstream_repos_count']:
+            parts.append(f"{summary['cloudstream_repos_count']} CloudStream repos")
+        msg = f"Backup created: {', '.join(parts)}"
         return True, msg, summary
     except Exception as e:
         logger.error(f"Failed to create backup: {e}", exc_info=True)
@@ -152,7 +190,8 @@ def create_backup(output_path):
 
 def restore_backup(input_path):
     """
-    Restore addons, plugins, CloudStream repositories, and settings from
+    Restore addons, plugins, CloudStream repositories, library data (favorites,
+    watched, history, continue watching), downloads, and settings from
     a backup (.zip or .json).
     Returns (success: bool, message: str, summary: dict).
     """
@@ -289,14 +328,50 @@ def restore_backup(input_path):
         # 4. Restore settings
         settings = payload.get("settings", {})
         if isinstance(settings, dict):
-            for k in ("hide_adult_content", "stream_provider_timeout", "stream_provider_retries",
-                      "show_movies_button", "show_series_button", "show_anime_button"):
-                if k in settings:
-                    database.set_setting(k, settings[k])
-            if "removed_default_addons" in settings:
-                database.set_setting("removed_default_addons", settings["removed_default_addons"])
+            safe_settings = {k: v for k, v in settings.items() if k != "stremio_auth_key"}
+            database.set_settings_batch(safe_settings)
 
-        # 5. Clear stream & catalog caches
+        # 5. Restore Favorites
+        favorites = payload.get("favorites", [])
+        restored_favorites = 0
+        if isinstance(favorites, list) and favorites:
+            restored_favorites = database.add_favorites_batch(favorites, sync_to_remote=False)
+
+        # 6. Restore Watched
+        watched = payload.get("watched", [])
+        restored_watched = 0
+        if isinstance(watched, list) and watched:
+            restored_watched = database.add_watched_batch(watched)
+
+        # 7. Restore History
+        history = payload.get("history", [])
+        restored_history = 0
+        if isinstance(history, list) and history:
+            restored_history = database.add_history_batch(history, sync_to_remote=False)
+
+        # 8. Restore Continue Watching
+        cw = payload.get("continue_watching", [])
+        restored_cw = 0
+        if isinstance(cw, list) and cw:
+            restored_cw = database.add_continue_watching_batch(cw, sync_to_remote=False)
+
+        # 9. Restore user dismissed continue watching
+        dismissed = payload.get("user_dismissed_continue_watching", [])
+        if isinstance(dismissed, list) and dismissed:
+            restored_cw_ids = set()
+            for it in (cw if isinstance(cw, list) else []):
+                restored_cw_ids.update(database._continue_watching_item_ids(it))
+            valid_dismissals = [d for d in dismissed if str(d) not in restored_cw_ids]
+            if valid_dismissals:
+                database.add_continue_watching_dismissals_batch(valid_dismissals)
+
+        # 10. Restore Downloads
+        downloads = payload.get("downloads", [])
+        restored_downloads = 0
+        if isinstance(downloads, list) and downloads:
+            restored_downloads = database.add_downloads_batch(downloads)
+
+        # 11. Clear stream & catalog caches
         database.clear_all_cached_streams_async()
         database.clear_all_cached_catalogs()
 
@@ -307,11 +382,27 @@ def restore_backup(input_path):
             "cloudstream_repos_count": restored_cs_repos,
             "cloudstream_installed_count": installed_cs_count,
             "extracted_packages_count": extracted_pkgs,
+            "favorites_count": restored_favorites,
+            "watched_count": restored_watched,
+            "history_count": restored_history,
+            "continue_watching_count": restored_cw,
+            "downloads_count": restored_downloads,
         }
-        msg = (
-            f"Restored {restored_addons} addons, {restored_nuvio_repos} Nuvio repos, "
-            f"and {restored_cs_repos} CloudStream repos ({installed_cs_count} installed plugins)"
-        )
+
+        parts = [f"{restored_addons} addons"]
+        if restored_favorites:
+            parts.append(f"{restored_favorites} favorites")
+        if restored_cw:
+            parts.append(f"{restored_cw} continue watching")
+        if restored_history:
+            parts.append(f"{restored_history} history")
+        if restored_watched:
+            parts.append(f"{restored_watched} watched")
+        if restored_nuvio_repos:
+            parts.append(f"{restored_nuvio_repos} Nuvio repos")
+        if restored_cs_repos:
+            parts.append(f"{restored_cs_repos} CloudStream repos")
+        msg = f"Restored {', '.join(parts)}"
         logger.info(f"Restore complete: {msg}")
         return True, msg, summary
     except Exception as e:

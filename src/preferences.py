@@ -718,6 +718,19 @@ class Preferences(Adw.Dialog):
                                 self.win._refresh_cloudstream_catalog_views()
                             if hasattr(self.win, "_ensure_all_menus_built"):
                                 self.win._ensure_all_menus_built()
+                            if hasattr(self.win, "_update_continue_watching_section"):
+                                self.win._update_continue_watching_section()
+                            if hasattr(self.win, "main_stack"):
+                                curr_page = self.win.main_stack.get_visible_child_name()
+                                if curr_page in ("continue_watching", "favorites", "history") and hasattr(self.win, "_populate_local_db_page"):
+                                    self.win._populate_local_db_page(curr_page)
+                            if hasattr(self.win, "_refresh_active_library_view"):
+                                self.win._refresh_active_library_view()
+                            if hasattr(self.win, "update_category_buttons_visibility"):
+                                self.win.update_category_buttons_visibility()
+                            if hasattr(self, "doh_switch_row"):
+                                self.doh_switch_row.set_active(database.get_setting("doh_enabled", False))
+                            self._update_stremio_ui()
                         return False
                     GLib.idle_add(_done)
 

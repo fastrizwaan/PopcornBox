@@ -727,6 +727,55 @@ def is_favorite(item_or_id):
         return False
     return bool(target_ids.intersection(_get_favorites_ids_set()))
 
+def add_favorites_batch(items, sync_to_remote=True):
+    """Add multiple items to favorites efficiently in a single database transaction."""
+    if not items or not isinstance(items, (list, tuple)):
+        return 0
+    clean_items = []
+    for it in items:
+        if isinstance(it, dict):
+            c_it = {k: v for k, v in it.items() if not callable(v) and k != "_on_hydrated"}
+            clean_items.append(c_it)
+    if not clean_items:
+        return 0
+
+    added_count = 0
+    with _db_lock:
+        db = _read_db()
+        favs = list(db.setdefault("favorites", []))
+        existing_ids = set()
+        for f in favs:
+            existing_ids.update(_extract_all_item_ids(f))
+
+        settings = db.setdefault("settings", {})
+        removed_favs = set(str(v) for v in settings.get("removed_favorite_ids", []) if v)
+
+        new_favs = []
+        for it in clean_items:
+            t_ids = _extract_all_item_ids(it)
+            if not t_ids:
+                continue
+            if not t_ids.intersection(existing_ids):
+                new_favs.append(it)
+                existing_ids.update(t_ids)
+                for tid in t_ids:
+                    removed_favs.discard(tid)
+                added_count += 1
+
+        if new_favs:
+            db["favorites"] = new_favs + favs
+            settings["removed_favorite_ids"] = list(removed_favs)
+            _write_db(db)
+
+    if sync_to_remote and not _is_testing() and added_count > 0:
+        try:
+            from . import stremio_sync
+            if stremio_sync.is_sync_enabled():
+                stremio_sync.sync_in_background()
+        except Exception as e:
+            logging.warning(f"Failed to trigger remote sync: {e}")
+    return added_count
+
 # --- Watched ---
 
 def get_watched():
@@ -764,6 +813,41 @@ def is_watched(item_or_id):
     if not target_ids:
         return False
     return bool(target_ids.intersection(_get_watched_ids_set()))
+
+def add_watched_batch(items):
+    """Add multiple items to watched efficiently in a single database transaction."""
+    if not items or not isinstance(items, (list, tuple)):
+        return 0
+    clean_items = []
+    for it in items:
+        if isinstance(it, dict):
+            c_it = {k: v for k, v in it.items() if not callable(v) and k != "_on_hydrated"}
+            clean_items.append(c_it)
+    if not clean_items:
+        return 0
+
+    added_count = 0
+    with _db_lock:
+        db = _read_db()
+        watched = list(db.setdefault("watched", []))
+        existing_ids = set()
+        for w in watched:
+            existing_ids.update(_extract_all_item_ids(w))
+
+        new_watched = []
+        for it in clean_items:
+            t_ids = _extract_all_item_ids(it)
+            if not t_ids:
+                continue
+            if not t_ids.intersection(existing_ids):
+                new_watched.append(it)
+                existing_ids.update(t_ids)
+                added_count += 1
+
+        if new_watched:
+            db["watched"] = new_watched + watched
+            _write_db(db)
+    return added_count
 
 # --- History ---
 
@@ -812,27 +896,50 @@ def clear_history():
 def add_history_batch(items, sync_to_remote=True):
     """Add multiple items to history efficiently in a single database transaction."""
     if not items:
-        return
+        return 0
     clean_items = []
     for it in items:
         if isinstance(it, dict):
             c_it = {k: v for k, v in it.items() if not callable(v) and k != "_on_hydrated"}
             clean_items.append(c_it)
     if not clean_items:
-        return
+        return 0
+    added_count = 0
     with _db_lock:
         db = _read_db()
         history = list(db.get("history", []))
-        item_ids_to_add = set()
+        seen_ids = set()
+        combined = []
+        all_candidates = sorted(
+            list(clean_items) + list(history),
+            key=lambda x: int(x.get("last_watched", 0)),
+            reverse=True
+        )
+        for cand in all_candidates:
+            cand_ids = _extract_all_item_ids(cand)
+            if not cand_ids:
+                continue
+            if not cand_ids.intersection(seen_ids):
+                seen_ids.update(cand_ids)
+                combined.append(cand)
+
+        clean_all_ids = set()
         for it in clean_items:
-            item_ids_to_add.update(_extract_all_item_ids(it))
-        # Filter out existing occurrences
-        history = [h for h in history if not _extract_all_item_ids(h).intersection(item_ids_to_add)]
-        # Insert new items at top, sorted by last_watched descending
-        sorted_new = sorted(clean_items, key=lambda x: int(x.get("last_watched", 0)), reverse=True)
-        combined = sorted_new + history
+            clean_all_ids.update(_extract_all_item_ids(it))
+
+        for it in combined[:HISTORY_LIMIT]:
+            if _extract_all_item_ids(it).intersection(clean_all_ids):
+                added_count += 1
+
+        settings = db.setdefault("settings", {})
+        removed_hist = set(str(v) for v in settings.get("removed_history_ids", []) if v)
+        for tid in clean_all_ids:
+            removed_hist.discard(tid)
+        settings["removed_history_ids"] = list(removed_hist)
+
         db["history"] = combined[:HISTORY_LIMIT]
         _write_db(db)
+    return added_count
 
 def remove_history(item_or_id, sync_to_remote=True):
     target_ids = _extract_all_item_ids(item_or_id)
@@ -1292,6 +1399,114 @@ def remove_continue_watching(item_id, blacklist=True, user_action=False, sync_to
         except Exception as e:
             logging.warning(f"Failed to trigger remote sync: {e}")
 
+def add_continue_watching_batch(items, sync_to_remote=False):
+    """Add or merge multiple continue watching items efficiently in a single transaction."""
+    if not items or not isinstance(items, (list, tuple)):
+        return 0
+    clean_items = []
+    for it in items:
+        if isinstance(it, dict) and (it.get("id") or it.get("imdb_id")):
+            c_it = {k: v for k, v in it.items() if not callable(v) and k != "_on_hydrated"}
+            clean_items.append(c_it)
+    if not clean_items:
+        return 0
+
+    added_count = 0
+    global _cw_write_gen
+    with _cw_write_gen_lock:
+        _cw_write_gen += 1
+
+    with _db_lock:
+        db = _read_db()
+        cw = list(db.get("continue_watching", []))
+        user_dismissed = _user_dismissed_continue_watching_ids(db)
+        removed_set = set(str(v) for v in db.get("removed_continue_watching", []) if v)
+
+        for item in clean_items:
+            ids_to_match = _continue_watching_item_ids(item)
+            if not ids_to_match:
+                continue
+
+            for mid in ids_to_match:
+                removed_set.discard(mid)
+                user_dismissed.discard(mid)
+
+            existing_idx = None
+            for idx, entry in enumerate(cw):
+                entry_ids = _continue_watching_item_ids(entry)
+                if entry_ids.intersection(ids_to_match):
+                    existing_idx = idx
+                    break
+
+            if "stream_queue" in item and isinstance(item["stream_queue"], (list, tuple)):
+                q = list(item["stream_queue"])
+                q_idx = max(0, min(int(item.get("stream_queue_index") or 0), len(q) - 1)) if q else 0
+                trimmed = q[q_idx:q_idx + 2] if q_idx < len(q) else q[:2]
+                item["stream_queue"] = [
+                    _normalize_stream_for_storage(s) or s for s in trimmed
+                ]
+                item["stream_queue_index"] = 0
+            if "selected_torrent" in item and isinstance(item["selected_torrent"], dict):
+                item["selected_torrent"] = (
+                    _normalize_stream_for_storage(item["selected_torrent"])
+                    or item["selected_torrent"]
+                )
+
+            i_id = str(item.get("imdb_id") or item.get("id") or "")
+            curr_poster = item.get("medium_cover_image") or item.get("poster")
+            if i_id.startswith("tt") and is_scraper_image_url(curr_poster):
+                clean_poster = f"https://images.metahub.space/poster/medium/{i_id}/img"
+                item["medium_cover_image"] = clean_poster
+                item["poster"] = clean_poster
+            elif i_id.startswith("tmdb:") and is_scraper_image_url(curr_poster):
+                cached = get_cached_metadata(i_id)
+                cp = (cached or {}).get("medium_cover_image") or (cached or {}).get("poster")
+                if cp and not is_scraper_image_url(cp):
+                    item["medium_cover_image"] = cp
+                    item["poster"] = cp
+                else:
+                    item.pop("medium_cover_image", None)
+                    item.pop("poster", None)
+
+            if existing_idx is None:
+                cw.append(item)
+                added_count += 1
+            else:
+                existing = cw[existing_idx]
+                e_lw = int(existing.get("last_watched", 0))
+                i_lw = int(item.get("last_watched", 0))
+                e_pos = float(existing.get("position", 0.0))
+                if i_lw > e_lw or (e_pos <= 0.0 and float(item.get("position", 0.0)) > 0.0):
+                    merged = dict(existing)
+                    merged.update(item)
+                    cw[existing_idx] = merged
+                    added_count += 1
+
+        db["removed_continue_watching"] = list(removed_set)
+        db["user_dismissed_continue_watching"] = list(user_dismissed)
+        cw_sorted = sorted(cw, key=lambda x: int(x.get("last_watched", 0)), reverse=True)
+        db["continue_watching"] = cw_sorted[:100]
+        _write_db(db)
+
+    return added_count
+
+def add_continue_watching_dismissals_batch(dismissal_ids):
+    """Add multiple IDs to user_dismissed_continue_watching."""
+    if not dismissal_ids:
+        return
+    with _db_lock:
+        db = _read_db()
+        user_dismissed = list(_user_dismissed_continue_watching_ids(db))
+        changed = False
+        for mid in dismissal_ids:
+            s_mid = str(mid)
+            if s_mid and s_mid not in user_dismissed:
+                user_dismissed.append(s_mid)
+                changed = True
+        if changed:
+            db["user_dismissed_continue_watching"] = user_dismissed[-200:]
+            _write_db(db)
+
 # --- Downloads ---
 
 def get_downloads():
@@ -1414,10 +1629,50 @@ def clear_downloads():
         db["downloads"] = []
         _write_db(db)
 
+def add_downloads_batch(items):
+    """Add multiple download records in a single database transaction."""
+    if not items or not isinstance(items, (list, tuple)):
+        return 0
+    clean_items = []
+    for it in items:
+        if isinstance(it, dict) and (it.get("info_hash") or it.get("url")):
+            c_it = {k: v for k, v in it.items() if not callable(v) and k != "_on_hydrated"}
+            clean_items.append(c_it)
+    if not clean_items:
+        return 0
+
+    added_count = 0
+    with _db_lock:
+        db = _read_db()
+        downloads = list(db.setdefault("downloads", []))
+        existing_keys = set()
+        for d in downloads:
+            if d.get("info_hash"):
+                existing_keys.add(d["info_hash"])
+            if d.get("url"):
+                existing_keys.add(d["url"])
+
+        for it in clean_items:
+            key = it.get("info_hash") or it.get("url")
+            if key and key not in existing_keys:
+                downloads.append(it)
+                existing_keys.add(key)
+                added_count += 1
+
+        if added_count > 0:
+            db["downloads"] = downloads
+            _write_db(db)
+    return added_count
+
 # --- Settings ---
 
 def get_setting(key, default=None):
     return _read_db().get("settings", {}).get(key, default)
+
+def get_all_settings():
+    """Return a copy of all settings stored in the database."""
+    with _db_lock:
+        return dict(_read_db().get("settings", {}))
 
 def set_setting(key, value):
     op_started = time.perf_counter()
@@ -1428,6 +1683,19 @@ def set_setting(key, value):
         settings[key] = value
         _write_db(db)
     _db_trace(f"set_setting {key}", op_started, f"lock_wait={lock_wait:.3f}s")
+
+def set_settings_batch(settings_dict):
+    """Update multiple settings in a single atomic database write."""
+    if not settings_dict or not isinstance(settings_dict, dict):
+        return
+    op_started = time.perf_counter()
+    with _db_lock:
+        lock_wait = time.perf_counter() - op_started
+        db = _read_db()
+        settings = db.setdefault("settings", {})
+        settings.update(settings_dict)
+        _write_db(db)
+    _db_trace("set_settings_batch", op_started, f"lock_wait={lock_wait:.3f}s")
 
 def is_kids_safe_mode():
     return bool(get_setting("kids_safe_mode", False))
