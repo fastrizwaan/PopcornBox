@@ -292,13 +292,24 @@ class PopcornBoxApplication(Adw.Application):
 
     def _on_shutdown(self, *args):
         for win in self.get_windows():
-            # Cleanly shut down the search thread pool if it was initialized
-            if hasattr(win, "_search_pool"):
-                try:
-                    win._search_pool.shutdown(wait=False, cancel_futures=True)
-                except TypeError:
-                    win._search_pool.shutdown(wait=False)
-            win.close()
+            # Cleanly shut down background thread pools if initialized
+            for pool_name in ("_search_pool", "_unique_active_pool", "_discover_active_pool"):
+                pool = getattr(win, pool_name, None)
+                if pool:
+                    try:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        pool.shutdown(wait=False)
+                    except Exception:
+                        pass
+                    try:
+                        setattr(win, pool_name, None)
+                    except Exception:
+                        pass
+            try:
+                win.close()
+            except Exception:
+                pass
         try:
             from . import player
             player.cleanup_torrents_and_cache_on_exit()

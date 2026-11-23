@@ -253,6 +253,36 @@ class TestCancelBackgroundFetching(unittest.TestCase):
                 self.assertEqual(len(cached), 1)
                 self.assertEqual(cached[0]["id"], "m1")
 
+    def test_on_shutdown_handles_none_search_pool(self):
+        from src.main import PopcornBoxApplication
+        app = MagicMock(spec=PopcornBoxApplication)
+        win = MagicMock()
+        win._search_pool = None
+        win._unique_active_pool = None
+        win._discover_active_pool = None
+        app.get_windows.return_value = [win]
+
+        with patch("src.player.cleanup_torrents_and_cache_on_exit"):
+            PopcornBoxApplication._on_shutdown(app)
+
+        win.close.assert_called_once()
+
+    def test_on_shutdown_shuts_down_active_pools(self):
+        from src.main import PopcornBoxApplication
+        app = MagicMock(spec=PopcornBoxApplication)
+        win = MagicMock()
+        search_pool = MagicMock()
+        win._search_pool = search_pool
+        win._unique_active_pool = None
+        win._discover_active_pool = None
+        app.get_windows.return_value = [win]
+
+        with patch("src.player.cleanup_torrents_and_cache_on_exit"):
+            PopcornBoxApplication._on_shutdown(app)
+
+        search_pool.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+        win.close.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
