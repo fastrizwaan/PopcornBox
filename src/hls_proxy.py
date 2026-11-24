@@ -27,6 +27,21 @@ from gi.repository import GLib
 
 logger = logging.getLogger("PopcornBox.HLSProxy")
 
+MAX_PLAYLIST_BYTES = 8 * 1024 * 1024
+
+
+def _read_playlist_text(response) -> str:
+    """Read a playlist with a hard cap so a remote server cannot exhaust memory."""
+    data = bytearray()
+    while len(data) <= MAX_PLAYLIST_BYTES:
+        chunk = response.read(min(64 * 1024, MAX_PLAYLIST_BYTES + 1 - len(data)))
+        if not chunk:
+            break
+        data.extend(chunk)
+    if len(data) > MAX_PLAYLIST_BYTES:
+        raise ValueError(f"HLS playlist exceeds {MAX_PLAYLIST_BYTES} bytes")
+    return data.decode("utf-8", errors="ignore")
+
 
 def _sanitize_url(url: str) -> str:
     """Sanitize URL path by percent-encoding spaces and brackets."""
@@ -86,7 +101,7 @@ class HlsSession:
             try:
                 req = urllib.request.Request(current_url, headers=req_headers)
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    text = resp.read().decode("utf-8", errors="ignore")
+                    text = _read_playlist_text(resp)
                 break
             except urllib.error.HTTPError as he:
                 if he.code in (402, 429):
@@ -138,7 +153,7 @@ class HlsSession:
                 self.url = current_url
                 req = urllib.request.Request(current_url, headers=req_headers)
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    text = resp.read().decode("utf-8", errors="ignore")
+                    text = _read_playlist_text(resp)
 
         lines = text.splitlines()
         headers = []
@@ -281,7 +296,7 @@ class HlsSession:
                 try:
                     s_req = urllib.request.Request(sub_uri, headers=req_headers)
                     with urllib.request.urlopen(s_req, timeout=5.0) as resp:
-                        s_text = resp.read().decode("utf-8", errors="ignore")
+                        s_text = _read_playlist_text(resp)
                     for s_line in s_text.splitlines():
                         s_line = s_line.strip()
                         if not s_line or s_line.startswith("#"):
