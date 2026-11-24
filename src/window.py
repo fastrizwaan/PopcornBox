@@ -11061,8 +11061,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         self._discover_catalog_items = items
         if hasattr(self, "catalog_dropdown") and self.catalog_dropdown:
-            self.catalog_dropdown.set_model(Gtk.StringList.new([it["display_name"] for it in items]))
-            self.catalog_dropdown.set_selected(0)
+            prior_sync = getattr(self, "_syncing_discover_toolbar", False)
+            self._syncing_discover_toolbar = True
+            try:
+                self.catalog_dropdown.set_model(Gtk.StringList.new([it["display_name"] for it in items]))
+                self.catalog_dropdown.set_selected(0)
+            finally:
+                self._syncing_discover_toolbar = prior_sync
 
     def _populate_discover_section_dropdown(self, addon, chosen_type, catalog_item=None):
         from . import api
@@ -11098,10 +11103,23 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         elif catalog_item and (catalog_item.get("_source") == "cloudstream" or str(catalog_item.get("manifest_url") or "").startswith("cloudstream://")):
             from . import cloudstream
             m_url = catalog_item.get("manifest_url")
-            matching_cats = [
-                c for c in cloudstream.get_catalogs(chosen_type)
-                if str(c.get("manifest_url") or "") == str(m_url)
-            ]
+            p_id = cloudstream.provider_id_from_catalog_url(m_url)
+            prov = cloudstream.get_provider(p_id)
+            if prov and hasattr(prov, "catalog_sections"):
+                matching_cats = [
+                    {
+                        "catalog_id": sec.get("id") or sec.get("name") if isinstance(sec, dict) else sec[1],
+                        "catalog_name": sec.get("name") or sec.get("section") if isinstance(sec, dict) else sec[0],
+                        "manifest_url": m_url,
+                        "_source": "cloudstream",
+                    }
+                    for sec in prov.catalog_sections
+                ]
+            else:
+                matching_cats = [
+                    c for c in cloudstream.get_catalogs(chosen_type)
+                    if str(c.get("manifest_url") or "") == str(m_url)
+                ]
             seen_ids = set()
             for c in matching_cats:
                 cid = c.get("catalog_id") or ""
@@ -11165,10 +11183,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         has_multiple_sections = len(real_sections) > 1
         self._discover_section_items = items
         if hasattr(self, "section_dropdown") and self.section_dropdown:
-            self.section_dropdown.set_model(Gtk.StringList.new([it["display_name"] for it in items]))
-            self.section_dropdown.set_selected(0)
-            self.section_dropdown.set_sensitive(has_multiple_sections)
-            self.section_dropdown.set_visible(has_multiple_sections)
+            prior_sync = getattr(self, "_syncing_discover_toolbar", False)
+            self._syncing_discover_toolbar = True
+            try:
+                self.section_dropdown.set_model(Gtk.StringList.new([it["display_name"] for it in items]))
+                self.section_dropdown.set_selected(0)
+                self.section_dropdown.set_sensitive(has_multiple_sections)
+                self.section_dropdown.set_visible(has_multiple_sections)
+            finally:
+                self._syncing_discover_toolbar = prior_sync
 
     def _get_selected_discover_catalog_item(self):
         items = getattr(self, "_discover_catalog_items", []) or []
@@ -11218,14 +11241,29 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         catalogs = []
         if source == "cloudstream" or manifest_url.startswith("cloudstream://"):
             from . import cloudstream
-            catalogs = cloudstream.get_catalogs(chosen_type)
+            p_id = cloudstream.provider_id_from_catalog_url(manifest_url)
+            prov = cloudstream.get_provider(p_id)
+            if prov and hasattr(prov, "catalog_sections"):
+                catalogs = [
+                    {
+                        "id": sec.get("id") or sec.get("name") if isinstance(sec, dict) else sec[1],
+                        "name": sec.get("name") or sec.get("section") if isinstance(sec, dict) else sec[0],
+                        "manifest_url": manifest_url,
+                        "_source": "cloudstream",
+                    }
+                    for sec in prov.catalog_sections
+                ]
+            else:
+                catalogs = [
+                    c for c in cloudstream.get_catalogs(chosen_type)
+                    if isinstance(c, dict) and str(c.get("manifest_url") or "") == manifest_url
+                ]
         elif source == "custom_plugin" or manifest_url.startswith("custom://"):
             from . import custom_plugins
-            catalogs = custom_plugins.get_catalogs(chosen_type)
-        catalogs = [
-            c for c in catalogs
-            if isinstance(c, dict) and str(c.get("manifest_url") or "") == manifest_url
-        ]
+            catalogs = [
+                c for c in custom_plugins.get_catalogs(chosen_type)
+                if isinstance(c, dict) and str(c.get("manifest_url") or "") == manifest_url
+            ]
         if isinstance(active_cat, str) and active_cat:
             catalogs = [c for c in catalogs if str(c.get("id") or c.get("catalog_id") or "") == active_cat]
         return False, catalogs
@@ -14427,10 +14465,27 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             cur_network = None
         from . import cloudstream, custom_plugins
         if filter_addon_url:
-            cloudstream_catalogs = [
-                cat for cat in cloudstream.get_catalogs(filter_media_type or "all")
-                if str(cat.get("manifest_url") or "") == str(filter_addon_url)
-            ]
+            if str(filter_addon_url).startswith("cloudstream://"):
+                p_id = cloudstream.provider_id_from_catalog_url(filter_addon_url)
+                prov = cloudstream.get_provider(p_id)
+                if prov and hasattr(prov, "catalog_sections"):
+                    cloudstream_catalogs = [
+                        {
+                            "catalog_id": sec.get("id") or sec.get("name") if isinstance(sec, dict) else sec[1],
+                            "catalog_name": sec.get("name") or sec.get("section") if isinstance(sec, dict) else sec[0],
+                            "type": filter_media_type or "all",
+                            "manifest_url": filter_addon_url,
+                            "_source": "cloudstream",
+                        }
+                        for sec in prov.catalog_sections
+                    ]
+                else:
+                    cloudstream_catalogs = [
+                        cat for cat in cloudstream.get_catalogs(filter_media_type or "all")
+                        if str(cat.get("manifest_url") or "") == str(filter_addon_url)
+                    ]
+            else:
+                cloudstream_catalogs = []
             custom_catalogs = [
                 cat for cat in custom_plugins.get_catalogs(filter_media_type or "all")
                 if str(cat.get("manifest_url") or "") == str(filter_addon_url)

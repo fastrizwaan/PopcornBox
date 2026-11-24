@@ -3536,7 +3536,14 @@ def _is_strict_title_match(query, candidate):
         return False
 
     if len(q_set) == 1 or len(c_set) == 1:
-        return q_set == c_set
+        if q_set == c_set:
+            return True
+        if q_set.issubset(c_set):
+            # If the raw normalized query had multiple words (e.g. 'the outsider')
+            # and the whole phrase appears in candidate:
+            if len(q_norm.split()) >= 2 and re.search(r"\b" + re.escape(q_norm) + r"\b", c_norm):
+                return True
+        return False
 
     q_ratio = len(overlap) / len(q_set)
     c_ratio = len(overlap) / len(c_set)
@@ -3650,6 +3657,10 @@ def find_dex_base_url(dex_bytes):
     return None
 
 
+_BASE_URL_CACHE = {}
+_BASE_URL_CACHE_LOCK = threading.Lock()
+
+
 class GenericCloudStreamProvider(CloudStreamProvider):
     def __init__(self, provider_id, name="CloudStream Provider", base_url=None, supported_types=None):
         self.id = provider_id
@@ -3661,8 +3672,19 @@ class GenericCloudStreamProvider(CloudStreamProvider):
         if getattr(self, "_base_url", None):
             return self._base_url
 
+        with _BASE_URL_CACHE_LOCK:
+            if self.id in _BASE_URL_CACHE:
+                self._base_url = _BASE_URL_CACHE[self.id]
+                return self._base_url
+
         plugin = get_plugin(self.id)
         if plugin:
+            if plugin.get("base_url"):
+                self._base_url = plugin["base_url"]
+                with _BASE_URL_CACHE_LOCK:
+                    _BASE_URL_CACHE[self.id] = self._base_url
+                return self._base_url
+
             # 1. Inspect package classes.dex if installed
             storage_key = plugin.get("storage_key")
             if storage_key:
@@ -3680,6 +3702,12 @@ class GenericCloudStreamProvider(CloudStreamProvider):
                                     base = find_dex_base_url(dex)
                                     if base:
                                         self._base_url = base
+                                        with _BASE_URL_CACHE_LOCK:
+                                            _BASE_URL_CACHE[self.id] = base
+                                        try:
+                                            plugin["base_url"] = base
+                                        except Exception:
+                                            pass
                                         return self._base_url
                         except Exception:
                             pass
@@ -3691,6 +3719,12 @@ class GenericCloudStreamProvider(CloudStreamProvider):
                 p = urllib.parse.urlparse(icon)
                 if p.scheme in ("http", "https") and p.netloc and not any(skip in p.netloc.lower() for skip in CLOUDSTREAM_URL_SKIP_DOMAINS):
                     self._base_url = f"{p.scheme}://{p.netloc}"
+                    with _BASE_URL_CACHE_LOCK:
+                        _BASE_URL_CACHE[self.id] = self._base_url
+                    try:
+                        plugin["base_url"] = self._base_url
+                    except Exception:
+                        pass
                     return self._base_url
 
         self._base_url = None
@@ -3823,6 +3857,42 @@ class GenericCloudStreamProvider(CloudStreamProvider):
                 "description": title,
                 "year": year,
             })
+
+        if len(items) <= 1:
+            link_pattern = r'<a\b[^>]*href=[\x27\x22]([^\x27\x22]+)[\x27\x22][^>]*>(.*?)</a>'
+            for m in re.finditer(link_pattern, page_html, re.I | re.DOTALL):
+                raw_href = m.group(1).strip()
+                inner_text = m.group(2)
+                href = urllib.parse.urljoin(f"{base}/", html_lib.unescape(raw_href))
+                if href in seen_hrefs or not href.startswith("http"):
+                    continue
+                h_low = href.lower()
+                if not any(k in h_low for k in ("/movies/", "/movie/", "/series/", "/film/", "/watch/", "/download-", "/download/")):
+                    continue
+                t_m = re.search(r"<h[1-6]\b[^>]*>(.*?)</h[1-6]>", inner_text, re.I | re.DOTALL)
+                if not t_m:
+                    t_m = re.search(r"<img\b[^>]*alt=[\x27\x22]([^\x27\x22]+)[\x27\x22]", inner_text, re.I)
+                title = html_lib.unescape(re.sub(r"<[^>]+>", " ", t_m.group(1))).strip() if t_m else ""
+                if not title or len(title) < 3 or title.lower() in ("download", "watch", "read more", "click here"):
+                    continue
+                seen_hrefs.add(href)
+                img_m = re.search(r"<img\b[^>]*src=[\x27\x22]([^\x27\x22]+)[\x27\x22]", inner_text, re.I)
+                if not img_m:
+                    img_m = re.search(r"<img\b[^>]*data-(?:src|original|lazy-src)=[\x27\x22]([^\x27\x22]+)[\x27\x22]", inner_text, re.I)
+                poster = urllib.parse.urljoin(f"{base}/", img_m.group(1).strip()) if img_m else None
+                y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
+                year = int(y_m.group(1)) if y_m else None
+                is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}\b", title, re.I))
+                items.append({
+                    "provider_id": self.id,
+                    "data": f"generic:{href}",
+                    "name": title,
+                    "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                    "poster_url": poster,
+                    "background_url": poster,
+                    "description": title,
+                    "year": year,
+                })
         return items
 
     def search(self, query):
@@ -3832,20 +3902,74 @@ class GenericCloudStreamProvider(CloudStreamProvider):
         if not base:
             return []
         base = base.rstrip("/")
+
+        # Resolve active mirror redirects off the main thread (e.g. vegamovies.lease -> vegamovies.latino)
+        effective_base = getattr(self, "_effective_base_url", None)
+        if not effective_base:
+            try:
+                req = urllib.request.Request(base, headers={"User-Agent": DEFAULT_USER_AGENT})
+                with urllib.request.urlopen(req, timeout=3.5) as resp:
+                    effective_base = resp.geturl().rstrip("/")
+                    self._effective_base_url = effective_base
+            except Exception:
+                effective_base = base
+        base = effective_base or base
+
         q_enc = urllib.parse.quote(str(query).strip())
+
+        # 1. First check Typesense JSON search (VegaMovies, 1CineVood, and modern streaming portals)
+        try:
+            ts_url = f"{base}/ts-search.php?q={q_enc}"
+            ts_raw = _http_get_text(ts_url, timeout=5.0)
+            if ts_raw and ts_raw.strip().startswith("{") and "hits" in ts_raw:
+                try:
+                    ts_data = json.loads(ts_raw)
+                    hits = ts_data.get("hits") or []
+                    cards = []
+                    for h in hits:
+                        doc = h.get("document") if isinstance(h, dict) else None
+                        if not doc or not isinstance(doc, dict):
+                            continue
+                        p_title = doc.get("post_title") or doc.get("title") or doc.get("name")
+                        p_link = doc.get("permalink") or doc.get("url") or doc.get("slug")
+                        if not p_title or not p_link:
+                            continue
+                        full_link = urllib.parse.urljoin(f"{base}/", p_link)
+                        thumb = doc.get("post_thumbnail") or doc.get("thumbnail") or doc.get("poster")
+                        y_m = re.search(r"\b((?:19|20)\d{2})\b", p_title)
+                        year = int(y_m.group(1)) if y_m else None
+                        is_series = bool(re.search(r"\bseason\b|\bseries\b|\bS\d{1,2}\b", p_title, re.I))
+                        cards.append({
+                            "provider_id": self.id,
+                            "data": f"generic:{full_link}",
+                            "name": p_title,
+                            "type": CloudStreamTvType.TvSeries if is_series else CloudStreamTvType.Movie,
+                            "poster_url": thumb,
+                            "background_url": thumb,
+                            "description": p_title,
+                            "year": year,
+                        })
+                    if cards:
+                        return cards
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 2. HTML search URLs
         search_urls = [
             f"{base}/?s={q_enc}",
-            f"{base}/search/{q_enc}",
             f"{base}/search/{q_enc}/",
         ]
         for search_url in search_urls:
             try:
-                page_html = _http_get_text(search_url, timeout=10.0)
+                page_html = _http_get_text(search_url, timeout=6.0)
                 cards = self._parse_cards(page_html, base)
                 if cards:
                     return cards
             except Exception as e:
                 logger.debug(f"{self.name} search failed on {search_url}: {e}")
+                break
         return []
 
     def load(self, data_str):
@@ -3935,11 +4059,11 @@ class GenericCloudStreamProvider(CloudStreamProvider):
 
         all_links = re.findall(r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>', page_html, re.I)
 
-        # Check direct video extractors on page
-        for h in all_links[:25]:
+        # Check direct video extractors across all links on page
+        for h in all_links:
             if any(k in h.lower() for k in [
                 "filepress", "gdflix", "multicloud", "hubcloud", "hubdrive", "fastdl",
-                "pixeldrain", "gofile", "streamwish", "vidhide", "mixdrop", "dood",
+                "nexdrive", "vcloud", "pixeldrain", "gofile", "streamwish", "vidhide", "mixdrop", "dood",
                 "streamtape", "filemoon", "fastream", "voe", "mp4upload", "vidoza",
                 ".m3u8", ".mp4"
             ]):
@@ -3956,14 +4080,26 @@ class GenericCloudStreamProvider(CloudStreamProvider):
             clean_h = urllib.parse.urljoin(data_s, h.strip())
             h_lower = clean_h.lower()
             if any(k in h_lower for k in [
-                "/links/", "/download/", "/file/", "/archives/", "savelinks.", "fastdl.", "hubcloud."
+                "nexdrive.", "fastdl.", "vcloud.", "hubcloud.", "hubdrive.", "gdflix.", "filepress.",
+                "pixeldrain.", "gofile.", "multicloud.", "/links/", "/download/", "/download-", "/file/", "/archives/",
+                "savelinks.", "/genx"
             ]):
                 if clean_h not in candidate_intermediates and clean_h != data_s:
                     candidate_intermediates.append(clean_h)
 
-        for inter_url in candidate_intermediates[:4]:
+        # 3a. First check if any candidate link can be directly resolved by extractors
+        for inter_url in candidate_intermediates[:6]:
             try:
-                inter_html = _http_get_text(inter_url, timeout=8.0)
+                st = extract_video_streams(inter_url, referer=data_s)
+                if st:
+                    return st
+            except Exception as e:
+                logger.debug(f"Direct stream extraction failed on {inter_url}: {e}")
+
+        # 3b. Otherwise fetch the intermediate download page and parse links
+        for inter_url in candidate_intermediates[:3]:
+            try:
+                inter_html = _http_get_text(inter_url, timeout=6.0)
                 inter_links = re.findall(r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>', inter_html, re.I)
                 for ih in inter_links:
                     ih_clean = urllib.parse.urljoin(inter_url, ih.strip())
@@ -3971,7 +4107,7 @@ class GenericCloudStreamProvider(CloudStreamProvider):
                         "filepress", "gdflix", "multicloud", "hubcloud", "hubdrive", "fastdl",
                         "pixeldrain", "gofile", "streamwish", "vidhide", "mixdrop", "dood",
                         "streamtape", "filemoon", "fastream", "voe", "mp4upload", "vidoza",
-                        ".m3u8", ".mp4"
+                        "vcloud", "nexdrive", ".m3u8", ".mp4"
                     ]):
                         st = extract_video_streams(ih_clean, referer=inter_url)
                         if st:
@@ -4033,7 +4169,11 @@ def get_provider(provider_id):
     if plugin:
         p_name = plugin.get("name") or p_name
         p_types = plugin.get("tv_types") or plugin.get("raw_tv_types")
-    return GenericCloudStreamProvider(provider_id, name=p_name, supported_types=p_types)
+    prov = GenericCloudStreamProvider(provider_id, name=p_name, supported_types=p_types)
+    _PROVIDERS[provider_id] = prov
+    if p_name and p_name not in _PROVIDERS:
+        _PROVIDERS[p_name] = prov
+    return prov
 
 def get_all_registered_providers():
     return list(_PROVIDERS.values())
@@ -4067,6 +4207,7 @@ def is_cloudstream_enabled():
 def set_cloudstream_enabled(enabled):
     database.set_setting("cloudstream_enabled", bool(enabled))
     database.clear_all_cached_streams_async()
+    invalidate_catalogs_cache()
 
 def is_security_warning_accepted():
     return bool(database.get_setting("cloudstream_security_accepted", False))
@@ -4081,8 +4222,19 @@ def get_all_plugins():
     return database.get_cloudstream_plugins()
 
 def get_plugin(plugin_id):
+    if not plugin_id:
+        return None
+    clean_id = str(plugin_id).strip()
+    clean_lower = clean_id.lower()
+    suffix = clean_id.split("#", 1)[-1].lower() if "#" in clean_id else clean_lower
     for p in get_all_plugins():
-        if p.get("id") == plugin_id:
+        pid = str(p.get("id") or "").strip()
+        pname = str(p.get("name") or "").strip()
+        if pid == clean_id or pid.lower() == clean_lower:
+            return p
+        if pid.lower().endswith(f"#{suffix}"):
+            return p
+        if pname and (pname.lower() == clean_lower or pname.lower() == suffix):
             return p
     return None
 
@@ -5309,6 +5461,35 @@ def fetch_cloudstream_streams_for_media(
     requested_type = str(media_type or "movie").strip().lower()
     norm_type = _normalized_type(requested_type) or "movie"
 
+    def _is_plugin_compatible(p):
+        provider = get_provider(p.get("id"))
+        if not provider:
+            return False
+        if getattr(provider, "id", "") == MegaProviderCloudStreamProvider.id or isinstance(provider, MegaProviderCloudStreamProvider):
+            return False
+        if excluded_provider_id and (
+            p.get("id") == excluded_provider_id
+            or getattr(provider, "id", None) == excluded_provider_id
+            or (excluded_provider_name and (p.get("name") == excluded_provider_name or getattr(provider, "name", None) == excluded_provider_name))
+        ):
+            return False
+        supported_types = {str(value).lower() for value in (getattr(provider, "supported_types", None) or [])}
+        if not supported_types or "all" in supported_types or "other" in supported_types:
+            return True
+        if norm_type in ("movie", "series"):
+            if requested_type in supported_types or norm_type in supported_types:
+                return True
+            if norm_type == "movie" and any(t in supported_types for t in ("animemovie", "documentary")):
+                return True
+            if norm_type == "series" and any(t in supported_types for t in ("anime", "ova", "cartoon", "asiandrama")):
+                return True
+            return False
+        if norm_type in ("tv", "live"):
+            return any(t in supported_types for t in ("live", "tv"))
+        return True
+
+    candidate_plugins = [p for p in deduped_plugins if _is_plugin_compatible(p)]
+
     def _year(value, fallback_text=""):
         match = re.search(r"\b((?:18|19|20)\d{2})\b", str(value or ""))
         if not match:
@@ -5437,10 +5618,9 @@ def fetch_cloudstream_streams_for_media(
                     )
                     if not title_matches and not has_imdb_match:
                         # CloudStream search results are already ranked by the
-                        # provider. Keep year-verified localized titles as a
-                        # fallback only when there is genuine title word overlap.
-                        if requested_year and candidate_year == requested_year:
-                            if matches_all_query_terms(title, candidate_name):
+                        # provider. Keep results matching all query terms when year does not conflict.
+                        if matches_all_query_terms(title, candidate_name):
+                            if not requested_year or not candidate_year or candidate_year == requested_year:
                                 ranked_fallbacks.append((order, item))
                         continue
 
@@ -5478,13 +5658,15 @@ def fetch_cloudstream_streams_for_media(
                         for resolved_year in (match_year, loaded_year)
                     ):
                         continue
-                    if (
-                        loaded_name
-                        and not _is_strict_title_match(title, loaded_name)
-                        and not (catalog_title and _is_strict_title_match(str(catalog_title), loaded_name))
-                        and not (imdb_id and str(imdb_id).startswith("tt") and str(imdb_id) in match_data)
-                    ):
-                        continue
+                    if loaded_name:
+                        is_match = (
+                            _is_strict_title_match(title, loaded_name)
+                            or (catalog_title and _is_strict_title_match(str(catalog_title), loaded_name))
+                            or (imdb_id and str(imdb_id).startswith("tt") and str(imdb_id) in match_data)
+                            or (matches_all_query_terms(title, loaded_name) and (not requested_year or not loaded_year or loaded_year == requested_year))
+                        )
+                        if not is_match:
+                            continue
 
                     if norm_type == "series":
                         def _episode_number(value):
@@ -5540,10 +5722,11 @@ def fetch_cloudstream_streams_for_media(
             logger.debug(f"CloudStream matching on {provider.name} failed: {e}")
             return []
 
-    ex = ThreadPoolExecutor(max_workers=min(len(enabled_plugins), 16))
+    target_plugins = candidate_plugins or enabled_plugins
+    ex = ThreadPoolExecutor(max_workers=min(len(target_plugins), 24))
     try:
-        futures = [ex.submit(_worker, p) for p in enabled_plugins]
-        done, _ = concurrent.futures.wait(futures, timeout=timeout)
+        futures = [ex.submit(_worker, p) for p in target_plugins]
+        done, _ = concurrent.futures.wait(futures, timeout=max(timeout or 15.0, 15.0))
         for f in done:
             try:
                 res = f.result()
