@@ -63,6 +63,7 @@ popcornbox_sources = [
   'plugins.py',
   'cloudstream.py',
   'custom_plugins.py',
+  'custom_plugins_runner.py',
   'preferences.py',
   'save_session.py',
   'shortcuts.py',

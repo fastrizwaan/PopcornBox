@@ -233,6 +233,60 @@ class Scraper:
         self.assertEqual(api_items[0]["id"], "tt9999999")
         self.assertIn("Sci-Fi", api_items[0]["title"])
 
+    def test_subprocess_isolation_exit_handling(self):
+        """A scraper calling sys.exit() must not kill the main application process."""
+        p_dir = custom_plugins.get_custom_plugins_dir()
+        exit_code = '''
+import sys
+class Scraper:
+    id = "custom.exit"
+    name = "Exit Scraper"
+    media_types = ["movie"]
+    def get_streams(self, *a, **k):
+        sys.exit(42)
+'''
+        (p_dir / "exit_scraper.py").write_text(exit_code, encoding="utf-8")
+        scrapers = custom_plugins.load_all_custom_scrapers(force_reload=True)
+        exit_scraper = next((s for s in scrapers if s.id == "custom.exit"), None)
+        self.assertIsNotNone(exit_scraper)
+
+        streams = custom_plugins.execute_custom_scraper(exit_scraper, "tt1234567", "movie")
+        self.assertEqual(streams, [])
+
+    def test_subprocess_isolation_timeout_handling(self):
+        """A scraper hanging in an infinite loop must be terminated without hanging the main process."""
+        p_dir = custom_plugins.get_custom_plugins_dir()
+        hang_code = '''
+import time
+class Scraper:
+    id = "custom.hang"
+    name = "Hang Scraper"
+    media_types = ["movie"]
+    def get_streams(self, *a, **k):
+        time.sleep(10)
+        return []
+'''
+        (p_dir / "hang_scraper.py").write_text(hang_code, encoding="utf-8")
+        scrapers = custom_plugins.load_all_custom_scrapers(force_reload=True)
+        hang_scraper = next((s for s in scrapers if s.id == "custom.hang"), None)
+        self.assertIsNotNone(hang_scraper)
+
+        # Call with a very small timeout (0.5s)
+        streams = custom_plugins.execute_custom_scraper(hang_scraper, "tt1234567", "movie", timeout=0.5)
+        self.assertEqual(streams, [])
+
+    def test_top_level_crash_isolation(self):
+        """A plugin that calls sys.exit() or crashes on import must not crash PopcornBox."""
+        p_dir = custom_plugins.get_custom_plugins_dir()
+        crash_code = '''
+import sys
+sys.exit(99)
+'''
+        (p_dir / "crash_on_import.py").write_text(crash_code, encoding="utf-8")
+        scrapers = custom_plugins.load_all_custom_scrapers(force_reload=True)
+        # Verify the crash file was not loaded and PopcornBox is still alive
+        self.assertFalse(any(s.id == "custom.crash_on_import" for s in scrapers))
+
     def test_youtube_custom_scraper(self):
         p_dir = custom_plugins.get_custom_plugins_dir()
         root_plugin = Path(__file__).parent / "plugins" / "youtube_scraper.py"

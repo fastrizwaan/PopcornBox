@@ -87,7 +87,7 @@ def find_js_runtime():
                 try:
                     res = subprocess.run([c, "--version"], capture_output=True, text=True, timeout=3)
                     if res.returncode == 0:
-                        _js_runtime_cmd = [c, "run", "--no-config", "--allow-net", bundle_path]
+                        _js_runtime_cmd = [c, "run", "--no-config", "--no-prompt", "--allow-net", bundle_path]
                         _runtime_checked = True
                         logger.info(f"Using Deno runtime for Nuvio plugins: {c}")
                         return _js_runtime_cmd
@@ -101,6 +101,89 @@ def find_js_runtime():
 
 def is_runtime_available():
     return find_js_runtime() is not None
+
+
+def resolve_scraper_allowed_hosts(scraper):
+    """
+    Resolves the network host allowlist for a scraper.
+    Returns a list of host strings if host-scoped permissions are defined,
+    or None if the scraper requires unconstrained network access (dynamic hosts).
+    """
+    if not isinstance(scraper, dict):
+        return None
+
+    s_id = scraper.get("id")
+    hosts = set()
+
+    # 1. Manifest / scraper metadata
+    declared = (
+        scraper.get("allowed_hosts")
+        or scraper.get("allowedDomains")
+        or scraper.get("domains")
+        or scraper.get("hosts")
+    )
+    if declared:
+        if isinstance(declared, str):
+            declared = [h.strip() for h in declared.split(",") if h.strip()]
+        if isinstance(declared, (list, tuple, set)):
+            hosts.update(str(h).strip().lower() for h in declared if h)
+
+    # 2. Scraper settings override
+    if s_id:
+        settings = get_scraper_settings(s_id) or {}
+        custom_hosts = settings.get("allowed_hosts")
+        if custom_hosts:
+            if isinstance(custom_hosts, str):
+                custom_hosts = [h.strip() for h in custom_hosts.split(",") if h.strip()]
+            if isinstance(custom_hosts, (list, tuple, set)):
+                hosts.update(str(h).strip().lower() for h in custom_hosts if h)
+
+    if not hosts:
+        return None
+
+    # Include default essential metadata hosts
+    hosts.add("api.themoviedb.org")
+
+    repo_url = scraper.get("repository_url")
+    if repo_url:
+        try:
+            repo_host = urllib.parse.urlparse(repo_url).hostname
+            if repo_host:
+                hosts.add(repo_host.lower())
+        except Exception:
+            pass
+
+    return sorted(hosts)
+
+
+def build_scraper_command(scraper):
+    """
+    Builds the JS runtime command for executing a scraper, applying host-scoped
+    Deno network permissions when allowed hosts are declared or configured.
+    """
+    base_cmd = find_js_runtime()
+    if not base_cmd:
+        return None
+
+    cmd = list(base_cmd)
+    allowed_hosts = resolve_scraper_allowed_hosts(scraper)
+
+    if allowed_hosts:
+        scoped_net_flag = f"--allow-net={','.join(allowed_hosts)}"
+        if "--allow-net" in cmd:
+            idx = cmd.index("--allow-net")
+            cmd[idx] = scoped_net_flag
+        elif not any(isinstance(arg, str) and arg.startswith("--allow-net") for arg in cmd):
+            cmd.insert(-1, scoped_net_flag)
+        logger.debug(
+            f"Executing scraper {scraper.get('name')!r} with host-scoped network permissions: {scoped_net_flag}"
+        )
+    else:
+        logger.debug(
+            f"Executing scraper {scraper.get('name')!r} with unconstrained network permissions (--allow-net)"
+        )
+
+    return cmd
 
 
 # --- URL Normalization ---
@@ -425,6 +508,7 @@ def fetch_repository_data(manifest_url):
             "formats": info.get("formats") or info.get("supportedFormats") or [],
             "supported_platforms": info.get("supportedPlatforms") or [],
             "disabled_platforms": info.get("disabledPlatforms") or [],
+            "allowed_hosts": info.get("allowed_hosts") or info.get("allowedDomains") or info.get("domains") or info.get("hosts") or [],
             "code": code,
         }
 
@@ -555,7 +639,7 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
         result._scraper_error = reason
         return result
 
-    cmd = find_js_runtime()
+    cmd = build_scraper_command(scraper)
     if not cmd:
         logger.warning(
             "Cannot execute scraper %r: No sandbox-capable Deno runtime found on this system.",

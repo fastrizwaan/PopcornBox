@@ -189,6 +189,63 @@ class TestNuvioPlugins(unittest.TestCase):
 
         plugins.set_plugins_enabled(True)
 
+    def test_resolve_scraper_allowed_hosts(self):
+        # 1. Unconstrained scraper (no declared hosts)
+        scraper_dynamic = {
+            "id": "repo:dynamic",
+            "name": "Dynamic Scraper",
+            "repository_url": "https://example.com/repo/manifest.json",
+        }
+        self.assertIsNone(plugins.resolve_scraper_allowed_hosts(scraper_dynamic))
+
+        # 2. Scraper with declared hosts in manifest metadata
+        scraper_scoped = {
+            "id": "repo:scoped",
+            "name": "Scoped Scraper",
+            "repository_url": "https://custom.repo.org/manifest.json",
+            "allowed_hosts": ["video.provider.net", "api.provider.net"],
+        }
+        resolved = plugins.resolve_scraper_allowed_hosts(scraper_scoped)
+        self.assertIsNotNone(resolved)
+        self.assertIn("api.themoviedb.org", resolved)
+        self.assertIn("custom.repo.org", resolved)
+        self.assertIn("video.provider.net", resolved)
+        self.assertIn("api.provider.net", resolved)
+
+        # 3. User setting override
+        plugins.save_scraper_settings("repo:custom", {"allowed_hosts": ["override.host.com"]})
+        scraper_custom = {
+            "id": "repo:custom",
+            "name": "Custom Settings Scraper",
+            "repository_url": "https://example.com/manifest.json",
+        }
+        custom_resolved = plugins.resolve_scraper_allowed_hosts(scraper_custom)
+        self.assertIsNotNone(custom_resolved)
+        self.assertIn("override.host.com", custom_resolved)
+
+    def test_build_scraper_command_scoping(self):
+        mock_deno_cmd = ["/app/bin/deno", "run", "--no-config", "--no-prompt", "--allow-net", "/app/runner.js"]
+        with patch.object(plugins, "find_js_runtime", return_value=mock_deno_cmd):
+            # Dynamic scraper -> preserves --allow-net
+            scraper_dynamic = {"id": "repo:dyn", "name": "Dyn"}
+            cmd_dynamic = plugins.build_scraper_command(scraper_dynamic)
+            self.assertIn("--allow-net", cmd_dynamic)
+            self.assertIn("--no-prompt", cmd_dynamic)
+
+            # Scoped scraper -> replaces --allow-net with host allow-list
+            scraper_scoped = {
+                "id": "repo:scoped",
+                "name": "Scoped",
+                "repository_url": "https://repo.org/manifest.json",
+                "allowed_hosts": ["stream.org"],
+            }
+            cmd_scoped = plugins.build_scraper_command(scraper_scoped)
+            self.assertNotIn("--allow-net", cmd_scoped)
+            self.assertTrue(any(arg.startswith("--allow-net=") for arg in cmd_scoped))
+            self.assertTrue(any("stream.org" in arg for arg in cmd_scoped))
+            self.assertTrue(any("api.themoviedb.org" in arg for arg in cmd_scoped))
+            self.assertIn("--no-prompt", cmd_scoped)
+
 
 if __name__ == "__main__":
     unittest.main()

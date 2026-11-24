@@ -25,6 +25,30 @@ _LOAD_LOCK = threading.Lock()
 _LOADED_SCRAPERS = {}  # {scraper_id: scraper_instance}
 _LOADED_MODULES = {}   # {filename: module}
 
+RUNNER_FILENAME = "custom_plugins_runner.py"
+
+
+def get_runner_path() -> str:
+    """Return the absolute path to the isolated custom_plugins_runner.py script."""
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.join(module_dir, RUNNER_FILENAME)
+    if os.path.exists(candidate):
+        return candidate
+
+    alt_paths = [
+        os.path.join("/app/share/popcorn-box/popcornbox", RUNNER_FILENAME),
+        os.path.join("/usr/share/popcorn-box/popcornbox", RUNNER_FILENAME),
+        os.path.join("/usr/local/share/popcorn-box/popcornbox", RUNNER_FILENAME),
+        os.path.join("/app/share/popcorn-box/cine", RUNNER_FILENAME),
+        os.path.join("/usr/share/popcorn-box/cine", RUNNER_FILENAME),
+        os.path.join("/usr/local/share/popcorn-box/cine", RUNNER_FILENAME),
+    ]
+    for p in alt_paths:
+        if os.path.exists(p):
+            return p
+
+    return candidate
+
 README_CONTENT = """# PopcornBox Custom Plugins Directory
 
 You can place standalone Python (.py) scraper files in this directory.
@@ -163,6 +187,26 @@ def load_all_custom_scrapers(force_reload: bool = False):
             if filename.startswith("_") or filename.startswith("."):
                 continue
 
+            # Run isolated probe in subprocess first to protect against top-level exits/crashes
+            runner_path = get_runner_path()
+            if runner_path and os.path.exists(runner_path):
+                try:
+                    probe = subprocess.run(
+                        [sys.executable, "-s", runner_path],
+                        input=json.dumps({"action": "inspect", "file_path": str(filepath)}),
+                        capture_output=True,
+                        text=True,
+                        timeout=5.0,
+                    )
+                    if probe.returncode != 0:
+                        logger.error(
+                            f"Plugin probe failed for {filename} (exit code {probe.returncode}): {probe.stderr[:200]}"
+                        )
+                        continue
+                except Exception as probe_err:
+                    logger.error(f"Failed to probe custom plugin {filename}: {probe_err}")
+                    continue
+
             module_name = f"popcornbox_custom_plugin_{filepath.stem}"
             try:
                 spec = importlib.util.spec_from_file_location(module_name, filepath)
@@ -195,6 +239,7 @@ def load_all_custom_scrapers(force_reload: bool = False):
                             instance.id = s_id
                             instance._filename = filename
                             instance._file_path = str(filepath)
+                            instance._class_name = attr_name
                             if not getattr(instance, "name", None):
                                 instance.name = filepath.stem.replace("_", " ").title()
                             if not getattr(instance, "media_types", None):
@@ -286,42 +331,100 @@ def execute_custom_scraper(
         except Exception:
             pass
 
-    def _call():
-        # Inspect parameters to call with supported signature
-        sig = inspect.signature(scraper.get_streams)
-        kwargs = {}
-        params = sig.parameters
-        if "imdb_id" in params:
-            kwargs["imdb_id"] = imdb_id
-        if "media_type" in params:
-            kwargs["media_type"] = media_type
-        if "season" in params:
-            kwargs["season"] = season
-        if "episode" in params:
-            kwargs["episode"] = episode
-        if "title" in params:
-            kwargs["title"] = title
-        if "year" in params:
-            kwargs["year"] = year
-        if "tmdb_id" in params:
-            kwargs["tmdb_id"] = tmdb_id
+    file_path = getattr(scraper, "_file_path", None)
+    class_name = getattr(scraper, "_class_name", None)
+    runner_path = get_runner_path()
 
-        # Fallback to positional arguments if keyword binding isn't matching
-        if not kwargs and len(params) >= 1:
-            return scraper.get_streams(imdb_id)
-        return scraper.get_streams(**kwargs)
+    raw_streams = None
 
-    raw_streams = []
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_call)
+    # Preferred out-of-process execution for file-backed custom plugins
+    if file_path and os.path.isfile(file_path) and runner_path and os.path.isfile(runner_path):
+        payload = {
+            "action": "get_streams",
+            "file_path": str(file_path),
+            "class_name": class_name,
+            "kwargs": {
+                "imdb_id": imdb_id,
+                "media_type": media_type,
+                "season": season,
+                "episode": episode,
+                "title": title,
+                "year": year,
+                "tmdb_id": tmdb_id,
+            },
+        }
+        proc = None
         try:
-            raw_streams = future.result(timeout=timeout) or []
-        except TimeoutError:
-            logger.warning(f"Custom scraper '{scraper_name}' timed out after {timeout}s")
+            proc = subprocess.Popen(
+                [sys.executable, "-s", runner_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            stdout, stderr = proc.communicate(json.dumps(payload), timeout=timeout)
+            if proc.returncode != 0:
+                logger.warning(
+                    f"Custom scraper '{scraper_name}' process exited with code {proc.returncode}. stderr: {stderr[:300]}"
+                )
+                raw_streams = []
+            else:
+                data = json.loads(stdout)
+                if isinstance(data, dict) and "error" in data:
+                    logger.warning(f"Custom scraper '{scraper_name}' error: {data['error']}")
+                    raw_streams = []
+                elif isinstance(data, list):
+                    raw_streams = data
+                else:
+                    raw_streams = []
+        except subprocess.TimeoutExpired:
+            if proc:
+                try:
+                    proc.kill()
+                    proc.communicate(timeout=1.0)
+                except Exception:
+                    pass
+            logger.warning(f"Custom scraper '{scraper_name}' timed out after {timeout}s (subprocess terminated)")
             return []
         except Exception as e:
-            logger.error(f"Custom scraper '{scraper_name}' raised an exception: {e}")
-            return []
+            logger.error(f"Error executing custom scraper '{scraper_name}' in subprocess: {e}")
+            raw_streams = []
+
+    # Fallback to in-process execution (e.g. for dynamic or mock in-memory scraper instances in tests)
+    if raw_streams is None:
+        def _call():
+            sig = inspect.signature(scraper.get_streams)
+            kwargs = {}
+            params = sig.parameters
+            if "imdb_id" in params:
+                kwargs["imdb_id"] = imdb_id
+            if "media_type" in params:
+                kwargs["media_type"] = media_type
+            if "season" in params:
+                kwargs["season"] = season
+            if "episode" in params:
+                kwargs["episode"] = episode
+            if "title" in params:
+                kwargs["title"] = title
+            if "year" in params:
+                kwargs["year"] = year
+            if "tmdb_id" in params:
+                kwargs["tmdb_id"] = tmdb_id
+
+            if not kwargs and len(params) >= 1:
+                return scraper.get_streams(imdb_id)
+            return scraper.get_streams(**kwargs)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_call)
+            try:
+                raw_streams = future.result(timeout=timeout) or []
+            except TimeoutError:
+                logger.warning(f"Custom scraper '{scraper_name}' timed out after {timeout}s")
+                return []
+            except Exception as e:
+                logger.error(f"Custom scraper '{scraper_name}' raised an exception: {e}")
+                return []
 
     if not isinstance(raw_streams, list):
         return []
@@ -586,36 +689,94 @@ def fetch_catalog_items(
     if is_cancelled and is_cancelled():
         return []
 
-    def _call():
-        sig = inspect.signature(scraper.get_catalog_items)
-        kwargs = {}
-        params = sig.parameters
-        if "catalog_id" in params:
-            kwargs["catalog_id"] = catalog_id
-        if "genre" in params:
-            kwargs["genre"] = genre
-        if "page" in params:
-            kwargs["page"] = page
-        if "query" in params:
-            kwargs["query"] = query
-        if "limit" in params:
-            kwargs["limit"] = limit
+    file_path = getattr(scraper, "_file_path", None)
+    class_name = getattr(scraper, "_class_name", None)
+    runner_path = get_runner_path()
 
-        if not kwargs and len(params) >= 1:
-            return scraper.get_catalog_items(catalog_id)
-        return scraper.get_catalog_items(**kwargs)
+    items = None
 
-    items = []
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_call)
+    if file_path and os.path.isfile(file_path) and runner_path and os.path.isfile(runner_path):
+        payload = {
+            "action": "get_catalog_items",
+            "file_path": str(file_path),
+            "class_name": class_name,
+            "kwargs": {
+                "catalog_id": catalog_id,
+                "genre": genre,
+                "page": page,
+                "query": query,
+                "limit": limit,
+            },
+        }
+        proc = None
         try:
-            items = future.result(timeout=timeout) or []
-        except TimeoutError:
-            logger.warning(f"Custom plugin '{plugin_id}' catalog '{catalog_id}' timed out after {timeout}s")
+            proc = subprocess.Popen(
+                [sys.executable, "-s", runner_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            stdout, stderr = proc.communicate(json.dumps(payload), timeout=timeout)
+            if proc.returncode != 0:
+                logger.warning(
+                    f"Custom plugin '{plugin_id}' catalog '{catalog_id}' process exited with code {proc.returncode}: {stderr[:300]}"
+                )
+                items = []
+            else:
+                data = json.loads(stdout)
+                if isinstance(data, dict) and "error" in data:
+                    logger.warning(f"Custom plugin '{plugin_id}' catalog error: {data['error']}")
+                    items = []
+                elif isinstance(data, list):
+                    items = data
+                else:
+                    items = []
+        except subprocess.TimeoutExpired:
+            if proc:
+                try:
+                    proc.kill()
+                    proc.communicate(timeout=1.0)
+                except Exception:
+                    pass
+            logger.warning(
+                f"Custom plugin '{plugin_id}' catalog '{catalog_id}' timed out after {timeout}s (subprocess terminated)"
+            )
             return []
         except Exception as e:
-            logger.error(f"Custom plugin '{plugin_id}' catalog error: {e}")
-            return []
+            logger.error(f"Error fetching catalog from '{plugin_id}' in subprocess: {e}")
+            items = []
+
+    if items is None:
+        def _call():
+            sig = inspect.signature(scraper.get_catalog_items)
+            kwargs = {}
+            params = sig.parameters
+            if "catalog_id" in params:
+                kwargs["catalog_id"] = catalog_id
+            if "genre" in params:
+                kwargs["genre"] = genre
+            if "page" in params:
+                kwargs["page"] = page
+            if "query" in params:
+                kwargs["query"] = query
+            if "limit" in params:
+                kwargs["limit"] = limit
+
+            if not kwargs and len(params) >= 1:
+                return scraper.get_catalog_items(catalog_id)
+            return scraper.get_catalog_items(**kwargs)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_call)
+            try:
+                items = future.result(timeout=timeout) or []
+            except TimeoutError:
+                logger.warning(f"Custom plugin '{plugin_id}' catalog '{catalog_id}' timed out after {timeout}s")
+                return []
+            except Exception as e:
+                logger.error(f"Custom plugin '{plugin_id}' catalog error: {e}")
+                return []
 
     if not isinstance(items, list):
         return []
