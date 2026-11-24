@@ -6541,6 +6541,20 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
 
         is_external = bool(s.get("is_external") or (external_url and not raw_stream_url))
         stream_url = raw_stream_url or external_url
+
+        # Stream URLs from addons and scrapers are untrusted. Keep local file
+        # URIs and relative paths out of libmpv; local media is opened through
+        # the application's own file and playlist flows.
+        if stream_url:
+            try:
+                parsed_stream_url = urllib.parse.urlsplit(stream_url)
+            except ValueError:
+                continue
+            scheme = parsed_stream_url.scheme.lower()
+            if scheme not in ("http", "https", "magnet"):
+                continue
+            if scheme in ("http", "https") and not parsed_stream_url.hostname:
+                continue
         
         # Filter out non-media external HTML pages, embeds, and preview/teaser sample clips
         stream_url_lower = stream_url.lower()

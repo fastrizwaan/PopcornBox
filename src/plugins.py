@@ -1,7 +1,7 @@
 """
 Nuvio Plugins Support for PopcornBox.
 Handles Nuvio plugin repositories, scraper manifest parsing, code fetching,
-and sandboxed JavaScript execution using Deno (or Node.js fallback).
+and permission-limited JavaScript execution using Deno.
 """
 
 import os
@@ -64,7 +64,7 @@ def get_runner_bundle_path():
 
 def find_js_runtime():
     """
-    Find an available JavaScript runtime (Deno preferred, Node.js fallback).
+    Find Deno, the JavaScript runtime that provides the required permission boundary.
     Returns a list of command arguments (e.g. ['deno', 'run', '--no-config', '--allow-net']).
     """
     global _js_runtime_cmd, _runtime_checked
@@ -94,28 +94,8 @@ def find_js_runtime():
                 except Exception as e:
                     logger.debug(f"Failed testing Deno candidate {c}: {e}")
 
-        # Fallback to Node.js
-        node_candidates = [
-            "/app/bin/node",
-            shutil.which("node"),
-            shutil.which("nodejs"),
-            "/usr/bin/node",
-            "/usr/local/bin/node",
-        ]
-        for c in node_candidates:
-            if c and os.path.isfile(c) and os.access(c, os.X_OK):
-                try:
-                    res = subprocess.run([c, "--version"], capture_output=True, text=True, timeout=3)
-                    if res.returncode == 0:
-                        _js_runtime_cmd = [c, bundle_path]
-                        _runtime_checked = True
-                        logger.info(f"Using Node.js runtime for Nuvio plugins: {c}")
-                        return _js_runtime_cmd
-                except Exception as e:
-                    logger.debug(f"Failed testing Node candidate {c}: {e}")
-
         _runtime_checked = True
-        logger.warning("No Deno or Node.js runtime found on the system for Nuvio plugins.")
+        logger.warning("No sandbox-capable Deno runtime found for Nuvio plugins.")
         return None
 
 
@@ -556,7 +536,7 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
     failure reasons can inspect the ``_scraper_error`` attribute attached to
     the returned list object.  Possible values:
 
-      - ``SCRAPER_ERROR_NO_RUNTIME`` – Deno/Node.js not found on the system
+      - ``SCRAPER_ERROR_NO_RUNTIME`` – sandbox-capable Deno not found on the system
       - ``SCRAPER_ERROR_NO_CODE``    – scraper has no downloaded code
       - ``SCRAPER_ERROR_TIMEOUT``    – JS process exceeded *timeout* seconds
       - ``SCRAPER_ERROR_CRASH``      – runner exited with non-zero status
@@ -578,7 +558,7 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
     cmd = find_js_runtime()
     if not cmd:
         logger.warning(
-            "Cannot execute scraper %r: No JS runtime (Deno/Node.js) found on this system.",
+            "Cannot execute scraper %r: No sandbox-capable Deno runtime found on this system.",
             scraper.get("name"),
         )
         return _err(SCRAPER_ERROR_NO_RUNTIME)
@@ -592,7 +572,9 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
         return _err(SCRAPER_ERROR_NO_CODE)
 
     norm_type = normalize_media_type(media_type)
-    tmdb_key = tmdb_helper.get_tmdb_api_key() or "b030404650f279792a8d3287232358e3"
+    # Scraper repositories are third-party code. Keep user-configured keys in
+    # the application and pass only the public built-in key for compatibility.
+    tmdb_key = tmdb_helper.DEFAULT_TMDB_API_KEY
 
     payload = {
         "action": "getStreams",
@@ -837,7 +819,7 @@ def test_scraper(scraper_id):
     if not scraper:
         return False, 0, "Provider not found"
     if not is_runtime_available():
-        return False, 0, "No Deno or Node.js runtime is available to run this provider"
+        return False, 0, "No sandbox-capable Deno runtime is available to run this provider"
     if not scraper.get("code"):
         return False, 0, "This provider has no downloaded scraper code; refresh its repository"
 

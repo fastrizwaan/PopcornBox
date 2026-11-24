@@ -57,7 +57,8 @@ class TestNuvioPlugins(unittest.TestCase):
 
     def test_js_runtime_detection(self):
         runtime_cmd = plugins.find_js_runtime()
-        self.assertIsNotNone(runtime_cmd)
+        if runtime_cmd is None:
+            self.skipTest("Sandbox-capable Deno is not installed")
         self.assertTrue(len(runtime_cmd) >= 1)
         # Runner bundle path should exist
         bundle_path = plugins.get_runner_bundle_path()
@@ -113,6 +114,7 @@ class TestNuvioPlugins(unittest.TestCase):
         self.assertEqual(len(plugins.get_installed_repositories()), 0)
         self.assertEqual(len(plugins.get_all_scrapers()), 0)
 
+    @unittest.skipUnless(plugins.is_runtime_available(), "Sandbox-capable Deno is not installed")
     def test_execute_scraper_and_stream_formatting(self):
         js_code = """
         async function getStreams(tmdbId, mediaType, season, episode) {

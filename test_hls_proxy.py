@@ -1,4 +1,5 @@
 import unittest
+import io
 import urllib.request
 import urllib.parse
 from src import hls_proxy
@@ -34,6 +35,19 @@ https://cdn.example.com/480p/manifest.m3u8
 """
 
 class TestHlsProxy(unittest.TestCase):
+    def test_playlist_reader_rejects_oversized_body(self):
+        class OversizedResponse:
+            def __init__(self):
+                self.remaining = hls_proxy.MAX_PLAYLIST_BYTES + 1
+
+            def read(self, count):
+                amount = min(count, self.remaining)
+                self.remaining -= amount
+                return b"x" * amount
+
+        with self.assertRaises(ValueError):
+            hls_proxy._read_playlist_text(OversizedResponse())
+
     def test_is_hls_stream(self):
         self.assertTrue(hls_proxy.is_hls_stream("https://example.com/stream.m3u8"))
         self.assertTrue(hls_proxy.is_hls_stream("https://example.com/hls/manifest.m3u8?token=123"))
@@ -130,7 +144,7 @@ class TestHlsProxy(unittest.TestCase):
 1080p/playlist.m3u8
 """
         mock_resp = MagicMock()
-        mock_resp.read.return_value = master_with_audio.encode("utf-8")
+        mock_resp.read.side_effect = io.BytesIO(master_with_audio.encode("utf-8")).read
         mock_resp.__enter__.return_value = mock_resp
         mock_resp.__exit__.return_value = False
 
@@ -187,7 +201,7 @@ en-us.[CC].vtt
 #EXT-X-ENDLIST
 """
         mock_resp = MagicMock()
-        mock_resp.read.return_value = sub_m3u8_content.encode("utf-8")
+        mock_resp.read.side_effect = io.BytesIO(sub_m3u8_content.encode("utf-8")).read
         mock_resp.__enter__.return_value = mock_resp
         mock_resp.__exit__.return_value = False
 
@@ -228,7 +242,7 @@ en-us.[CC].vtt
 1080p.m3u8
 """
         mock_resp = MagicMock()
-        mock_resp.read.return_value = master_with_both.encode("utf-8")
+        mock_resp.read.side_effect = io.BytesIO(master_with_both.encode("utf-8")).read
         mock_resp.__enter__.return_value = mock_resp
         mock_resp.__exit__.return_value = False
 

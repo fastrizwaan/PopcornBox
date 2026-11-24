@@ -296,14 +296,23 @@ def _start_worker_thread(info_hash, url, dest_path, headers=None, torrent=None, 
                         "-bsf:a", "aac_adtstoasc",
                         part_path
                     ]
-                    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                    # Keep stderr out of an unread pipe: once the pipe fills,
+                    # FFmpeg blocks while the worker waits for it to exit.
+                    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     while proc.poll() is None:
                         if abort_event.is_set():
                             proc.terminate()
                             try:
                                 proc.wait(timeout=5)
                             except Exception:
-                                proc.kill()
+                                try:
+                                    proc.kill()
+                                except Exception:
+                                    pass
+                                try:
+                                    proc.wait(timeout=5)
+                                except Exception:
+                                    pass
                             break
                         if os.path.exists(part_path) and task:
                             task["downloaded"] = os.path.getsize(part_path)
@@ -316,8 +325,7 @@ def _start_worker_thread(info_hash, url, dest_path, headers=None, torrent=None, 
                         return
 
                     if proc.returncode != 0:
-                        err_msg = proc.stderr.read().decode('utf-8', errors='ignore')[-300:]
-                        raise RuntimeError(f"FFmpeg error: {err_msg}")
+                        raise RuntimeError(f"FFmpeg exited with status {proc.returncode}")
                 else:
                     raise RuntimeError("HLS (.m3u8) stream requires ffmpeg to download")
             else:
