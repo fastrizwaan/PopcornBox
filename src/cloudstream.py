@@ -3544,11 +3544,117 @@ def _is_strict_title_match(query, candidate):
     return q_ratio >= 0.75 and c_ratio >= 0.75
 
 
+CLOUDSTREAM_URL_SKIP_DOMAINS = {
+    "github.com", "raw.githubusercontent.com", "github.io", "gitlab.com",
+    "pages.dev", "workers.dev", "vercel.app", "netlify.app",
+    "google.com", "gstatic.com", "android.com", "cloudflare.com",
+    "w3.org", "schema.org", "apache.org", "jsdelivr.net",
+    "themoviedb.org", "tmdb.org", "strem.io", "cinemeta.strem.io",
+    "buymeacoffee.com", "ko-fi.com", "patreon.com", "paypal.com",
+    "t.me", "telegram.org", "discord.gg", "discord.com",
+    "youtube.com", "youtu.be", "vimeo.com", "dailymotion.com",
+    "i.ibb.co", "postimg.cc", "imgur.com", "cloudfront.net", "short.gy",
+    "dpdns.org", "crashedserverpanel.xyz", "wyzie.ru",
+}
+
+
+def find_dex_base_url(dex_bytes):
+    """
+    Extracts the provider's active streaming base URL from Android DEX bytecode.
+    First checks Dalvik bytecode assignment to mainUrl (iput-object / sput-object),
+    then falls back to frequency scanning of candidate URLs excluding repos/trackers/CDNs.
+    """
+    if not dex_bytes or len(dex_bytes) < 0x70 or not dex_bytes.startswith(b"dex\n"):
+        return None
+    try:
+        import struct
+        string_ids_size, string_ids_off = struct.unpack_from("<II", dex_bytes, 0x38)
+        field_ids_size, field_ids_off = struct.unpack_from("<II", dex_bytes, 0x50)
+
+        def _get_str(idx):
+            if idx >= string_ids_size:
+                return ""
+            str_data_off, = struct.unpack_from("<I", dex_bytes, string_ids_off + idx * 4)
+            pos = str_data_off
+            val, shift = 0, 0
+            while True:
+                b = dex_bytes[pos]
+                pos += 1
+                val |= (b & 0x7f) << shift
+                if not (b & 0x80):
+                    break
+                shift += 7
+            end = dex_bytes.find(b"\x00", pos)
+            return dex_bytes[pos:end].decode("utf-8", errors="replace") if end != -1 else ""
+
+        # 1. Exact field assignment to mainUrl
+        main_url_str_id = None
+        for i in range(string_ids_size):
+            if _get_str(i) == "mainUrl":
+                main_url_str_id = i
+                break
+
+        if main_url_str_id is not None:
+            main_url_field_ids = set()
+            for i in range(field_ids_size):
+                c_idx, t_idx, n_idx = struct.unpack_from("<HHI", dex_bytes, field_ids_off + i * 8)
+                if n_idx == main_url_str_id:
+                    main_url_field_ids.add(i)
+
+            for fid in main_url_field_ids:
+                fid_bytes = struct.pack("<H", fid)
+                pos = 0
+                while True:
+                    idx = dex_bytes.find(b"\x5b", pos)
+                    if idx == -1:
+                        break
+                    if idx + 4 <= len(dex_bytes) and dex_bytes[idx+2:idx+4] == fid_bytes:
+                        window = dex_bytes[max(0, idx-20):idx]
+                        for w in range(len(window)-4, -1, -2):
+                            if window[w] == 0x1a:
+                                str_idx, = struct.unpack_from("<H", window, w+2)
+                                s = _get_str(str_idx)
+                                if s.startswith("http://") or s.startswith("https://"):
+                                    p = urllib.parse.urlparse(s)
+                                    if p.netloc and not any(skip in p.netloc.lower() for skip in CLOUDSTREAM_URL_SKIP_DOMAINS):
+                                        return f"{p.scheme}://{p.netloc}"
+                            elif window[w] == 0x1b and w+6 <= len(window):
+                                str_idx, = struct.unpack_from("<I", window, w+2)
+                                s = _get_str(str_idx)
+                                if s.startswith("http://") or s.startswith("https://"):
+                                    p = urllib.parse.urlparse(s)
+                                    if p.netloc and not any(skip in p.netloc.lower() for skip in CLOUDSTREAM_URL_SKIP_DOMAINS):
+                                        return f"{p.scheme}://{p.netloc}"
+                    pos = idx + 1
+
+        # 2. Heuristic scan of all URL strings in DEX
+        all_strs = []
+        for i in range(string_ids_size):
+            s = _get_str(i)
+            if s.startswith("http://") or s.startswith("https://"):
+                all_strs.append(s)
+
+        candidates = []
+        for s in all_strs:
+            try:
+                p = urllib.parse.urlparse(s)
+                h = p.netloc.lower()
+                if h and not any(skip in h for skip in CLOUDSTREAM_URL_SKIP_DOMAINS):
+                    candidates.append(f"{p.scheme}://{p.netloc}")
+            except Exception:
+                pass
+        if candidates:
+            return max(set(candidates), key=candidates.count)
+    except Exception as e:
+        logger.debug(f"find_dex_base_url error: {e}")
+    return None
+
+
 class GenericCloudStreamProvider(CloudStreamProvider):
-    def __init__(self, provider_id, name="CloudStream Provider", base_url=None):
+    def __init__(self, provider_id, name="CloudStream Provider", base_url=None, supported_types=None):
         self.id = provider_id
         self.name = name
-        self.supported_types = ["movie", "series", "live", "tv", "other"]
+        self.supported_types = list(supported_types) if supported_types else ["movie", "series", "live", "tv", "other"]
         self._base_url = base_url
 
     def get_base_url(self):
@@ -3557,48 +3663,116 @@ class GenericCloudStreamProvider(CloudStreamProvider):
 
         plugin = get_plugin(self.id)
         if plugin:
+            # 1. Inspect package classes.dex if installed
+            storage_key = plugin.get("storage_key")
+            if storage_key:
+                pkg_dirs = [get_packages_dir()]
+                home = Path.home()
+                pkg_dirs.append(home / ".var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box/cloudstream_packages")
+                pkg_dirs.append(home / ".local/share/popcorn-box/cloudstream_packages")
+                for pdir in pkg_dirs:
+                    pkg_file = os.path.join(pdir, f"{storage_key}.cs3")
+                    if os.path.exists(pkg_file) and zipfile.is_zipfile(pkg_file):
+                        try:
+                            with zipfile.ZipFile(pkg_file) as z:
+                                if "classes.dex" in z.namelist():
+                                    dex = z.read("classes.dex")
+                                    base = find_dex_base_url(dex)
+                                    if base:
+                                        self._base_url = base
+                                        return self._base_url
+                        except Exception:
+                            pass
+                        break
+
+            # 2. Check icon_url as fallback
             icon = plugin.get("icon_url", "")
             if icon:
                 p = urllib.parse.urlparse(icon)
-                if p.scheme in ("http", "https") and p.netloc and not any(skip in p.netloc.lower() for skip in [
-                    "github", "google", "wikimedia", "gstatic", "i.ibb.co", "i.postimg.cc", "t2.gstatic.com", "imgur.com"
-                ]):
+                if p.scheme in ("http", "https") and p.netloc and not any(skip in p.netloc.lower() for skip in CLOUDSTREAM_URL_SKIP_DOMAINS):
                     self._base_url = f"{p.scheme}://{p.netloc}"
                     return self._base_url
 
-            storage_key = plugin.get("storage_key")
-            if storage_key:
-                pkg_file = os.path.join(get_packages_dir(), f"{storage_key}.cs3")
-                if os.path.exists(pkg_file) and zipfile.is_zipfile(pkg_file):
-                    try:
-                        with zipfile.ZipFile(pkg_file) as z:
-                            if "classes.dex" in z.namelist():
-                                dex = z.read("classes.dex")
-                                urls = re.findall(rb'https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\x00\s\"\'<>]*)?', dex)
-                                candidates = []
-                                for u in urls:
-                                    try:
-                                        s = u.decode("utf-8")
-                                        p = urllib.parse.urlparse(s)
-                                        h = p.netloc.lower()
-                                        if not any(skip in h for skip in [
-                                            "github", "android", "google", "cloudflare", "w3.org", "schema.org", "apache",
-                                            "jsdelivr", "tmdb", "themoviedb", "buymeacoffee", "gofile.io", "dood.", "streamtape"
-                                        ]):
-                                            candidates.append(f"{p.scheme}://{p.netloc}")
-                                    except Exception:
-                                        pass
-                                if candidates:
-                                    self._base_url = max(set(candidates), key=candidates.count)
-                                    return self._base_url
-                    except Exception:
-                        pass
         self._base_url = None
         return None
 
-    catalog_sections = ()
+    @property
+    def catalog_sections(self):
+        base = self.get_base_url()
+        if not base:
+            return ()
+        plugin = get_plugin(self.id)
+        raw_types = [str(t).lower() for t in ((plugin.get("tv_types") if plugin else None) or self.supported_types or [])]
+        sections = []
+        has_movie = any(t in raw_types for t in ("movie", "animemovie", "documentary"))
+        has_series = any(t in raw_types for t in ("tvseries", "series", "cartoon", "asiandrama"))
+        has_anime = any(t in raw_types for t in ("anime", "ova"))
+        has_live = any(t in raw_types for t in ("live", "tv"))
+
+        if has_movie:
+            sections.append({
+                "id": f"{self.id}#latest-movies",
+                "name": "Latest Movies",
+                "section": "Latest Movies",
+                "type": "movie",
+                "supports_pagination": True,
+            })
+        if has_series:
+            sections.append({
+                "id": f"{self.id}#latest-series",
+                "name": "Latest Series",
+                "section": "Latest Series",
+                "type": "series",
+                "supports_pagination": True,
+            })
+        if has_anime and not has_series:
+            sections.append({
+                "id": f"{self.id}#latest-anime",
+                "name": "Latest Anime",
+                "section": "Latest Anime",
+                "type": "anime",
+                "supports_pagination": True,
+            })
+        if has_live and not sections:
+            sections.append({
+                "id": f"{self.id}#live",
+                "name": "Live TV",
+                "section": "Live TV",
+                "type": "tv",
+                "supports_pagination": False,
+            })
+        if not sections:
+            sections.append({
+                "id": f"{self.id}#latest",
+                "name": "Latest",
+                "section": "Latest",
+                "type": "movie",
+                "supports_pagination": True,
+            })
+        return tuple(sections)
 
     def get_main_page(self, page=1):
+        base = self.get_base_url()
+        if not base:
+            return []
+        base = base.rstrip("/")
+        urls_to_try = []
+        if page and int(page) > 1:
+            urls_to_try.extend([
+                f"{base}/page/{page}/",
+                f"{base}/?page={page}",
+                f"{base}/?paged={page}",
+            ])
+        urls_to_try.append(f"{base}/")
+
+        for u in urls_to_try:
+            try:
+                html = _http_get_text(u, timeout=10.0)
+                cards = self._parse_cards(html, base)
+                if cards:
+                    return [("Latest", cards)]
+            except Exception as e:
+                logger.debug(f"{self.name} get_main_page failed on {u}: {e}")
         return []
 
     def _parse_cards(self, page_html, base):
@@ -3606,7 +3780,16 @@ class GenericCloudStreamProvider(CloudStreamProvider):
         if not page_html:
             return items
         seen_hrefs = set()
-        blocks = re.findall(r"<(?:article|figure|li|div\b[^>]*class=[\x27\x22][^\x27\x22]*(?:card|post|item)[^\x27\x22]*[\x27\x22])>(.*?)</(?:article|figure|li|div)>", page_html, re.I | re.DOTALL)
+        pattern = (
+            r"<(?:article|figure|li|div)\b[^>]*?"
+            r"(?:class=[\x27\x22][^\x27\x22]*(?:card|post|item|poster|movie|entry|video|film|thumb)[^\x27\x22]*[\x27\x22]|"
+            r"id=[\x27\x22][^\x27\x22]*(?:post|movie|item)[^\x27\x22]*[\x27\x22])"
+            r"[^>]*>(.*?)</(?:article|figure|li|div)>"
+        )
+        blocks = re.findall(pattern, page_html, re.I | re.DOTALL)
+        if not blocks:
+            blocks = re.findall(r"(<(?:h[1-6]|a)\b[^>]*>.*?<img\b[^>]*>.*?</(?:h[1-6]|a)>)", page_html, re.I | re.DOTALL)
+
         for block in blocks:
             l_m = re.search(r"<a\b[^>]*href=[\x27\x22]([^\x27\x22]+)[\x27\x22][^>]*>", block, re.I)
             if not l_m:
@@ -3624,6 +3807,8 @@ class GenericCloudStreamProvider(CloudStreamProvider):
             if not title or len(title) < 2:
                 continue
             img_m = re.search(r"<img\b[^>]*src=[\x27\x22]([^\x27\x22]+)[\x27\x22]", block, re.I)
+            if not img_m:
+                img_m = re.search(r"<img\b[^>]*data-(?:src|original|lazy-src)=[\x27\x22]([^\x27\x22]+)[\x27\x22]", block, re.I)
             poster = urllib.parse.urljoin(f"{base}/", img_m.group(1).strip()) if img_m else None
             y_m = re.search(r"\b((?:19|20)\d{2})\b", title)
             year = int(y_m.group(1)) if y_m else None
@@ -3647,13 +3832,21 @@ class GenericCloudStreamProvider(CloudStreamProvider):
         if not base:
             return []
         base = base.rstrip("/")
-        search_url = f"{base}/?s={urllib.parse.quote(str(query).strip())}"
-        try:
-            page_html = _http_get_text(search_url, timeout=10.0)
-        except Exception as e:
-            logger.debug(f"{self.name} search failed: {e}")
-            return []
-        return self._parse_cards(page_html, base)
+        q_enc = urllib.parse.quote(str(query).strip())
+        search_urls = [
+            f"{base}/?s={q_enc}",
+            f"{base}/search/{q_enc}",
+            f"{base}/search/{q_enc}/",
+        ]
+        for search_url in search_urls:
+            try:
+                page_html = _http_get_text(search_url, timeout=10.0)
+                cards = self._parse_cards(page_html, base)
+                if cards:
+                    return cards
+            except Exception as e:
+                logger.debug(f"{self.name} search failed on {search_url}: {e}")
+        return []
 
     def load(self, data_str):
         clean_url = str(data_str).replace("generic:", "").strip()
@@ -3715,32 +3908,83 @@ class GenericCloudStreamProvider(CloudStreamProvider):
 
     def load_links(self, data_str, season=None, episode=None):
         data_s = str(data_str).replace("generic:", "").strip()
-        if data_s.startswith("http://") or data_s.startswith("https://"):
-            try:
-                extracted = extract_video_streams(data_s)
-                if extracted:
-                    return extracted
-            except Exception:
-                pass
+        if not (data_s.startswith("http://") or data_s.startswith("https://")):
+            return []
 
-            try:
-                page_html = _http_get_text(data_s, timeout=8.0)
-                links = re.findall(r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>', page_html, re.I)
-                for h in links[:15]:
-                    if any(k in h.lower() for k in ["filepress", "gdflix", "multicloud", "hubcloud", "pixeldrain", "gofile", ".m3u8", ".mp4"]):
-                        st = extract_video_streams(h, referer=data_s)
-                        if st:
-                            return st
-            except Exception:
-                pass
+        # 1. Direct stream or direct extractor
+        try:
+            extracted = extract_video_streams(data_s)
+            if extracted:
+                return extracted
+        except Exception:
+            pass
 
+        # 2. Inspect movie page for direct stream links or video extractors
+        try:
+            page_html = _http_get_text(data_s, timeout=8.0)
+        except Exception:
+            page_html = ""
+
+        if not page_html:
             return [{
                 "name": self.name,
                 "url": data_s,
                 "is_hls": ".m3u8" in data_s,
                 "is_dash": ".mpd" in data_s,
             }]
-        return []
+
+        all_links = re.findall(r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>', page_html, re.I)
+
+        # Check direct video extractors on page
+        for h in all_links[:25]:
+            if any(k in h.lower() for k in [
+                "filepress", "gdflix", "multicloud", "hubcloud", "hubdrive", "fastdl",
+                "pixeldrain", "gofile", "streamwish", "vidhide", "mixdrop", "dood",
+                "streamtape", "filemoon", "fastream", "voe", "mp4upload", "vidoza",
+                ".m3u8", ".mp4"
+            ]):
+                try:
+                    st = extract_video_streams(h, referer=data_s)
+                    if st:
+                        return st
+                except Exception:
+                    pass
+
+        # 3. Check intermediate download/stream link pages
+        candidate_intermediates = []
+        for h in all_links:
+            clean_h = urllib.parse.urljoin(data_s, h.strip())
+            h_lower = clean_h.lower()
+            if any(k in h_lower for k in [
+                "/links/", "/download/", "/file/", "/archives/", "savelinks.", "fastdl.", "hubcloud."
+            ]):
+                if clean_h not in candidate_intermediates and clean_h != data_s:
+                    candidate_intermediates.append(clean_h)
+
+        for inter_url in candidate_intermediates[:4]:
+            try:
+                inter_html = _http_get_text(inter_url, timeout=8.0)
+                inter_links = re.findall(r'<a\b[^>]*href=["\'](https?://[^"\']+)["\'][^>]*>', inter_html, re.I)
+                for ih in inter_links:
+                    ih_clean = urllib.parse.urljoin(inter_url, ih.strip())
+                    if any(k in ih_clean.lower() for k in [
+                        "filepress", "gdflix", "multicloud", "hubcloud", "hubdrive", "fastdl",
+                        "pixeldrain", "gofile", "streamwish", "vidhide", "mixdrop", "dood",
+                        "streamtape", "filemoon", "fastream", "voe", "mp4upload", "vidoza",
+                        ".m3u8", ".mp4"
+                    ]):
+                        st = extract_video_streams(ih_clean, referer=inter_url)
+                        if st:
+                            return st
+            except Exception as e:
+                logger.debug(f"Intermediate link extraction failed on {inter_url}: {e}")
+
+        return [{
+            "name": self.name,
+            "url": data_s,
+            "is_hls": ".m3u8" in data_s,
+            "is_dash": ".mpd" in data_s,
+        }]
 
 
 # --- Provider Registry ---
@@ -3785,9 +4029,11 @@ def get_provider(provider_id):
     # Fallback to Generic provider so every provider has an active instance
     p_name = provider_id.split("#", 1)[1] if "#" in provider_id else provider_id
     plugin = get_plugin(provider_id)
+    p_types = None
     if plugin:
         p_name = plugin.get("name") or p_name
-    return GenericCloudStreamProvider(provider_id, name=p_name)
+        p_types = plugin.get("tv_types") or plugin.get("raw_tv_types")
+    return GenericCloudStreamProvider(provider_id, name=p_name, supported_types=p_types)
 
 def get_all_registered_providers():
     return list(_PROVIDERS.values())
@@ -3857,6 +4103,25 @@ def is_provider_runnable(plugin):
     return True
 
 
+def is_provider_usable(plugin):
+    """
+    Check if a plugin can actively be used for searches and stream fetching.
+    Returns True if an active Python scraper adapter is registered, or if the
+    plugin is installed and its provider has a discoverable base URL.
+    """
+    if is_provider_runnable(plugin):
+        return True
+    if not isinstance(plugin, dict) or not plugin.get("is_installed"):
+        return False
+    p_id = plugin.get("id")
+    if not p_id:
+        return False
+    prov = get_provider(p_id)
+    if prov and hasattr(prov, "get_base_url") and prov.get_base_url():
+        return True
+    return False
+
+
 _PROVIDER_HEALTH = {}
 _PROVIDER_HEALTH_LOCK = threading.Lock()
 _PROVIDER_OFFLINE_TTL = 300.0  # 5 minutes
@@ -3865,14 +4130,17 @@ _PROVIDER_OFFLINE_TTL = 300.0  # 5 minutes
 def is_provider_online(provider_id):
     """
     Check if a CloudStream provider is currently online and functional.
-    Returns False if the provider has no runnable Python adapter,
+    Returns False if the provider has no runnable or usable adapter,
     or if it was marked offline recently (< 5 minutes).
     """
     if not provider_id:
         return False
     prov = get_provider(provider_id)
-    if not prov or type(prov) is GenericCloudStreamProvider:
+    if not prov:
         return False
+    if type(prov) is GenericCloudStreamProvider:
+        if not getattr(prov, "get_base_url", None) or not prov.get_base_url():
+            return False
 
     with _PROVIDER_HEALTH_LOCK:
         entry = _PROVIDER_HEALTH.get(str(provider_id))
@@ -3933,7 +4201,7 @@ def provider_id_from_catalog_url(value):
 
 
 def get_catalogs(media_type="all"):
-    """Return browsable sections declared by enabled, runnable CloudStream adapters."""
+    """Return browsable sections declared by enabled, runnable or usable CloudStream adapters."""
     if not is_cloudstream_enabled():
         return []
 
@@ -3946,13 +4214,13 @@ def get_catalogs(media_type="all"):
     catalogs = []
     seen = set()
     for plugin in get_all_plugins():
-        if not plugin.get("enabled") or not is_provider_runnable(plugin):
+        if not plugin.get("enabled") or not is_provider_usable(plugin):
             continue
         if hide_adult and is_plugin_nsfw(plugin):
             continue
         plugin_id = str(plugin.get("id") or "").strip()
         provider = get_provider(plugin_id)
-        if not plugin_id or not provider or type(provider) is GenericCloudStreamProvider:
+        if not plugin_id or not provider:
             continue
         if not is_provider_online(plugin_id):
             continue
@@ -4098,7 +4366,7 @@ def fetch_catalog_items(provider_id, catalog_id, page=1, limit=50, is_cancelled=
     if is_cancelled and is_cancelled():
         return []
     plugin = get_plugin(provider_id)
-    if not is_cloudstream_enabled() or not plugin or not plugin.get("enabled") or not is_provider_runnable(plugin):
+    if not is_cloudstream_enabled() or not plugin or not plugin.get("enabled") or not is_provider_usable(plugin):
         return []
 
     hide_adult = False
@@ -4471,6 +4739,7 @@ def bulk_install_and_enable(plugin_ids, only_compatible=True):
     except Exception:
         pass
 
+    targets = []
     for pid in plugin_ids:
         plugin = get_plugin(pid)
         if not plugin:
@@ -4480,15 +4749,44 @@ def bulk_install_and_enable(plugin_ids, only_compatible=True):
         if hide_adult and is_plugin_nsfw(plugin):
             logger.debug(f"Skipping NSFW plugin {plugin.get('name')} during bulk install (Hide 18+ active)")
             continue
+        targets.append(plugin)
+
+    def _process_one(plugin):
+        pid = plugin["id"]
+        inst = False
         if not plugin.get("is_installed") or plugin.get("version", 0) > (plugin.get("installed_version") or 0):
             ok, msg = install_plugin(pid)
-            if ok:
+            if not ok:
+                return False, False, f"{plugin.get('name')}: {msg}"
+            inst = True
+        toggled = toggle_plugin(pid, True)
+        return inst, toggled, None
+
+    if len(targets) <= 1:
+        for p in targets:
+            inst, toggled, err = _process_one(p)
+            if inst:
                 installed += 1
-            else:
-                errors.append(f"{plugin.get('name')}: {msg}")
-                continue
-        if toggle_plugin(pid, True):
-            enabled += 1
+            if toggled:
+                enabled += 1
+            if err:
+                errors.append(err)
+    else:
+        max_workers = min(len(targets), 8)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_process_one, p): p for p in targets}
+            for fut in as_completed(futures):
+                try:
+                    inst, toggled, err = fut.result()
+                    if inst:
+                        installed += 1
+                    if toggled:
+                        enabled += 1
+                    if err:
+                        errors.append(err)
+                except Exception as e:
+                    errors.append(str(e))
+
     return {
         "installed": installed,
         "enabled": enabled,
@@ -4867,7 +5165,7 @@ def search_all_enabled_providers(query, timeout=10.0):
 
     enabled_plugins = [
         p for p in get_all_plugins()
-        if p.get("enabled") and is_provider_runnable(p) and not (hide_adult and is_plugin_nsfw(p))
+        if p.get("enabled") and is_provider_usable(p) and not (hide_adult and is_plugin_nsfw(p))
     ]
     if not enabled_plugins:
         return []
@@ -4952,7 +5250,7 @@ def fetch_cloudstream_streams_for_media(
 
     enabled_plugins = [
         p for p in get_all_plugins()
-        if p.get("enabled") and is_provider_runnable(p) and not (hide_adult and is_plugin_nsfw(p))
+        if p.get("enabled") and is_provider_usable(p) and not (hide_adult and is_plugin_nsfw(p))
     ]
     if not enabled_plugins:
         return []
@@ -5207,10 +5505,13 @@ def fetch_cloudstream_streams_for_media(
                                 link_data = ep.get("data")
                                 break
                         if not link_data:
-                            logger.debug(
-                                f"CloudStream: no matching episode S{season}E{episode} in {provider.name}"
-                            )
-                            continue
+                            if not loaded.get("episodes"):
+                                link_data = loaded.get("data") or match_data
+                            else:
+                                logger.debug(
+                                    f"CloudStream: no matching episode S{season}E{episode} in {provider.name}"
+                                )
+                                continue
                     else:
                         link_data = loaded.get("data") or match_data
 

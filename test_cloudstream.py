@@ -1124,7 +1124,8 @@ class TestCloudStream(unittest.TestCase):
         with patch.object(cloudstream, "get_plugin", return_value=plugin_dict):
             prov = cloudstream.get_provider("https://example.com/repo.json#TestPlugin")
             self.assertEqual(prov.get_base_url(), "https://custom-movies.site")
-            self.assertEqual(prov.catalog_sections, ())
+            self.assertTrue(len(prov.catalog_sections) >= 1)
+            self.assertIn("Latest", prov.catalog_sections[0]["name"])
             self.assertFalse(cloudstream.is_provider_runnable(plugin_dict))
 
         # When no base URL is discoverable and no provider class is registered
@@ -1509,7 +1510,133 @@ class TestCloudStream(unittest.TestCase):
             self.assertEqual(fallback_cards[0]["title"], "Romantic Tale")
             self.assertEqual(fallback_cards[0]["catalog_title"], "Romantic Tale 2022")
 
+    def test_is_provider_usable(self):
+        # 1. Runnable plugin with adapter (e.g. KickTR) is always usable
+        kick_plugin = {"id": "https://raw.githubusercontent.com/Kraptor123/cs-kraptor/master/repo.json#KickTR", "name": "KickTR"}
+        self.assertTrue(cloudstream.is_provider_usable(kick_plugin))
+
+        # 2. Generic plugin that is installed and has a discoverable base URL is usable
+        installed_with_url = {
+            "id": "https://example.com/repo.json#AnimeSite",
+            "name": "AnimeSite",
+            "icon_url": "https://animesite.to/favicon.png",
+            "is_installed": True,
+        }
+        with patch.object(cloudstream, "get_plugin", return_value=installed_with_url):
+            self.assertTrue(cloudstream.is_provider_usable(installed_with_url))
+
+        # 3. Generic plugin that is not installed is not usable yet
+        not_installed_with_url = {
+            "id": "https://example.com/repo.json#AnimeSite",
+            "name": "AnimeSite",
+            "icon_url": "https://animesite.to/favicon.png",
+            "is_installed": False,
+        }
+        with patch.object(cloudstream, "get_plugin", return_value=not_installed_with_url):
+            self.assertFalse(cloudstream.is_provider_usable(not_installed_with_url))
+
+        # 4. Generic plugin with no discoverable base URL is not usable
+        empty_plugin = {
+            "id": "https://example.com/repo.json#EmptyPlugin",
+            "name": "EmptyPlugin",
+            "icon_url": "https://github.com/logo.png",
+            "is_installed": True,
+        }
+        with patch.object(cloudstream, "get_plugin", return_value=empty_plugin):
+            self.assertFalse(cloudstream.is_provider_usable(empty_plugin))
+
+    def test_bulk_install_all_repository_plugins(self):
+        mock_plugins = [
+            {"id": "https://example.com/repo.json#PluginA", "name": "PluginA", "is_installed": False},
+            {"id": "https://example.com/repo.json#PluginB", "name": "PluginB", "is_installed": False},
+        ]
+        with patch("src.cloudstream.get_plugin", side_effect=lambda pid: next((p for p in mock_plugins if p["id"] == pid), None)), \
+             patch("src.cloudstream.install_plugin", return_value=(True, "Installed")), \
+             patch("src.cloudstream.toggle_plugin", return_value=True) as mock_toggle:
+            res = cloudstream.bulk_install_and_enable([p["id"] for p in mock_plugins], only_compatible=False)
+            self.assertEqual(res["installed"], 2)
+            self.assertEqual(res["enabled"], 2)
+            self.assertEqual(mock_toggle.call_count, 2)
+
+    def test_generic_cloudstream_parse_cards_modern_markup(self):
+        sample_html = """
+        <html>
+        <body>
+        <article class="item" id="post-101">
+            <a href="/movies/inception-2010/">
+                <img src="/posters/inception.jpg" alt="Inception" />
+            </a>
+            <div class="data">
+                <h3 class="title">Inception (2010) Dual Audio [Hindi-English] 1080p</h3>
+            </div>
+        </article>
+        <article class="item" id="post-102">
+            <a href="/movies/stranger-things-s01/">
+                <img src="/posters/st.jpg" alt="Stranger Things" />
+            </a>
+            <div class="data">
+                <h3 class="title">Stranger Things S01 Complete Hindi WEB-DL</h3>
+            </div>
+        </article>
+        </body>
+        </html>
+        """
+        prov = cloudstream.GenericCloudStreamProvider("test_id", "TestProv", base_url="https://example.site")
+        cards = prov._parse_cards(sample_html, "https://example.site")
+        self.assertEqual(len(cards), 2)
+        self.assertIn("Inception (2010)", cards[0]["name"])
+        self.assertEqual(cards[0]["data"], "generic:https://example.site/movies/inception-2010/")
+        self.assertEqual(cards[0]["type"], cloudstream.CloudStreamTvType.Movie)
+        self.assertEqual(cards[0]["year"], 2010)
+        self.assertEqual(cards[1]["type"], cloudstream.CloudStreamTvType.TvSeries)
+
+    def test_generic_cloudstream_load_links_intermediate_page(self):
+        movie_html = """
+        <html>
+        <body>
+        <h1>Sample Movie (2024)</h1>
+        <a href="https://example.site/links/12345/">Download 1080p</a>
+        </body>
+        </html>
+        """
+        inter_html = """
+        <html>
+        <body>
+        <a href="https://gdflix.vip/file/ABC123XYZ">GDFlix Fast</a>
+        </body>
+        </html>
+        """
+        prov = cloudstream.GenericCloudStreamProvider("test_id", "TestProv", base_url="https://example.site")
+        def mock_get_text(url, timeout=None):
+            if "links/12345" in url:
+                return inter_html
+            return movie_html
+
+        with patch.object(cloudstream, "_http_get_text", side_effect=mock_get_text), \
+             patch.object(cloudstream, "extract_video_streams", return_value=[{"name": "Stream1", "url": "https://fast.stream/play.mp4"}]):
+            sources = prov.load_links("generic:https://example.site/movie/sample-2024")
+            self.assertEqual(len(sources), 1)
+            self.assertEqual(sources[0]["url"], "https://fast.stream/play.mp4")
+
+    def test_get_catalogs_includes_usable_generic_providers(self):
+        generic_plugin = {
+            "id": "https://example.com/repo.json#VegaProvider",
+            "name": "VegaProvider",
+            "icon_url": "https://vegasite.com/icon.png",
+            "enabled": True,
+            "is_installed": True,
+        }
+        with patch.object(cloudstream, "is_cloudstream_enabled", return_value=True), \
+             patch.object(cloudstream, "get_all_plugins", return_value=[generic_plugin]), \
+             patch.object(cloudstream, "get_plugin", return_value=generic_plugin), \
+             patch.object(cloudstream, "is_provider_usable", return_value=True), \
+             patch.object(cloudstream, "is_provider_online", return_value=True):
+            cats = cloudstream.get_catalogs("all")
+            self.assertTrue(len(cats) >= 1)
+            self.assertIn("VegaProvider (CloudStream)", cats[0]["addon_name"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

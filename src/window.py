@@ -21974,7 +21974,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         repo_count = len(repos)
         installed_count = len([p for p in plugins_list if p.get("is_installed")])
-        active_count = len([p for p in plugins_list if p.get("enabled") and cloudstream.is_provider_runnable(p)])
+        active_count = len([p for p in plugins_list if p.get("enabled") and (cloudstream.is_provider_runnable(p) or p.get("is_installed"))])
 
         self.cloudstream_badge_repos.set_label(f"{repo_count} repo{'s' if repo_count != 1 else ''}")
         self.cloudstream_badge_installed.set_label(f"{installed_count} installed")
@@ -22153,8 +22153,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             ver_badge.add_css_class("caption")
             sfx.append(ver_badge)
 
-            # Test button (for runnable providers)
-            if is_runnable and not is_nsfw_blocked:
+            # Test button (for runnable providers or installed providers with base URL)
+            prov_inst = cloudstream.get_provider(p_id)
+            has_base = bool(prov_inst and getattr(prov_inst, "get_base_url", None) and prov_inst.get_base_url())
+            if (is_runnable or (is_installed and has_base)) and not is_nsfw_blocked:
                 test_btn = Gtk.Button(label=_("Test"), valign=Gtk.Align.CENTER)
                 test_btn.add_css_class("flat")
                 test_btn.add_css_class("pill")
@@ -22183,19 +22185,23 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 sfx.append(del_btn)
 
             if not is_runnable:
-                badge = Gtk.Label(label=_("No Scraper"), valign=Gtk.Align.CENTER)
+                badge_text = _("Generic Scraper") if has_base else _("No Scraper")
+                badge = Gtk.Label(label=badge_text, valign=Gtk.Align.CENTER)
                 badge.add_css_class("plugin-tag-label")
                 badge.add_css_class("dim-label")
-                badge.set_tooltip_text(_("This CloudStream plugin contains Android DEX bytecode without an active Python scraper."))
+                if has_base:
+                    badge.set_tooltip_text(_("This plugin uses Android DEX bytecode with a discovered website domain fallback."))
+                else:
+                    badge.set_tooltip_text(_("This CloudStream plugin contains Android DEX bytecode without an active Python scraper."))
                 sfx.append(badge)
 
             sw = Gtk.Switch(valign=Gtk.Align.CENTER)
-            sw.set_active(bool(p.get("enabled", False)) and is_runnable and not is_nsfw_blocked)
-            sw.set_sensitive(is_installed and is_runnable and not is_nsfw_blocked)
+            sw.set_active(bool(p.get("enabled", False)) and not is_nsfw_blocked)
+            sw.set_sensitive(is_installed and not is_nsfw_blocked)
             if is_nsfw_blocked:
                 sw.set_tooltip_text(_("Disabled because 'Hide 18+ / Explicit Content' is enabled in Preferences"))
             elif not is_runnable:
-                sw.set_tooltip_text(_("No Python scraper available for this plugin (Android DEX bytecode)"))
+                sw.set_tooltip_text(_("This plugin uses Android DEX bytecode (Generic scraper engine)"))
             else:
                 sw.set_tooltip_text(_("Enable or disable this provider"))
             sw.connect("notify::active", lambda s, pspec, pid=p_id: self._on_cloudstream_switch_toggled(s, pid))
@@ -22222,7 +22228,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             return True
         if text in ("installed",) and is_inst:
             return True
-        if text in ("enabled", "active") and (is_enb and is_run):
+        if text in ("enabled", "active") and is_enb:
             return True
         if text in ("no scraper", "unsupported", "dex") and not is_run:
             return True
@@ -22327,8 +22333,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     msg = _("%s installed (disabled because 'Hide 18+ / Explicit Content' is enabled)") % plugin_name
                 else:
                     cloudstream.toggle_plugin(plugin_id, True)
-                    if plugin and not cloudstream.is_provider_runnable(plugin):
-                        msg = _("%s installed (Note: Android DEX bytecode only - no Python scraper adapter yet)") % plugin_name
+                    prov = cloudstream.get_provider(plugin_id)
+                    if not cloudstream.is_provider_runnable(plugin):
+                        if prov and getattr(prov, "get_base_url", None) and prov.get_base_url():
+                            msg = _("Installed and enabled %s (Generic scraper engine: %s)") % (plugin_name, prov.get_base_url())
+                        else:
+                            msg = _("%s installed (Note: Android DEX bytecode only - no Python scraper adapter yet)") % plugin_name
                     elif "megaprovider" in plugin_id.lower():
                         provider = cloudstream.get_provider(plugin_id)
                         if provider and hasattr(provider, "sync_repositories"):
@@ -22424,24 +22434,43 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._show_toast(_("CloudStream security notice accepted"))
 
     def _on_cloudstream_bulk_install_clicked(self, *args):
-        self._show_toast(_("Installing compatible CloudStream plugins..."))
+        self._show_toast(_("Installing CloudStream plugins..."))
 
         def worker():
             from . import cloudstream, database
             plugins_list = cloudstream.get_all_plugins()
+            if not plugins_list:
+                def on_empty():
+                    self._show_toast(_("No CloudStream plugins available. Please add a repository first."))
+                    return False
+                GLib.idle_add(on_empty)
+                return
+
             hide_adult = database.is_adult_content_hidden()
-            p_ids = [
+            compatible_ids = [
                 p["id"] for p in plugins_list
                 if cloudstream.is_provider_runnable(p) and not (hide_adult and cloudstream.is_plugin_nsfw(p))
             ]
-            res = cloudstream.bulk_install_and_enable(p_ids, only_compatible=True)
+
+            if compatible_ids:
+                res = cloudstream.bulk_install_and_enable(compatible_ids, only_compatible=True)
+            else:
+                all_ids = [
+                    p["id"] for p in plugins_list
+                    if not (hide_adult and cloudstream.is_plugin_nsfw(p))
+                ]
+                res = cloudstream.bulk_install_and_enable(all_ids, only_compatible=False)
 
             def apply_result():
                 self._populate_cloudstream()
                 self._refresh_cloudstream_catalog_views()
                 inst = res.get("installed", 0)
                 enb = res.get("enabled", 0)
-                self._show_toast(_("Installed %d, enabled %d CloudStream providers") % (inst, enb))
+                errs = res.get("errors", [])
+                if errs and not inst and not enb:
+                    self._show_toast(_("Failed to install providers: %s") % errs[0])
+                else:
+                    self._show_toast(_("Installed %d, enabled %d CloudStream providers") % (inst, enb))
                 return False
 
             GLib.idle_add(apply_result)

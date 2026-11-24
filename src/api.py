@@ -2896,7 +2896,7 @@ def has_stream_addons(media_type=None, item_id=None, only_working=True):
         from . import cloudstream
         if cloudstream.is_cloudstream_enabled():
             plugins_list = [p for p in cloudstream.get_all_plugins() if p.get("enabled")]
-            if any(cloudstream.is_provider_runnable(p) for p in plugins_list):
+            if any(cloudstream.is_provider_usable(p) for p in plugins_list):
                 return True
     except Exception:
         pass
@@ -3693,7 +3693,7 @@ def _get_cloudstream_catalogs(c_type):
         return []
 
 
-def get_available_catalogs(c_type="movie", cache_only=True, include_cloudstream=False):
+def get_available_catalogs(c_type="movie", cache_only=True, include_cloudstream=True):
     with _AVAILABLE_CATALOGS_LOCK:
         if c_type in _AVAILABLE_CATALOGS_CACHE:
             catalogs = list(_AVAILABLE_CATALOGS_CACHE[c_type])
@@ -7920,7 +7920,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         p for p in cloudstream.get_all_plugins() if p.get("enabled")
     ] if cloudstream.is_cloudstream_enabled() and source_scope != "torrent" else []
     runnable_cloudstream_plugins = [
-        p for p in enabled_cloudstream_plugins if cloudstream.is_provider_runnable(p)
+        p for p in enabled_cloudstream_plugins if cloudstream.is_provider_usable(p)
     ]
     has_active_cloudstream = bool(runnable_cloudstream_plugins)
 
