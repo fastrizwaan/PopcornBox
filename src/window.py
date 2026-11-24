@@ -18692,6 +18692,35 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._cancel_stream_waiting_watchdog()
 
         playback_trace("queue prepared")
+        # Check if the queued stream is a torrent and prompt for first-time P2P privacy notice
+        target_s = self.stream_queue[self.stream_queue_index] if self.stream_queue and self.stream_queue_index < len(self.stream_queue) else {}
+        is_p2p_torrent = bool(isinstance(target_s, dict) and is_torrent_stream(target_s))
+        if is_p2p_torrent and not database._is_testing() and not database.get_setting("torrent_warning_accepted", False):
+            def on_torrent_prompt_response(dlg, response):
+                if response == "proceed":
+                    database.set_setting("torrent_warning_accepted", True)
+                    self._play_current_stream_from_queue(self.stream_request_id)
+                else:
+                    self.is_loading_stream = False
+                    if hasattr(self, "main_stack") and previous_page:
+                        self.main_stack.set_visible_child_name(previous_page)
+
+            torrent_dlg = Adw.MessageDialog(
+                heading=_("BitTorrent P2P Streaming Notice"),
+                body=_(
+                    "Streaming media via BitTorrent connects directly to peer-to-peer swarms, "
+                    "making your public IP address visible to other peers on the network.\n\n"
+                    "If you require privacy, consider using a VPN before streaming torrents."
+                ),
+                transient_for=self if hasattr(self, "get_root") or hasattr(self, "present") else None,
+            )
+            torrent_dlg.add_response("cancel", _("Cancel"))
+            torrent_dlg.add_response("proceed", _("Proceed"))
+            torrent_dlg.set_response_appearance("proceed", Adw.ResponseAppearance.SUGGESTED)
+            torrent_dlg.connect("response", on_torrent_prompt_response)
+            torrent_dlg.present()
+            return
+
         self._play_current_stream_from_queue(self.stream_request_id)
 
     def _play_current_stream_from_queue(self, request_id=None):
@@ -22568,9 +22597,31 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     return
 
                 from . import custom_plugins
-                ok, msg = custom_plugins.import_plugin_file(path)
-                self._populate_custom_plugins()
-                self._show_toast(msg)
+                fname = os.path.basename(path)
+
+                def do_import():
+                    ok, msg = custom_plugins.import_plugin_file(path)
+                    self._populate_custom_plugins()
+                    self._show_toast(msg)
+
+                confirm_dlg = Adw.MessageDialog(
+                    heading=_("Import Custom Plugin?"),
+                    body=_(
+                        f"'{fname}' is an external Python script that will execute locally with your user account privileges.\n\n"
+                        "Only import plugins from authors and sources you trust."
+                    ),
+                    transient_for=self,
+                )
+                confirm_dlg.add_response("cancel", _("Cancel"))
+                confirm_dlg.add_response("import", _("Import Plugin"))
+                confirm_dlg.set_response_appearance("import", Adw.ResponseAppearance.SUGGESTED)
+
+                def on_confirm(dlg, response):
+                    if response == "import":
+                        do_import()
+
+                confirm_dlg.connect("response", on_confirm)
+                confirm_dlg.present()
             except Exception as e:
                 logger.error(f"Failed to import plugin: {e}")
 

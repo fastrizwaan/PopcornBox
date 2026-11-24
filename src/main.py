@@ -276,8 +276,13 @@ class PopcornBoxApplication(Adw.Application):
             version=APP_VERSION,
             issue_url="https://github.com/fastrizwaan/PopcornBox/issues",
             website="https://github.com/fastrizwaan/PopcornBox",
-            copyright="© 2026 Mohammed Asif Ali Rizvan",
-            comments=_("This product uses the TMDB API but is not endorsed or certified by TMDB. Streaming availability data is provided by JustWatch through TMDB."),
+            comments=_(
+                "This product uses the TMDB API but is not endorsed or certified by TMDB. "
+                "Streaming availability data is provided by JustWatch through TMDB.\n\n"
+                "PopcornBox is an open-source media aggregator and player client. It does not host, provide, "
+                "or control any media streams. All content and streams are retrieved from third-party services, "
+                "URLs, or addons configured by the user."
+            ),
             license_type=Gtk.License.GPL_3_0,
         )
         about.present(self.props.active_window)

@@ -532,6 +532,12 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                     <property name="active">true</property>
                   </object>
                 </child>
+                <child>
+                  <object class="AdwActionRow">
+                    <property name="title" translatable="yes">BitTorrent P2P Privacy Notice</property>
+                    <property name="subtitle" translatable="yes">Streaming torrents connects directly to peer swarms, making your IP address visible to peers. Use a VPN if you require privacy.</property>
+                  </object>
+                </child>
               </object>
             </child>
             <child>

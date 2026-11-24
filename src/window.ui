@@ -2534,6 +2534,46 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                       </object>
                                                     </child>
                                                     <child>
+                                                      <object class="GtkBox" id="custom_plugin_security_warning_box">
+                                                        <property name="orientation">1</property>
+                                                        <property name="margin-top">4</property>
+                                                        <property name="margin-bottom">6</property>
+                                                        <style>
+                                                          <class name="card"/>
+                                                        </style>
+                                                        <child>
+                                                          <object class="GtkBox">
+                                                            <property name="orientation">1</property>
+                                                            <property name="margin-start">14</property>
+                                                            <property name="margin-end">14</property>
+                                                            <property name="margin-top">14</property>
+                                                            <property name="margin-bottom">14</property>
+                                                            <property name="spacing">6</property>
+                                                            <child>
+                                                              <object class="GtkLabel">
+                                                                <property name="label" translatable="yes">Security Notice</property>
+                                                                <property name="xalign">0</property>
+                                                                <style>
+                                                                  <class name="heading"/>
+                                                                </style>
+                                                              </object>
+                                                            </child>
+                                                            <child>
+                                                              <object class="GtkLabel">
+                                                                <property name="label" translatable="yes">Custom plugins are external Python (.py) scripts that run locally with your user account permissions. Only import or execute plugins from authors and sources you trust.</property>
+                                                                <property name="xalign">0</property>
+                                                                <property name="wrap">true</property>
+                                                                <style>
+                                                                  <class name="dim-label"/>
+                                                                  <class name="caption"/>
+                                                                </style>
+                                                              </object>
+                                                            </child>
+                                                          </object>
+                                                        </child>
+                                                      </object>
+                                                    </child>
+                                                    <child>
                                                       <object class="AdwActionRow" id="custom_plugin_open_folder_row">
                                                         <property name="title" translatable="yes">Open Plugins Folder</property>
                                                         <property name="subtitle" translatable="yes">Drop Python (.py) scraper scripts into this folder</property>

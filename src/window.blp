@@ -1423,6 +1423,32 @@ template $PopcornBoxWindow: Adw.ApplicationWindow {
                             subtitle: _("Execute local Python scrapers during stream discovery.");
                             active: true;
                           }
+                        }
+                        Box custom_plugin_security_warning_box {
+                          orientation: vertical;
+                          styles ["card"]
+                          margin-top: 4;
+                          Box {
+                            orientation: vertical;
+                            margin-start: 14;
+                            margin-end: 14;
+                            margin-top: 14;
+                            margin-bottom: 14;
+                            spacing: 6;
+                            Label {
+                              label: _("Security Notice");
+                              xalign: 0;
+                              styles ["heading"]
+                            }
+                            Label {
+                              label: _("Custom plugins are external Python (.py) scripts that run locally with your user account permissions. Only import or execute plugins from authors and sources you trust.");
+                              xalign: 0;
+                              wrap: true;
+                              styles ["dim-label", "caption"]
+                            }
+                          }
+                        }
+                        Adw.PreferencesGroup {
                           Adw.ActionRow custom_plugin_open_folder_row {
                             title: _("Open Plugins Folder");
                             subtitle: _("Drop Python (.py) scraper scripts into this folder");

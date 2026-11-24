@@ -477,6 +477,11 @@ template $Preferences: Adw.Dialog {
 					subtitle: _("Resolve domains securely via Cloudflare and Google to bypass ISP censorship and DNS poisoning");
 					active: true;
 				}
+
+				Adw.ActionRow {
+					title: _("BitTorrent P2P Privacy Notice");
+					subtitle: _("Streaming torrents connects directly to peer swarms, making your IP address visible to peers. Use a VPN if you require privacy.");
+				}
 			}
 
 			Adw.PreferencesGroup {
