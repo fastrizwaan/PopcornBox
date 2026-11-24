@@ -5,7 +5,7 @@ Targeted tests for stream provider correctness:
   - Duplicate scraper deduplication (code-identical vs different)
   - Stream passthrough without movie year rejection (all provider streams kept)
   - execute_scraper error classification
-  - Deno/Node runtime detection reporting
+  - Sandboxed Deno runtime detection reporting
 """
 import hashlib
 import json
@@ -31,7 +31,7 @@ if _schema_path.exists():
     subprocess.run(["glib-compile-schemas", _schema_dir.name], check=True)
     os.environ["GSETTINGS_SCHEMA_DIR"] = _schema_dir.name
 
-from src import api, database, plugins
+from src import api, database, plugins, tmdb_helper
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -242,6 +242,20 @@ class TestScraperErrorClassification(unittest.TestCase):
             result = plugins.execute_scraper(self._base_scraper(), tmdb_id=603, media_type="movie")
         self.assertTrue(len(result) >= 1)
         self.assertIsNone(getattr(result, "_scraper_error", None))
+
+    def test_scraper_payload_uses_public_key_not_user_configured_key(self):
+        process = MagicMock()
+        process.communicate.return_value = ("[]", "")
+        process.returncode = 0
+        with patch.object(plugins, "find_js_runtime", return_value=["deno", "bundle.js"]), \
+             patch.object(plugins.tmdb_helper, "get_tmdb_api_key", return_value="user-configured-secret"), \
+             patch.object(plugins, "get_scraper_settings", return_value={}), \
+             patch("src.plugins.subprocess.Popen", return_value=process):
+            plugins.execute_scraper(self._base_scraper(), tmdb_id=603, media_type="movie")
+
+        payload = json.loads(process.communicate.call_args.args[0])
+        self.assertEqual(payload["tmdbApiKey"], tmdb_helper.DEFAULT_TMDB_API_KEY)
+        self.assertNotIn("user-configured-secret", process.communicate.call_args.args[0])
 
 
 # ===========================================================================
@@ -583,12 +597,26 @@ class TestRuntimeAvailability(unittest.TestCase):
         plugins._runtime_checked = False
         plugins._js_runtime_cmd = None
 
-    @unittest.skipUnless(plugins.is_runtime_available(), "No Deno/Node.js runtime on this system")
+    def test_node_is_not_used_without_sandboxed_deno(self):
+        plugins._runtime_checked = False
+        plugins._js_runtime_cmd = None
+        try:
+            with patch.object(plugins.shutil, "which", side_effect=lambda name: "/usr/bin/node" if name == "node" else None), \
+                 patch.object(plugins.os.path, "isfile", side_effect=lambda path: str(path).endswith("node")), \
+                 patch.object(plugins.os, "access", return_value=True), \
+                 patch.object(plugins.subprocess, "run") as run:
+                self.assertIsNone(plugins.find_js_runtime())
+            run.assert_not_called()
+        finally:
+            plugins._runtime_checked = False
+            plugins._js_runtime_cmd = None
+
+    @unittest.skipUnless(plugins.is_runtime_available(), "No sandbox-capable Deno runtime on this system")
     def test_runner_bundle_exists_when_runtime_present(self):
         bundle_path = plugins.get_runner_bundle_path()
         self.assertTrue(
             os.path.exists(bundle_path),
-            f"Runner bundle not found at {bundle_path}; Deno/Node is available but runner is missing",
+            f"Runner bundle not found at {bundle_path}; Deno is available but runner is missing",
         )
 
 
