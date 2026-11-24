@@ -2877,13 +2877,27 @@ def get_stream_addons(media_type=None, item_id=None, only_working=True):
     ]
 
 def has_stream_addons(media_type=None, item_id=None, only_working=True):
-    """Return True if there is at least one enabled stream/torrent addon or Nuvio plugin for this media type and item."""
+    """Return True if there is at least one enabled stream/torrent addon or Nuvio/custom/CloudStream plugin for this media type and item."""
     if len(get_stream_addons(media_type=media_type, item_id=item_id, only_working=only_working)) > 0:
         return True
     try:
         from . import plugins
         if plugins.is_plugins_enabled() and len(plugins.get_enabled_scrapers_for_type(media_type or "movie")) > 0:
             return True
+    except Exception:
+        pass
+    try:
+        from . import custom_plugins
+        if custom_plugins.is_custom_plugins_enabled() and len(custom_plugins.get_enabled_scrapers_for_type(media_type or "movie")) > 0:
+            return True
+    except Exception:
+        pass
+    try:
+        from . import cloudstream
+        if cloudstream.is_cloudstream_enabled():
+            plugins_list = [p for p in cloudstream.get_all_plugins() if p.get("enabled")]
+            if any(cloudstream.is_provider_runnable(p) for p in plugins_list):
+                return True
     except Exception:
         pass
     return False

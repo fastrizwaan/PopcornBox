@@ -2076,6 +2076,60 @@ class MovieDetailsPage(Gtk.Overlay):
             self._last_fetch_key = None
             self._set_provider_spinner_active(False)
 
+    def update_sidebar_visibility(self):
+        """Update visibility of the right sidebar / stream providers widget.
+
+        When there are really no stream addons or plugins installed (and no direct
+        playable streams), do not show the stream providers widget on the right of
+        movie details.
+        """
+        if not hasattr(self, "sidebar_box"):
+            return
+
+        # Multi-item content (series, anime, channel, collections) uses the sidebar
+        # to display episodes/videos. Always keep the sidebar visible for them.
+        is_multi_item = (
+            self.media_type in ["series", "anime", "channel"]
+            or self.is_channel
+            or self.is_collection
+            or str(self.movie_stub.get("id", "")).startswith("ctmdb.")
+            or self.movie_stub.get("type") == "collections"
+            or (getattr(self, "videos", None) and len(self.videos) > 1)
+        )
+        if is_multi_item:
+            self.sidebar_box.set_visible(True)
+            return
+
+        from . import api, database
+        lookup_ids = []
+        for k in ("id", "imdb_id"):
+            v = self.movie_stub.get(k)
+            if v and str(v) not in lookup_ids:
+                lookup_ids.append(str(v))
+        for a in self.movie_stub.get("alias_ids") or []:
+            if a and str(a) not in lookup_ids:
+                lookup_ids.append(str(a))
+        primary_id = lookup_ids[0] if lookup_ids else None
+
+        has_stream_addons = (
+            api.has_stream_addons(self.media_type, primary_id, only_working=False)
+            or api.has_stream_addons(self.media_type, None, only_working=False)
+        )
+
+        working_stream = database.get_working_stream(lookup_ids, self.selected_season, self.selected_episode) if lookup_ids else None
+        cw_item = database.get_continue_watching_item(lookup_ids) if lookup_ids else None
+        details = getattr(self, "movie_details", None) or {}
+        has_direct_playable = bool(
+            working_stream
+            or (cw_item and (cw_item.get("stream_url") or cw_item.get("magnet") or cw_item.get("stream_queue")))
+            or getattr(self, "torrents", None)
+            or (self.movie_stub.get("stream_url") or self.movie_stub.get("magnet"))
+            or (details.get("stream_url") or details.get("magnet"))
+        )
+
+        should_show = bool(has_stream_addons or has_direct_playable)
+        self.sidebar_box.set_visible(should_show)
+
     def handle_addons_changed(self):
         """Drop provider-dependent state after the addon list/caches change."""
         self._rearm_background_fetching(force=True)
@@ -2087,6 +2141,7 @@ class MovieDetailsPage(Gtk.Overlay):
         self._last_forced_stream_refresh_at = 0
         self.update_provider_dropdown_model()
         self.update_quality_dropdown()
+        self.update_sidebar_visibility()
 
     def _fallback_to_all_providers(self):
         """Replace a provider filter that yields no streams with All Providers."""
@@ -2522,7 +2577,10 @@ class MovieDetailsPage(Gtk.Overlay):
         elif working_stream:
             has_progress = True
 
-        has_stream_provider = api.has_stream_addons(self.media_type, primary_id)
+        has_stream_provider = (
+            api.has_stream_addons(self.media_type, primary_id, only_working=False)
+            or api.has_stream_addons(self.media_type, None, only_working=False)
+        )
         has_direct_playable = bool(
             working_stream
             or has_progress
@@ -3140,7 +3198,9 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.season_nav_box.set_visible(False)
             if hasattr(self, 'row2_box'):
                 self.row2_box.set_visible(False)
-            self.fetch_torrents_async(force=False)
+            self.update_sidebar_visibility()
+            if self.sidebar_box.get_visible():
+                self.fetch_torrents_async(force=False)
 
     def _build_person_card(self, member, role_text=""):
         from .movie_widget import load_image_into_picture
@@ -3642,6 +3702,7 @@ class MovieDetailsPage(Gtk.Overlay):
             )
             self.update_quality_dropdown()
             self.update_continue_btn()
+            self.update_sidebar_visibility()
 
             if self.window and getattr(self.window, "stream_queue", None) is not None:
                 q_page = getattr(self.window, "stream_queue_details_page", None)
