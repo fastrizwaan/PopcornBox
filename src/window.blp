@@ -906,116 +906,6 @@ template $PopcornBoxWindow: Adw.ApplicationWindow {
           };
         }
 
-        Adw.ViewStackPage page_addons {
-          name: "addons";
-          child: Box {
-            orientation: vertical;
-            Adw.HeaderBar {
-              [start]
-              Button {
-                icon-name: "go-previous-symbolic";
-                action-name: "win.back-to-library";
-                tooltip-text: _("Library");
-                styles ["flat", "circular"]
-              }
-              [title]
-              Adw.WindowTitle {
-                title: _("PopcornBox");
-              }
-              [end]
-              MenuButton {
-                valign: center;
-                primary: true;
-                icon-name: "open-menu-symbolic";
-                tooltip-text: _("Main Menu");
-                menu-model: primary_menu;
-              }
-              [end]
-              Box {
-                spacing: 2;
-                Button { action-name: "win.open-continue-watching"; icon-name: "media-playback-start-symbolic"; tooltip-text: _("Continue Watching"); styles ["flat", "local-nav-btn"] }
-                Button { action-name: "win.open-favorites"; icon-name: "starred-symbolic"; tooltip-text: _("Favorites"); styles ["flat", "local-nav-btn"] }
-                Button { action-name: "win.open-history"; icon-name: "document-open-recent-symbolic"; tooltip-text: _("History"); styles ["flat", "local-nav-btn"] }
-              }
-            }
-            Box {
-              orientation: vertical;
-              margin-top: 14;
-              margin-bottom: 6;
-              margin-start: 24;
-              margin-end: 24;
-              spacing: 10;
-              Box {
-                spacing: 10;
-                DropDown addon_catalog_dropdown {
-                  valign: center;
-                }
-                DropDown addon_type_dropdown {
-                  valign: center;
-                }
-                Box {
-                  hexpand: true;
-                }
-                SearchEntry addon_search_entry {
-                  placeholder-text: _("Search addons...");
-                  width-request: 260;
-                }
-              }
-              Box {
-                spacing: 8;
-                Entry addon_url_entry {
-                  placeholder-text: _("Paste Stremio addon manifest URL to install...");
-                  hexpand: true;
-                }
-                Button add_addon_btn {
-                  label: _("Install");
-                  styles ["suggested-action"]
-                  action-name: "win.add-addon";
-                }
-                Button import_addon_btn {
-                  label: _("Import");
-                  action-name: "win.import-addons";
-                }
-                Button export_addon_btn {
-                  label: _("Export");
-                  action-name: "win.export-addons";
-                }
-              }
-            }
-            ScrolledWindow {
-              vexpand: true;
-              hexpand: true;
-              child: Box {
-                orientation: vertical;
-                margin-top: 12;
-                margin-start: 24;
-                margin-end: 24;
-                margin-bottom: 24;
-                Spinner addon_catalog_spinner {
-                  halign: center;
-                  valign: center;
-                  width-request: 32;
-                  height-request: 32;
-                  visible: false;
-                  margin-top: 36;
-                  margin-bottom: 36;
-                }
-                Label addon_catalog_status_label {
-                  visible: false;
-                  halign: center;
-                  margin-top: 36;
-                  margin-bottom: 36;
-                  styles ["dim-label", "title-4"]
-                }
-                ListBox addons_listbox {
-                  selection-mode: none;
-                  styles ["boxed-list"]
-                }
-              };
-            }
-          };
-        }
-
         Adw.ViewStackPage page_plugins {
           name: "plugins";
           child: Box {
@@ -1052,10 +942,93 @@ template $PopcornBoxWindow: Adw.ApplicationWindow {
             Adw.ViewStack plugins_sub_stack {
               vexpand: true;
               hexpand: true;
+              Adw.ViewStackPage page_addons_sub {
+                name: "addons";
+                title: _("Addons");
+                icon-name: "application-x-addon-symbolic";
+                child: Box {
+                  orientation: vertical;
+                  Box {
+                    orientation: vertical;
+                    margin-top: 14;
+                    margin-bottom: 6;
+                    margin-start: 24;
+                    margin-end: 24;
+                    spacing: 10;
+                    Box {
+                      spacing: 10;
+                      DropDown addon_catalog_dropdown {
+                        valign: center;
+                      }
+                      DropDown addon_type_dropdown {
+                        valign: center;
+                      }
+                      Box {
+                        hexpand: true;
+                      }
+                      SearchEntry addon_search_entry {
+                        placeholder-text: _("Search addons...");
+                        width-request: 260;
+                      }
+                    }
+                    Box {
+                      spacing: 8;
+                      Entry addon_url_entry {
+                        placeholder-text: _("Paste Stremio addon manifest URL to install...");
+                        hexpand: true;
+                      }
+                      Button add_addon_btn {
+                        label: _("Install");
+                        styles ["suggested-action"]
+                        action-name: "win.add-addon";
+                      }
+                      Button import_addon_btn {
+                        label: _("Import");
+                        action-name: "win.import-addons";
+                      }
+                      Button export_addon_btn {
+                        label: _("Export");
+                        action-name: "win.export-addons";
+                      }
+                    }
+                  }
+                  ScrolledWindow {
+                    vexpand: true;
+                    hexpand: true;
+                    child: Box {
+                      orientation: vertical;
+                      margin-top: 12;
+                      margin-start: 24;
+                      margin-end: 24;
+                      margin-bottom: 24;
+                      Spinner addon_catalog_spinner {
+                        halign: center;
+                        valign: center;
+                        width-request: 32;
+                        height-request: 32;
+                        visible: false;
+                        margin-top: 36;
+                        margin-bottom: 36;
+                      }
+                      Label addon_catalog_status_label {
+                        visible: false;
+                        halign: center;
+                        margin-top: 36;
+                        margin-bottom: 36;
+                        styles ["dim-label", "title-4"]
+                      }
+                      ListBox addons_listbox {
+                        selection-mode: none;
+                        styles ["boxed-list"]
+                      }
+                    };
+                  }
+                };
+              }
               Adw.ViewStackPage page_nuvio_sub {
                 name: "nuvio";
-                title: _("Nuvio");
-                icon-name: "application-x-addon-symbolic";
+                title: _("Plugins");
+                icon-name: "system-run-symbolic";
                 child: ScrolledWindow {
                   vexpand: true;
                   hexpand: true;
@@ -1189,184 +1162,6 @@ template $PopcornBoxWindow: Adw.ApplicationWindow {
                           }
                         }
                         ListBox plugin_providers_listbox {
-                          selection-mode: none;
-                          styles ["boxed-list"]
-                        }
-                      }
-                    };
-                  };
-                };
-              }
-              Adw.ViewStackPage page_cloudstream_sub {
-                name: "cloudstream";
-                title: _("CloudStream");
-                icon-name: "network-wireless-symbolic";
-                child: ScrolledWindow {
-                  vexpand: true;
-                  hexpand: true;
-                  child: Adw.Clamp {
-                    maximum-size: 860;
-                    tightening-threshold: 600;
-                    margin-top: 18;
-                    margin-bottom: 32;
-                    margin-start: 16;
-                    margin-end: 16;
-                    child: Box {
-                      orientation: vertical;
-                      spacing: 24;
-
-                      Box {
-                        orientation: vertical;
-                        spacing: 8;
-                        Box {
-                          spacing: 8;
-                          Label {
-                            label: _("OVERVIEW");
-                            xalign: 0;
-                            hexpand: true;
-                            styles ["heading", "dim-label"]
-                          }
-                          Label cloudstream_badge_repos {
-                            label: "0 repos";
-                            styles ["plugin-pill-badge"]
-                          }
-                          Label cloudstream_badge_installed {
-                            label: "0 installed";
-                            styles ["plugin-pill-badge"]
-                          }
-                          Label cloudstream_badge_providers {
-                            label: "0 active";
-                            styles ["plugin-pill-badge"]
-                          }
-                          Label cloudstream_badge_status {
-                            label: "CloudStream enabled";
-                            styles ["plugin-pill-badge", "plugin-enabled"]
-                          }
-                        }
-                        Adw.PreferencesGroup {
-                          Adw.SwitchRow cloudstream_enable_globally_row {
-                            title: _("Enable CloudStream plugins globally");
-                            subtitle: _("Use CloudStream providers during search and stream discovery.");
-                            active: true;
-                          }
-                        }
-                        Box cloudstream_security_warning_box {
-                          orientation: vertical;
-                          styles ["card"]
-                          spacing: 8;
-                          margin-top: 4;
-                          Box {
-                            orientation: vertical;
-                            margin-start: 14;
-                            margin-end: 14;
-                            margin-top: 14;
-                            margin-bottom: 14;
-                            spacing: 8;
-                            Label {
-                              label: _("Security Notice");
-                              xalign: 0;
-                              styles ["heading"]
-                            }
-                            Label {
-                              label: _("CloudStream plugins are maintained by third-party community developers. Only install repositories that you trust.");
-                              xalign: 0;
-                              wrap: true;
-                              styles ["dim-label", "caption"]
-                            }
-                            Button cloudstream_accept_warning_btn {
-                              label: _("I Understand and Accept");
-                              styles ["suggested-action", "pill"]
-                              halign: start;
-                            }
-                          }
-                        }
-                      }
-
-                      Box {
-                        orientation: vertical;
-                        spacing: 8;
-                        Label {
-                          label: _("ADD CLOUDSTREAM REPOSITORY");
-                          xalign: 0;
-                          styles ["heading", "dim-label"]
-                        }
-                        Box {
-                          orientation: vertical;
-                          styles ["card"]
-                          spacing: 12;
-                          margin-top: 2;
-                          Box {
-                            orientation: vertical;
-                            margin-start: 14;
-                            margin-end: 14;
-                            margin-top: 14;
-                            margin-bottom: 14;
-                            spacing: 12;
-                            Entry cloudstream_repo_url_entry {
-                              placeholder-text: _("CloudStream repository URL (GitHub repo, short link, or repo.json)");
-                              hexpand: true;
-                            }
-                            Button cloudstream_install_repo_btn {
-                              label: _("Install CloudStream Repository");
-                              styles ["suggested-action", "pill"]
-                              halign: fill;
-                            }
-                            Label cloudstream_install_status_label {
-                              visible: false;
-                              xalign: 0;
-                              styles ["caption", "dim-label"]
-                              wrap: true;
-                            }
-                          }
-                        }
-                      }
-
-                      Box {
-                        orientation: vertical;
-                        spacing: 8;
-                        Box {
-                          spacing: 8;
-                          Label {
-                            label: _("INSTALLED REPOSITORIES");
-                            xalign: 0;
-                            hexpand: true;
-                            styles ["heading", "dim-label"]
-                          }
-                          Button cloudstream_refresh_all_btn {
-                            icon-name: "view-refresh-symbolic";
-                            tooltip-text: _("Refresh all repositories");
-                            styles ["flat", "circular"]
-                          }
-                        }
-                        ListBox cloudstream_repos_listbox {
-                          selection-mode: none;
-                          styles ["boxed-list"]
-                        }
-                      }
-
-                      Box {
-                        orientation: vertical;
-                        spacing: 8;
-                        Box {
-                          spacing: 8;
-                          Label {
-                            label: _("PROVIDERS & EXTENSIONS");
-                            xalign: 0;
-                            hexpand: true;
-                            styles ["heading", "dim-label"]
-                          }
-                          SearchEntry cloudstream_provider_search_entry {
-                            placeholder-text: _("Filter providers...");
-                            width-request: 220;
-                          }
-                          Button cloudstream_bulk_install_btn {
-                            label: _("Install & Enable All");
-                            icon-name: "folder-download-symbolic";
-                            styles ["flat", "pill"]
-                            tooltip-text: _("Install and enable all compatible providers");
-                          }
-                        }
-                        ListBox cloudstream_plugins_listbox {
                           selection-mode: none;
                           styles ["boxed-list"]
                         }
@@ -1644,8 +1439,7 @@ template $PopcornBoxWindow: Adw.ApplicationWindow {
                     item (_("Watched"), "win.open-watched")
                     item (_("Favorites"), "win.open-favorites")
                     item (_("Player"), "win.open-player")
-                    item (_("Addons"), "win.open-addons")
-                    item (_("Plugins"), "win.open-plugins")
+                    item (_("Addons/Plugins"), "win.open-addons")
                   }
                   
                   section {

@@ -1660,197 +1660,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                   </object>
                 </child>
                 <child>
-                  <object class="AdwViewStackPage" id="page_addons">
-                    <property name="name">addons</property>
-                    <property name="child">
-                      <object class="GtkBox">
-                        <property name="orientation">1</property>
-                        <child>
-                          <object class="AdwHeaderBar">
-                            <child type="start">
-                              <object class="GtkButton">
-                                <property name="icon-name">go-previous-symbolic</property>
-                                <property name="action-name">win.back-to-library</property>
-                                <property name="tooltip-text" translatable="yes">Library</property>
-                                <style>
-                                  <class name="flat"/>
-                                  <class name="circular"/>
-                                </style>
-                              </object>
-                            </child>
-                            <child type="title">
-                              <object class="AdwWindowTitle">
-                                <property name="title" translatable="yes">PopcornBox</property>
-                              </object>
-                            </child>
-                            <child type="end">
-                              <object class="GtkMenuButton">
-                                <property name="valign">3</property>
-                                <property name="primary">true</property>
-                                <property name="icon-name">open-menu-symbolic</property>
-                                <property name="tooltip-text" translatable="yes">Main Menu</property>
-                                <property name="menu-model">primary_menu</property>
-                              </object>
-                            </child>
-                            <child type="end">
-                              <object class="GtkBox">
-                                <property name="spacing">2</property>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-continue-watching</property>
-                                    <property name="icon-name">media-playback-start-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Continue Watching</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-favorites</property>
-                                    <property name="icon-name">starred-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">Favorites</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton">
-                                    <property name="action-name">win.open-history</property>
-                                    <property name="icon-name">document-open-recent-symbolic</property>
-                                    <property name="tooltip-text" translatable="yes">History</property>
-                                    <style>
-                                      <class name="flat"/>
-                                      <class name="local-nav-btn"/>
-                                    </style>
-                                  </object>
-                                </child>
-                              </object>
-                            </child>
-                          </object>
-                        </child>
-                        <child>
-                          <object class="GtkBox">
-                            <property name="orientation">1</property>
-                            <property name="margin-top">14</property>
-                            <property name="margin-bottom">6</property>
-                            <property name="margin-start">24</property>
-                            <property name="margin-end">24</property>
-                            <property name="spacing">10</property>
-                            <child>
-                              <object class="GtkBox">
-                                <property name="spacing">10</property>
-                                <child>
-                                  <object class="GtkDropDown" id="addon_catalog_dropdown">
-                                    <property name="valign">3</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkDropDown" id="addon_type_dropdown">
-                                    <property name="valign">3</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkBox">
-                                    <property name="hexpand">true</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkSearchEntry" id="addon_search_entry">
-                                    <property name="placeholder-text" translatable="yes">Search addons...</property>
-                                    <property name="width-request">260</property>
-                                  </object>
-                                </child>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="GtkBox">
-                                <property name="spacing">8</property>
-                                <child>
-                                  <object class="GtkEntry" id="addon_url_entry">
-                                    <property name="placeholder-text" translatable="yes">Paste Stremio addon manifest URL to install...</property>
-                                    <property name="hexpand">true</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton" id="add_addon_btn">
-                                    <property name="label" translatable="yes">Install</property>
-                                    <style>
-                                      <class name="suggested-action"/>
-                                    </style>
-                                    <property name="action-name">win.add-addon</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton" id="import_addon_btn">
-                                    <property name="label" translatable="yes">Import</property>
-                                    <property name="action-name">win.import-addons</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkButton" id="export_addon_btn">
-                                    <property name="label" translatable="yes">Export</property>
-                                    <property name="action-name">win.export-addons</property>
-                                  </object>
-                                </child>
-                              </object>
-                            </child>
-                          </object>
-                        </child>
-                        <child>
-                          <object class="GtkScrolledWindow">
-                            <property name="vexpand">true</property>
-                            <property name="hexpand">true</property>
-                            <property name="child">
-                              <object class="GtkBox">
-                                <property name="orientation">1</property>
-                                <property name="margin-top">12</property>
-                                <property name="margin-start">24</property>
-                                <property name="margin-end">24</property>
-                                <property name="margin-bottom">24</property>
-                                <child>
-                                  <object class="GtkSpinner" id="addon_catalog_spinner">
-                                    <property name="halign">3</property>
-                                    <property name="valign">3</property>
-                                    <property name="width-request">32</property>
-                                    <property name="height-request">32</property>
-                                    <property name="visible">false</property>
-                                    <property name="margin-top">36</property>
-                                    <property name="margin-bottom">36</property>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkLabel" id="addon_catalog_status_label">
-                                    <property name="visible">false</property>
-                                    <property name="halign">3</property>
-                                    <property name="margin-top">36</property>
-                                    <property name="margin-bottom">36</property>
-                                    <style>
-                                      <class name="dim-label"/>
-                                      <class name="title-4"/>
-                                    </style>
-                                  </object>
-                                </child>
-                                <child>
-                                  <object class="GtkListBox" id="addons_listbox">
-                                    <property name="selection-mode">0</property>
-                                    <style>
-                                      <class name="boxed-list"/>
-                                    </style>
-                                  </object>
-                                </child>
-                              </object>
-                            </property>
-                          </object>
-                        </child>
-                      </object>
-                    </property>
-                  </object>
-                </child>
-                <child>
                   <object class="AdwViewStackPage" id="page_plugins">
                     <property name="name">plugins</property>
                     <property name="child">
@@ -1929,10 +1738,136 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                             <property name="vexpand">true</property>
                             <property name="hexpand">true</property>
                             <child>
+                              <object class="AdwViewStackPage" id="page_addons_sub">
+                                <property name="name">addons</property>
+                                <property name="title" translatable="yes">Addons</property>
+                                <property name="icon-name">application-x-addon-symbolic</property>
+                                <property name="child">
+                                  <object class="GtkBox">
+                                    <property name="orientation">1</property>
+                                    <child>
+                                      <object class="GtkBox">
+                                        <property name="orientation">1</property>
+                                        <property name="margin-top">14</property>
+                                        <property name="margin-bottom">6</property>
+                                        <property name="margin-start">24</property>
+                                        <property name="margin-end">24</property>
+                                        <property name="spacing">10</property>
+                                        <child>
+                                          <object class="GtkBox">
+                                            <property name="spacing">10</property>
+                                            <child>
+                                              <object class="GtkDropDown" id="addon_catalog_dropdown">
+                                                <property name="valign">3</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkDropDown" id="addon_type_dropdown">
+                                                <property name="valign">3</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkBox">
+                                                <property name="hexpand">true</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkSearchEntry" id="addon_search_entry">
+                                                <property name="placeholder-text" translatable="yes">Search addons...</property>
+                                                <property name="width-request">260</property>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkBox">
+                                            <property name="spacing">8</property>
+                                            <child>
+                                              <object class="GtkEntry" id="addon_url_entry">
+                                                <property name="placeholder-text" translatable="yes">Paste Stremio addon manifest URL to install...</property>
+                                                <property name="hexpand">true</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkButton" id="add_addon_btn">
+                                                <property name="label" translatable="yes">Install</property>
+                                                <style>
+                                                  <class name="suggested-action"/>
+                                                </style>
+                                                <property name="action-name">win.add-addon</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkButton" id="import_addon_btn">
+                                                <property name="label" translatable="yes">Import</property>
+                                                <property name="action-name">win.import-addons</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkButton" id="export_addon_btn">
+                                                <property name="label" translatable="yes">Export</property>
+                                                <property name="action-name">win.export-addons</property>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </child>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkScrolledWindow">
+                                        <property name="vexpand">true</property>
+                                        <property name="hexpand">true</property>
+                                        <property name="child">
+                                          <object class="GtkBox">
+                                            <property name="orientation">1</property>
+                                            <property name="margin-top">12</property>
+                                            <property name="margin-start">24</property>
+                                            <property name="margin-end">24</property>
+                                            <property name="margin-bottom">24</property>
+                                            <child>
+                                              <object class="GtkSpinner" id="addon_catalog_spinner">
+                                                <property name="halign">3</property>
+                                                <property name="valign">3</property>
+                                                <property name="width-request">32</property>
+                                                <property name="height-request">32</property>
+                                                <property name="visible">false</property>
+                                                <property name="margin-top">36</property>
+                                                <property name="margin-bottom">36</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkLabel" id="addon_catalog_status_label">
+                                                <property name="visible">false</property>
+                                                <property name="halign">3</property>
+                                                <property name="margin-top">36</property>
+                                                <property name="margin-bottom">36</property>
+                                                <style>
+                                                  <class name="dim-label"/>
+                                                  <class name="title-4"/>
+                                                </style>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkListBox" id="addons_listbox">
+                                                <property name="selection-mode">0</property>
+                                                <style>
+                                                  <class name="boxed-list"/>
+                                                </style>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </property>
+                              </object>
+                            </child>
+                            <child>
                               <object class="AdwViewStackPage" id="page_nuvio_sub">
                                 <property name="name">nuvio</property>
-                                <property name="title" translatable="yes">Nuvio</property>
-                                <property name="icon-name">application-x-addon-symbolic</property>
+                                <property name="title" translatable="yes">Plugins</property>
+                                <property name="icon-name">system-run-symbolic</property>
                                 <property name="child">
                                   <object class="GtkScrolledWindow">
                                     <property name="vexpand">true</property>
@@ -2164,301 +2099,6 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                               </object>
                             </child>
                             <child>
-                              <object class="AdwViewStackPage" id="page_cloudstream_sub">
-                                <property name="name">cloudstream</property>
-                                <property name="title" translatable="yes">CloudStream</property>
-                                <property name="icon-name">network-wireless-symbolic</property>
-                                <property name="child">
-                                  <object class="GtkScrolledWindow">
-                                    <property name="vexpand">true</property>
-                                    <property name="hexpand">true</property>
-                                    <property name="child">
-                                      <object class="AdwClamp">
-                                        <property name="maximum-size">860</property>
-                                        <property name="tightening-threshold">600</property>
-                                        <property name="margin-top">18</property>
-                                        <property name="margin-bottom">32</property>
-                                        <property name="margin-start">16</property>
-                                        <property name="margin-end">16</property>
-                                        <property name="child">
-                                          <object class="GtkBox">
-                                            <property name="orientation">1</property>
-                                            <property name="spacing">24</property>
-                                            <child>
-                                              <object class="GtkBox">
-                                                <property name="orientation">1</property>
-                                                <property name="spacing">8</property>
-                                                <child>
-                                                  <object class="GtkBox">
-                                                    <property name="spacing">8</property>
-                                                    <child>
-                                                      <object class="GtkLabel">
-                                                        <property name="label" translatable="yes">OVERVIEW</property>
-                                                        <property name="xalign">0</property>
-                                                        <property name="hexpand">true</property>
-                                                        <style>
-                                                          <class name="heading"/>
-                                                          <class name="dim-label"/>
-                                                        </style>
-                                                      </object>
-                                                    </child>
-                                                    <child>
-                                                      <object class="GtkLabel" id="cloudstream_badge_repos">
-                                                        <property name="label">0 repos</property>
-                                                        <style>
-                                                          <class name="plugin-pill-badge"/>
-                                                        </style>
-                                                      </object>
-                                                    </child>
-                                                    <child>
-                                                      <object class="GtkLabel" id="cloudstream_badge_installed">
-                                                        <property name="label">0 installed</property>
-                                                        <style>
-                                                          <class name="plugin-pill-badge"/>
-                                                        </style>
-                                                      </object>
-                                                    </child>
-                                                    <child>
-                                                      <object class="GtkLabel" id="cloudstream_badge_providers">
-                                                        <property name="label">0 active</property>
-                                                        <style>
-                                                          <class name="plugin-pill-badge"/>
-                                                        </style>
-                                                      </object>
-                                                    </child>
-                                                    <child>
-                                                      <object class="GtkLabel" id="cloudstream_badge_status">
-                                                        <property name="label">CloudStream enabled</property>
-                                                        <style>
-                                                          <class name="plugin-pill-badge"/>
-                                                          <class name="plugin-enabled"/>
-                                                        </style>
-                                                      </object>
-                                                    </child>
-                                                  </object>
-                                                </child>
-                                                <child>
-                                                  <object class="AdwPreferencesGroup">
-                                                    <child>
-                                                      <object class="AdwSwitchRow" id="cloudstream_enable_globally_row">
-                                                        <property name="title" translatable="yes">Enable CloudStream plugins globally</property>
-                                                        <property name="subtitle" translatable="yes">Use CloudStream providers during search and stream discovery.</property>
-                                                        <property name="active">true</property>
-                                                      </object>
-                                                    </child>
-                                                  </object>
-                                                </child>
-                                                <child>
-                                                  <object class="GtkBox" id="cloudstream_security_warning_box">
-                                                    <property name="orientation">1</property>
-                                                    <style>
-                                                      <class name="card"/>
-                                                    </style>
-                                                    <property name="spacing">8</property>
-                                                    <property name="margin-top">4</property>
-                                                    <child>
-                                                      <object class="GtkBox">
-                                                        <property name="orientation">1</property>
-                                                        <property name="margin-start">14</property>
-                                                        <property name="margin-end">14</property>
-                                                        <property name="margin-top">14</property>
-                                                        <property name="margin-bottom">14</property>
-                                                        <property name="spacing">8</property>
-                                                        <child>
-                                                          <object class="GtkLabel">
-                                                            <property name="label" translatable="yes">Security Notice</property>
-                                                            <property name="xalign">0</property>
-                                                            <style>
-                                                              <class name="heading"/>
-                                                            </style>
-                                                          </object>
-                                                        </child>
-                                                        <child>
-                                                          <object class="GtkLabel">
-                                                            <property name="label" translatable="yes">CloudStream plugins are maintained by third-party community developers. Only install repositories that you trust.</property>
-                                                            <property name="xalign">0</property>
-                                                            <property name="wrap">true</property>
-                                                            <style>
-                                                              <class name="dim-label"/>
-                                                              <class name="caption"/>
-                                                            </style>
-                                                          </object>
-                                                        </child>
-                                                        <child>
-                                                          <object class="GtkButton" id="cloudstream_accept_warning_btn">
-                                                            <property name="label" translatable="yes">I Understand and Accept</property>
-                                                            <style>
-                                                              <class name="suggested-action"/>
-                                                              <class name="pill"/>
-                                                            </style>
-                                                            <property name="halign">1</property>
-                                                          </object>
-                                                        </child>
-                                                      </object>
-                                                    </child>
-                                                  </object>
-                                                </child>
-                                              </object>
-                                            </child>
-                                            <child>
-                                              <object class="GtkBox">
-                                                <property name="orientation">1</property>
-                                                <property name="spacing">8</property>
-                                                <child>
-                                                  <object class="GtkLabel">
-                                                    <property name="label" translatable="yes">ADD CLOUDSTREAM REPOSITORY</property>
-                                                    <property name="xalign">0</property>
-                                                    <style>
-                                                      <class name="heading"/>
-                                                      <class name="dim-label"/>
-                                                    </style>
-                                                  </object>
-                                                </child>
-                                                <child>
-                                                  <object class="GtkBox">
-                                                    <property name="orientation">1</property>
-                                                    <style>
-                                                      <class name="card"/>
-                                                    </style>
-                                                    <property name="spacing">12</property>
-                                                    <property name="margin-top">2</property>
-                                                    <child>
-                                                      <object class="GtkBox">
-                                                        <property name="orientation">1</property>
-                                                        <property name="margin-start">14</property>
-                                                        <property name="margin-end">14</property>
-                                                        <property name="margin-top">14</property>
-                                                        <property name="margin-bottom">14</property>
-                                                        <property name="spacing">12</property>
-                                                        <child>
-                                                          <object class="GtkEntry" id="cloudstream_repo_url_entry">
-                                                            <property name="placeholder-text" translatable="yes">CloudStream repository URL (GitHub repo, short link, or repo.json)</property>
-                                                            <property name="hexpand">true</property>
-                                                          </object>
-                                                        </child>
-                                                        <child>
-                                                          <object class="GtkButton" id="cloudstream_install_repo_btn">
-                                                            <property name="label" translatable="yes">Install CloudStream Repository</property>
-                                                            <style>
-                                                              <class name="suggested-action"/>
-                                                              <class name="pill"/>
-                                                            </style>
-                                                            <property name="halign">0</property>
-                                                          </object>
-                                                        </child>
-                                                        <child>
-                                                          <object class="GtkLabel" id="cloudstream_install_status_label">
-                                                            <property name="visible">false</property>
-                                                            <property name="xalign">0</property>
-                                                            <style>
-                                                              <class name="caption"/>
-                                                              <class name="dim-label"/>
-                                                            </style>
-                                                            <property name="wrap">true</property>
-                                                          </object>
-                                                        </child>
-                                                      </object>
-                                                    </child>
-                                                  </object>
-                                                </child>
-                                              </object>
-                                            </child>
-                                            <child>
-                                              <object class="GtkBox">
-                                                <property name="orientation">1</property>
-                                                <property name="spacing">8</property>
-                                                <child>
-                                                  <object class="GtkBox">
-                                                    <property name="spacing">8</property>
-                                                    <child>
-                                                      <object class="GtkLabel">
-                                                        <property name="label" translatable="yes">INSTALLED REPOSITORIES</property>
-                                                        <property name="xalign">0</property>
-                                                        <property name="hexpand">true</property>
-                                                        <style>
-                                                          <class name="heading"/>
-                                                          <class name="dim-label"/>
-                                                        </style>
-                                                      </object>
-                                                    </child>
-                                                    <child>
-                                                      <object class="GtkButton" id="cloudstream_refresh_all_btn">
-                                                        <property name="icon-name">view-refresh-symbolic</property>
-                                                        <property name="tooltip-text" translatable="yes">Refresh all repositories</property>
-                                                        <style>
-                                                          <class name="flat"/>
-                                                          <class name="circular"/>
-                                                        </style>
-                                                      </object>
-                                                    </child>
-                                                  </object>
-                                                </child>
-                                                <child>
-                                                  <object class="GtkListBox" id="cloudstream_repos_listbox">
-                                                    <property name="selection-mode">0</property>
-                                                    <style>
-                                                      <class name="boxed-list"/>
-                                                    </style>
-                                                  </object>
-                                                </child>
-                                              </object>
-                                            </child>
-                                            <child>
-                                              <object class="GtkBox">
-                                                <property name="orientation">1</property>
-                                                <property name="spacing">8</property>
-                                                <child>
-                                                  <object class="GtkBox">
-                                                    <property name="spacing">8</property>
-                                                    <child>
-                                                      <object class="GtkLabel">
-                                                        <property name="label" translatable="yes">PROVIDERS &amp; EXTENSIONS</property>
-                                                        <property name="xalign">0</property>
-                                                        <property name="hexpand">true</property>
-                                                        <style>
-                                                          <class name="heading"/>
-                                                          <class name="dim-label"/>
-                                                        </style>
-                                                      </object>
-                                                    </child>
-                                                    <child>
-                                                      <object class="GtkSearchEntry" id="cloudstream_provider_search_entry">
-                                                        <property name="placeholder-text" translatable="yes">Filter providers...</property>
-                                                        <property name="width-request">220</property>
-                                                      </object>
-                                                    </child>
-                                                    <child>
-                                                      <object class="GtkButton" id="cloudstream_bulk_install_btn">
-                                                        <property name="label" translatable="yes">Install &amp; Enable All</property>
-                                                        <property name="icon-name">folder-download-symbolic</property>
-                                                        <style>
-                                                          <class name="flat"/>
-                                                          <class name="pill"/>
-                                                        </style>
-                                                        <property name="tooltip-text" translatable="yes">Install and enable all compatible providers</property>
-                                                      </object>
-                                                    </child>
-                                                  </object>
-                                                </child>
-                                                <child>
-                                                  <object class="GtkListBox" id="cloudstream_plugins_listbox">
-                                                    <property name="selection-mode">0</property>
-                                                    <style>
-                                                      <class name="boxed-list"/>
-                                                    </style>
-                                                  </object>
-                                                </child>
-                                              </object>
-                                            </child>
-                                          </object>
-                                        </property>
-                                      </object>
-                                    </property>
-                                  </object>
-                                </property>
-                              </object>
-                            </child>
-                            <child>
                               <object class="AdwViewStackPage" id="page_custom_sub">
                                 <property name="name">custom</property>
                                 <property name="title" translatable="yes">Custom</property>
@@ -2533,46 +2173,49 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                         <property name="active">true</property>
                                                       </object>
                                                     </child>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="GtkBox" id="custom_plugin_security_warning_box">
+                                                    <property name="orientation">1</property>
+                                                    <style>
+                                                      <class name="card"/>
+                                                    </style>
+                                                    <property name="margin-top">4</property>
                                                     <child>
-                                                      <object class="GtkBox" id="custom_plugin_security_warning_box">
+                                                      <object class="GtkBox">
                                                         <property name="orientation">1</property>
-                                                        <property name="margin-top">4</property>
-                                                        <property name="margin-bottom">6</property>
-                                                        <style>
-                                                          <class name="card"/>
-                                                        </style>
+                                                        <property name="margin-start">14</property>
+                                                        <property name="margin-end">14</property>
+                                                        <property name="margin-top">14</property>
+                                                        <property name="margin-bottom">14</property>
+                                                        <property name="spacing">6</property>
                                                         <child>
-                                                          <object class="GtkBox">
-                                                            <property name="orientation">1</property>
-                                                            <property name="margin-start">14</property>
-                                                            <property name="margin-end">14</property>
-                                                            <property name="margin-top">14</property>
-                                                            <property name="margin-bottom">14</property>
-                                                            <property name="spacing">6</property>
-                                                            <child>
-                                                              <object class="GtkLabel">
-                                                                <property name="label" translatable="yes">Security Notice</property>
-                                                                <property name="xalign">0</property>
-                                                                <style>
-                                                                  <class name="heading"/>
-                                                                </style>
-                                                              </object>
-                                                            </child>
-                                                            <child>
-                                                              <object class="GtkLabel">
-                                                                <property name="label" translatable="yes">Custom plugins are external Python (.py) scripts that run locally with your user account permissions. Only import or execute plugins from authors and sources you trust.</property>
-                                                                <property name="xalign">0</property>
-                                                                <property name="wrap">true</property>
-                                                                <style>
-                                                                  <class name="dim-label"/>
-                                                                  <class name="caption"/>
-                                                                </style>
-                                                              </object>
-                                                            </child>
+                                                          <object class="GtkLabel">
+                                                            <property name="label" translatable="yes">Security Notice</property>
+                                                            <property name="xalign">0</property>
+                                                            <style>
+                                                              <class name="heading"/>
+                                                            </style>
+                                                          </object>
+                                                        </child>
+                                                        <child>
+                                                          <object class="GtkLabel">
+                                                            <property name="label" translatable="yes">Custom plugins are external Python (.py) scripts that run locally with your user account permissions. Only import or execute plugins from authors and sources you trust.</property>
+                                                            <property name="xalign">0</property>
+                                                            <property name="wrap">true</property>
+                                                            <style>
+                                                              <class name="dim-label"/>
+                                                              <class name="caption"/>
+                                                            </style>
                                                           </object>
                                                         </child>
                                                       </object>
                                                     </child>
+                                                  </object>
+                                                </child>
+                                                <child>
+                                                  <object class="AdwPreferencesGroup">
                                                     <child>
                                                       <object class="AdwActionRow" id="custom_plugin_open_folder_row">
                                                         <property name="title" translatable="yes">Open Plugins Folder</property>
@@ -2847,12 +2490,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <attribute name="action">win.open-player</attribute>
                                               </item>
                                               <item>
-                                                <attribute name="label" translatable="yes">Addons</attribute>
+                                                <attribute name="label" translatable="yes">Addons/Plugins</attribute>
                                                 <attribute name="action">win.open-addons</attribute>
-                                              </item>
-                                              <item>
-                                                <attribute name="label" translatable="yes">Plugins</attribute>
-                                                <attribute name="action">win.open-plugins</attribute>
                                               </item>
                                             </section>
                                             <section>

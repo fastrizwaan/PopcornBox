@@ -1064,22 +1064,6 @@ class MovieWidget(Gtk.Box):
         if not movie_data.get("title") and movie_data.get("name"):
             movie_data["title"] = movie_data["name"]
 
-        if movie_data.get("is_cloudstream") or str(movie_data.get("id", "")).startswith("cloudstream:"):
-            raw_title = movie_data.get("catalog_title") or movie_data.get("raw_title") or movie_data.get("title") or movie_data.get("name")
-            if raw_title:
-                movie_data.setdefault("catalog_title", raw_title)
-                movie_data.setdefault("raw_title", raw_title)
-                from .cloudstream import clean_cloudstream_title, is_cloudstream_series
-                if is_cloudstream_series(raw_title, str(movie_data.get("id", "")), movie_data.get("type")):
-                    movie_data["type"] = "series"
-                    item_type = "series"
-                clean_name, extracted_year = clean_cloudstream_title(raw_title)
-                if clean_name:
-                    movie_data["title"] = clean_name
-                    movie_data["name"] = clean_name
-                if extracted_year and not movie_data.get("year"):
-                    movie_data["year"] = extracted_year
-
         # Check metadata cache for missing info or cached certification/flags
         cached = None
         if database.is_adult_content_hidden() and item_id:

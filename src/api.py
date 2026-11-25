@@ -2865,7 +2865,7 @@ def get_stream_addons(media_type=None, item_id=None, only_working=True):
     ]
 
 def has_stream_addons(media_type=None, item_id=None, only_working=True):
-    """Return True if there is at least one enabled stream/torrent addon or Nuvio/custom/CloudStream plugin for this media type and item."""
+    """Return True if there is at least one enabled stream/torrent addon or Nuvio/custom plugin for this media type and item."""
     if len(get_stream_addons(media_type=media_type, item_id=item_id, only_working=only_working)) > 0:
         return True
     try:
@@ -2878,14 +2878,6 @@ def has_stream_addons(media_type=None, item_id=None, only_working=True):
         from . import custom_plugins
         if custom_plugins.is_custom_plugins_enabled() and len(custom_plugins.get_enabled_scrapers_for_type(media_type or "movie")) > 0:
             return True
-    except Exception:
-        pass
-    try:
-        from . import cloudstream
-        if cloudstream.is_cloudstream_enabled():
-            plugins_list = [p for p in cloudstream.get_all_plugins() if p.get("enabled")]
-            if any(cloudstream.is_provider_usable(p) for p in plugins_list):
-                return True
     except Exception:
         pass
     return False
@@ -3672,20 +3664,10 @@ def invalidate_catalogs_cache():
         _AVAILABLE_CATALOGS_CACHE.clear()
 
 
-def _get_cloudstream_catalogs(c_type):
-    try:
-        from . import cloudstream
-        return cloudstream.get_catalogs(c_type)
-    except Exception as e:
-        logger.debug(f"Could not list CloudStream catalogs: {e}")
-        return []
-
-
-def get_available_catalogs(c_type="movie", cache_only=True, include_cloudstream=True):
+def get_available_catalogs(c_type="movie", cache_only=True):
     with _AVAILABLE_CATALOGS_LOCK:
         if c_type in _AVAILABLE_CATALOGS_CACHE:
-            catalogs = list(_AVAILABLE_CATALOGS_CACHE[c_type])
-            return catalogs + _get_cloudstream_catalogs(c_type) if include_cloudstream else catalogs
+            return list(_AVAILABLE_CATALOGS_CACHE[c_type])
 
     from . import database
     catalogs = []
@@ -3758,7 +3740,7 @@ def get_available_catalogs(c_type="movie", cache_only=True, include_cloudstream=
     with _AVAILABLE_CATALOGS_LOCK:
         _AVAILABLE_CATALOGS_CACHE[c_type] = list(catalogs)
 
-    return catalogs + _get_cloudstream_catalogs(c_type) if include_cloudstream else catalogs
+    return catalogs
 
 
 def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
@@ -3851,24 +3833,25 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
     if not target_catalog_id and catalog_id and catalog_id != "top":
         target_catalog_id = catalog_id
 
-    if isinstance(catalog_url, str) and catalog_url.startswith("cloudstream://catalog/"):
+    if isinstance(catalog_url, str) and catalog_url.startswith("nuvio://catalog/"):
         if cache_only:
             return []
-        from . import cloudstream
-        provider_id = cloudstream.provider_id_from_catalog_url(catalog_url)
-        if not provider_id:
+        from . import plugins
+        scraper_id = plugins.scraper_id_from_catalog_url(catalog_url)
+        if not scraper_id:
             return []
         year_filter = None
         if isinstance(extra_filters, dict):
             year_filter = extra_filters.get("year")
-        items = cloudstream.fetch_catalog_items(
-            provider_id,
+        items = plugins.fetch_catalog_items(
+            scraper_id,
             target_catalog_id or catalog_id,
+            media_type=c_type,
+            genre=genre,
             page=page,
             limit=page_limit,
-            is_cancelled=is_cancelled,
-            genre=genre,
             query=query,
+            is_cancelled=is_cancelled,
             year=year_filter,
             extra_filters=extra_filters,
         )
@@ -3994,7 +3977,17 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 try:
                     addon_items = future.result()
                     new_batch = []
-                    q_lower = query.lower()
+                    q_lower = query.lower().strip()
+                    q_words = [w for w in re.findall(r"\w+", q_lower) if w not in MOVIE_STOP_WORDS and len(w) >= 2]
+                    if not q_words:
+                        q_words = [w for w in re.findall(r"\w+", q_lower) if len(w) >= 1]
+                    q_phrase_re = (
+                        re.compile(
+                            r"(?<!\w)" + r"\W+".join(re.escape(w) for w in q_words) + r"(?!\w)"
+                        )
+                        if len(q_words) >= 2
+                        else None
+                    )
                     cur_addon = future_to_addon.get(future) or {}
                     cur_addon_name = cur_addon.get("name", "")
                     cur_manifest_url = cur_addon.get("manifest_url", "")
@@ -4003,14 +3996,14 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                             continue
                         title = m.get("name") or m.get("title") or ""
                         desc = m.get("description") or m.get("overview") or ""
-                        title_clean = str(title).lower()
-                        desc_clean = str(desc).lower()
-                        q_words = [w for w in re.findall(r"\w+", q_lower) if w not in MOVIE_STOP_WORDS and len(w) >= 2]
-                        if not q_words:
-                            q_words = [w for w in re.findall(r"\w+", q_lower) if len(w) >= 1]
+                        title_clean = re.sub(r"[\'’]", "", str(title).lower())
+                        desc_clean = re.sub(r"[\'’]", "", str(desc).lower())
 
                         if q_words:
-                            title_matches_all = all(re.search(r"\b" + re.escape(w) + r"\b", title_clean) or (len(w) >= 4 and w in title_clean) for w in q_words)
+                            title_matches_all = all(
+                                re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", title_clean)
+                                for w in q_words
+                            )
                         else:
                             title_matches_all = q_lower in title_clean
 
@@ -4019,9 +4012,32 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                                 continue
                         else:
                             if not title_matches_all:
-                                desc_matches_all = all(w in desc_clean for w in q_words) if q_words else (q_lower in desc_clean)
+                                if q_phrase_re is not None:
+                                    desc_matches_all = bool(q_phrase_re.search(desc_clean))
+                                elif q_words:
+                                    desc_matches_all = all(
+                                        re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", desc_clean)
+                                        for w in q_words
+                                    )
+                                else:
+                                    desc_matches_all = q_lower in desc_clean
                                 if not desc_matches_all:
                                     continue
+
+                        # Rank exact & whole-phrase title matches ahead of loose matches
+                        norm_title_tokens = re.findall(r"\w+", title_clean)
+                        norm_title_str = " ".join(norm_title_tokens)
+                        norm_q_str = " ".join(re.findall(r"\w+", re.sub(r"[\'’]", "", q_lower)))
+                        if norm_title_str == norm_q_str:
+                            search_rank = 0
+                        elif title_matches_all and q_phrase_re and q_phrase_re.search(title_clean):
+                            search_rank = 1
+                        elif title_matches_all and q_words and norm_title_tokens[:len(q_words)] == q_words:
+                            search_rank = 2
+                        elif title_matches_all:
+                            search_rank = 3
+                        else:
+                            search_rank = 4
 
                         imdb_id = m.get("imdb_id") or m.get("id")
                         if not imdb_id or imdb_id in seen_ids:
@@ -4095,10 +4111,12 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
 
                         if item_desc and imdb_id:
                             database.save_cached_metadata(imdb_id, item_obj["type"], item_obj)
+                        item_obj["_search_rank"] = search_rank
                         seen_titles.setdefault(title_lower, []).append(item_obj)
                         items.append(item_obj)
                         new_batch.append(item_obj)
                     if new_batch:
+                        new_batch.sort(key=lambda x: x.get("_search_rank", 9))
                         database.hydrate_items_from_metadata(new_batch, media_type=c_type)
                         hydrate_missing_catalog_items(new_batch, media_type=c_type)
                     if new_batch and on_item_found:
@@ -4120,6 +4138,7 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 pass
                     
         if items:
+            items.sort(key=lambda x: x.pop("_search_rank", 9))
             database.hydrate_items_from_metadata(items, media_type=c_type)
             hydrate_missing_catalog_items(items, media_type=c_type)
         return items
@@ -5237,6 +5256,25 @@ def is_custom_plugin_route_id(item_id):
     return ":" in s or s.startswith("custom.")
 
 
+def clean_media_title(raw_title):
+    """Extract a clean display title and optional 4-digit release year from a catalog title."""
+    text = str(raw_title or "").strip()
+    if not text:
+        return "", None
+    year_match = re.search(r"[\s(\[-]*((?:19|20)\d{2})[\s)\]-]*$", text)
+    extracted_year = year_match.group(1) if year_match else None
+    clean_name = text
+    if year_match:
+        clean_name = text[:year_match.start()].strip(" .-_([")
+    clean_name = re.sub(
+        r"\s*(?:\b(?:4k|2160p|1080p|720p|480p|hdrip|web-?dl|webrip|bluray|dual audio|hindi dubbed)\b.*)$",
+        "",
+        clean_name,
+        flags=re.IGNORECASE,
+    ).strip(" .-_([")
+    return (clean_name or text), extracted_year
+
+
 def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True, poster=None, prefer_tmdb=False, expected_year=None):
     if isinstance(imdb_id, list):
         if not imdb_id: return {}
@@ -5251,122 +5289,12 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             primary_id = next((i for i in imdb_id if str(i).startswith('tt')), imdb_id[0])
         return fetch_movie_details(primary_id, media_type, title, use_cache, poster, prefer_tmdb, expected_year)
 
-    if str(imdb_id).startswith("cloudstream:"):
-        route_id = str(imdb_id)
-        raw_catalog_title = str(title or "").strip()
-        from . import cloudstream
-        if media_type not in ("series", "anime", "tv") and cloudstream.is_cloudstream_series(raw_catalog_title or title or "", route_id, media_type):
-            media_type = "series"
-        if prefer_tmdb and title and media_type in ("movie", "series", "anime"):
-            title_text = raw_catalog_title
-            clean_name, extracted_year = cloudstream.clean_cloudstream_title(title_text)
-            year_text_match = re.search(r"\b((?:18|19|20)\d{2})\b", str(expected_year or extracted_year or ""))
-            year_text = year_text_match.group(1) if year_text_match else None
-            release_title = clean_name or title_text
-            identity_title = clean_name or title_text
-
-            cached_route_meta = database.get_cached_metadata(route_id, media_type) if use_cache else None
-            cached_year = str((cached_route_meta or {}).get("year") or "")[:4]
-            cached_title = str((cached_route_meta or {}).get("title") or "")
-            cached_identity_title = re.sub(r"\b((?:18|19|20)\d{2})\b", "", cached_title).strip(" .-_")
-            cached_title_matches = bool(identity_title and tmdb_helper.is_similar_title(identity_title, cached_identity_title))
-            if (
-                cached_route_meta
-                and is_valid_meta(cached_route_meta)
-                and str(cached_route_meta.get("metadata_source", "")).lower() == "tmdb"
-                and (not year_text or not cached_year or cached_year == year_text)
-                and cached_title_matches
-            ):
-                if poster and not database.is_scraper_image_url(poster):
-                    cached_route_meta["medium_cover_image"] = poster
-                    cached_route_meta["poster"] = poster
-                if raw_catalog_title:
-                    cached_route_meta.setdefault("catalog_title", raw_catalog_title)
-                    cached_route_meta.setdefault("original_title", raw_catalog_title)
-                return cached_route_meta
-
-            # CloudStream search IDs identify a provider page, not the movie or
-            # series. Resolve the search card's title and year for details so
-            # clicks show canonical metadata while the route remains available
-            # for stream fallback.
-            title_candidates = [release_title]
-            if year_text and release_title:
-                without_year = re.sub(rf"[\s(\[]*{year_text}[)\]]*\s*$", "", release_title).strip(" .-_")
-                if without_year and without_year not in title_candidates:
-                    title_candidates.append(without_year)
-
-            clean_poster = None if database.is_scraper_image_url(poster) else poster
-            for search_title in title_candidates:
-                try:
-                    tmdb_meta = fetch_tmdb_standalone_metadata(
-                        None,
-                        media_type=media_type,
-                        title=search_title,
-                        poster=clean_poster,
-                        year=year_text,
-                    )
-                except Exception as e:
-                    print(f"[TMDB] CloudStream search resolution failed for {search_title!r}: {e}")
-                    tmdb_meta = None
-                if not tmdb_meta or not is_valid_meta(tmdb_meta):
-                    continue
-                resolved_year = str(tmdb_meta.get("year") or "")[:4]
-                if year_text and resolved_year and resolved_year != year_text:
-                    continue
-                tmdb_meta["type"] = media_type
-                tmdb_meta["cloudstream_route_id"] = route_id
-                tmdb_meta["is_cloudstream"] = True
-                if raw_catalog_title:
-                    tmdb_meta["catalog_title"] = raw_catalog_title
-                    tmdb_meta["original_title"] = raw_catalog_title
-                return _save_and_return_meta(
-                    tmdb_meta,
-                    route_id,
-                    media_type,
-                    title=search_title,
-                    poster=poster,
-                    expected_year=year_text,
-                )
-
-        from . import cloudstream
-        meta = cloudstream.get_metadata_for_route(route_id)
-        if meta:
-            if raw_catalog_title:
-                meta.setdefault("catalog_title", raw_catalog_title)
-                meta.setdefault("original_title", raw_catalog_title)
-            if media_type == "series" or cloudstream.is_cloudstream_series(raw_catalog_title or meta.get("title") or "", route_id, meta.get("type")):
-                meta["type"] = "series"
-            elif media_type:
-                meta["type"] = media_type
-            if prefer_tmdb and title and media_type in ("movie", "series", "anime"):
-                fallback_title = identity_title or release_title
-                if fallback_title:
-                    meta["title"] = fallback_title
-                    meta["name"] = fallback_title
-                if year_text:
-                    meta["year"] = year_text
-                if poster:
-                    meta["medium_cover_image"] = poster
-                    meta["poster"] = poster
-                description = str(meta.get("description") or meta.get("overview") or "").strip()
-                if description and not is_cloudstream_description_usable(description, fallback_title):
-                    meta["description"] = ""
-                    meta["overview"] = ""
-            elif poster and not meta.get("medium_cover_image"):
-                meta["medium_cover_image"] = poster
-                meta["poster"] = poster
-            if title and not meta.get("title"):
-                meta["title"] = title
-            database.save_cached_metadata(imdb_id, media_type, meta)
-            return meta
-
     # Custom plugin route IDs (e.g. "vegamovies:https://...", "moviesdrive:https://...", "custom.scraper:...")
     str_custom_id = str(imdb_id or "").strip()
     is_custom_plugin_item = is_custom_plugin_route_id(str_custom_id)
     if is_custom_plugin_item:
         route_id = str_custom_id
         raw_catalog_title = str(title or "").strip()
-        from . import cloudstream
         if not raw_catalog_title and ":" in route_id:
             slug = route_id.split(":", 1)[1].rstrip("/").split("/")[-1]
             raw_catalog_title = slug.replace("-", " ").replace("_", " ").title()
@@ -5378,7 +5306,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         ):
             media_type = "series"
 
-        clean_name, extracted_year = cloudstream.clean_cloudstream_title(raw_catalog_title)
+        clean_name, extracted_year = clean_media_title(raw_catalog_title)
         year_text_match = re.search(r"\b((?:18|19|20)\d{2})\b", str(expected_year or extracted_year or ""))
         year_text = year_text_match.group(1) if year_text_match else None
         release_title = clean_name or raw_catalog_title
@@ -6310,6 +6238,13 @@ def get_stream_search_text(stream):
             pass
     return " \n ".join(parts)
 
+_RE_EXPLICIT_MOVIE_STREAM = re.compile(
+    r"\b(?:full[\s._-]*movie|hindi[\s._-]*movie|malayalam[\s._-]*movie|tamil[\s._-]*movie|"
+    r"telugu[\s._-]*movie|kannada[\s._-]*movie|hdcam|camrip|hdtc)\b",
+    re.IGNORECASE,
+)
+
+
 def match_stream_to_episode(stream, target_season, target_episode, ep_title=None, series_title=None):
     """
     Evaluates whether a stream corresponds to the requested season and episode.
@@ -6343,6 +6278,9 @@ def match_stream_to_episode(stream, target_season, target_episode, ep_title=None
         return MATCH_UNKNOWN
 
     s, ep_start, ep_end, is_pack = extract_stream_episode_info(text)
+
+    if s is None and ep_start is None and not is_pack and _RE_EXPLICIT_MOVIE_STREAM.search(text):
+        return MATCH_MISMATCH
 
     # 1. Season mismatch check
     if s is not None and s != t_season:
@@ -6435,59 +6373,162 @@ def is_opaque_identifier(s):
 
 MOVIE_STOP_WORDS = {'the', 'a', 'an', 'and', 'or', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'by', 'from'}
 
+_RELEASE_DESCRIPTOR_WORDS = {
+    'malayalam', 'hindi', 'tamil', 'telugu', 'kannada', 'bengali', 'marathi', 'punjabi',
+    'gujarati', 'english', 'eng', 'hin', 'tam', 'tel', 'mal', 'kan', 'ben', 'mar',
+    'fre', 'french', 'spa', 'spanish', 'ger', 'german', 'ita', 'italian', 'jpn', 'japanese',
+    'kor', 'korean', 'chi', 'chinese', 'rus', 'russian', 'ara', 'arabic', 'tur', 'turkish',
+    'por', 'portuguese', 'dual', 'multi', 'audio', 'sub', 'subs', 'esub', 'esubs', 'dub',
+    'dubbed', 'subbed', 'org', 'original', 'movie', 'full', 'series', 'show', 'season',
+    'episode', 'ep', 'pilot', 'part', 'pt', 'vol', 'volume', 'complete', 'collection',
+    'extended', 'uncut', 'unrated', 'remastered', 'directors', 'director', 'cut',
+    'theatrical', 'special', 'edition', 'proper', 'repack', 'imax', '3d', 'hdr', 'hdr10',
+    'dv', 'dolby', 'vision', 'atmos', '10bit', '8bit', 'x264', 'x265', 'h264', 'h265',
+    'hevc', 'avc', 'aac', 'dts', 'ac3', 'eac3', 'ddp', 'flac', 'mp3', 'web', 'webdl',
+    'webrip', 'bluray', 'bdrip', 'brrip', 'dvdrip', 'hdrip', 'hdtv', 'pdtv', 'hdtc',
+    'hdcam', 'cam', 'camrip', 'remux', 'mkv', 'mp4', 'avi', 'webm', 'm4v', 'ts', 'm3u8',
+    '4k', 'uhd', 'fhd', 'hd', 'sd', '2160p', '1080p', '720p', '480p', '360p',
+    'download', 'watch', 'online', 'free',
+}
 
-def check_movie_title_mismatch(target_title, filename):
+_PROVIDER_PREFIX_WORDS = {
+    '1shows', 'vidrock', 'vidsrc', 'vidfast', 'vidlink', 'vidlove', 'movix', 'castle',
+    'dahmermovies', 'cinestream', 'torrentio', 'yts', 'topcartoons', 'uhdmovies',
+    'hdhub4u', '4khdhub', 'moviesmod', 'vegamovies', 'moviesdrive', 'moviebox',
+    'fibwatch', 'desiflix', 'einthustan', 'hindmoviez', 'cinefreak', 'cinemacity',
+    'moonflix', 'allmovieland', 'reanime', 'hianime', 'allanime', 'animekai', 'animepahe',
+    'fast', 'server', 'premium', 'shared', 'hubcloud', 'driveseed', 'pixeldrain',
+    'unknown', 'direct', 'stream', 'popcorn', 'nebula', 'nova',
+    'torbox', 'realdebrid', 'alldebrid', 'debrid', 'mediafusion', 'comet',
+    'knightcrawler', 'annatar', 'stremthru', 'jackettio', 'nuvio', 'showbox', 'addon',
+}
+
+_RE_SCENE_BOUNDARY = re.compile(
+    r'[\.\s\-_\(\[](?:(?:18|19|20)\d{2}|S\d{1,2}(?:E\d{1,2})?|\d{1,2}x\d{1,2}|'
+    r'Season[\s._-]?\d+|Ep(?:isode)?[\s._-]?\d+|2160p|1080p|720p|480p|360p|4k|uhd|'
+    r'WEB[\s._-]?DL|WEBRip|BluRay|BDRip|BRRip|HDRip|HDTV|HDTC|HDCAM|DVDRip|x264|x265|HEVC|'
+    r'Malayalam|Hindi|Tamil|Telugu|Kannada|Dual[\s._-]?Audio|Multi[\s._-]?Audio|Full[\s._-]?Movie)\b',
+    re.IGNORECASE,
+)
+
+_VIDEO_FILE_EXTS = ('.mkv', '.mp4', '.avi', '.webm', '.m4v', '.ts')
+
+
+def _tokenize_clean_words(text: str) -> list[str]:
+    """Normalize apostrophes/punctuation and extract lowercase whole-word tokens."""
+    if not text:
+        return []
+    normalized = re.sub(r"[\'’]", "", str(text).lower())
+    return re.findall(r"[a-z0-9]+", normalized)
+
+
+def _strip_leading_provider_prefix(text: str) -> str:
+    """Strip emojis, bracket tags, domain tags, and known 'Provider - ' prefixes."""
+    s = re.sub(r'^\ufeff|\u200b', '', str(text or '')).strip()
+    s = re.sub(r'\[[^\]]*\]', ' ', s)
+    s = re.sub(r'www\.[^\s\.]+\.[a-z]{2,4}', ' ', s, flags=re.I)
+    s = re.sub(r'^[^\w\(\[]+', '', s).strip()
+    # Strip "Provider [tag] - " or "Provider • " if left side is solely provider/quality metadata
+    sep_match = re.match(r'^([^|\-\u2022]+?)\s*(?:\-|•|\|)\s*(.+)$', s)
+    if sep_match:
+        left_tokens = _tokenize_clean_words(sep_match.group(1))
+        if left_tokens and all(w in _PROVIDER_PREFIX_WORDS or w in _RELEASE_DESCRIPTOR_WORDS or w in MOVIE_STOP_WORDS or w.isdigit() for w in left_tokens):
+            s = sep_match.group(2).strip()
+            s = re.sub(r'^[^\w\(\[]+', '', s).strip()
+    return s
+
+
+def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None):
     """
-    Return True if filename explicitly represents a DIFFERENT movie title
-    via a false-positive substring match (e.g. target 'Musk' found only inside
-    unrelated word 'Muskurahatein' or 'Musketeer' without any whole-word match).
-    
-    Returns False if filename is opaque, generic, ambiguous, in another language,
-    or does not contain a false-positive substring match.
-    Does NOT require the target title to be present (as many UI titles, CDN URLs,
-    and international releases do not contain the English title).
+    Return True if filename explicitly represents a DIFFERENT title using
+    bidirectional whole-word matching (e.g. 'Modern Family' vs 'Family',
+    'Family' vs 'Modern Family', 'You Can See Everything' vs 'See', or false
+    substrings like 'Musk' inside 'Muskurahatein').
+
+    Returns False if filename is opaque, generic, pure metadata, or compatible.
     """
     if not target_title or not filename or is_opaque_identifier(filename):
         return False
 
-    # Strip site prefixes like [Fibwatch.Com] or [YTS.MX] or domain prefixes
-    fn = re.sub(r'\[[^\]]*\]', ' ', filename)
-    fn = re.sub(r'www\.[^\s\.]+\.[a-z]{2,4}', ' ', fn, flags=re.I)
+    ignored_words = _PROVIDER_PREFIX_WORDS | _RELEASE_DESCRIPTOR_WORDS | MOVIE_STOP_WORDS
+    if extra_ignored_words:
+        ignored_words = ignored_words | {str(w).lower() for w in extra_ignored_words if w}
 
-    clean_title = re.sub(r'[^a-zA-Z0-9\s]', ' ', target_title).lower()
-    title_words = [w for w in clean_title.split() if w not in MOVIE_STOP_WORDS and len(w) > 0]
-    if not title_words:
-        title_words = [w for w in clean_title.split() if len(w) > 0]
-    if not title_words:
+    raw_str = str(filename).strip()
+    fn = _strip_leading_provider_prefix(raw_str)
+    if not fn:
         return False
 
-    clean_fn = re.sub(r'[^a-zA-Z0-9\s]', ' ', fn).lower()
-    fn_words = set(clean_fn.split())
+    clean_title = re.sub(r"[\'’]", "", str(target_title).lower())
+    target_all_words = re.findall(r"[a-z0-9]+", clean_title)
+    title_words = [w for w in target_all_words if w not in MOVIE_STOP_WORDS and len(w) > 0]
+    if not title_words:
+        title_words = list(target_all_words)
+    if not title_words:
+        return False
+    title_word_set = set(title_words)
 
-    # Check whole word matches
-    matched = set(w for w in title_words if w in fn_words or re.search(r'\b' + re.escape(w) + r'\b', clean_fn))
+    fn_words_list = _tokenize_clean_words(fn)
+    fn_words = set(fn_words_list)
+    if not fn_words:
+        return False
 
-    # Check scene release title mismatch:
-    # If the filename begins with a clear scene title followed by year/season/quality tags,
-    # and that release title is missing significant words of target_title, it's a mismatch.
-    is_file_like = ('.' in filename) or any(ext in filename.lower() for ext in ('.mkv', '.mp4', '.avi'))
-    scene_match = re.search(r'[\.\s\-_]((?:19|20)\d{2}|S\d{1,2}E\d{1,2}|S\d{1,2}|1080p|720p|4k|2160p|WEB-DL|WEBRip|BluRay|HDTV)\b', fn, re.I)
-    if is_file_like and scene_match:
-        prefix = fn[:scene_match.start()].strip(' .-_')
-        prefix_clean = re.sub(r'[^a-zA-Z0-9\s]', ' ', prefix).lower()
-        prefix_words = set(prefix_clean.split())
-        sig_prefix_words = [w for w in prefix_words if w not in MOVIE_STOP_WORDS and len(w) >= 2]
-        # Only check if prefix looks like an actual multi-word movie title (>= 2 significant words)
-        # to avoid discarding single-word provider tags like 'HDhub4u'
-        if len(sig_prefix_words) >= 2:
-            for tw in title_words:
-                if len(tw) >= 3 and tw not in prefix_words and not re.search(r'\b' + re.escape(tw) + r'\b', prefix_clean):
-                    return True
+    # Ignore pure provider/quality/descriptor badges with no release title content
+    non_noise_fn = [
+        w for w in fn_words_list
+        if w not in ignored_words and not w.isdigit()
+    ]
+    if not non_noise_fn:
+        return False
 
-    # Check for false positive substring match:
-    # A target title word (especially short words like 'musk') is present ONLY as a
-    # substring of a longer unrelated word (e.g. 'musk' in 'muskurahatein', 'musk' in 'musketeer')
-    # and has NO whole-word match in the filename.
+    matched = {w for w in title_words if w in fn_words}
+
+    # If candidate has pipe-separated UI segments (e.g. "S1 E1 - Pilot | Modern Family"),
+    # accept immediately if any segment contains all target words as whole words without conflict.
+    if "|" in raw_str:
+        segments = [_strip_leading_provider_prefix(seg) for seg in raw_str.split("|")]
+        for seg in segments:
+            seg_tokens = _tokenize_clean_words(seg)
+            seg_core = [w for w in seg_tokens if w not in ignored_words]
+            if seg_core and all(tw in seg_core for tw in title_words):
+                seg_extra = [w for w in seg_core if w not in title_word_set]
+                first_pos = min((i for i, w in enumerate(seg_core) if w in title_word_set), default=0)
+                if first_pos == 0 and len(seg_extra) != 1:
+                    return False
+
+    # Check scene release / dated / episode-tagged / video filename title prefix
+    lower_raw = raw_str.lower()
+    has_video_ext = any(lower_raw.endswith(ext) for ext in _VIDEO_FILE_EXTS)
+    scene_match = _RE_SCENE_BOUNDARY.search(fn)
+
+    if scene_match or has_video_ext:
+        prefix = fn[:scene_match.start()] if scene_match else os.path.splitext(fn)[0]
+        prefix = prefix.strip(' .-_:|•')
+        if prefix:
+            prefix_tokens = _tokenize_clean_words(prefix)
+            prefix_core = [
+                w for w in prefix_tokens
+                if w not in ignored_words
+            ]
+            if prefix_core:
+                # 1. Forward check: every significant target word must be a whole word in release title
+                # (catches 'Family (2023) Malayalam' for 'Modern Family', or 'See 1080p' for 'You Can See Everything')
+                for tw in title_words:
+                    if tw not in prefix_core:
+                        return True
+
+                # 2. Reverse check: release title must not be a different title containing target word
+                # (catches 'Modern Family S01E01' or 'You Can See Everything' when target is 'See'/'Family')
+                extra_core = [w for w in prefix_core if w not in title_word_set]
+                if extra_core:
+                    first_target_pos = min(
+                        (i for i, w in enumerate(prefix_core) if w in title_word_set),
+                        default=0,
+                    )
+                    if first_target_pos > 0 or len(extra_core) == 1:
+                        return True
+
+    # 3. False positive substring match: target word present only inside longer unrelated word
     for tw in title_words:
         if tw not in matched and len(tw) >= 2:
             for fw in fn_words:
@@ -6500,41 +6541,61 @@ def check_movie_title_mismatch(target_title, filename):
 
 def match_stream_to_movie(stream, target_title=None, expected_year=None):
     """
-    Evaluates whether a stream corresponds to the requested movie title.
-    Does NOT evaluate release year (movie name matching only).
+    Evaluates whether a stream corresponds to the requested movie/series title.
+    Does NOT evaluate release year (title word matching only).
     Returns:
         MATCH_UNKNOWN (0): Stream appears compatible or is ambiguous.
-        MATCH_MISMATCH (-1): Explicit indicator of a different movie title.
+        MATCH_MISMATCH (-1): Explicit indicator of a different title.
     """
     if not isinstance(stream, dict) or not target_title:
         return MATCH_UNKNOWN
+
+    provider_words = set()
+    for p_src in (stream.get("addon_name"), stream.get("name"), *(stream.get("addon_names") or [])):
+        if p_src and isinstance(p_src, str):
+            provider_words.update(_tokenize_clean_words(p_src))
+    # Never ignore words that are part of the target title itself
+    target_tokens = set(_tokenize_clean_words(target_title))
+    provider_words -= target_tokens
 
     # 1. URL filename or magnet dn (represents the physical file on the server/CDN)
     url = stream.get("url") or stream.get("externalUrl") or stream.get("magnet")
     url_fn = get_stream_url_filename(url)
     if url_fn and not is_opaque_identifier(url_fn):
-        if check_movie_title_mismatch(target_title, url_fn):
+        if check_movie_title_mismatch(target_title, url_fn, extra_ignored_words=provider_words):
             return MATCH_MISMATCH
 
     # 2. behaviorHints or explicit filename
     bh = stream.get("behaviorHints") or {}
-    bh_fn = bh.get("filename") if isinstance(bh, dict) else ""
+    bh_fn = bh.get("filename") or bh.get("videoFilename") if isinstance(bh, dict) else ""
     if bh_fn and isinstance(bh_fn, str) and not is_opaque_identifier(bh_fn):
-        if check_movie_title_mismatch(target_title, bh_fn):
+        if check_movie_title_mismatch(target_title, bh_fn, extra_ignored_words=provider_words):
             return MATCH_MISMATCH
 
     s_fn = stream.get("filename")
     if s_fn and isinstance(s_fn, str) and s_fn != bh_fn and not is_opaque_identifier(s_fn):
-        if check_movie_title_mismatch(target_title, s_fn):
+        if check_movie_title_mismatch(target_title, s_fn, extra_ignored_words=provider_words):
             return MATCH_MISMATCH
 
-    # 3. Torrent / release title (check first line of title if it looks like a scene release)
-    t_desc = stream.get("title") or stream.get("description") or ""
-    if t_desc and isinstance(t_desc, str):
-        first_line = t_desc.splitlines()[0].strip()
-        if not any(first_line.startswith(em) for em in ("🎬", "🍿", "📺", "⚡", "🧲", "🌐")):
-            if any(k in first_line.lower() for k in ("1080p", "720p", "2160p", "4k", "bluray", "web-dl", "webrip", "hdtv", "x264", "x265", "hevc")):
-                if check_movie_title_mismatch(target_title, first_line):
+    # 3. Release / stream display titles across raw Nuvio (`title`) and parsed (`stream_title`) formats
+    checked = set()
+    for field_name in ("stream_title", "title", "description"):
+        val = stream.get(field_name)
+        if not val or not isinstance(val, str):
+            continue
+        lines = [ln.strip() for ln in val.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        first_line = lines[0]
+        if first_line not in checked:
+            checked.add(first_line)
+            if check_movie_title_mismatch(target_title, first_line, extra_ignored_words=provider_words):
+                return MATCH_MISMATCH
+        if len(lines) >= 2:
+            two_lines = f"{first_line} {lines[1]}"
+            if two_lines not in checked:
+                checked.add(two_lines)
+                if check_movie_title_mismatch(target_title, two_lines, extra_ignored_words=provider_words):
                     return MATCH_MISMATCH
 
     return MATCH_UNKNOWN
@@ -6718,7 +6779,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
             or str(s.get("magnet") or "").startswith("magnet:")
             or stream_url.split('?')[0].lower().endswith(".torrent")
         )
-        if is_torrent and source_addon_names:
+        if is_torrent and source_addon_names and not s.get("is_nuvio_plugin"):
             for aname in source_addon_names:
                 mark_addon_as_torrent(aname)
         is_http = not is_torrent and bool(
@@ -7345,10 +7406,6 @@ def extract_stream_headers(stream_entry, url=None):
 def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cache=True, provider=None, bypass_url_cache=False):
     if not imdb_id:
         return []
-        
-    if str(imdb_id).startswith("cloudstream:"):
-        from . import cloudstream
-        return cloudstream.get_streams_for_route(str(imdb_id), season=season, episode=episode)
 
     if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
         parts = str(imdb_id).split("||")
@@ -7555,9 +7612,12 @@ def _ping_stream_url(stream):
             else:
                 req = urllib.request.Request(url, headers=req_headers, method='HEAD')
             with urllib.request.urlopen(req, timeout=3.0, context=_SSL_CONTEXT) as resp:
-                if resp.status < 400:
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if resp.status < 400 and "text/html" not in ctype and "application/xhtml" not in ctype:
                     stream["is_working"] = True
                     return stream
+                stream["is_working"] = False
+                return stream
         except urllib.error.HTTPError as e:
             is_hakuna = isinstance(url, str) and "hakunaymatata.com" in url.lower()
             if e.code in (428, 429) or is_hakuna:
@@ -7575,9 +7635,12 @@ def _ping_stream_url(stream):
         try:
             req = urllib.request.Request(url, headers=dict(headers, Range='bytes=0-100'))
             with urllib.request.urlopen(req, timeout=3.0, context=_SSL_CONTEXT) as resp:
-                if resp.status < 400:
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if resp.status < 400 and "text/html" not in ctype and "application/xhtml" not in ctype:
                     stream["is_working"] = True
                     return stream
+                stream["is_working"] = False
+                return stream
         except urllib.error.HTTPError as e:
             is_hakuna = isinstance(url, str) and "hakunaymatata.com" in url.lower()
             if e.code in (428, 429) or is_hakuna:
@@ -7597,6 +7660,147 @@ def _ping_stream_url(stream):
 
     stream["is_working"] = False
     return stream
+
+_NON_MEDIA_HTML_SIGNATURES_LOCK = threading.Lock()
+_NON_MEDIA_HTML_HOST_PATHS = set()  # (netloc, path) confirmed to serve text/html webpages
+_SAFE_MEDIA_PATH_HINTS = (".m3u8", ".mpd", ".mp4", ".mkv", ".avi", ".webm", ".mov", ".ts", ".m4v", "/hls/", "/stream/", "/video/", "/api/file/", "/tv/", "/movie/")
+_SHORTENER_HOST_KEYWORDS = ("unblockedgames", "thenaukriadda", "techyboy4u", "gadgetsweb", "cryptoinsights", "bloggingvector")
+_SHORTENER_QUERY_KEYS = ("sid", "go", "_lp_http", "wp_http", "u")
+
+
+def _stream_url_probe_signature(url: str):
+    """Return (netloc, path, is_suspicious) for detecting unresolved HTML shortener URLs."""
+    if not url or not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return None, None, False
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        netloc = (parsed.netloc or "").lower()
+        path = (parsed.path or "/").lower()
+        full_l = url.lower()
+        if any(h in path or h in full_l.split("?", 1)[0] for h in _SAFE_MEDIA_PATH_HINTS):
+            return netloc, path, False
+        has_shortener_host = any(k in netloc for k in _SHORTENER_HOST_KEYWORDS)
+        q_keys = set(urllib.parse.parse_qs(parsed.query, keep_blank_values=True).keys())
+        has_shortener_q = any(k in q_keys for k in _SHORTENER_QUERY_KEYS)
+        is_wrapper_path_query = (path in ("", "/", "/bulk") and bool(parsed.query))
+        return netloc, path, bool(has_shortener_host or (has_shortener_q and is_wrapper_path_query))
+    except Exception:
+        return None, None, False
+
+
+def _is_known_non_media_html_url(url: str) -> bool:
+    """Fast synchronous check against known/confirmed non-media HTML redirector signatures."""
+    netloc, path, is_suspicious = _stream_url_probe_signature(url)
+    if not is_suspicious:
+        if netloc:
+            with _NON_MEDIA_HTML_SIGNATURES_LOCK:
+                return (netloc, path) in _NON_MEDIA_HTML_HOST_PATHS or (netloc, "*") in _NON_MEDIA_HTML_HOST_PATHS
+        return False
+    if any(k in (netloc or "") for k in _SHORTENER_HOST_KEYWORDS):
+        return True
+    with _NON_MEDIA_HTML_SIGNATURES_LOCK:
+        return (netloc, path) in _NON_MEDIA_HTML_HOST_PATHS or (netloc, "*") in _NON_MEDIA_HTML_HOST_PATHS
+
+
+def _probe_url_returns_html(url: str, headers: dict = None, timeout: float = 2.5) -> bool:
+    """Return True if probing an ambiguous URL reveals text/html or an anti-bot challenge page."""
+    req_headers = dict(headers or {})
+    if not any(k.lower() == "user-agent" for k in req_headers):
+        req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    for method, extra in (("HEAD", {}), ("GET", {"Range": "bytes=0-255"})):
+        try:
+            h = dict(req_headers, **extra)
+            req = urllib.request.Request(url, headers=h, method=method)
+            with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if "text/html" in ctype or "application/xhtml" in ctype:
+                    return True
+                if method == "GET":
+                    sample = resp.read(256).lstrip().lower()
+                    if sample.startswith((b"<!doctype html", b"<html")):
+                        return True
+                return False
+        except urllib.error.HTTPError as he:
+            hdrs_lower = {k.lower(): str(v).lower() for k, v in (he.headers.items() if he.headers else [])}
+            if hdrs_lower.get("cf-mitigated") == "challenge":
+                return True
+            if method == "HEAD" and he.code in (405, 501):
+                continue
+            return False
+        except Exception:
+            return False
+    return False
+
+
+def filter_non_media_html_streams(streams: list, allow_network_probe: bool = True) -> list:
+    """Drop direct HTTP stream entries that point to HTML shorteners or challenge-gated webpages."""
+    if not streams:
+        return []
+    candidates_to_probe = {}
+    for s in streams:
+        if not isinstance(s, dict) or is_torrent_stream(s):
+            continue
+        url = s.get("url")
+        netloc, path, is_suspicious = _stream_url_probe_signature(url)
+        if is_suspicious and netloc:
+            sig = (netloc, path)
+            with _NON_MEDIA_HTML_SIGNATURES_LOCK:
+                already_known = sig in _NON_MEDIA_HTML_HOST_PATHS
+            if not already_known and allow_network_probe and sig not in candidates_to_probe:
+                candidates_to_probe[sig] = (url, extract_stream_headers(s, url))
+
+    def _run_probe(probe_map):
+        newly_blocked_hosts = set()
+        def _check(item):
+            sig, (u, hdrs) = item
+            return sig, _probe_url_returns_html(u, headers=hdrs, timeout=2.5)
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(probe_map))) as ex:
+                for sig, is_html in ex.map(_check, probe_map.items()):
+                    if is_html:
+                        with _NON_MEDIA_HTML_SIGNATURES_LOCK:
+                            _NON_MEDIA_HTML_HOST_PATHS.add(sig)
+                        newly_blocked_hosts.add(sig[0])
+                        print(f"[STREAM DEBUG] detected non-media text/html redirector host={sig[0]!r} path={sig[1]!r}")
+        except RuntimeError:
+            pass
+        return newly_blocked_hosts
+
+    if candidates_to_probe and allow_network_probe:
+        blocked_hosts = _run_probe(candidates_to_probe)
+        # If a host on a base domain returned a challenge/HTML gate (e.g. p.111477.xyz),
+        # probe one representative URL for sibling subdomains in the same batch (e.g. a.111477.xyz)
+        # that redirect back to the gated host.
+        if blocked_hosts:
+            blocked_bases = {".".join(h.split(".")[-2:]) for h in blocked_hosts if "." in h}
+            sibling_probes = {}
+            for s in streams:
+                if not isinstance(s, dict) or is_torrent_stream(s):
+                    continue
+                url = s.get("url")
+                if not url or not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                    continue
+                netloc = (urllib.parse.urlsplit(url).netloc or "").lower()
+                if netloc and netloc not in blocked_hosts and any(netloc == b or netloc.endswith("." + b) for b in blocked_bases):
+                    sig = (netloc, "*")
+                    with _NON_MEDIA_HTML_SIGNATURES_LOCK:
+                        already_known = sig in _NON_MEDIA_HTML_HOST_PATHS
+                    if not already_known and sig not in sibling_probes:
+                        sibling_probes[sig] = (url, extract_stream_headers(s, url))
+            if sibling_probes:
+                _run_probe(sibling_probes)
+
+    kept = []
+    for s in streams:
+        if not isinstance(s, dict) or is_torrent_stream(s):
+            kept.append(s)
+            continue
+        url = s.get("url")
+        if _is_known_non_media_html_url(url):
+            continue
+        kept.append(s)
+    return kept
+
 
 def ping_and_filter_streams(streams):
     if not streams:
@@ -7700,18 +7904,23 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         except Exception:
             pass
 
-    def _filter_mismatched_movie_streams(streams):
-        """Drop streams that explicitly belong to a different title."""
+    def _filter_mismatched_movie_streams(streams, allow_html_probe=False):
+        """Drop streams belonging to a different title, wrong format, or HTML redirect pages."""
+        filtered_list = filter_non_media_html_streams(streams, allow_network_probe=allow_html_probe)
         if not title:
-            return list(streams or [])
+            return filtered_list
         accepted = []
-        for stream in streams or []:
+        for stream in filtered_list:
             if not isinstance(stream, dict):
                 accepted.append(stream)
                 continue
             if match_stream_to_movie(stream, target_title=title) == MATCH_MISMATCH:
                 print(f"[STREAM DEBUG] discarded mismatched stream title={title!r} url={(stream.get('url') or '')[:80]}")
                 continue
+            if season is not None and episode is not None:
+                if match_stream_to_episode(stream, season, episode, ep_title=ep_title, series_title=title) == MATCH_MISMATCH:
+                    print(f"[STREAM DEBUG] discarded episode/movie-mismatched stream title={title!r} url={(stream.get('url') or '')[:80]}")
+                    continue
             accepted.append(stream)
         return accepted
 
@@ -7738,37 +7947,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         elif len(parts) == 2 and parts[-1].isdigit() and parts[0].startswith("tt"):
             imdb_id = parts[0]
 
-    target_cs_route = str(imdb_id) if str(imdb_id).startswith("cloudstream:") else (
-        cloudstream_route_id if (isinstance(cloudstream_route_id, str) and cloudstream_route_id.startswith("cloudstream:")) else None
-    )
-    initial_cs_streams = []
-    if target_cs_route:
-        from . import cloudstream
-        print(f"[STREAM DEBUG] CloudStream immediate route lookup starting: {target_cs_route!r} s={season} e={episode}")
-        try:
-            route_streams = cloudstream.get_streams_for_route(target_cs_route, season=season, episode=episode)
-            if route_streams:
-                print(f"[STREAM DEBUG] CloudStream immediate route lookup returned {len(route_streams)} stream(s)")
-                initial_cs_streams = list(route_streams)
-                parsed_initial = process_raw_streams(route_streams, season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year) or route_streams
-                if parsed_initial:
-                    clean_source_scope = str(source_scope).strip().lower() if source_scope else None
-                    is_only_cs = bool(
-                        str(imdb_id).startswith("cloudstream:")
-                        or clean_source_scope == "direct"
-                    )
-                    if callback:
-                        callback(parsed_initial, is_cached=False, is_complete=is_only_cs)
-                    if is_only_cs:
-                        cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
-                        if cache_key:
-                            database.save_cached_streams(cache_key, parsed_initial)
-                        return parsed_initial
-        except Exception as e:
-            print(f"[STREAM DEBUG] CloudStream immediate route lookup failed: {e}")
-
     target_custom_route = None
-    for cand in (custom_plugin_route_id, cloudstream_route_id, original_id):
+    for cand in (custom_plugin_route_id, original_id):
         if is_custom_plugin_route_id(cand):
             target_custom_route = cand
             break
@@ -7811,10 +7991,9 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     print(f"[STREAM DEBUG] Custom plugin immediate route lookup returned {len(c_streams)} stream(s)")
                     initial_custom_streams = list(c_streams)
                     parsed_initial = process_raw_streams(c_streams, season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year)
-                    is_only_custom = bool(not initial_cs_streams)
                     if parsed_initial and callback:
-                        callback(parsed_initial, is_cached=False, is_complete=is_only_custom)
-                    if is_only_custom and len(parsed_initial) >= 1:
+                        callback(parsed_initial, is_cached=False, is_complete=True)
+                    if len(parsed_initial) >= 1:
                         cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
                         if cache_key:
                             database.save_cached_streams(cache_key, parsed_initial)
@@ -7836,36 +8015,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         if canonical_id:
             print(f"[STREAM DEBUG] Custom plugin route fallback to canonical {canonical_id!r}")
             imdb_id = canonical_id
-
-    if str(imdb_id).startswith("cloudstream:"):
-        # A search-card route may have no playable links on its own. Try its
-        # canonical identity when available, then continue through provider
-        # discovery by title if TMDB resolution is unavailable.
-        canonical_id = f"tmdb:{known_tmdb_id}" if known_tmdb_id else None
-        if not canonical_id and title:
-            try:
-                resolved_tmdb_id = tmdb_helper.resolve_to_tmdb_id(
-                    None, media_type, title, year=expected_year
-                )
-                if resolved_tmdb_id:
-                    canonical_id = f"tmdb:{resolved_tmdb_id}"
-            except Exception as e:
-                print(f"[STREAM DEBUG] CloudStream route title resolution failed: {e}")
-        if canonical_id:
-            print(f"[STREAM DEBUG] CloudStream route had no direct links; retrying discovery with {canonical_id!r}")
-            imdb_id = canonical_id
-        elif title:
-            # A TMDB lookup can fail even when the selected CloudStream page
-            # is valid. Keep the route ID and continue: CloudStream providers
-            # can still search by the resolved display title, and the normal
-            # provider pipeline may resolve aliases independently.
-            print(
-                f"[STREAM DEBUG] CloudStream route had no direct links or TMDB ID; "
-                f"continuing title-based discovery title={title!r}"
-            )
-        else:
-            if callback: callback([], is_cached=False, is_complete=True)
-            return []
 
     if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
         parts = str(imdb_id).split("||")
@@ -8003,11 +8152,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     if not plugins.is_plugins_enabled():
         cached = [s for s in cached if not s.get("is_nuvio_plugin")]
         cache_candidates = [s for s in cache_candidates if not s.get("is_nuvio_plugin")]
-
-    from . import cloudstream
-    if not cloudstream.is_cloudstream_enabled():
-        cached = [s for s in cached if not s.get("is_cloudstream")]
-        cache_candidates = [s for s in cache_candidates if not s.get("is_cloudstream")]
+    cached = [s for s in cached if not s.get("is_cloudstream")]
+    cache_candidates = [s for s in cache_candidates if not s.get("is_cloudstream")]
 
     # Drop cached Nuvio plugin streams that were fetched for a different TMDB
     # item.  This can happen when two movies share an IMDb ID in the cache (a
@@ -8082,17 +8228,25 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     plugin_scrapers = (
         plugins.get_enabled_scrapers_for_type(actual_media)
-        if plugins.is_plugins_enabled() and source_scope != "torrent"
+        if plugins.is_plugins_enabled()
         else []
     )
+    if source_scope == "torrent":
+        plugin_scrapers = [s for s in plugin_scrapers if plugins.is_torrent_capable_scraper(s)]
+    elif source_scope == "direct":
+        plugin_scrapers = [s for s in plugin_scrapers if not plugins.is_torrent_capable_scraper(s)]
     if provider_scope:
         plugin_scrapers = [
             s for s in plugin_scrapers
             if plugins.get_scraper_provider_name(s).strip().casefold() == provider_scope.casefold()
             or str(s.get("name") or "").strip().casefold() == provider_scope.casefold()
         ]
+    plugin_scrapers = [
+        s for s in plugin_scrapers
+        if not plugins.is_scraper_in_cooldown(s.get("id"))
+    ]
     plugin_scrapers_before_dedup = len(plugin_scrapers)
-    plugin_scrapers = plugins.deduplicate_scrapers(plugin_scrapers)
+    plugin_scrapers = plugins.sort_scrapers_by_health(plugins.deduplicate_scrapers(plugin_scrapers))
 
     from . import custom_plugins
     enabled_custom_scrapers = (
@@ -8107,21 +8261,11 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             or getattr(s, "id", "").strip().casefold() == provider_scope.casefold()
         ]
 
-    from . import cloudstream
-    enabled_cloudstream_plugins = [
-        p for p in cloudstream.get_all_plugins() if p.get("enabled")
-    ] if cloudstream.is_cloudstream_enabled() and source_scope != "torrent" else []
-    runnable_cloudstream_plugins = [
-        p for p in enabled_cloudstream_plugins if cloudstream.is_provider_usable(p)
-    ]
-    has_active_cloudstream = bool(runnable_cloudstream_plugins)
-
     has_cached_plugins = any(s.get("is_nuvio_plugin") for s in (cache_candidates or []))
     has_cached_addons = any(
         not s.get("is_nuvio_plugin") and not s.get("is_cloudstream") and not s.get("is_custom_plugin")
         for s in (cache_candidates or [])
     )
-    has_cached_cloudstream = any(s.get("is_cloudstream") for s in (cache_candidates or []))
     has_cached_custom = any(s.get("is_custom_plugin") for s in (cache_candidates or []))
     missing_plugin_streams = bool(
         plugins.is_plugins_enabled()
@@ -8143,19 +8287,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         and not has_cached_addons
         and not provider_scope
     )
-    missing_cloudstream_streams = bool(
-        has_active_cloudstream
-        and not has_cached_cloudstream
-        and not provider_scope
-        and not source_scope
-    )
     is_fresh = bool(
         cache_candidates and len(usable_cache_candidates) == len(cache_candidates)
         and not force_refresh
         and not missing_plugin_streams
         and not missing_custom_streams
         and not missing_addon_streams
-        and not missing_cloudstream_streams
         and cache_age is not None
         and cache_age < max_fresh_age
     )
@@ -8173,24 +8310,17 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         f"[STREAM DEBUG] stream-capable addons={len(all_stream_addons)} "
         f"plugins={len(plugin_scrapers)} unique/{plugin_scrapers_before_dedup} enabled "
         f"custom_plugins={len(enabled_custom_scrapers)} "
-        f"cloudstream={int(has_active_cloudstream)} "
-        f"cloudstream_providers={[p.get('name') or p.get('id') for p in runnable_cloudstream_plugins]!r} "
-        f"cloudstream_unrunnable={[p.get('name') or p.get('id') for p in enabled_cloudstream_plugins if p not in runnable_cloudstream_plugins]!r} "
         f"provider_scope={provider_scope!r} "
         f"names={[a.get('name', 'Unknown') for a in all_stream_addons]}"
     )
-    if not all_stream_addons and not plugin_scrapers and not has_active_cloudstream and not enabled_custom_scrapers:
-        print(f"[STREAM DEBUG] no stream-capable addons, plugins, custom scrapers or cloudstream providers; returning cached cards={len(cached or [])}")
+    if not all_stream_addons and not plugin_scrapers and not enabled_custom_scrapers:
+        print(f"[STREAM DEBUG] no stream-capable addons, plugins or custom scrapers; returning cached cards={len(cached or [])}")
         if callback: callback(usable_cached, is_cached=False, is_complete=True)
         return usable_cached
 
     refresh_started_at = time.time()
 
     provider_timeout, provider_retries = _get_stream_provider_options()
-    # CloudStream resolution spans search, load, and loadLinks. Give it its
-    # own budget so slow but healthy providers are not discarded at the
-    # shorter per-request timeout used by ordinary add-ons.
-    cloudstream_timeout = min(20.0, max(8.0, provider_timeout * 1.5))
     retry_backoff_budget = sum(min(1.5 * (2 ** attempt), 4.0) for attempt in range(provider_retries))
     # Each retry reacquires a host slot (bounded to 4s) before making the HTTP
     # request. Use one total deadline for collection, including all attempts.
@@ -8307,33 +8437,16 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         from . import plugins
         provider_name = plugins.get_scraper_provider_name(scraper_obj)
         streams = plugins.execute_scraper(
-            scraper_obj, target_tmdb_id, actual_media, season=season, episode=episode, timeout=provider_timeout
+            scraper_obj,
+            target_tmdb_id,
+            actual_media,
+            season=season,
+            episode=episode,
+            timeout=provider_timeout,
+            expected_title=title,
         )
         print(f"[STREAM DEBUG] plugin scraper done scraper={scraper_obj.get('name')!r} raw_cards={len(streams or [])}")
         return provider_name, streams
-
-    def fetch_from_cloudstream():
-        if abort_event and abort_event.is_set():
-            return "CloudStream", []
-        from . import cloudstream
-        if not cloudstream.is_cloudstream_enabled() or not title:
-            return "CloudStream", []
-        try:
-            cs_streams = cloudstream.fetch_cloudstream_streams_for_media(
-                title=title,
-                media_type=actual_media,
-                year=expected_year,
-                season=season,
-                episode=episode,
-                timeout=cloudstream_timeout,
-                imdb_id=imdb_id,
-                catalog_title=catalog_title,
-                exclude_route=target_cs_route if initial_cs_streams else None,
-            )
-            return "CloudStream", cs_streams or []
-        except Exception as e:
-            print(f"[STREAM DEBUG] cloudstream stream fetch failed: {e}")
-            return "CloudStream", []
 
     def fetch_from_custom_plugin(scraper_obj):
         if abort_event and abort_event.is_set():
@@ -8375,7 +8488,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             print(f"[STREAM DEBUG] custom scraper failed scraper={scraper_name!r}: {e}")
             return scraper_name, []
 
-    all_raw_streams = list(initial_cs_streams) + list(initial_custom_streams)
+    all_raw_streams = list(initial_custom_streams)
     if cached and not force_refresh:
         cache_seed_streams = usable_cache_candidates if source_scope else usable_cached
         for c in cache_seed_streams:
@@ -8416,7 +8529,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     alias_cache_ids = []
 
     import concurrent.futures
-    total_providers = len(all_stream_addons) + len(plugin_scrapers) + (1 if has_active_cloudstream else 0) + len(enabled_custom_scrapers)
+    total_providers = len(all_stream_addons) + len(plugin_scrapers) + len(enabled_custom_scrapers)
     max_workers_limit = 24
     num_workers = min(max(total_providers, 4), max_workers_limit) if total_providers > 0 else 1
     if num_workers > 0 and total_providers > 0:
@@ -8433,13 +8546,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         queried_addon_urls = set()
         queried_plugin_ids = set()
         effective_collection_timeout = provider_collection_timeout
-        if has_active_cloudstream:
-            effective_collection_timeout = max(effective_collection_timeout, cloudstream_timeout + 5.0)
         collection_deadline = time.monotonic() + effective_collection_timeout
-        print(
-            f"[STREAM DEBUG] effective provider collection budget={effective_collection_timeout:.1f}s "
-            f"cloudstream_timeout={cloudstream_timeout:.1f}s"
-        )
+        print(f"[STREAM DEBUG] effective provider collection budget={effective_collection_timeout:.1f}s")
 
         try:
             # Fire off ID resolution in the background immediately so it is not
@@ -8507,25 +8615,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     future_to_addon[c_fut] = ({"name": c_name, "is_custom_plugin": True}, imdb_id)
                     futures.add(c_fut)
 
-            # 2. CloudStream
-            from . import cloudstream
-            can_run_cs = (
-                cloudstream.is_cloudstream_enabled()
-                and bool(title)
-                and (source_scope != "torrent")
-                and (
-                    not provider_scope
-                    or provider_scope == "All Providers"
-                    or "cloudstream" in provider_scope.lower()
-                    or any(p.get("name", "").lower() in provider_scope.lower() for p in cloudstream.get_all_plugins())
-                )
-            )
-            if can_run_cs:
-                cs_fut = executor.submit(fetch_from_cloudstream)
-                future_to_addon[cs_fut] = ({"name": "CloudStream", "is_cloudstream": True}, title)
-                futures.add(cs_fut)
-
-            # 3. Direct Stremio addons (if any)
+            # 2. Direct Stremio addons (if any)
             for addon in direct_stream_addons:
                 if abort_event and abort_event.is_set():
                     return []
@@ -8571,7 +8661,10 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                 futures.add(fut)
                                 break
 
-            has_direct_providers = bool(plugin_scrapers or can_run_cs or direct_stream_addons or enabled_custom_scrapers)
+            has_direct_providers = bool(
+                source_scope != "torrent"
+                and (plugin_scrapers or direct_stream_addons or enabled_custom_scrapers)
+            )
             if not has_direct_providers:
                 _submit_torrent_addons()
 
@@ -8684,7 +8777,10 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                             addon_orig_info = future_to_addon.get(future, (None, None))
                             addon_obj = addon_orig_info[0] if addon_orig_info else None
                             addon_name, streams = future.result()
-                            streams = _filter_mismatched_movie_streams(streams)
+                            if streams and addon_obj and addon_obj.get("id"):
+                                streams = _filter_mismatched_movie_streams(streams, allow_html_probe=True)
+                            else:
+                                streams = _filter_mismatched_movie_streams(streams, allow_html_probe=False)
                             if streams:
                                 # Successful response — clear any previous failure count for Stremio addons
                                 if addon_obj and addon_obj.get("manifest_url") and not addon_obj.get("raw_id"):

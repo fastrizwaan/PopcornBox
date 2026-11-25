@@ -239,7 +239,6 @@ class Preferences(Adw.Dialog):
     stream_provider_timeout_row: Adw.SpinRow = Gtk.Template.Child()
     stream_provider_retries_row: Adw.SpinRow = Gtk.Template.Child()
     prefs_nuvio_plugins_row: Adw.ActionRow = Gtk.Template.Child()
-    prefs_cloudstream_plugins_row: Adw.ActionRow = Gtk.Template.Child()
     prefs_custom_plugins_row: Adw.ActionRow = Gtk.Template.Child()
     stremio_account_row: Adw.ActionRow = Gtk.Template.Child()
     stremio_login_btn: Gtk.Button = Gtk.Template.Child()
@@ -320,9 +319,6 @@ class Preferences(Adw.Dialog):
         if hasattr(self, "prefs_nuvio_plugins_row") and self.prefs_nuvio_plugins_row:
             self.prefs_nuvio_plugins_row.connect("activated", self._on_nuvio_plugins_activated)
 
-        if hasattr(self, "prefs_cloudstream_plugins_row") and self.prefs_cloudstream_plugins_row:
-            self.prefs_cloudstream_plugins_row.connect("activated", self._on_cloudstream_plugins_activated)
-
         if hasattr(self, "prefs_custom_plugins_row") and self.prefs_custom_plugins_row:
             self.prefs_custom_plugins_row.connect("activated", self._on_custom_plugins_activated)
 
@@ -349,13 +345,6 @@ class Preferences(Adw.Dialog):
         self.close()
         if hasattr(self.win, "_open_plugins"):
             self.win._open_plugins()
-
-    def _on_cloudstream_plugins_activated(self, _row):
-        self.close()
-        if hasattr(self.win, "_open_cloudstream_plugins"):
-            self.win._open_cloudstream_plugins()
-        elif hasattr(self.win, "_open_plugins"):
-            self.win._open_plugins(initial_tab="cloudstream")
 
     def _on_custom_plugins_activated(self, _row):
         self.close()
@@ -426,7 +415,7 @@ class Preferences(Adw.Dialog):
 
     def _on_hide_adult_content_changed(self, settings, key):
         val = settings.get_boolean(key)
-        from . import database, api, cloudstream
+        from . import database, api
         database.set_adult_content_hidden(val)
         if not val and database.is_kids_safe_mode():
             try:
@@ -438,7 +427,6 @@ class Preferences(Adw.Dialog):
                 self.kids_mode_row.set_active(False)
         database.clear_all_cached_catalogs()
         api.invalidate_catalogs_cache()
-        cloudstream.on_adult_content_toggled(val)
         if hasattr(self, "win") and self.win:
             if hasattr(self.win, "_discover_catalog_list_cache") and isinstance(self.win._discover_catalog_list_cache, dict):
                 self.win._discover_catalog_list_cache.clear()
@@ -446,10 +434,6 @@ class Preferences(Adw.Dialog):
                 self.win._on_addons_changed()
             if hasattr(self.win, "_refresh_discover_page"):
                 self.win._refresh_discover_page(force_refresh=True)
-            if hasattr(self.win, "_refresh_cloudstream_catalog_views"):
-                self.win._refresh_cloudstream_catalog_views()
-            if hasattr(self.win, "_populate_cloudstream"):
-                self.win._populate_cloudstream()
             if hasattr(self.win, "_is_unique_mode_active") and self.win._is_unique_mode_active() is True:
                 if hasattr(self.win, "_refresh_unique_combined_view"):
                     self.win._refresh_unique_combined_view()
@@ -464,7 +448,7 @@ class Preferences(Adw.Dialog):
         self._apply_kids_safe_mode(val)
 
     def _apply_kids_safe_mode(self, val: bool):
-        from . import database, api, cloudstream
+        from . import database, api
         database.set_kids_safe_mode(val)
         if val:
             try:
@@ -472,7 +456,6 @@ class Preferences(Adw.Dialog):
             except Exception:
                 pass
             database.set_adult_content_hidden(True)
-            cloudstream.on_adult_content_toggled(True)
             if hasattr(self, "hide_adult_content_row"):
                 self.hide_adult_content_row.set_active(True)
         database.clear_all_cached_catalogs()
@@ -485,10 +468,6 @@ class Preferences(Adw.Dialog):
                 self.win._on_addons_changed()
             if hasattr(self.win, "_refresh_discover_page"):
                 self.win._refresh_discover_page(force_refresh=True)
-            if hasattr(self.win, "_refresh_cloudstream_catalog_views"):
-                self.win._refresh_cloudstream_catalog_views()
-            if hasattr(self.win, "_populate_cloudstream"):
-                self.win._populate_cloudstream()
             if hasattr(self.win, "_is_unique_mode_active") and self.win._is_unique_mode_active() is True:
                 if hasattr(self.win, "_refresh_unique_combined_view"):
                     self.win._refresh_unique_combined_view()
@@ -710,12 +689,8 @@ class Preferences(Adw.Dialog):
                                 self.win._populate_addons()
                             if hasattr(self.win, "_populate_plugins"):
                                 self.win._populate_plugins()
-                            if hasattr(self.win, "_populate_cloudstream"):
-                                self.win._populate_cloudstream()
                             if hasattr(self.win, "_on_addons_changed"):
                                 self.win._on_addons_changed()
-                            if hasattr(self.win, "_refresh_cloudstream_catalog_views"):
-                                self.win._refresh_cloudstream_catalog_views()
                             if hasattr(self.win, "_ensure_all_menus_built"):
                                 self.win._ensure_all_menus_built()
                             if hasattr(self.win, "_update_continue_watching_section"):

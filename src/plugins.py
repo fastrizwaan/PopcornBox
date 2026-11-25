@@ -156,6 +156,19 @@ def resolve_scraper_allowed_hosts(scraper):
     return sorted(hosts)
 
 
+def _get_scraper_subprocess_env():
+    """Return environment dictionary with DoH proxy variables applied when enabled."""
+    env = dict(os.environ)
+    try:
+        from . import doh
+        doh_env = doh.get_doh_env()
+        if doh_env:
+            env.update(doh_env)
+    except Exception as e:
+        logger.debug(f"Could not configure DoH proxy for scraper runtime: {e}")
+    return env
+
+
 def build_scraper_command(scraper):
     """
     Builds the JS runtime command for executing a scraper, applying host-scoped
@@ -169,7 +182,18 @@ def build_scraper_command(scraper):
     allowed_hosts = resolve_scraper_allowed_hosts(scraper)
 
     if allowed_hosts:
-        scoped_net_flag = f"--allow-net={','.join(allowed_hosts)}"
+        hosts_for_flag = list(allowed_hosts)
+        try:
+            from . import doh
+            doh_env = doh.get_doh_env()
+            proxy_url = (doh_env or {}).get("HTTP_PROXY") or ""
+            if proxy_url:
+                proxy_netloc = urllib.parse.urlparse(proxy_url).netloc
+                if proxy_netloc and proxy_netloc not in hosts_for_flag:
+                    hosts_for_flag.append(proxy_netloc)
+        except Exception:
+            pass
+        scoped_net_flag = f"--allow-net={','.join(hosts_for_flag)}"
         if "--allow-net" in cmd:
             idx = cmd.index("--allow-net")
             cmd[idx] = scoped_net_flag
@@ -219,7 +243,96 @@ def normalize_manifest_url(raw_url):
     return url
 
 
-# --- Settings / Preferences ---
+# --- Settings / Preferences & Health State ---
+
+_SCRAPER_HEALTH = {}
+_SCRAPER_PERF = {}
+_SCRAPER_HEALTH_LOCK = threading.Lock()
+_SCRAPER_FAILURE_THRESHOLD = 2
+_SCRAPER_COOLDOWN_SECONDS = 120.0
+
+
+def is_scraper_in_cooldown(scraper_id):
+    """Return True if the scraper recently failed repeatedly and is cooling down."""
+    if not scraper_id:
+        return False
+    with _SCRAPER_HEALTH_LOCK:
+        entry = _SCRAPER_HEALTH.get(str(scraper_id))
+        if not entry:
+            return False
+        if time.monotonic() < entry.get("cooldown_until", 0.0):
+            return True
+        if entry.get("cooldown_until", 0.0) > 0.0:
+            entry["cooldown_until"] = 0.0
+            entry["failures"] = 0
+        return False
+
+
+def clear_scraper_cooldown(scraper_id=None):
+    """Clear cooldown state for a specific scraper or all scrapers."""
+    with _SCRAPER_HEALTH_LOCK:
+        if scraper_id is None:
+            _SCRAPER_HEALTH.clear()
+            _SCRAPER_PERF.clear()
+        else:
+            _SCRAPER_HEALTH.pop(str(scraper_id), None)
+            _SCRAPER_PERF.pop(str(scraper_id), None)
+
+
+def _record_scraper_success(scraper_id, elapsed=None, stream_count=0):
+    if not scraper_id:
+        return
+    key = str(scraper_id)
+    with _SCRAPER_HEALTH_LOCK:
+        _SCRAPER_HEALTH.pop(key, None)
+        perf = _SCRAPER_PERF.get(key) or {}
+        if elapsed is not None:
+            prev_avg = perf.get("avg_elapsed")
+            perf["avg_elapsed"] = elapsed if prev_avg is None else (prev_avg * 0.6 + elapsed * 0.4)
+        perf["last_streams"] = int(stream_count or 0)
+        _SCRAPER_PERF[key] = perf
+
+
+def _record_scraper_failure(scraper_id, reason):
+    if not scraper_id or reason == SCRAPER_ERROR_EMPTY:
+        return
+    key = str(scraper_id)
+    with _SCRAPER_HEALTH_LOCK:
+        entry = _SCRAPER_HEALTH.setdefault(key, {"failures": 0, "cooldown_until": 0.0, "last_error": None})
+        entry["failures"] = entry.get("failures", 0) + 1
+        entry["last_error"] = reason
+        if entry["failures"] >= _SCRAPER_FAILURE_THRESHOLD:
+            entry["cooldown_until"] = time.monotonic() + _SCRAPER_COOLDOWN_SECONDS
+            logger.info(
+                "Scraper %r placed in %.0fs cooldown after %d failures (%s)",
+                key, _SCRAPER_COOLDOWN_SECONDS, entry["failures"], reason,
+            )
+
+
+def sort_scrapers_by_health(scrapers):
+    """Order scrapers so previously fast, stream-producing scrapers run before slow/failing ones."""
+    items = list(scrapers or [])
+    if len(items) <= 1:
+        return items
+    with _SCRAPER_HEALTH_LOCK:
+        health_snap = {k: dict(v) for k, v in _SCRAPER_HEALTH.items()}
+        perf_snap = {k: dict(v) for k, v in _SCRAPER_PERF.items()}
+
+    def _priority(idx_and_scraper):
+        idx, scraper = idx_and_scraper
+        s_id = str((scraper or {}).get("id") or "")
+        health = health_snap.get(s_id)
+        if health and health.get("failures", 0) > 0:
+            return (3, float(health.get("failures", 0)), idx)
+        perf = perf_snap.get(s_id)
+        if not perf:
+            return (1, 0.0, idx)
+        if perf.get("last_streams", 0) > 0:
+            return (0, float(perf.get("avg_elapsed") or 0.0), idx)
+        return (2, float(perf.get("avg_elapsed") or 0.0), idx)
+
+    return [s for _, s in sorted(enumerate(items), key=_priority)]
+
 
 def is_plugins_enabled():
     return bool(database.get_setting("plugins_enabled", True))
@@ -227,6 +340,7 @@ def is_plugins_enabled():
 
 def set_plugins_enabled(enabled):
     database.set_setting("plugins_enabled", bool(enabled))
+    clear_scraper_cooldown()
     # Cached stream rows embed the provider labels from the previous mode.
     # Drop them so disabling plugins cannot keep their cards alive and
     # re-enabling gets a clean, grouped fetch.
@@ -427,19 +541,269 @@ def deduplicate_scrapers(scrapers):
 
 def toggle_scraper(scraper_id, enabled):
     """Enable or disable a specific scraper."""
+    clear_scraper_cooldown(scraper_id)
     database.toggle_plugin_scraper(scraper_id, bool(enabled))
 
 
 # --- HTTP Helpers ---
 
+def _normalize_manifest_resources(raw_resources):
+    """Normalize Nuvio/Stremio manifest resources entries to lowercase names."""
+    out = []
+    if isinstance(raw_resources, (list, tuple)):
+        for item in raw_resources:
+            if isinstance(item, str):
+                name = item.strip().lower()
+            elif isinstance(item, dict):
+                name = str(item.get("name") or item.get("id") or "").strip().lower()
+            else:
+                name = ""
+            if name and name not in out:
+                out.append(name)
+    return out
+
+
+_RE_JS_INSPECT_INDICATOR = re.compile(
+    r"\b(?:getCatalog|getHome|getCatalogs|onSettings|manifest)\b|\.(?:catalog|getCatalog|getHome|onSettings|manifest)\b"
+)
+_RE_CATALOG_DEF = re.compile(
+    r"(?:(?:async\s+)?function\s+(?P<fname>getCatalog|getHome)\s*\([^)]*\)|"
+    r"\b(?P<aname>getCatalog|getHome|catalog)\s*[:=]\s*(?:async\s*)?(?:function\b[^{]*|\([^)]*\)\s*=>|[A-Za-z0-9_$]+\s*=>))"
+)
+_RE_ON_SETTINGS_DEF = re.compile(r"\bonSettings\s*[:=(]|\bexports\.onSettings\s*=")
+_RE_STATIC_RESOURCES = re.compile(r"\bresources\s*[:=]\s*\[([^\]]{1,200})\]")
+_RE_STUB_ASYNC_BODY = re.compile(
+    r'^\{\s*(?:["\']use strict["\'];\s*)?return\s*__async\s*\([^,]+,[^,]+,function\s*\*\s*\([^)]*\)\s*\{\s*return\s*(?:\[\s*\]|\{\s*\}|\{\s*(?:metas|items|results|catalog|data)\s*:\s*\[\s*\]\s*\}|null|undefined|void\s+0)\s*;?\s*\}\s*\)\s*;?\s*\}$'
+)
+_RE_STUB_SYNC_BODY = re.compile(
+    r'^\{\s*(?:["\']use strict["\'];\s*)?return\s*(?:\[\s*\]|\{\s*\}|\{\s*(?:metas|items|results|catalog|data)\s*:\s*\[\s*\]\s*\}|null|undefined|void\s+0)\s*;?\s*\}$'
+)
+_RE_STUB_ARROW_EXPR = re.compile(r'^(?:\(\s*)?(?:\[\s*\]|\{\s*\}|null|undefined|void\s+0)(?:\s*\))?\s*(?:[;,}\n]|$)')
+
+
+def _extract_js_brace_block(code, open_idx, limit=350):
+    """Extract a short balanced { ... } block for static stub detection."""
+    if open_idx < 0 or open_idx >= len(code) or code[open_idx] != "{":
+        return ""
+    depth = 0
+    end_limit = min(len(code), open_idx + limit)
+    for idx in range(open_idx, end_limit):
+        ch = code[idx]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return code[open_idx:idx + 1]
+    return ""
+
+
+def _static_inspect_js(code):
+    """Inspect JS source without spawning Deno to classify handlers and empty stubs."""
+    text = str(code or "")
+    matches = list(_RE_CATALOG_DEF.finditer(text))
+    has_catalog = bool(matches)
+    all_stubs = False
+    if matches:
+        all_stubs = True
+        for m in matches:
+            tail = text[m.end():].lstrip()
+            if tail.startswith("{"):
+                block = _extract_js_brace_block(text, text.find("{", m.end()))
+                compact = re.sub(r"\s+", " ", block).strip()
+                if not (_RE_STUB_ASYNC_BODY.match(compact) or _RE_STUB_SYNC_BODY.match(compact)):
+                    all_stubs = False
+                    break
+            else:
+                compact_tail = re.sub(r"\s+", " ", tail[:80]).strip()
+                if not _RE_STUB_ARROW_EXPR.match(compact_tail):
+                    all_stubs = False
+                    break
+
+    resources = []
+    for rm in _RE_STATIC_RESOURCES.finditer(text):
+        found = [tok.strip().lower() for tok in re.findall(r'["\']([a-zA-Z0-9_-]+)["\']', rm.group(1))]
+        if found:
+            resources = found
+            break
+
+    return {
+        "hasGetStreams": "getStreams" in text,
+        "hasGetCatalog": has_catalog,
+        "hasSearch": bool(re.search(r"\bsearch\s*[:=(]", text)),
+        "hasOnSettings": bool(_RE_ON_SETTINGS_DEF.search(text)),
+        "isCatalogStub": bool(has_catalog and all_stubs),
+        "isSearchStub": False,
+        "resources": resources,
+        "catalogs": [],
+    }
+
+
+def _run_scraper_process(scraper, payload, timeout=15.0):
+    """Execute the Deno runner bundle with *payload* and return (returncode, stdout, stderr)."""
+    cmd = build_scraper_command(scraper)
+    if not cmd:
+        return None, "", "No runtime available"
+
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_get_scraper_subprocess_env(),
+        )
+        stdout, stderr = proc.communicate(json.dumps(payload), timeout=timeout)
+        return proc.returncode, stdout or "", stderr or ""
+    finally:
+        if proc and proc.poll() is None:
+            try:
+                proc.kill()
+                proc.wait(timeout=1)
+            except Exception:
+                pass
+
+
+def inspect_scraper_capabilities(scraper, timeout=6.0):
+    """
+    Determine real exported handlers, manifest resources, and stub status for a scraper.
+    Uses sandboxed Deno evaluation when indicators are present, falling back to static JS analysis.
+    """
+    code = str((scraper or {}).get("code") or "")
+    static_caps = _static_inspect_js(code)
+    if not code:
+        return static_caps
+
+    has_indicator = bool(
+        _RE_JS_INSPECT_INDICATOR.search(code)
+        or (scraper.get("catalogs") or [])
+        or (scraper.get("resources") or [])
+        or scraper.get("has_settings")
+    )
+    if not has_indicator or not is_runtime_available():
+        return static_caps
+
+    payload = {
+        "action": "inspect",
+        "code": code,
+        "scraperId": scraper.get("id") or scraper.get("raw_id") or "inspect",
+        "settings": get_scraper_settings(scraper.get("id")) if scraper.get("id") else {},
+        "tmdbApiKey": tmdb_helper.DEFAULT_TMDB_API_KEY,
+    }
+    try:
+        rc, stdout, _ = _run_scraper_process(scraper, payload, timeout=timeout)
+        if rc == 0 and stdout.strip():
+            for line in reversed([ln.strip() for ln in stdout.strip().split("\n") if ln.strip()]):
+                if line.startswith("{") and line.endswith("}"):
+                    parsed = json.loads(line)
+                    if isinstance(parsed, dict) and not parsed.get("error"):
+                        return {
+                            "exports": parsed.get("exports") or [],
+                            "hasGetStreams": bool(parsed.get("hasGetStreams")),
+                            "hasGetCatalog": bool(parsed.get("hasGetCatalog")),
+                            "hasSearch": bool(parsed.get("hasSearch")),
+                            "hasOnSettings": bool(parsed.get("hasOnSettings")),
+                            "isCatalogStub": bool(parsed.get("isCatalogStub")),
+                            "isSearchStub": bool(parsed.get("isSearchStub")),
+                            "resources": _normalize_manifest_resources(parsed.get("resources")),
+                            "catalogs": parsed.get("catalogs") if isinstance(parsed.get("catalogs"), list) else [],
+                        }
+    except Exception as e:
+        logger.debug(f"Capability inspection fallback for {scraper.get('name')!r}: {e}")
+    return static_caps
+
+
+def scraper_has_catalog(scraper):
+    """
+    Return True only when a Nuvio scraper genuinely implements a non-stub catalog
+    and does not restrict its resources to stream-only.
+    """
+    if not isinstance(scraper, dict):
+        return False
+    code = str(scraper.get("code") or "")
+    if not code.strip():
+        return False
+
+    manifest_resources = _normalize_manifest_resources(scraper.get("resources"))
+    if manifest_resources and "catalog" not in manifest_resources and "home" not in manifest_resources:
+        return False
+
+    caps = scraper.get("capabilities")
+    if isinstance(caps, dict) and "hasGetCatalog" in caps:
+        cap_resources = _normalize_manifest_resources(caps.get("resources"))
+        if cap_resources and "catalog" not in cap_resources and "home" not in cap_resources:
+            return False
+        if caps.get("isCatalogStub"):
+            return False
+        return bool(caps.get("hasGetCatalog"))
+
+    static_caps = _static_inspect_js(code)
+    cap_resources = static_caps.get("resources") or []
+    if cap_resources and "catalog" not in cap_resources and "home" not in cap_resources:
+        return False
+    if static_caps.get("isCatalogStub"):
+        return False
+    return bool(static_caps.get("hasGetCatalog"))
+
+
+def scraper_has_settings(scraper):
+    """Return True if a scraper genuinely defines an `onSettings` handler."""
+    if not isinstance(scraper, dict):
+        return False
+    caps = scraper.get("capabilities")
+    if isinstance(caps, dict) and "hasOnSettings" in caps:
+        return bool(caps["hasOnSettings"])
+    code = str(scraper.get("code") or "")
+    if code.strip():
+        return bool(_RE_ON_SETTINGS_DEF.search(code))
+    return bool(scraper.get("has_settings"))
+
+
+def is_torrent_capable_scraper(scraper):
+    """Return True if a Nuvio scraper is declared or known to yield torrent/magnet streams."""
+    if not isinstance(scraper, dict):
+        return False
+    formats = {str(f).strip().lower() for f in (scraper.get("formats") or []) if f}
+    if formats & {"torrent", "magnet", "p2p"}:
+        return True
+    ident = " ".join([
+        str(scraper.get("raw_id") or ""),
+        str(scraper.get("name") or ""),
+        str(scraper.get("description") or ""),
+    ]).lower()
+    if any(tok in ident for tok in ("torrent", "magnet", "p2p", "nyaa", "1337x", "yts", "eztv", "jackett", "prowlarr")):
+        return True
+    code = str(scraper.get("code") or "")
+    if code and re.search(r'\binfoHash\s*:|[\'"]magnet:\?', code):
+        return True
+    return False
+
+
 def _http_get_text(url, timeout=15.0):
-    """Fetch text resource directly with proper User-Agent and SSL context."""
+    """Fetch text resource with host-paced windowing, User-Agent, and SSL context."""
     if not url:
         return ""
     req = urllib.request.Request(
         url,
         headers={"User-Agent": DEFAULT_USER_AGENT, "Accept": "*/*"}
     )
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    if host:
+        on_gtk_main = False
+        if threading.current_thread() is threading.main_thread():
+            try:
+                from gi.repository import GLib
+                on_gtk_main = GLib.main_depth() > 0
+            except Exception:
+                on_gtk_main = False
+        from . import api
+        with api._acquire_catalog_window(host, may_wait=not on_gtk_main) as allowed:
+            if not allowed:
+                raise urllib.error.URLError(f"Host window denied for {host}")
+            with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
+                return resp.read().decode("utf-8", errors="replace")
     with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CONTEXT) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
@@ -451,15 +815,22 @@ def fetch_repository_data(manifest_url):
     Fetches the repository manifest and all its scraper code files.
     Returns (repo_info, list_of_scrapers).
     """
-    raw_json = _http_get_text(manifest_url, timeout=12.0)
+    raw_json = _http_get_text(manifest_url, timeout=12.0).lstrip("\ufeff").strip()
     manifest = json.loads(raw_json)
+    if not isinstance(manifest, dict):
+        raise ValueError("Invalid plugin repository manifest format (expected JSON object)")
 
     repo_name = str(manifest.get("name") or "Unnamed Plugin Repository").strip()
     repo_version = str(manifest.get("version") or "1.0.0").strip()
     repo_desc = manifest.get("description")
-    raw_scrapers = manifest.get("scrapers", [])
+    raw_scrapers = (
+        manifest.get("scrapers")
+        or manifest.get("providers")
+        or manifest.get("plugins")
+        or []
+    )
 
-    if not raw_scrapers:
+    if not raw_scrapers or not isinstance(raw_scrapers, list):
         raise ValueError(f"Plugin repository '{repo_name}' contains no scrapers")
 
     base_url = manifest_url.split("?")[0]
@@ -467,22 +838,23 @@ def fetch_repository_data(manifest_url):
         base_url = base_url[:-len("/manifest.json")]
     base_url = base_url.rstrip("/")
 
-    # Fetch scraper code in parallel
+    # Fetch scraper code bounded to catalog host window concurrency
     scrapers = []
     def _fetch_one_scraper(info):
         if not isinstance(info, dict) or not scraper_supported_on_this_platform(info):
             return None
-        s_id = str(info.get("id") or "").strip()
+        s_id = str(info.get("id") or info.get("raw_id") or "").strip()
         if not s_id:
             return None
-        filename = str(info.get("filename") or "").strip()
+        filename = str(info.get("filename") or info.get("url") or info.get("script") or "").strip()
         if not filename:
             return None
 
         if filename.startswith("http://") or filename.startswith("https://"):
             code_url = filename
         else:
-            code_url = f"{base_url}/{filename.lstrip('/')}"
+            rel_path = filename.lstrip("./").lstrip("/")
+            code_url = f"{base_url}/{rel_path}"
 
         try:
             code = _http_get_text(code_url, timeout=15.0)
@@ -490,8 +862,17 @@ def fetch_repository_data(manifest_url):
             logger.warning(f"Failed to fetch scraper code for {s_id} from {code_url}: {e}")
             return None
 
+        if not code or not code.strip():
+            logger.warning(f"Empty scraper code for {s_id} from {code_url}")
+            return None
+
+        declared_catalogs = info.get("catalogs")
+        if not isinstance(declared_catalogs, list):
+            declared_catalogs = []
+
+        resources = _normalize_manifest_resources(info.get("resources"))
         scraper_id = f"{manifest_url.lower()}:{s_id}"
-        return {
+        entry = {
             "id": scraper_id,
             "raw_id": s_id,
             "repository_url": manifest_url,
@@ -509,15 +890,30 @@ def fetch_repository_data(manifest_url):
             "supported_platforms": info.get("supportedPlatforms") or [],
             "disabled_platforms": info.get("disabledPlatforms") or [],
             "allowed_hosts": info.get("allowed_hosts") or info.get("allowedDomains") or info.get("domains") or info.get("hosts") or [],
+            "resources": resources,
+            "catalogs": declared_catalogs,
             "code": code,
         }
+        caps = inspect_scraper_capabilities(entry)
+        entry["capabilities"] = caps
+        entry["has_settings"] = scraper_has_settings(entry)
+        if not entry["resources"] and caps.get("resources"):
+            entry["resources"] = caps["resources"]
+        if not entry["catalogs"] and caps.get("catalogs") and scraper_has_catalog(entry):
+            entry["catalogs"] = caps["catalogs"]
+        elif entry["catalogs"] and not scraper_has_catalog(entry):
+            entry["catalogs"] = []
+        return entry
 
-    with ThreadPoolExecutor(max_workers=min(len(raw_scrapers), 8)) as ex:
+    with ThreadPoolExecutor(max_workers=min(len(raw_scrapers), 3)) as ex:
         futures = [ex.submit(_fetch_one_scraper, s) for s in raw_scrapers]
         for f in as_completed(futures):
-            res = f.result()
-            if res:
-                scrapers.append(res)
+            try:
+                res = f.result()
+                if res:
+                    scrapers.append(res)
+            except Exception as e:
+                logger.warning(f"Unexpected error fetching scraper entry: {e}")
 
     repo_info = {
         "manifest_url": manifest_url,
@@ -553,6 +949,7 @@ def install_repository(raw_url):
         return False, f"Failed to install repository: {e}", None
 
     # Save to database
+    clear_scraper_cooldown()
     database.save_plugin_repository(repo_info)
     database.save_plugin_scrapers(scrapers, replace_for_repo=manifest_url)
 
@@ -562,6 +959,7 @@ def install_repository(raw_url):
 
 def remove_repository(manifest_url):
     """Remove an installed repository and its scrapers."""
+    clear_scraper_cooldown()
     database.remove_plugin_repository(manifest_url)
     logger.info(f"Removed plugin repository {manifest_url}")
 
@@ -571,6 +969,7 @@ def refresh_repository(manifest_url):
     Refresh a repository and its scrapers while preserving user toggle states.
     Returns (success: bool, message: str, repo_info: dict | None).
     """
+    clear_scraper_cooldown()
     try:
         repo_info, new_scrapers = fetch_repository_data(manifest_url)
     except Exception as e:
@@ -611,7 +1010,26 @@ SCRAPER_ERROR_INVALID_JSON = "invalid_json"
 SCRAPER_ERROR_EMPTY = "empty"
 
 
-def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, timeout=25):
+_RE_SCRAPER_SELECTED_LOG = re.compile(
+    r'(?:Selected|Found\s+post|Matched(?:\s+(?:title|post|media))?)\s*:\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+
+
+def _extract_scraper_selected_title(lines: list[str]) -> str | None:
+    """Extract an explicitly logged selected release/post title from scraper stdout logs."""
+    for line in reversed(lines):
+        if (line.startswith("[") and line.endswith("]")) or (line.startswith("{") and line.endswith("}")):
+            continue
+        m = _RE_SCRAPER_SELECTED_LOG.search(line)
+        if m:
+            candidate = m.group(1).strip()
+            if candidate:
+                return candidate
+    return None
+
+
+def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, timeout=25, expected_title=None):
     """
     Executes a single scraper JS code in the sandboxed runner.
     Returns a list of raw stream dictionaries.
@@ -655,6 +1073,10 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
         )
         return _err(SCRAPER_ERROR_NO_CODE)
 
+    tmdb_id_str = "" if tmdb_id is None else str(tmdb_id).strip()
+    if not tmdb_id_str or tmdb_id_str.lower() in ("none", "null"):
+        return _err(SCRAPER_ERROR_EMPTY)
+
     norm_type = normalize_media_type(media_type)
     # Scraper repositories are third-party code. Keep user-configured keys in
     # the application and pass only the public built-in key for compatibility.
@@ -664,7 +1086,7 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
         "action": "getStreams",
         "code": code,
         "scraperId": scraper.get("id"),
-        "tmdbId": str(tmdb_id),
+        "tmdbId": tmdb_id_str,
         "mediaType": norm_type,
         "season": season,
         "episode": episode,
@@ -672,23 +1094,27 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
         "tmdbApiKey": tmdb_key,
     }
 
-    try:
-        env = dict(os.environ)
-        try:
-            from . import doh
-            doh_env = doh.get_doh_env()
-            if doh_env:
-                env.update(doh_env)
-        except Exception as e:
-            logger.debug(f"Could not configure DoH proxy for scraper runtime: {e}")
+    def _unwrap_items(parsed):
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            for key in ("streams", "results", "data"):
+                val = parsed.get(key)
+                if isinstance(val, list):
+                    return val
+        return None
 
+    proc = None
+    scraper_id = scraper.get("id")
+    started_at = time.monotonic()
+    try:
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=env,
+            env=_get_scraper_subprocess_env(),
         )
         input_data = json.dumps(payload)
         stdout, stderr = proc.communicate(input_data, timeout=timeout)
@@ -708,6 +1134,7 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
                     proc.returncode,
                 )
             if not stdout.strip():
+                _record_scraper_failure(scraper_id, SCRAPER_ERROR_CRASH)
                 return _err(SCRAPER_ERROR_CRASH)
 
         # The runner outputs the JSON array on the last line of stdout.
@@ -719,15 +1146,32 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
                 tmdb_id,
                 norm_type,
             )
+            _record_scraper_success(scraper_id, elapsed=time.monotonic() - started_at, stream_count=0)
             return _err(SCRAPER_ERROR_EMPTY)
 
-        # Find the last valid JSON array line.
+        # Find the last valid JSON line.
+        selected_title = _extract_scraper_selected_title(lines)
         for line in reversed(lines):
-            if line.startswith("[") and line.endswith("]"):
+            if (line.startswith("[") and line.endswith("]")) or (line.startswith("{") and line.endswith("}")):
                 try:
-                    items = json.loads(line)
-                    if isinstance(items, list):
+                    items = _unwrap_items(json.loads(line))
+                    if items is not None:
+                        if expected_title and selected_title and items:
+                            from . import api
+                            if api.check_movie_title_mismatch(expected_title, selected_title):
+                                logger.warning(
+                                    "Discarding mismatched results from scraper %r: selected %r for expected %r",
+                                    scraper.get("name"),
+                                    selected_title,
+                                    expected_title,
+                                )
+                                return _err(SCRAPER_ERROR_EMPTY)
                         formatted = _format_scraper_results(items, scraper, queried_tmdb_id=tmdb_id)
+                        _record_scraper_success(
+                            scraper_id,
+                            elapsed=time.monotonic() - started_at,
+                            stream_count=len(formatted),
+                        )
                         if not formatted:
                             return _err(SCRAPER_ERROR_EMPTY, formatted)
                         return formatted
@@ -736,9 +1180,14 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
 
         # Fallback: try to parse entire stdout as JSON.
         try:
-            items = json.loads(stdout.strip())
-            if isinstance(items, list):
+            items = _unwrap_items(json.loads(stdout.strip()))
+            if items is not None:
                 formatted = _format_scraper_results(items, scraper, queried_tmdb_id=tmdb_id)
+                _record_scraper_success(
+                    scraper_id,
+                    elapsed=time.monotonic() - started_at,
+                    stream_count=len(formatted),
+                )
                 if not formatted:
                     return _err(SCRAPER_ERROR_EMPTY, formatted)
                 return formatted
@@ -751,12 +1200,14 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
             scraper.get("name"),
             stdout[:200],
         )
+        _record_scraper_failure(scraper_id, SCRAPER_ERROR_INVALID_JSON)
         return _err(SCRAPER_ERROR_INVALID_JSON)
 
     except subprocess.TimeoutExpired:
         try:
-            proc.kill()
-            proc.wait(timeout=2)
+            if proc:
+                proc.kill()
+                proc.wait(timeout=2)
         except Exception:
             pass
         logger.info(
@@ -766,6 +1217,7 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
             tmdb_id,
             norm_type,
         )
+        _record_scraper_failure(scraper_id, SCRAPER_ERROR_TIMEOUT)
         return _err(SCRAPER_ERROR_TIMEOUT)
     except Exception as e:
         logger.warning(
@@ -774,7 +1226,18 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
             type(e).__name__,
             e,
         )
+        _record_scraper_failure(scraper_id, SCRAPER_ERROR_CRASH)
         return _err(SCRAPER_ERROR_CRASH)
+    finally:
+        if proc and proc.poll() is None:
+            try:
+                proc.kill()
+                proc.wait(timeout=1)
+            except Exception:
+                pass
+
+
+_INVISIBLE_CHARS_RE = re.compile(r"[\ufeff\u200b\u200c\u200d\u2060]+")
 
 
 def _format_scraper_results(raw_items, scraper, queried_tmdb_id=None):
@@ -788,7 +1251,9 @@ def _format_scraper_results(raw_items, scraper, queried_tmdb_id=None):
     default_name = scraper.get("name") or "Plugin"
 
     def _text(value):
-        return "" if value is None else str(value).strip()
+        if value is None:
+            return ""
+        return _INVISIBLE_CHARS_RE.sub("", str(value)).strip()
 
     for item in raw_items:
         if not isinstance(item, dict):
@@ -798,12 +1263,18 @@ def _format_scraper_results(raw_items, scraper, queried_tmdb_id=None):
         if isinstance(url, dict):
             url = url.get("url")
         url = _text(url)
+        magnet = _text(item.get("magnet"))
+        if not url and magnet:
+            url = magnet
         external_url = _text(item.get("externalUrl"))
         info_hash = _text(item.get("infoHash"))
+        if not info_hash and magnet.lower().startswith("magnet:"):
+            m_hash = re.search(r"xt=urn:btih:([A-Za-z0-9]{32,40})", magnet, re.I)
+            if m_hash:
+                info_hash = m_hash.group(1)
         yt_id = _text(item.get("ytId"))
-        # Nuvio scrapers may return direct URLs, torrent hashes, external
-        # links, or YouTube IDs. Dropping a hash-only result silently emptied
-        # whole providers, so accept every playable source shape here.
+        # Nuvio scrapers may return direct URLs, magnet URIs, torrent hashes,
+        # external links, or YouTube IDs. Accept every playable source shape here.
         if not any((url, external_url, info_hash, yt_id)):
             continue
 
@@ -817,12 +1288,46 @@ def _format_scraper_results(raw_items, scraper, queried_tmdb_id=None):
         quality = _text(item.get("quality"))
         size = _text(item.get("size"))
         language = _text(item.get("language"))
+
+        behavior_hints = item.get("behaviorHints")
+        if not isinstance(behavior_hints, dict):
+            behavior_hints = {}
+        else:
+            behavior_hints = dict(behavior_hints)
+
         headers = item.get("headers")
-        if not isinstance(headers, dict):
+        if isinstance(headers, dict):
+            headers = dict(headers)
+        else:
             headers = {}
-        subtitles = item.get("subtitles")
-        if not isinstance(subtitles, list):
-            subtitles = []
+        if not headers:
+            bh_req = (behavior_hints.get("proxyHeaders") or {}).get("request") if isinstance(behavior_hints.get("proxyHeaders"), dict) else None
+            if isinstance(bh_req, dict) and bh_req:
+                headers = dict(bh_req)
+            elif isinstance(behavior_hints.get("headers"), dict) and behavior_hints.get("headers"):
+                headers = dict(behavior_hints["headers"])
+
+        raw_subtitles = item.get("subtitles")
+        subtitles = []
+        if isinstance(raw_subtitles, list):
+            for sub in raw_subtitles:
+                if isinstance(sub, str) and sub.strip():
+                    subtitles.append({"url": sub.strip(), "lang": "und", "language": "und"})
+                elif isinstance(sub, dict):
+                    sub_url = _text(sub.get("url") or sub.get("src"))
+                    if not sub_url:
+                        continue
+                    sub_lang = _text(sub.get("lang") or sub.get("language") or sub.get("srclang") or "und")
+                    sub_label = _text(sub.get("label") or sub.get("name") or sub.get("title") or sub_lang)
+                    s_entry = dict(sub)
+                    s_entry["url"] = sub_url
+                    s_entry.setdefault("lang", sub_lang)
+                    s_entry.setdefault("language", sub_lang)
+                    if sub_label:
+                        s_entry.setdefault("label", sub_label)
+                        s_entry.setdefault("name", sub_label)
+                    subtitles.append(s_entry)
+
         sources = item.get("sources")
         if not isinstance(sources, list):
             sources = []
@@ -837,11 +1342,9 @@ def _format_scraper_results(raw_items, scraper, queried_tmdb_id=None):
         else:
             full_title = title or name
 
-        behavior_hints = item.get("behaviorHints")
-        if not isinstance(behavior_hints, dict):
-            behavior_hints = {}
-        else:
-            behavior_hints = dict(behavior_hints)
+        raw_filename = _text(item.get("filename"))
+        if raw_filename and not behavior_hints.get("filename"):
+            behavior_hints["filename"] = raw_filename
         if headers:
             # Proxy / HTTP headers. Merge with any hints the scraper supplied
             # instead of replacing them outright.
@@ -894,9 +1397,81 @@ def _format_scraper_results(raw_items, scraper, queried_tmdb_id=None):
     return formatted
 
 
+def get_scraper_on_settings(scraper_id, timeout=10.0):
+    """
+    Query a scraper's `onSettings` handler in the sandboxed runner to retrieve
+    its dynamic configuration UI fields. Returns a list of field dicts or [].
+    """
+    scraper = get_scraper(scraper_id)
+    if not scraper or not scraper.get("code") or not is_runtime_available():
+        return []
+    payload = {
+        "action": "onSettings",
+        "code": scraper.get("code"),
+        "scraperId": scraper.get("id"),
+        "settings": get_scraper_settings(scraper.get("id")),
+        "tmdbApiKey": tmdb_helper.DEFAULT_TMDB_API_KEY,
+    }
+    try:
+        rc, stdout, _ = _run_scraper_process(scraper, payload, timeout=timeout)
+        if rc == 0 and stdout.strip():
+            for line in reversed([ln.strip() for ln in stdout.strip().split("\n") if ln.strip()]):
+                if (line.startswith("[") and line.endswith("]")) or (line.startswith("{") and line.endswith("}")):
+                    parsed = json.loads(line)
+                    if isinstance(parsed, list):
+                        return [x for x in parsed if isinstance(x, dict)]
+                    if isinstance(parsed, dict):
+                        for key in ("fields", "settings", "data", "items"):
+                            val = parsed.get(key)
+                            if isinstance(val, list):
+                                return [x for x in val if isinstance(x, dict)]
+    except Exception as e:
+        logger.debug(f"Failed retrieving onSettings for {scraper.get('name')!r}: {e}")
+    return []
+
+
+def _pick_test_target(scraper):
+    """Select an appropriate test (tmdb_id, media_type, season, episode) for *scraper*."""
+    raw_types = [str(t).strip().lower() for t in (scraper.get("supported_types") or ["movie", "tv"])]
+    norm_types = [normalize_media_type(t) for t in raw_types] or ["movie", "tv"]
+    langs = {str(l).strip().lower() for l in (scraper.get("content_language") or []) if l}
+    ident = " ".join([
+        str(scraper.get("name") or ""),
+        str(scraper.get("raw_id") or ""),
+        str(scraper.get("description") or ""),
+    ]).lower()
+
+    has_movie = "movie" in norm_types
+    has_tv = "tv" in norm_types
+
+    is_anime = "anime" in raw_types or "anime" in ident or (langs == {"ja"} and has_tv)
+    if is_anime:
+        if has_tv:
+            return "1429", "tv", 1, 1  # Attack on Titan S01E01
+        return "129", "movie", None, None  # Spirited Away
+
+    is_kdrama = (langs == {"ko"}) or "kdrama" in ident or "k-drama" in ident or "korean" in ident
+    if is_kdrama:
+        if has_tv:
+            return "93405", "tv", 1, 1  # Squid Game S01E01
+        return "496243", "movie", None, None  # Parasite
+
+    is_indian = bool(langs & {"hi", "ta", "te", "ml", "bn"}) and not ("en" in langs)
+    if not is_indian:
+        is_indian = any(tok in ident for tok in ("hindi", "desi", "bollywood", "einthusan", "gram"))
+    if is_indian:
+        if has_movie:
+            return "20453", "movie", None, None  # 3 Idiots
+        return "79026", "tv", 1, 1  # Mirzapur S01E01
+
+    if has_movie:
+        return "603", "movie", None, None  # The Matrix
+    return "1399", "tv", 1, 1  # Game of Thrones S01E01
+
+
 def test_scraper(scraper_id):
     """
-    Tests a scraper against TMDB ID 603 (The Matrix) or S01E01.
+    Tests a scraper against a matching title for its supported types/languages.
     Returns (success: bool, stream_count: int, error_msg: str | None).
     """
     scraper = get_scraper(scraper_id)
@@ -907,13 +1482,14 @@ def test_scraper(scraper_id):
     if not scraper.get("code"):
         return False, 0, "This provider has no downloaded scraper code; refresh its repository"
 
-    media_type = "movie" if scraper_supports_type(scraper, "movie") else "tv"
-    season = 1 if media_type == "tv" else None
-    episode = 1 if media_type == "tv" else None
-    tmdb_id = "603"  # The Matrix
+    clear_scraper_cooldown(scraper_id)
+    tmdb_id, media_type, season, episode = _pick_test_target(scraper)
 
     try:
         streams = execute_scraper(scraper, tmdb_id, media_type, season=season, episode=episode, timeout=20)
+        err = getattr(streams, "_scraper_error", None)
+        if err in (SCRAPER_ERROR_CRASH, SCRAPER_ERROR_TIMEOUT, SCRAPER_ERROR_INVALID_JSON, SCRAPER_ERROR_NO_RUNTIME, SCRAPER_ERROR_NO_CODE):
+            return False, 0, f"Scraper test failed ({err})"
         return True, len(streams), None
     except Exception as e:
         return False, 0, str(e)
@@ -930,7 +1506,10 @@ def fetch_plugin_streams(tmdb_id, media_type, season=None, episode=None, on_stre
     if not is_plugins_enabled():
         return []
 
-    scrapers = deduplicate_scrapers(get_enabled_scrapers_for_type(media_type))
+    scrapers = [
+        s for s in deduplicate_scrapers(get_enabled_scrapers_for_type(media_type))
+        if not is_scraper_in_cooldown(s.get("id"))
+    ]
     if not scrapers:
         return []
 
@@ -964,3 +1543,343 @@ def fetch_plugin_streams(tmdb_id, media_type, season=None, episode=None, on_stre
                 logger.debug(f"Scraper {scraper.get('name') if scraper else 'unknown'} failed: {e}")
 
     return all_streams
+
+
+# --- Catalog Integration (Plugin-Declared Only; Zero False Positives) ---
+
+_NUVIO_CATALOG_PREFIX = "nuvio://catalog/"
+
+
+def catalog_url(scraper_id: str) -> str:
+    """Return the virtual catalog URI for an enabled Nuvio plugin provider."""
+    return f"{_NUVIO_CATALOG_PREFIX}{urllib.parse.quote(str(scraper_id or ''), safe='')}"
+
+
+def scraper_id_from_catalog_url(raw_url: str) -> str:
+    """Extract the scraper ID from a nuvio://catalog/<id> URI."""
+    if not isinstance(raw_url, str) or not raw_url.startswith(_NUVIO_CATALOG_PREFIX):
+        return ""
+    encoded = raw_url[len(_NUVIO_CATALOG_PREFIX):].split("/", 1)[0]
+    return urllib.parse.unquote(encoded)
+
+
+def _catalog_type_matches(scraper, media_type: str) -> bool:
+    norm = str(media_type or "all").strip().lower()
+    if norm in ("", "all"):
+        return True
+    if norm == "movie_series":
+        return scraper_supports_type(scraper, "movie") or scraper_supports_type(scraper, "tv")
+    if norm == "anime":
+        raw_types = [str(t).lower() for t in (scraper.get("supported_types") or [])]
+        langs = [str(l).lower() for l in (scraper.get("content_language") or [])]
+        name_l = str(scraper.get("name") or "").lower()
+        return "anime" in raw_types or "anime" in name_l or ("ja" in langs and "tv" in raw_types)
+    return scraper_supports_type(scraper, norm)
+
+
+def _scraper_app_media_type(scraper, requested_type: str = "all") -> str:
+    req = str(requested_type or "all").strip().lower()
+    if req in ("movie", "series", "anime"):
+        return req
+    raw_types = [str(t).lower() for t in (scraper.get("supported_types") or ["movie", "tv"])]
+    if "anime" in raw_types and "movie" not in raw_types and "tv" not in raw_types:
+        return "anime"
+    if "movie" in raw_types and ("tv" in raw_types or "series" in raw_types):
+        return "all"
+    if "tv" in raw_types or "series" in raw_types:
+        return "series"
+    return "movie"
+
+
+def _resolve_scraper_catalog_entries(scraper):
+    """Return raw declared catalog dicts from manifest or JS-inspected capabilities."""
+    declared = scraper.get("catalogs")
+    if isinstance(declared, list) and declared:
+        return declared
+    caps = scraper.get("capabilities")
+    if isinstance(caps, dict) and isinstance(caps.get("catalogs"), list) and caps.get("catalogs"):
+        return caps["catalogs"]
+    return []
+
+
+def get_catalogs(media_type: str = "all") -> list[dict]:
+    """
+    Return browsable catalog entries ONLY for enabled Nuvio plugins that
+    genuinely implement a non-stub catalog handler (never fabricated for
+    stream-only scrapers).
+    """
+    if not is_plugins_enabled():
+        return []
+
+    norm_type = str(media_type or "all").strip().lower()
+    catalogs = []
+    seen = set()
+
+    for scraper in get_all_scrapers():
+        if not isinstance(scraper, dict) or not scraper.get("enabled", True):
+            continue
+        if not scraper_has_catalog(scraper):
+            continue
+        if not _catalog_type_matches(scraper, norm_type):
+            continue
+
+        s_id = str(scraper.get("id") or "").strip()
+        if not s_id:
+            continue
+        s_name = str(scraper.get("name") or s_id).strip()
+        m_url = catalog_url(s_id)
+        app_type = _scraper_app_media_type(scraper, norm_type)
+        default_genres = database.get_available_genres(app_type if app_type != "all" else "movie")
+
+        declared = _resolve_scraper_catalog_entries(scraper)
+        sections = []
+        if declared:
+            for entry in declared:
+                if not isinstance(entry, dict):
+                    continue
+                c_id = str(entry.get("id") or entry.get("catalog_id") or "").strip()
+                c_name = str(entry.get("name") or entry.get("catalog_name") or c_id.title()).strip()
+                c_type = str(entry.get("type") or app_type).strip().lower()
+                if c_type == "tv":
+                    c_type = "series"
+                if norm_type in ("movie", "series", "anime") and c_type not in ("", "all", norm_type):
+                    if not (norm_type == "movie_series" and c_type in ("movie", "series")):
+                        continue
+                if not c_id:
+                    continue
+                sec_genres = entry.get("genres")
+                if not isinstance(sec_genres, list):
+                    sec_genres = default_genres
+                sec_extra = entry.get("extraSupported")
+                if not isinstance(sec_extra, list):
+                    sec_extra = ["genre", "year", "skip", "search"]
+                sections.append((c_id, c_name, c_type or app_type, sec_genres, sec_extra))
+        else:
+            # Non-stub getCatalog / getHome handler without explicit manifest sections
+            sections.append(("popular", "Catalog", app_type, default_genres, ["genre", "year", "skip", "search"]))
+
+        for cid, cname, sec_type, sec_genres, sec_extra in sections:
+            key = (s_id, cid, sec_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            catalogs.append({
+                "addon_name": s_name,
+                "repository_url": scraper.get("repository_url") or "",
+                "manifest_url": m_url,
+                "plugin_id": s_id,
+                "catalog_id": cid,
+                "catalog_name": cname,
+                "display_name": f"{s_name} - {cname}",
+                "genres": list(sec_genres),
+                "extra": [
+                    {"name": "genre", "isRequired": False, "options": list(sec_genres)},
+                    {"name": "year", "isRequired": False},
+                ],
+                "extraSupported": list(sec_extra),
+                "type": sec_type,
+                "supports_pagination": True,
+                "_source": "nuvio_plugin",
+            })
+
+    return catalogs
+
+
+def execute_scraper_catalog(
+    scraper,
+    catalog_id="popular",
+    media_type="all",
+    page=1,
+    genre="",
+    query="",
+    timeout=10.0,
+    year="",
+):
+    """
+    Query a Nuvio plugin's sandboxed `getCatalog` / `search` handler.
+    Returns raw item list or [].
+    """
+    if not isinstance(scraper, dict) or not scraper.get("code"):
+        return []
+    if not is_runtime_available():
+        return []
+
+    action = "search" if query else "getCatalog"
+    req_type = str(media_type or "all").strip().lower()
+    norm_type = normalize_media_type(req_type if req_type not in ("", "all", "movie_series") else "movie")
+    page_num = max(1, int(page or 1))
+    payload = {
+        "action": action,
+        "code": scraper.get("code"),
+        "scraperId": scraper.get("id"),
+        "catalogId": str(catalog_id or "popular"),
+        "mediaType": norm_type,
+        "page": page_num,
+        "skip": (page_num - 1) * 24,
+        "genre": str(genre or ""),
+        "year": str(year or ""),
+        "query": str(query or ""),
+        "settings": get_scraper_settings(scraper.get("id")),
+        "tmdbApiKey": tmdb_helper.DEFAULT_TMDB_API_KEY,
+    }
+    try:
+        rc, stdout, _ = _run_scraper_process(scraper, payload, timeout=timeout)
+        if rc != 0 or not stdout.strip():
+            return []
+        for line in reversed([ln.strip() for ln in stdout.strip().split("\n") if ln.strip()]):
+            if (line.startswith("[") and line.endswith("]")) or (line.startswith("{") and line.endswith("}")):
+                parsed = json.loads(line)
+                if isinstance(parsed, list):
+                    return parsed
+                if isinstance(parsed, dict):
+                    for key in ("metas", "items", "catalog", "results", "data", "streams"):
+                        val = parsed.get(key)
+                        if isinstance(val, list):
+                            return val
+    except Exception as e:
+        logger.debug(f"Catalog execution failed for {scraper.get('name')!r}: {e}")
+    return []
+
+
+def _normalize_plugin_catalog_item(raw, media_type, provider_name):
+    """Normalize a raw plugin catalog item into PopcornBox's catalog card dictionary."""
+    if not isinstance(raw, dict):
+        return None
+    item_title = str(raw.get("title") or raw.get("name") or "").strip()
+    if not item_title:
+        return None
+
+    item_id = str(raw.get("id") or "").strip()
+    if not item_id and (raw.get("tmdbId") or raw.get("tmdb_id")):
+        item_id = f"tmdb:{raw.get('tmdbId') or raw.get('tmdb_id')}"
+    if not item_id and (raw.get("imdbId") or raw.get("imdb_id")):
+        item_id = str(raw.get("imdbId") or raw.get("imdb_id")).strip()
+    if not item_id:
+        return None
+
+    if database.is_adult_content_hidden():
+        if raw.get("adult"):
+            return None
+        try:
+            from . import api
+            if api.is_content_filtered(raw):
+                return None
+        except Exception:
+            pass
+    if tmdb_helper.is_future_item(raw):
+        return None
+
+    poster = str(
+        raw.get("poster")
+        or raw.get("image")
+        or raw.get("medium_cover_image")
+        or raw.get("cover")
+        or ""
+    ).strip()
+    background = str(
+        raw.get("background")
+        or raw.get("backdrop")
+        or raw.get("banner")
+        or poster
+    ).strip()
+
+    m_t = str(raw.get("type") or raw.get("mediaType") or raw.get("media_type") or media_type or "movie").lower()
+    if m_t == "tv":
+        m_t = "series"
+    elif m_t in ("", "all"):
+        m_t = "movie"
+
+    rel_date = str(raw.get("release_date") or raw.get("releaseInfo") or "").strip()
+    year_val = str(raw.get("year") or "").strip()
+    if not year_val and len(rel_date) >= 4 and rel_date[:4].isdigit():
+        year_val = rel_date[:4]
+
+    rating = None
+    raw_rating = raw.get("rating") if raw.get("rating") is not None else raw.get("imdbRating")
+    if raw_rating not in (None, ""):
+        try:
+            rating = round(float(raw_rating), 1)
+        except (TypeError, ValueError):
+            rating = None
+
+    genres = raw.get("genres")
+    if not isinstance(genres, list):
+        genres = []
+
+    return {
+        "id": item_id,
+        "tmdb_id": str(raw.get("tmdbId") or raw.get("tmdb_id") or "") or (
+            item_id.split(":", 1)[1] if item_id.startswith("tmdb:") else ""
+        ),
+        "title": item_title,
+        "name": item_title,
+        "type": m_t,
+        "media_type": m_t,
+        "poster": poster,
+        "medium_cover_image": poster,
+        "background": background,
+        "year": year_val,
+        "release_date": rel_date,
+        "rating": rating,
+        "imdbRating": f"{rating:.1f}" if rating is not None else "",
+        "description": str(raw.get("description") or raw.get("overview") or "").strip(),
+        "overview": str(raw.get("overview") or raw.get("description") or "").strip(),
+        "genres": [str(g) for g in genres if g],
+        "nuvio_provider_name": provider_name,
+    }
+
+
+def fetch_catalog_items(
+    scraper_id: str,
+    catalog_id: str = "popular",
+    media_type: str = "all",
+    genre: str = "",
+    page: int = 1,
+    limit: int = 24,
+    query: str = None,
+    is_cancelled=None,
+    year: str = None,
+    extra_filters: dict = None,
+) -> list[dict]:
+    """
+    Fetch catalog items exclusively from an enabled Nuvio plugin's sandboxed
+    `getCatalog` / `search` handler. Never falls back to synthetic TMDB rows.
+    """
+    if is_cancelled and is_cancelled():
+        return []
+    if not is_plugins_enabled():
+        return []
+
+    scraper = get_scraper(scraper_id)
+    if not scraper or not scraper.get("enabled", True):
+        return []
+    if not scraper_has_catalog(scraper):
+        return []
+
+    provider_name = scraper.get("name") or "Nuvio"
+    year_val = year or (extra_filters.get("year") if isinstance(extra_filters, dict) else None)
+    raw_plugin_items = execute_scraper_catalog(
+        scraper,
+        catalog_id=catalog_id,
+        media_type=media_type,
+        page=page,
+        genre=genre,
+        query=query,
+        year=str(year_val or ""),
+    )
+    if not raw_plugin_items or (is_cancelled and is_cancelled()):
+        return []
+
+    normalized = []
+    seen_ids = set()
+    for raw in raw_plugin_items:
+        if is_cancelled and is_cancelled():
+            break
+        item = _normalize_plugin_catalog_item(raw, media_type, provider_name)
+        if item and item["id"] not in seen_ids:
+            seen_ids.add(item["id"])
+            normalized.append(item)
+            if len(normalized) >= limit:
+                break
+
+    return normalized

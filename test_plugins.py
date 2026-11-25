@@ -246,6 +246,37 @@ class TestNuvioPlugins(unittest.TestCase):
             self.assertTrue(any("api.themoviedb.org" in arg for arg in cmd_scoped))
             self.assertIn("--no-prompt", cmd_scoped)
 
+    def test_nuvio_desktop_content_id_and_media_type_parity(self):
+        self.assertEqual(plugins.plugin_content_id("tmdb:1421:1:1", 1, 1), "1421")
+        self.assertEqual(plugins.plugin_content_id("tmdb/999/1/2", 1, 2), "999")
+        self.assertEqual(plugins.plugin_content_id("tt2575988:5:8", 5, 8), "tt2575988")
+        self.assertEqual(plugins.js_plugin_media_type("tv", ["movie", "series"], 1, 1), "series")
+        self.assertEqual(plugins.js_plugin_media_type("tv", ["movie", "tv"], 1, 1), "tv")
+        self.assertEqual(plugins.js_plugin_media_type("tv", ["series"], None, None), "tv")
+        self.assertEqual(plugins.js_plugin_media_type("movie", ["movie", "series"], None, None), "movie")
+
+        scraper = {
+            "id": "repo:series_scraper",
+            "name": "SeriesScraper",
+            "supported_types": ["movie", "series"],
+            "code": "module.exports = { getStreams: async () => [] };",
+        }
+        captured = {}
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.poll.return_value = 0
+
+        def _fake_comm(input_data, timeout=None):
+            captured["payload"] = json.loads(input_data)
+            return ("[]", "")
+
+        proc.communicate.side_effect = _fake_comm
+        with patch.object(plugins, "build_scraper_command", return_value=["deno", "run", "runner.js"]), \
+             patch("subprocess.Popen", return_value=proc):
+            plugins.execute_scraper(scraper, "tmdb:1421:1:2", "tv", season=1, episode=2)
+        self.assertEqual(captured["payload"]["tmdbId"], "1421")
+        self.assertEqual(captured["payload"]["mediaType"], "series")
+
 
 if __name__ == "__main__":
     unittest.main()

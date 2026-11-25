@@ -245,21 +245,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                 </child>
                 <child>
                   <object class="AdwActionRow" id="prefs_nuvio_plugins_row">
-                    <property name="title" translatable="yes">Nuvio Plugins</property>
+                    <property name="title" translatable="yes">Plugins (Nuvio)</property>
                     <property name="subtitle" translatable="yes">Manage plugin repositories and stream providers</property>
-                    <property name="activatable">true</property>
-                    <child type="suffix">
-                      <object class="GtkImage">
-                        <property name="icon-name">go-next-symbolic</property>
-                        <property name="valign">3</property>
-                      </object>
-                    </child>
-                  </object>
-                </child>
-                <child>
-                  <object class="AdwActionRow" id="prefs_cloudstream_plugins_row">
-                    <property name="title" translatable="yes">CloudStream Plugins</property>
-                    <property name="subtitle" translatable="yes">Manage CloudStream repositories and providers</property>
                     <property name="activatable">true</property>
                     <child type="suffix">
                       <object class="GtkImage">

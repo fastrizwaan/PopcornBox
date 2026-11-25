@@ -29,6 +29,49 @@ logger = logging.getLogger("PopcornBox.HLSProxy")
 
 MAX_PLAYLIST_BYTES = 8 * 1024 * 1024
 
+_FAKE_IMAGE_PREFIXES = (
+    b"\x89PNG\r\n\x1a\n",
+    b"GIF87a",
+    b"GIF89a",
+    b"\xff\xd8\xff",
+    b"BM",
+    b"RIFF",
+)
+_DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
+def _build_request_headers(raw_headers: dict = None) -> dict:
+    """Return a normalized header dict ensuring a browser User-Agent is present."""
+    headers = dict(raw_headers or {})
+    if not any(k.lower() == "user-agent" for k in headers):
+        headers["User-Agent"] = _DEFAULT_USER_AGENT
+    return headers
+
+
+def _find_mpegts_sync_offset(data: bytes) -> int:
+    """Return the byte offset of embedded MPEG-TS packets if prepended with a fake header, else 0."""
+    if not data or len(data) < 189:
+        return 0
+    if data.startswith(b"ID3") or data[4:8] in (b"ftyp", b"styp", b"moof", b"sidx"):
+        return 0
+    has_fake_prefix = data.startswith(_FAKE_IMAGE_PREFIXES)
+    # Valid MPEG-TS starts with 0x47 at byte 0 and byte 188 (unless spoofed with GIF8, which starts with 0x47 'G')
+    if not has_fake_prefix and data[0] == 0x47 and data[188] == 0x47:
+        return 0
+
+    max_scan = min(len(data) - 189, 2048)
+    for offset in range(1, max_scan + 1):
+        if data[offset] == 0x47 and data[offset + 188] == 0x47:
+            if offset + 376 < len(data):
+                if data[offset + 376] == 0x47:
+                    return offset
+            elif has_fake_prefix or offset >= 8:
+                return offset
+    return 0
+
 
 def _read_playlist_text(response) -> str:
     """Read a playlist with a hard cap so a remote server cannot exhaust memory."""
@@ -80,6 +123,8 @@ class HlsSession:
         self.cumulative_times = []  # list of float start times
         self.total_duration = 0.0
         self.is_fmp4 = False
+        self.is_segment_proxy = False
+        self._seg_sync_offset = 0
         self.is_vod = True
         self.target_duration = 4.0
         self.media_sequence = 0
@@ -91,9 +136,7 @@ class HlsSession:
         self.created_at = time.time()
 
     def fetch_and_parse(self, timeout: float = 15.0):
-        req_headers = dict(self.headers)
-        if not any(k.lower() == "user-agent" for k in req_headers):
-            req_headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        req_headers = _build_request_headers(self.headers)
 
         text = None
         current_url = self.url
@@ -232,7 +275,36 @@ class HlsSession:
         self.cumulative_times = cum_times
         self.total_duration = cur_time
         self.is_ready = True
+        is_encrypted = any(
+            h.startswith("#EXT-X-KEY:") and "METHOD=NONE" not in h
+            for h in headers
+        )
+        if not self.is_fmp4 and not is_encrypted and segments:
+            self._probe_segment_header(req_headers, timeout=min(timeout, 5.0))
         return self
+
+    def _probe_segment_header(self, req_headers: dict, timeout: float = 5.0):
+        """Probe the first segment for fake binary/image headers before MPEG-TS sync bytes."""
+        if not self.segments:
+            return
+        first_url = self.segments[0][2]
+        if not first_url or not first_url.startswith(("http://", "https://")):
+            return
+        probe_headers = dict(req_headers)
+        probe_headers["Range"] = "bytes=0-1023"
+        try:
+            req = urllib.request.Request(first_url, headers=probe_headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                sample = resp.read(1024)
+            offset = _find_mpegts_sync_offset(sample)
+            if offset > 0:
+                self.is_segment_proxy = True
+                self._seg_sync_offset = offset
+                logger.info(
+                    f"[HLSProxy] Detected {offset}-byte disguised header before MPEG-TS in {first_url[:80]}; using segment proxy"
+                )
+        except Exception as e:
+            logger.debug(f"[HLSProxy] Segment header probe skipped ({e})")
 
     def _extract_best_variant_url(self, master_text: str, base_url: str) -> str:
         lines = master_text.splitlines()
@@ -359,7 +431,7 @@ class HlsSession:
             i += 1
         return "\n".join(out)
 
-    def slice_manifest(self, offset: float) -> tuple[bytes, float]:
+    def slice_manifest(self, offset: float, local_port: int = None) -> tuple[bytes, float]:
         if not self.segments or offset <= 0:
             start_idx = 0
             actual_offset = 0.0
@@ -396,14 +468,72 @@ class HlsSession:
                 else (1 if out and out[0] == "#EXTM3U" else 0)
             )
             out.insert(sequence_index, sequence_tag)
-        for _dur, inf_line, full_url in sliced:
+        for idx, (_dur, inf_line, full_url) in enumerate(sliced):
             out.append(inf_line)
-            out.append(full_url)
+            if self.is_segment_proxy and local_port:
+                seg_idx = start_idx + idx
+                out.append(f"http://127.0.0.1:{local_port}/hls/{self.session_id}/seg/{seg_idx}.ts")
+            else:
+                out.append(full_url)
         out.append("#EXT-X-ENDLIST")
         return "\n".join(out).encode("utf-8"), actual_offset
 
 
 class _HlsProxyHandler(BaseHTTPRequestHandler):
+    def _serve_stripped_segment(self, session: HlsSession, seg_idx: int):
+        """Fetch an upstream segment and strip any prepended non-TS header before streaming."""
+        if seg_idx < 0 or seg_idx >= len(session.segments):
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        seg_url = session.segments[seg_idx][2]
+        req_headers = _build_request_headers(session.headers)
+        req = urllib.request.Request(seg_url, headers=req_headers)
+        try:
+            with urllib.request.urlopen(req, timeout=20.0) as resp:
+                first_chunk = bytearray()
+                min_probe = max(1024, (session._seg_sync_offset or 0) + 512)
+                while len(first_chunk) < min_probe:
+                    piece = resp.read(65536)
+                    if not piece:
+                        break
+                    first_chunk.extend(piece)
+
+                raw_first = bytes(first_chunk)
+                strip_off = _find_mpegts_sync_offset(raw_first)
+                payload = raw_first[strip_off:] if strip_off > 0 else raw_first
+
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp2t")
+                upstream_len = resp.headers.get("Content-Length")
+                if upstream_len and upstream_len.isdigit():
+                    adj_len = max(len(payload), int(upstream_len) - strip_off)
+                    self.send_header("Content-Length", str(adj_len))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+
+                if payload:
+                    self.wfile.write(payload)
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except urllib.error.HTTPError as he:
+            logger.warning(f"[HLSProxy] Upstream segment HTTP {he.code}: {seg_url[:80]}")
+            self.send_response(he.code if 400 <= he.code < 600 else 502)
+            self.end_headers()
+        except Exception as e:
+            logger.debug(f"[HLSProxy] Segment proxy fetch error ({e}): {seg_url[:80]}")
+            try:
+                self.send_response(502)
+                self.end_headers()
+            except Exception:
+                pass
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         parts = parsed.path.strip("/").split("/")
@@ -411,6 +541,16 @@ class _HlsProxyHandler(BaseHTTPRequestHandler):
             session_id = parts[1]
             session = _sessions.get(session_id)
             if session:
+                if len(parts) >= 4 and parts[2] == "seg":
+                    try:
+                        seg_idx = int(parts[3].split(".", 1)[0])
+                    except (ValueError, TypeError):
+                        self.send_response(404)
+                        self.end_headers()
+                        return
+                    self._serve_stripped_segment(session, seg_idx)
+                    return
+
                 if session.is_master_proxy:
                     body = session.master_sanitized_text.encode("utf-8")
                     self.send_response(200)
@@ -427,7 +567,7 @@ class _HlsProxyHandler(BaseHTTPRequestHandler):
                     offset = float(qs.get("offset", [0])[0])
                 except (ValueError, TypeError):
                     offset = 0.0
-                body, actual_off = session.slice_manifest(offset)
+                body, actual_off = session.slice_manifest(offset, local_port=_proxy_port)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/vnd.apple.mpegurl")
                 self.send_header("Content-Length", str(len(body)))
@@ -500,6 +640,14 @@ def close_session(session_id: str):
             pass
 
 
+def is_segment_proxy_session(session_id: str | None) -> bool:
+    """Return True if the active HLS proxy session rewrites/strips segments."""
+    if not session_id:
+        return False
+    session = _sessions.get(session_id)
+    return bool(session and session.is_segment_proxy)
+
+
 def prepare_hls_stream_async(url: str, headers: dict = None, seek_target: float = 0.0, callback = None):
     """
     Asynchronously prepare an HLS stream.
@@ -528,10 +676,11 @@ def prepare_hls_stream_async(url: str, headers: dict = None, seek_target: float 
                 if callback:
                     GLib.idle_add(callback, False, session_id, master_url, None, 0.0, False, session.extracted_subtitles)
                 return
-            elif session.is_fmp4 and session.segments:
+            elif (session.is_fmp4 or session.is_segment_proxy) and session.segments:
                 _sessions[session_id] = session
                 sliced_url = get_sliced_url(session_id, offset=seek_target)
-                logger.info(f"[HLSProxy] Prepared fMP4 HLS session {session_id}: {len(session.segments)} segs, dur={session.total_duration:.1f}s")
+                kind = "fMP4" if session.is_fmp4 else "segment-proxy"
+                logger.info(f"[HLSProxy] Prepared {kind} HLS session {session_id}: {len(session.segments)} segs, dur={session.total_duration:.1f}s")
                 if callback:
                     GLib.idle_add(callback, True, session_id, sliced_url, session.total_duration, seek_target, False, session.extracted_subtitles)
                 return

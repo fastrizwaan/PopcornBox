@@ -1711,13 +1711,6 @@ def set_kids_safe_mode(enabled):
         api.invalidate_catalogs_cache()
     except Exception:
         pass
-    try:
-        from . import cloudstream
-        cloudstream.clear_main_page_cache()
-        if enabled:
-            cloudstream.on_adult_content_toggled(True)
-    except Exception:
-        pass
 
 def is_adult_content_hidden():
     return bool(get_setting("hide_adult_content", True)) or is_kids_safe_mode()
@@ -1730,11 +1723,6 @@ def set_adult_content_hidden(enabled):
     try:
         from . import api
         api.invalidate_catalogs_cache()
-    except Exception:
-        pass
-    try:
-        from . import cloudstream
-        cloudstream.on_adult_content_toggled(bool(enabled))
     except Exception:
         pass
 
@@ -2534,86 +2522,6 @@ def toggle_plugin_scraper(scraper_id, enabled):
         for s in db.setdefault("plugin_scrapers", []):
             if s.get("id") == scraper_id:
                 s["enabled"] = bool(enabled)
-                break
-        _write_db(db)
-    clear_all_cached_streams_async()
-
-# --- CloudStream Plugins & Addons ---
-
-def get_cloudstream_repositories():
-    return list(_read_db().get("cloudstream_repositories", []))
-
-def save_cloudstream_repository(repo):
-    if not isinstance(repo, dict) or not repo.get("manifest_url"):
-        return
-    with _db_lock:
-        db = _read_db()
-        repos = db.setdefault("cloudstream_repositories", [])
-        manifest_url = repo.get("manifest_url")
-        repos = [r for r in repos if r.get("manifest_url") != manifest_url]
-        repos.append(dict(repo))
-        db["cloudstream_repositories"] = repos
-        _write_db(db)
-
-def remove_cloudstream_repository(manifest_url):
-    if not manifest_url:
-        return
-    with _db_lock:
-        db = _read_db()
-        repos = db.setdefault("cloudstream_repositories", [])
-        db["cloudstream_repositories"] = [r for r in repos if r.get("manifest_url") != manifest_url]
-        plugins = db.setdefault("cloudstream_plugins", [])
-        db["cloudstream_plugins"] = [p for p in plugins if p.get("repository_manifest_url") != manifest_url]
-        _write_db(db)
-    clear_all_cached_streams()
-
-def get_cloudstream_plugins():
-    return list(_read_db().get("cloudstream_plugins", []))
-
-def save_cloudstream_plugins(plugins_list, replace_for_repo=None):
-    if not isinstance(plugins_list, list):
-        return
-    with _db_lock:
-        db = _read_db()
-        existing = db.setdefault("cloudstream_plugins", [])
-        if replace_for_repo:
-            existing = [p for p in existing if p.get("repository_manifest_url") != replace_for_repo]
-        existing_ids = {p.get("id") for p in plugins_list if p.get("id")}
-        existing = [p for p in existing if p.get("id") not in existing_ids]
-        existing.extend(plugins_list)
-        db["cloudstream_plugins"] = existing
-        _write_db(db)
-    clear_all_cached_streams()
-
-def update_cloudstream_plugin(plugin_id, updates):
-    if not plugin_id or not isinstance(updates, dict):
-        return
-    with _db_lock:
-        db = _read_db()
-        for p in db.setdefault("cloudstream_plugins", []):
-            if p.get("id") == plugin_id:
-                p.update(updates)
-                break
-        _write_db(db)
-
-def toggle_cloudstream_plugin(plugin_id, enabled):
-    if not plugin_id:
-        return
-    with _db_lock:
-        db = _read_db()
-        hide_adult = is_adult_content_hidden()
-        for p in db.setdefault("cloudstream_plugins", []):
-            if p.get("id") == plugin_id:
-                if enabled and hide_adult:
-                    raw_types = [str(t).strip().lower() for t in (p.get("raw_tv_types") or [])]
-                    parsed_types = [str(t).strip().lower() for t in (p.get("tv_types") or [])]
-                    all_types = set(raw_types + parsed_types)
-                    nsfw_kw = ("nsfw", "11", "adult", "18+", "hentai", "xxx", "erotica", "porn", "ecchi")
-                    name = str(p.get("name") or p.get("internal_name") or "").lower()
-                    if any(t in nsfw_kw or any(k in t for k in nsfw_kw) for t in all_types) or any(k in name for k in ("18+", "hentai", "porn", "xxx", "minioppai", "nekopoi")):
-                        p["enabled"] = False
-                        break
-                p["enabled"] = bool(enabled)
                 break
         _write_db(db)
     clear_all_cached_streams_async()
@@ -4512,8 +4420,27 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                         m.updated_at DESC
                     LIMIT ? OFFSET ?
                 """
-            params.extend([f"%{q_str}%", f"%{q_str}%", limit, offset])
+            sql_limit = max(int(limit or 60) * 4, 250)
+            params.extend([f"%{q_str}%", f"%{q_str}%", sql_limit, 0])
             cursor.execute(sql, params)
+            q_clean_tokens = re.findall(r"\w+", re.sub(r"[\'’]", "", q_str))
+            q_phrase_re = (
+                re.compile(r"(?<!\w)" + r"\W+".join(re.escape(w) for w in q_clean_tokens) + r"(?!\w)")
+                if len(q_clean_tokens) >= 2
+                else None
+            )
+
+            def _whole_word_match(text_val, require_phrase_for_multi=False):
+                norm = re.sub(r"[\'’]", "", str(text_val or "").lower())
+                if not norm:
+                    return False
+                if q_phrase_re is not None and require_phrase_for_multi:
+                    return bool(q_phrase_re.search(norm))
+                if q_clean_tokens:
+                    return all(re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", norm) for w in q_clean_tokens)
+                return q_str in norm
+
+            ranked_items = []
             for row in cursor.fetchall():
                 if not row or not row[0]:
                     continue
@@ -4522,19 +4449,34 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                     if isinstance(it, dict):
                         iid = it.get("id") or it.get("imdb_id")
                         if iid and iid not in seen_ids:
-                            title = str(it.get("title") or it.get("name") or "").lower()
+                            raw_title = str(it.get("title") or it.get("name") or "")
+                            title_hit = _whole_word_match(raw_title, require_phrase_for_multi=False)
                             if title_only:
-                                if q_str in title:
+                                if title_hit:
                                     seen_ids.add(iid)
-                                    items.append(it)
+                                    t_tokens = re.findall(r"\w+", re.sub(r"[\'’]", "", raw_title.lower()))
+                                    if t_tokens == q_clean_tokens:
+                                        rank = 0
+                                    elif q_phrase_re and q_phrase_re.search(raw_title.lower()):
+                                        rank = 1
+                                    else:
+                                        rank = 2
+                                    ranked_items.append((rank, it))
                             else:
-                                desc = str(it.get("description") or it.get("overview") or "").lower()
-                                genres = str(it.get("genres") or "").lower()
-                                if q_str in title or q_str in desc or q_str in genres:
+                                desc = str(it.get("description") or it.get("overview") or "")
+                                genres = str(it.get("genres") or "")
+                                if title_hit:
                                     seen_ids.add(iid)
-                                    items.append(it)
+                                    t_tokens = re.findall(r"\w+", re.sub(r"[\'’]", "", raw_title.lower()))
+                                    rank = 0 if t_tokens == q_clean_tokens else (1 if (q_phrase_re and q_phrase_re.search(raw_title.lower())) else 2)
+                                    ranked_items.append((rank, it))
+                                elif _whole_word_match(desc, require_phrase_for_multi=True) or _whole_word_match(genres, require_phrase_for_multi=False):
+                                    seen_ids.add(iid)
+                                    ranked_items.append((3, it))
                 except Exception:
                     pass
+            ranked_items.sort(key=lambda pair: pair[0])
+            items = [pair[1] for pair in ranked_items[offset:offset + limit]]
     except Exception as e:
         print(f"Error fetching cached items by search: {e}")
     if items:

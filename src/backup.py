@@ -4,7 +4,6 @@
 # Backs up and restores:
 #   - Stremio Addons (installed addons, custom URLs, manifests, default addon state)
 #   - Nuvio Plugins (repositories, scrapers, settings, enabled state)
-#   - CloudStream (repositories, plugins, installed/enabled status, and .cs3 packages)
 #   - Library data: Favorites, Watched items, Watch history, Continue Watching
 #   - Downloads queue and history
 #   - User playback preferences, stream info, and application settings
@@ -12,10 +11,6 @@
 import datetime
 import json
 import logging
-import os
-import shutil
-import tempfile
-import threading
 import zipfile
 from pathlib import Path
 
@@ -33,7 +28,7 @@ def get_default_backup_filename():
 
 def create_backup_data():
     """
-    Gather all addons, plugins, CloudStream repositories, library data (favorites,
+    Gather all addons, plugins, library data (favorites,
     watched, history, continue watching), downloads, and settings into a clean dictionary.
     """
     from . import database
@@ -44,14 +39,6 @@ def create_backup_data():
     nuvio_settings = database.get_setting("plugins_scraper_settings", {}) or {}
     nuvio_enabled = database.get_setting("plugins_enabled", True)
     nuvio_group_by = database.get_setting("plugins_group_by_repository", False)
-
-    cs_repos = database.get_cloudstream_repositories()
-    cs_plugins = database.get_cloudstream_plugins()
-    cs_enabled = database.get_setting("cloudstream_enabled", True)
-    cs_sec_accepted = database.get_setting("cloudstream_security_accepted", True)
-
-    installed_cs_ids = [p["id"] for p in cs_plugins if p.get("is_installed")]
-    enabled_cs_ids = [p["id"] for p in cs_plugins if p.get("enabled")]
 
     favorites = database.get_favorites()
     watched = database.get_watched()
@@ -92,14 +79,6 @@ def create_backup_data():
             "scrapers": nuvio_scrapers,
             "scraper_settings": nuvio_settings,
         },
-        "cloudstream": {
-            "enabled": bool(cs_enabled),
-            "security_accepted": bool(cs_sec_accepted),
-            "repositories": cs_repos,
-            "plugins": cs_plugins,
-            "installed_plugin_ids": installed_cs_ids,
-            "enabled_plugin_ids": enabled_cs_ids,
-        },
         "favorites": favorites,
         "watched": watched,
         "history": history,
@@ -114,11 +93,8 @@ def create_backup_data():
 def create_backup(output_path):
     """
     Create a backup archive (.zip) or JSON file at output_path.
-    If output_path ends with .zip, packages .cs3 files into the archive as well.
     Returns (success: bool, message: str, summary: dict).
     """
-    from . import cloudstream
-
     try:
         data = create_backup_data()
         out_path = Path(output_path)
@@ -126,28 +102,10 @@ def create_backup(output_path):
 
         is_zip = str(output_path).lower().endswith(".zip")
         if is_zip:
-            pkg_dir = cloudstream.get_packages_dir()
             with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                # Add JSON metadata
                 json_str = json.dumps(data, indent=2, ensure_ascii=False)
                 zf.writestr("backup.json", json_str)
-
-                # Add installed CloudStream .cs3 packages
-                cs_plugins = data.get("cloudstream", {}).get("plugins", [])
-                included_pkgs = 0
-                if pkg_dir.exists():
-                    for p in cs_plugins:
-                        if not p.get("is_installed"):
-                            continue
-                        sk = p.get("storage_key")
-                        if not sk:
-                            continue
-                        pkg_file = pkg_dir / f"{sk}.cs3"
-                        if pkg_file.is_file():
-                            zf.write(pkg_file, arcname=f"cloudstream_packages/{sk}.cs3")
-                            included_pkgs += 1
-
-            logger.info(f"Created ZIP backup at {output_path} with {included_pkgs} packages")
+            logger.info(f"Created ZIP backup at {output_path}")
         else:
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
@@ -157,8 +115,6 @@ def create_backup(output_path):
             "addons_count": len(data.get("addons", [])),
             "nuvio_repos_count": len(data.get("nuvio", {}).get("repositories", [])),
             "nuvio_scrapers_count": len(data.get("nuvio", {}).get("scrapers", [])),
-            "cloudstream_repos_count": len(data.get("cloudstream", {}).get("repositories", [])),
-            "cloudstream_installed_count": len(data.get("cloudstream", {}).get("installed_plugin_ids", [])),
             "favorites_count": len(data.get("favorites", [])),
             "watched_count": len(data.get("watched", [])),
             "history_count": len(data.get("history", [])),
@@ -179,8 +135,6 @@ def create_backup(output_path):
             parts.append(f"{summary['watched_count']} watched")
         if summary['nuvio_repos_count']:
             parts.append(f"{summary['nuvio_repos_count']} Nuvio repos")
-        if summary['cloudstream_repos_count']:
-            parts.append(f"{summary['cloudstream_repos_count']} CloudStream repos")
         msg = f"Backup created: {', '.join(parts)}"
         return True, msg, summary
     except Exception as e:
@@ -190,12 +144,12 @@ def create_backup(output_path):
 
 def restore_backup(input_path):
     """
-    Restore addons, plugins, CloudStream repositories, library data (favorites,
+    Restore addons, plugins, library data (favorites,
     watched, history, continue watching), downloads, and settings from
     a backup (.zip or .json).
     Returns (success: bool, message: str, summary: dict).
     """
-    from . import database, cloudstream
+    from . import database
 
     in_path = Path(input_path)
     if not in_path.is_file():
@@ -203,11 +157,9 @@ def restore_backup(input_path):
 
     try:
         payload = None
-        extracted_pkgs = 0
 
         if zipfile.is_zipfile(input_path):
             with zipfile.ZipFile(input_path, "r") as zf:
-                # Find the backup JSON file in zip
                 target_json = None
                 for name in zf.namelist():
                     if name.endswith("backup.json") or (name.endswith(".json") and not target_json):
@@ -218,19 +170,6 @@ def restore_backup(input_path):
 
                 with zf.open(target_json) as jf:
                     payload = json.loads(jf.read().decode("utf-8"))
-
-                # Extract cloudstream packages
-                pkg_dir = cloudstream.get_packages_dir()
-                pkg_dir.mkdir(parents=True, exist_ok=True)
-                for name in zf.namelist():
-                    if name.startswith("cloudstream_packages/") and name.endswith(".cs3"):
-                        base_name = os.path.basename(name)
-                        if base_name:
-                            dest_file = pkg_dir / base_name
-                            with zf.open(name) as src_pkg, open(dest_file, "wb") as dst_pkg:
-                                shutil.copyfileobj(src_pkg, dst_pkg)
-                            extracted_pkgs += 1
-            logger.info(f"Restored {extracted_pkgs} CloudStream package(s) from ZIP archive")
         else:
             with open(input_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
@@ -275,57 +214,7 @@ def restore_backup(input_path):
             if "group_by_repository" in nuvio:
                 database.set_setting("plugins_group_by_repository", bool(nuvio["group_by_repository"]))
 
-        # 3. Restore CloudStream
-        cs = payload.get("cloudstream", {})
-        restored_cs_repos = 0
-        restored_cs_plugins = 0
-        installed_cs_count = 0
-        if isinstance(cs, dict):
-            for r in cs.get("repositories", []):
-                if isinstance(r, dict) and r.get("manifest_url"):
-                    database.save_cloudstream_repository(r)
-                    restored_cs_repos += 1
-
-            cs_plugins = cs.get("plugins", [])
-            if isinstance(cs_plugins, list) and cs_plugins:
-                database.save_cloudstream_plugins(cs_plugins)
-                restored_cs_plugins = len(cs_plugins)
-
-            installed_ids = set(cs.get("installed_plugin_ids", []))
-            enabled_ids = set(cs.get("enabled_plugin_ids", []))
-
-            # Mark installed / enabled states for restored plugins
-            all_db_plugins = database.get_cloudstream_plugins()
-            for p in all_db_plugins:
-                p_id = p.get("id")
-                was_installed = p_id in installed_ids or p.get("is_installed", False)
-                was_enabled = p_id in enabled_ids or p.get("enabled", False)
-                if was_installed:
-                    installed_cs_count += 1
-                    sk = p.get("storage_key")
-                    has_pkg = cloudstream.package_exists(sk) if sk else False
-                    database.update_cloudstream_plugin(p_id, {
-                        "is_installed": True,
-                        "enabled": bool(was_enabled),
-                        "installed_version": p.get("version", p.get("installed_version")),
-                    })
-                    # If package is missing on disk, download it in background
-                    if not has_pkg and p.get("package_url"):
-                        try:
-                            threading.Thread(
-                                target=cloudstream.install_plugin,
-                                args=(p_id,),
-                                daemon=True,
-                                name=f"CS-Restore-Install-{p_id}",
-                            ).start()
-                        except Exception as e:
-                            logger.warning(f"Failed to queue background install for {p_id}: {e}")
-
-            if "enabled" in cs:
-                database.set_setting("cloudstream_enabled", bool(cs["enabled"]))
-            database.set_setting("cloudstream_security_accepted", True)
-
-        # 4. Restore settings
+        # 3. Restore settings
         settings = payload.get("settings", {})
         if isinstance(settings, dict):
             safe_settings = {k: v for k, v in settings.items() if k != "stremio_auth_key"}
@@ -379,9 +268,6 @@ def restore_backup(input_path):
             "addons_count": restored_addons,
             "nuvio_repos_count": restored_nuvio_repos,
             "nuvio_scrapers_count": restored_nuvio_scrapers,
-            "cloudstream_repos_count": restored_cs_repos,
-            "cloudstream_installed_count": installed_cs_count,
-            "extracted_packages_count": extracted_pkgs,
             "favorites_count": restored_favorites,
             "watched_count": restored_watched,
             "history_count": restored_history,
@@ -400,8 +286,6 @@ def restore_backup(input_path):
             parts.append(f"{restored_watched} watched")
         if restored_nuvio_repos:
             parts.append(f"{restored_nuvio_repos} Nuvio repos")
-        if restored_cs_repos:
-            parts.append(f"{restored_cs_repos} CloudStream repos")
         msg = f"Restored {', '.join(parts)}"
         logger.info(f"Restore complete: {msg}")
         return True, msg, summary

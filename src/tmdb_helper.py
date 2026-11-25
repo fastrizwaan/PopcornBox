@@ -2167,6 +2167,28 @@ def fetch_title_search_page(query, media_type="all", page=1, limit=50):
                 **({"runtime": f"{int(runtime)} min"} if runtime is not None else {}),
             })
 
+    q_clean = re.sub(r"[\'’]", "", query.lower()).strip()
+    q_words = re.findall(r"\w+", q_clean)
+    q_phrase_re = (
+        re.compile(r"(?<!\w)" + r"\W+".join(re.escape(w) for w in q_words) + r"(?!\w)")
+        if len(q_words) >= 2
+        else None
+    )
+
+    def _tmdb_search_rank(item):
+        t_clean = re.sub(r"[\'’]", "", str(item.get("title") or "").lower()).strip()
+        t_words = re.findall(r"\w+", t_clean)
+        if t_words == q_words:
+            tier = 0
+        elif q_phrase_re and q_phrase_re.search(t_clean):
+            tier = 1
+        elif q_words and all(re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", t_clean) for w in q_words):
+            tier = 2
+        else:
+            tier = 3
+        return (tier, -float(item.get("popularity") or 0.0))
+
+    items.sort(key=_tmdb_search_rank)
     return items[:limit], min(total_pages, _MAX_TITLE_SEARCH_PAGES)
 
 TMDB_GENRES = {

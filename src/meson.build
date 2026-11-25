@@ -61,7 +61,6 @@ popcornbox_sources = [
   'player.py',
   'playlist.py',
   'plugins.py',
-  'cloudstream.py',
   'custom_plugins.py',
   'custom_plugins_runner.py',
   'preferences.py',

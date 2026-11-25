@@ -565,11 +565,6 @@ class MovieDetailsPage(Gtk.Overlay):
             self.media_type = "movie"
         elif item_raw_id.startswith("ctmdb.") or self.media_type == "collections":
             self.media_type = "collections"
-        elif (
-            (item_raw_id.startswith("cloudstream:") or self.movie_stub.get("is_cloudstream"))
-            and re.search(r"\b(season\s*\d+|series|s\d{1,2}(?:e\d{1,2})?|episodes?|ep\s*\d+)\b", f"{self.catalog_title} {item_raw_id} {self.movie_stub.get('title', '')}", re.IGNORECASE)
-        ):
-            self.media_type = "series"
         elif self.media_type in ["series", "tvshow", "tv_series"]:
             self.media_type = "series"
         elif self.media_type in ["tv", "channel", "tvchannel"]:
@@ -783,9 +778,6 @@ class MovieDetailsPage(Gtk.Overlay):
         title_hbox.set_valign(Gtk.Align.START)
         
         title_str = self.movie_stub.get("title", "")
-        if self.movie_stub.get("is_cloudstream") or str(self.movie_stub.get("id", "")).startswith("cloudstream:"):
-            from .cloudstream import clean_cloudstream_title
-            title_str, _year = clean_cloudstream_title(title_str)
         self.title_label = Gtk.Label(label=title_str if title_str else "Loading...")
         self.title_label.add_css_class("title-1")
         self.title_label.set_halign(Gtk.Align.START)
@@ -1303,14 +1295,6 @@ class MovieDetailsPage(Gtk.Overlay):
                 if v and (k != "description" or v not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD")):
                     initial_meta[k] = v
         desc = initial_meta.get("description") or initial_meta.get("overview")
-        is_cloudstream_stub = bool(
-            self.movie_stub.get("is_cloudstream")
-            or str(self.movie_stub.get("id") or "").startswith("cloudstream:")
-        )
-        if is_cloudstream_stub and not api.is_cloudstream_description_usable(desc, self.movie_stub.get("title")):
-            desc = ""
-            initial_meta["description"] = ""
-            initial_meta["overview"] = ""
         if desc:
             initial_meta["description"] = desc
             initial_meta["overview"] = desc
@@ -2253,10 +2237,6 @@ class MovieDetailsPage(Gtk.Overlay):
             if self._destroyed or _is_event_set(getattr(self, 'page_abort_event', None)):
                 return
             from . import api
-            if self.media_type not in ("series", "anime", "tv"):
-                is_cs = bool(self.movie_stub.get("is_cloudstream") or str(item_id).startswith("cloudstream:"))
-                if is_cs and re.search(r"\b(season\s*\d+|series|s\d{1,2}(?:e\d{1,2})?|episodes?|ep\s*\d+)\b", f"{getattr(self, 'catalog_title', None)} {self.movie_stub.get('title')} {item_id}", re.IGNORECASE):
-                    self.media_type = "series"
             details = api.fetch_movie_details(
                 item_id,
                 self.media_type,
@@ -2271,20 +2251,9 @@ class MovieDetailsPage(Gtk.Overlay):
             if details:
                 if getattr(self, "catalog_title", None):
                     details.setdefault("catalog_title", self.catalog_title)
-                is_cloudstream_item = bool(
-                    self.movie_stub.get("is_cloudstream")
-                    or str(self.movie_stub.get("id") or "").startswith("cloudstream:")
-                )
-                if is_cloudstream_item:
-                    fetched_desc = details.get("description") or details.get("overview")
-                    if fetched_desc and not api.is_cloudstream_description_usable(fetched_desc, details.get("title") or self.movie_stub.get("title")):
-                        details["description"] = ""
-                        details["overview"] = ""
                 # Retain any rich overview/rating from movie_stub if missing from fetched details
                 if not details.get("description") or details.get("description") in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD"):
                     stub_desc = self.movie_stub.get("description") or self.movie_stub.get("overview")
-                    if is_cloudstream_item and not api.is_cloudstream_description_usable(stub_desc, details.get("title") or self.movie_stub.get("title")):
-                        stub_desc = None
                     if stub_desc and stub_desc not in ("No synopsis available.", "Synopsis temporarily unavailable.", "HD"):
                         details["description"] = stub_desc
                 if not details.get("imdbRating") and (self.movie_stub.get("imdbRating") or self.movie_stub.get("rating")):
@@ -2761,9 +2730,6 @@ class MovieDetailsPage(Gtk.Overlay):
             fetch_fallback_poster(details.get("id") or self.movie_stub.get("id"), self.media_type, self.poster, details.get("title") or self.movie_stub.get("title"), width=360, height=540, is_priority=True)
             
         d_title = details.get("title", "")
-        if self.movie_stub.get("is_cloudstream") or details.get("is_cloudstream") or str(details.get("id", "")).startswith("cloudstream:"):
-            from .cloudstream import clean_cloudstream_title
-            d_title, _year = clean_cloudstream_title(d_title)
         self.title_label.set_text(d_title)
 
         # Disconnect any previously connected signal handlers before reconnecting
@@ -3466,13 +3432,6 @@ class MovieDetailsPage(Gtk.Overlay):
 
         known_tmdb_id = movie_details.get("tmdb_id")
         expected_year = movie_details.get("year")
-        cloudstream_route_id = movie_details.get("cloudstream_route_id")
-        if not (isinstance(cloudstream_route_id, str) and cloudstream_route_id.startswith("cloudstream:")):
-            stub_route_id = self.movie_stub.get("id")
-            if isinstance(stub_route_id, str) and stub_route_id.startswith("cloudstream:"):
-                cloudstream_route_id = stub_route_id
-            elif selected_video and isinstance(selected_video, dict) and str(selected_video.get("id", "")).startswith("cloudstream:"):
-                cloudstream_route_id = str(selected_video.get("id"))
         custom_plugin_route_id = movie_details.get("custom_plugin_route_id")
         if not custom_plugin_route_id:
             stub_route_id = self.movie_stub.get("id")
@@ -3504,13 +3463,7 @@ class MovieDetailsPage(Gtk.Overlay):
             item_id = next((candidate for candidate in item_id if candidate), None)
         
         req_media_type = self.media_type
-        if req_media_type not in ["series", "anime", "tv"] and (
-            (item_id and str(item_id).startswith("cloudstream:")) or self.movie_stub.get("is_cloudstream")
-        ):
-            if re.search(r"\b(season\s*\d+|series|s\d{1,2}(?:e\d{1,2})?|episodes?|ep\s*\d+)\b", f"{self.catalog_title} {item_id} {self.movie_stub.get('title', '')}", re.IGNORECASE):
-                req_media_type = "series"
-                self.media_type = "series"
-        elif video_id and str(video_id).startswith("tt") and self.media_type not in ["series", "anime"]:
+        if video_id and str(video_id).startswith("tt") and self.media_type not in ["series", "anime"]:
             req_media_type = "movie"
 
         sel_season = getattr(self, 'selected_season', None) if req_media_type in ["series", "anime", "tv"] and not self.is_channel else None
@@ -3895,7 +3848,6 @@ class MovieDetailsPage(Gtk.Overlay):
                     source_scope=source_scope,
                     known_tmdb_id=known_tmdb_id,
                     expected_year=expected_year,
-                    cloudstream_route_id=cloudstream_route_id,
                     catalog_title=catalog_title,
                     custom_plugin_route_id=custom_plugin_route_id,
                 )
@@ -5277,21 +5229,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     plugins_sub_stack: Adw.ViewStack = Gtk.Template.Child()
     plugins_switcher_title: Adw.ViewSwitcher = Gtk.Template.Child()
 
-    cloudstream_badge_repos: Gtk.Label = Gtk.Template.Child()
-    cloudstream_badge_installed: Gtk.Label = Gtk.Template.Child()
-    cloudstream_badge_providers: Gtk.Label = Gtk.Template.Child()
-    cloudstream_badge_status: Gtk.Label = Gtk.Template.Child()
-    cloudstream_enable_globally_row: Adw.SwitchRow = Gtk.Template.Child()
-    cloudstream_security_warning_box: Gtk.Box = Gtk.Template.Child()
-    cloudstream_accept_warning_btn: Gtk.Button = Gtk.Template.Child()
-    cloudstream_repo_url_entry: Gtk.Entry = Gtk.Template.Child()
-    cloudstream_install_repo_btn: Gtk.Button = Gtk.Template.Child()
-    cloudstream_install_status_label: Gtk.Label = Gtk.Template.Child()
-    cloudstream_refresh_all_btn: Gtk.Button = Gtk.Template.Child()
-    cloudstream_repos_listbox: Gtk.ListBox = Gtk.Template.Child()
-    cloudstream_provider_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
-    cloudstream_bulk_install_btn: Gtk.Button = Gtk.Template.Child()
-    cloudstream_plugins_listbox: Gtk.ListBox = Gtk.Template.Child()
     custom_plugin_badge_installed: Gtk.Label = Gtk.Template.Child()
     custom_plugin_badge_active: Gtk.Label = Gtk.Template.Child()
     custom_plugin_badge_status: Gtk.Label = Gtk.Template.Child()
@@ -5677,7 +5614,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._create_action("save-session", self._on_save_session)
         self._create_action("open-addons", self._open_addons)
         self._create_action("open-plugins", self._open_plugins)
-        self._create_action("open-cloudstream", self._open_cloudstream_plugins)
         self._create_action("install-plugin-repo", self._on_install_plugin_repo_clicked)
         self._create_action("refresh-all-plugin-repos", self._on_refresh_all_plugin_repos_clicked)
         self._create_action("back-to-library", self._back_to_library)
@@ -7796,6 +7732,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         from . import hls_proxy
         self._hls_time_offset = target_val
         new_url = hls_proxy.get_sliced_url(self._hls_session_id, offset=target_val)
+        self._mpv_file_loaded = False
         try:
             self.mpv.command("loadfile", new_url, "replace")
         except Exception as e:
@@ -8532,6 +8469,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             playback_trace("mpv start-file")
             idle_add_once(self.spinner.set_visible, True)
             self.loaded_path = str(self.mpv.path)
+            self._mpv_file_loaded = False
+            self._file_load_seq = int(getattr(self, "_file_load_seq", 0) or 0) + 1
             self._subtitles_configured_for_file = False
             self._stream_media_started = True
 
@@ -8552,8 +8491,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         @self.mpv.event_callback("file-loaded")
         def on_files_loaded(_event):
             playback_trace("mpv file-loaded")
+            load_seq = int(getattr(self, "_file_load_seq", 0) or 0)
             def update():
                 try:
+                    if int(getattr(self, "_file_load_seq", 0) or 0) != load_seq:
+                        return
+                    self._mpv_file_loaded = True
                     self._next_episode_transition_in_progress = False
                     self.hide_player_loading()
                     self.spinner.set_visible(False)
@@ -8629,6 +8572,24 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 curr_pos = self.mpv.playlist_pos
 
                 if reason == b"error":
+                    is_yt = bool(
+                        (self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower() or "googlevideo.com" in self.loaded_path.lower()))
+                        or (isinstance(getattr(self, "_current_playing_item", None), dict) and any(
+                            k in str(self._current_playing_item.get("stream_url", "")).lower() for k in ["youtube.com", "youtu.be", "googlevideo.com"]
+                        ))
+                    )
+                    is_trailer = is_yt or bool(getattr(self, "_current_playing_item", {}).get("is_trailer"))
+
+                    if (
+                        not is_trailer
+                        and getattr(self, "_hls_prep_url", None)
+                        and not getattr(self, "_stream_media_started", False)
+                    ):
+                        logger.warning(f"[HLS] Direct fast-start failed while proxy probe is active ({error}); awaiting HLS proxy")
+                        self._last_stream_error = str(error)
+                        self._hls_fast_start_error = True
+                        return
+
                     idle_add_once(self.spinner.set_visible, False)
                     idle_add_once(self.start_page.set_sensitive, True)
 
@@ -8639,13 +8600,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
                     self.error_count += 1
                     self._last_stream_error = str(error)
-                    is_yt = bool(
-                        (self.loaded_path and isinstance(self.loaded_path, str) and ("youtube.com" in self.loaded_path.lower() or "youtu.be" in self.loaded_path.lower() or "googlevideo.com" in self.loaded_path.lower()))
-                        or (isinstance(getattr(self, "_current_playing_item", None), dict) and any(
-                            k in str(self._current_playing_item.get("stream_url", "")).lower() for k in ["youtube.com", "youtu.be", "googlevideo.com"]
-                        ))
-                    )
-                    is_trailer = is_yt or bool(getattr(self, "_current_playing_item", {}).get("is_trailer"))
 
                     if is_yt and not getattr(self, "_youtube_safe_mode_active", False):
                         logger.warning(f"[YouTube] Direct MPV playback failed ({error}), falling back to safe mode")
@@ -11081,24 +11035,21 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     "addon_name": name
                 })
 
-        # CloudStream providers do not have Stremio addon records. Add their
-        # runnable adapter-backed catalogs as provider choices using the same
-        # virtual URL that the Discover row loader understands.
-        from . import cloudstream
-        for cat in cloudstream.get_catalogs(chosen_type):
+        # Nuvio plugins that genuinely implement catalogs.
+        from . import plugins
+        for cat in plugins.get_catalogs(chosen_type):
             m_url = cat.get("manifest_url") or ""
             if not m_url or m_url in seen_urls:
                 continue
             seen_urls.add(m_url)
-            name = cat.get("addon_name") or "CloudStream"
-            base_name = re.sub(r"\s*\((?:cloudstream|cs)\)$", "", name, flags=re.I).strip()
-            display_name = f"{base_name} (CloudStream)"
+            name = cat.get("addon_name") or "Nuvio"
+            display_name = f"{name} (Nuvio)"
             items.append({
                 "display_name": display_name,
                 "addon": None,
                 "manifest_url": m_url,
                 "addon_name": display_name,
-                "_source": "cloudstream",
+                "_source": "nuvio_plugin",
             })
 
         # Custom plugins can also declare catalog sections.
@@ -11159,26 +11110,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     "cat": c,
                     "catalog_id": cid
                 })
-        elif catalog_item and (catalog_item.get("_source") == "cloudstream" or str(catalog_item.get("manifest_url") or "").startswith("cloudstream://")):
-            from . import cloudstream
+        elif catalog_item and (catalog_item.get("_source") == "nuvio_plugin" or str(catalog_item.get("manifest_url") or "").startswith("nuvio://")):
+            from . import plugins
             m_url = catalog_item.get("manifest_url")
-            p_id = cloudstream.provider_id_from_catalog_url(m_url)
-            prov = cloudstream.get_provider(p_id)
-            if prov and hasattr(prov, "catalog_sections"):
-                matching_cats = [
-                    {
-                        "catalog_id": sec.get("id") or sec.get("name") if isinstance(sec, dict) else sec[1],
-                        "catalog_name": sec.get("name") or sec.get("section") if isinstance(sec, dict) else sec[0],
-                        "manifest_url": m_url,
-                        "_source": "cloudstream",
-                    }
-                    for sec in prov.catalog_sections
-                ]
-            else:
-                matching_cats = [
-                    c for c in cloudstream.get_catalogs(chosen_type)
-                    if str(c.get("manifest_url") or "") == str(m_url)
-                ]
+            matching_cats = [
+                c for c in plugins.get_catalogs(chosen_type)
+                if str(c.get("manifest_url") or "") == str(m_url)
+            ]
             seen_ids = set()
             for c in matching_cats:
                 cid = c.get("catalog_id") or ""
@@ -11298,25 +11236,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         chosen_type = PopcornBoxWindow._get_current_discover_type(self) if hasattr(self, "type_dropdown") else "all"
         catalogs = []
-        if source == "cloudstream" or manifest_url.startswith("cloudstream://"):
-            from . import cloudstream
-            p_id = cloudstream.provider_id_from_catalog_url(manifest_url)
-            prov = cloudstream.get_provider(p_id)
-            if prov and hasattr(prov, "catalog_sections"):
-                catalogs = [
-                    {
-                        "id": sec.get("id") or sec.get("name") if isinstance(sec, dict) else sec[1],
-                        "name": sec.get("name") or sec.get("section") if isinstance(sec, dict) else sec[0],
-                        "manifest_url": manifest_url,
-                        "_source": "cloudstream",
-                    }
-                    for sec in prov.catalog_sections
-                ]
-            else:
-                catalogs = [
-                    c for c in cloudstream.get_catalogs(chosen_type)
-                    if isinstance(c, dict) and str(c.get("manifest_url") or "") == manifest_url
-                ]
+        if source == "nuvio_plugin" or manifest_url.startswith("nuvio://"):
+            from . import plugins
+            catalogs = [
+                c for c in plugins.get_catalogs(chosen_type)
+                if isinstance(c, dict) and str(c.get("manifest_url") or "") == manifest_url
+            ]
         elif source == "custom_plugin" or manifest_url.startswith("custom://"):
             from . import custom_plugins
             catalogs = [
@@ -13278,8 +13203,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             return None
 
                         try:
-                            is_cs_cat = (cat_info.get("_source") == "cloudstream" or str(m_url or "").startswith("cloudstream://"))
-                            cat_timeout = 8.0 if is_cs_cat else 2.5
+                            is_plugin_cat = (
+                                cat_info.get("_source") in ("custom_plugin", "nuvio_plugin")
+                                or str(m_url or "").startswith(("custom://", "nuvio://"))
+                            )
+                            cat_timeout = 8.0 if is_plugin_cat else 2.5
                             raw_items = api.fetch_items(
                                 media_type=m_type,
                                 catalog_id=c_id,
@@ -14152,7 +14080,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     target_idx = idx
                     found = True
                     break
-            if not found and target_cat and str(target_cat.get("manifest_url") or "").startswith("cloudstream://"):
+            if not found and target_cat and str(target_cat.get("manifest_url") or "").startswith(("custom://", "nuvio://")):
                 self.all_catalogs.append(target_cat)
                 target_idx = len(self.all_catalogs) - 1
             self.current_catalog = target_cat
@@ -14522,44 +14450,30 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         cur_network = getattr(self, "current_network", None)
         if not isinstance(cur_network, str) or cur_network in ("All Networks", _("All Networks"), "Network", _("Network"), "All"):
             cur_network = None
-        from . import cloudstream, custom_plugins
+        from . import plugins, custom_plugins
         if filter_addon_url:
-            if str(filter_addon_url).startswith("cloudstream://"):
-                p_id = cloudstream.provider_id_from_catalog_url(filter_addon_url)
-                prov = cloudstream.get_provider(p_id)
-                if prov and hasattr(prov, "catalog_sections"):
-                    cloudstream_catalogs = [
-                        {
-                            "catalog_id": sec.get("id") or sec.get("name") if isinstance(sec, dict) else sec[1],
-                            "catalog_name": sec.get("name") or sec.get("section") if isinstance(sec, dict) else sec[0],
-                            "type": filter_media_type or "all",
-                            "manifest_url": filter_addon_url,
-                            "_source": "cloudstream",
-                        }
-                        for sec in prov.catalog_sections
-                    ]
-                else:
-                    cloudstream_catalogs = [
-                        cat for cat in cloudstream.get_catalogs(filter_media_type or "all")
-                        if str(cat.get("manifest_url") or "") == str(filter_addon_url)
-                    ]
+            if str(filter_addon_url).startswith("nuvio://"):
+                nuvio_catalogs = [
+                    cat for cat in plugins.get_catalogs(filter_media_type or "all")
+                    if str(cat.get("manifest_url") or "") == str(filter_addon_url)
+                ]
             else:
-                cloudstream_catalogs = []
+                nuvio_catalogs = []
             custom_catalogs = [
                 cat for cat in custom_plugins.get_catalogs(filter_media_type or "all")
                 if str(cat.get("manifest_url") or "") == str(filter_addon_url)
             ]
         else:
-            cloudstream_catalogs = []
+            nuvio_catalogs = []
             custom_catalogs = []
-        cloudstream_signature = tuple(sorted(
+        plugin_catalog_signature = tuple(sorted(
             (str(c.get("manifest_url") or ""), str(c.get("catalog_id") or ""), str(c.get("type") or ""))
-            for c in (cloudstream_catalogs + custom_catalogs)
+            for c in (nuvio_catalogs + custom_catalogs)
         ))
         cache_key = (
-            ("home", filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "", cloudstream_signature)
+            ("home", filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "", plugin_catalog_signature)
             if is_home else
-            (filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "", cloudstream_signature)
+            (filter_media_type or "all", filter_addon_url or "", cur_sort, cur_genre or "", cur_year or "", cur_lang or "", cur_country or "", cur_network or "", plugin_catalog_signature)
         )
         cached_res = None
         if not force_refresh and hasattr(self, "_discover_catalog_list_cache") and cache_key in self._discover_catalog_list_cache:
@@ -14579,10 +14493,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 online_rows = [
                     row for row in cached_res
                     if (
-                        row.get("_source") == "cloudstream"
-                        and (str(row.get("manifest_url") or ""), str(row.get("catalog_id") or ""), str(row.get("media_type") or "")) in cloudstream_signature
+                        row.get("_source") in ("nuvio_plugin", "custom_plugin")
+                        and (str(row.get("manifest_url") or ""), str(row.get("catalog_id") or ""), str(row.get("media_type") or "")) in plugin_catalog_signature
                     ) or (
-                        row.get("_source") != "cloudstream"
+                        row.get("_source") not in ("nuvio_plugin", "custom_plugin")
                         and (not row.get("manifest_url") or api.is_addon_online(row.get("manifest_url")))
                     )
                 ]
@@ -14797,36 +14711,18 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         'title': row_title
                     })
 
-        # CloudStream adapters expose their own main-page sections instead of
-        # Stremio catalog manifests. List them on selection only (do not list them with all).
-        if filter_addon_url and cloudstream_catalogs:
-            for cat in cloudstream_catalogs:
-                if cur_genre and not api.catalog_supports_filter(cat, cur_genre):
-                    continue
-                if cur_lang and not api.catalog_supports_filter(cat, cur_lang):
-                    continue
-                if cur_country and not (
-                    api.catalog_supports_extra(cat, ["country", "origin_country", "countries"])[0]
-                    or api.catalog_supports_genre(cat, cur_country)
-                ):
-                    continue
+        # Nuvio plugin providers expose their catalog sections on selection.
+        if filter_addon_url and nuvio_catalogs:
+            for cat in nuvio_catalogs:
                 c_type = str(cat.get("type") or "movie").strip().lower()
-                if (
-                    is_home
-                    and str(filter_media_type or "all").strip().lower() in ("all", "movie_series")
-                    and (c_type in HOME_EXCLUDED_MEDIA_TYPES or c_type not in HOME_ALLOWED_MEDIA_TYPES)
-                ):
-                    continue
                 row_key = (cat.get("manifest_url"), cat.get("catalog_id"), c_type)
                 if row_key in seen_row_keys:
                     continue
                 seen_row_keys.add(row_key)
-                raw_name = cat.get("addon_name") or "CloudStream"
-                base_name = re.sub(r"\s*\((?:cloudstream|cs)\)$", "", raw_name, flags=re.I).strip()
-                addon_name = f"{base_name} (CloudStream)"
+                name = cat.get("addon_name") or "Nuvio"
                 rows.append({
-                    "_source": "cloudstream",
-                    "addon_name": addon_name,
+                    "_source": "nuvio_plugin",
+                    "addon_name": name,
                     "media_type": c_type,
                     "raw_type": c_type,
                     "catalog_id": cat.get("catalog_id"),
@@ -14835,8 +14731,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     "genres": list(cat.get("genres") or []),
                     "extra": list(cat.get("extra") or []),
                     "extraSupported": list(cat.get("extraSupported") or []),
-                    "supports_pagination": bool(cat.get("supports_pagination")),
-                    "title": f"{addon_name} - {cat.get('catalog_name') or cat.get('catalog_id')}",
+                    "supports_pagination": bool(cat.get("supports_pagination", True)),
+                    "title": f"{name} - {cat.get('catalog_name') or cat.get('catalog_id')}",
                 })
 
         # Custom plugins expose their own catalog sections. List them on selection.
@@ -16067,7 +15963,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         # that have no local results yet; fetch_items handles
                         # transport failures and timeout.
                         debug_log(f"discover row FETCHING from API: '{row_title}' (type={m_type}, id={c_id}, genre={fetch_genre})")
-                        is_cs_row = (row_info.get("_source") == "cloudstream" or str(m_url or "").startswith("cloudstream://"))
+                        is_plugin_row = (
+                            row_info.get("_source") in ("custom_plugin", "nuvio_plugin")
+                            or str(m_url or "").startswith(("custom://", "nuvio://"))
+                        )
                         items = api.fetch_items(
                             media_type=m_type,
                             catalog_id=c_id,
@@ -16075,7 +15974,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             genre=fetch_genre or "",
                             page=1,
                             limit=DISCOVER_ROW_CARD_LIMIT,
-                            timeout=8.0 if is_cs_row else 2.5,
+                            timeout=8.0 if is_plugin_row else 2.5,
                             is_cancelled=(lambda: _is_event_set(abort_ev)),
                             extra_filters={"year": current_y, "language": current_l, "country": current_c, "network": cur_network},
                         )
@@ -16108,26 +16007,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 items = api.prefilter_kids_safe_items(items, media_type=m_type)
                             items = [it for it in items if not api.is_future_item(it)]
                         debug_log(f"discover row FETCHED from API: '{row_title}'", f"Got {len(items) if items else 0} items")
-                        if not items and row_info.get("_source") == "cloudstream":
-                            m_url = row_info.get("manifest_url")
-                            if m_url and str(m_url).startswith("cloudstream://catalog/"):
-                                from . import cloudstream
-                                pid = cloudstream.provider_id_from_catalog_url(m_url)
-                                if pid:
-                                    cloudstream.mark_provider_status(pid, False)
                         return (row_info, items)
                     except Exception as e:
                         logger.error(f"Error fetching discover row {row_info.get('title')}: {e}")
-                        if row_info.get("_source") == "cloudstream":
-                            m_url = row_info.get("manifest_url")
-                            if m_url and str(m_url).startswith("cloudstream://catalog/"):
-                                try:
-                                    from . import cloudstream
-                                    pid = cloudstream.provider_id_from_catalog_url(m_url)
-                                    if pid:
-                                        cloudstream.mark_provider_status(pid, False)
-                                except Exception:
-                                    pass
                         return (row_info, None)
 
                 # Fetch all rows in this batch in parallel and stream completed rows immediately
@@ -16292,15 +16174,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         self._set_discover_spinner_active(False)
                         if hasattr(self, "_discover_views") and v_key in self._discover_views:
                             self._discover_views.pop(v_key, None)
-
-                        filter_addon_url = getattr(self, "_current_discover_addon", None)
-                        if filter_addon_url and str(filter_addon_url).startswith("cloudstream://catalog/"):
-                            from . import cloudstream
-                            pid = cloudstream.provider_id_from_catalog_url(filter_addon_url)
-                            if pid:
-                                cloudstream.mark_provider_status(pid, False)
-                                if hasattr(self, "_discover_catalog_list_cache"):
-                                    self._discover_catalog_list_cache.clear()
 
                         if not getattr(target_box, "_has_empty_label", False):
                             empty_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
@@ -17487,6 +17360,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._waiting_for_more_streams = False
         self.stream_request_id += 1
         self._failed_stream_identities = set()
+        self._failed_ua_fallback_hosts = set()
+        self._refreshed_providers_in_session = set()
+        self._failed_host_counts = {}
         self.stream_queue = []
         self.stream_queue_index = 0
         self.stream_queue_key = None
@@ -17898,6 +17774,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         )
 
         self._hls_prep_url = url if is_hls else None
+        self._hls_fast_start_error = False
+        self._mpv_file_loaded = False
         self._tracks_restored_for_file = False
         self._subtitles_configured_for_file = False
         self._audio_configured_for_file = False
@@ -17934,6 +17812,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 if getattr(self, "_hls_prep_url", None) != url:
                     return
                 self._hls_prep_url = None
+                fast_start_errored = bool(getattr(self, "_hls_fast_start_error", False))
+                self._hls_fast_start_error = False
                 if extracted_subtitles:
                     self._extracted_hls_subtitles = list(extracted_subtitles)
 
@@ -17950,7 +17830,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     self._try_next_stream_in_queue()
                     return
                 if is_fmp4 and session_id:
-                    if fast_start and is_channel_context:
+                    is_seg_proxy = bool(hls_proxy.is_segment_proxy_session(session_id))
+                    if fast_start and is_channel_context and not is_seg_proxy:
                         # Live playlists refresh continuously; a sliced VOD
                         # session would go stale. Direct playback needs no seek.
                         playback_trace("hls proxy skipped for live channel")
@@ -17961,28 +17842,40 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     self._hls_total_duration = total_dur
                     if total_dur and total_dur > 0:
                         self._update_duration(total_dur)
-                    if fast_start and not self._extracted_hls_subtitles:
+                    if fast_start and not self._extracted_hls_subtitles and not is_seg_proxy and not fast_start_errored:
                         # Direct playback is already running; keep the session
                         # so the first seek switches to the sliced playlist.
                         playback_trace("hls proxy attached for seeks")
                         return
                     self._seek_after_loaded = None
                     playback_trace("loadfile issue (hls proxy)")
+                    self._mpv_file_loaded = False
+                    reloaded = True
                     try:
                         self.mpv.loadfile(playback_url, "replace")
                     except Exception as e:
                         logger.warning(f"Error loading HLS proxy stream: {e}")
                 else:
+                    reloaded = False
                     self._is_hls_proxy_active = False
                     self._hls_session_id = None
                     self._hls_time_offset = 0.0
                     self._hls_total_duration = None
                     target_url = playback_url or url
+                    if fast_start and fast_start_errored and target_url == url:
+                        if getattr(self, "stream_queue", None) and len(self.stream_queue) > 0:
+                            self._try_next_stream_in_queue()
+                        else:
+                            err_msg = getattr(self, "_last_stream_error", "") or _("Stream failed to load")
+                            self._show_toast(_("File Error") + f": {err_msg}")
+                        return
                     need_switch = bool(self._extracted_hls_subtitles and target_url != url)
                     if fast_start and not need_switch:
                         pass
                     else:
                         playback_trace("loadfile issue (hls)", str(target_url)[:100])
+                        self._mpv_file_loaded = False
+                        reloaded = True
                         try:
                             curr_pos = float(getattr(self.mpv, "time_pos", 0.0) or 0.0)
                         except Exception:
@@ -17998,7 +17891,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
                 if self._extracted_hls_subtitles:
                     self._apply_extracted_hls_subtitles(self._extracted_hls_subtitles)
-                elif not getattr(self, "_subtitles_configured_for_file", False):
+                elif not reloaded and not getattr(self, "_subtitles_configured_for_file", False):
                     self._check_and_configure_subtitles()
 
             if fast_start:
@@ -18296,6 +18189,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             return
         if self._is_playing_trailer() or getattr(self.mpv, "idle_active", False):
             return
+        if getattr(self, "_mpv_file_loaded", None) is False:
+            logger.debug("[SUBS] File not loaded in MPV yet; deferring subtitle configuration until file-loaded.")
+            return
 
         if getattr(self, "_extracted_hls_subtitles", None):
             self._apply_extracted_hls_subtitles(self._extracted_hls_subtitles)
@@ -18334,6 +18230,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     logger.info(f"[SUBS] Reused saved external subtitle: {saved_path}")
                     return
                 except Exception as e:
+                    err_str = str(e)
+                    if "-12" in err_str or "error running mpv command" in err_str.lower():
+                        # MPV isn't ready for sub-add yet; defer injection rather than re-downloading.
+                        self.pending_subtitles = [(saved_path, str(saved_subtitle.get("lang") or "und"), True)]
+                        self._pending_subtitle_request = None
+                        self._try_add_pending_subtitles()
+                        return
                     logger.warning(f"[SUBS] Could not reuse saved external subtitle {saved_path}: {e}")
             else:
                 logger.info(f"[SUBS] Saved subtitle file is missing: {saved_path}")
@@ -18412,6 +18315,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     def fetch_and_add_subtitles(self, imdb_id, media_type, season, episode, stream_subtitles=None, stream_title=None):
         """Fetch subtitles in a background thread and inject them into MPV when ready."""
         self.pending_subtitles = []
+        sub_cache_key = (str(imdb_id or ""), str(media_type or ""), season, episode)
+        sess_sub_cache = getattr(self, "_session_downloaded_subtitles", None)
+        if isinstance(sess_sub_cache, dict) and sub_cache_key in sess_sub_cache:
+            cached_files = [(p, l, sel) for p, l, sel in sess_sub_cache[sub_cache_key] if p and os.path.exists(p)]
+            if cached_files:
+                self.pending_subtitles = cached_files
+                self._try_add_pending_subtitles()
+                return
         self._subtitle_fetch_id = getattr(self, '_subtitle_fetch_id', 0) + 1
         current_fetch_id = self._subtitle_fetch_id
         
@@ -18490,6 +18401,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 if not hasattr(self, 'pending_subtitles'):
                                     self.pending_subtitles = []
                                 self.pending_subtitles.append((p, l, is_first))
+                                if not isinstance(getattr(self, "_session_downloaded_subtitles", None), dict):
+                                    self._session_downloaded_subtitles = {}
+                                self._session_downloaded_subtitles.setdefault(sub_cache_key, []).append((p, l, is_first))
                                 self._try_add_pending_subtitles()
                                 return False
                             GLib.idle_add(_queue)
@@ -18552,7 +18466,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             
         threading.Thread(target=fetch, daemon=True).start()
 
-    def _try_add_pending_subtitles(self):
+    def _try_add_pending_subtitles(self, retry_count: int = 0):
         """Try to inject pending subtitles into MPV. Retries via timer if MPV isn't ready."""
         if not hasattr(self, 'pending_subtitles') or not self.pending_subtitles:
             return
@@ -18562,13 +18476,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         except Exception:
             is_idle = True
 
-        if is_idle:
-            # MPV isn't playing yet — schedule a retry in 500ms
-            logger.debug("[SUBS] MPV idle_active=True, scheduling retry in 500ms")
-            def _retry():
-                self._try_add_pending_subtitles()
-                return False
-            GLib.timeout_add(500, _retry)
+        if is_idle or getattr(self, "_mpv_file_loaded", None) is False:
+            if retry_count < 20:
+                logger.debug("[SUBS] MPV not ready for sub-add (idle=%s, file_loaded=%s), scheduling retry", is_idle, getattr(self, "_mpv_file_loaded", None))
+                def _retry():
+                    self._try_add_pending_subtitles(retry_count + 1)
+                    return False
+                GLib.timeout_add(400, _retry)
             return
             
         try:
@@ -18597,6 +18511,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     except Exception:
                         pass
         except Exception as e:
+            if ("-12" in str(e) or "error running mpv command" in str(e).lower()) and retry_count < 8:
+                def _retry_err():
+                    self._try_add_pending_subtitles(retry_count + 1)
+                    return False
+                GLib.timeout_add(350, _retry_err)
+                return
             logger.error(f"[SUBS] Failed to add pending subtitles: {e}")
 
     def play_stream_with_failover(self, queue, initial_index=0, title="", previous_page=None, season=None, episode=None, imdb_id=None, media_type=None, stream_subtitles=None):
@@ -18959,9 +18879,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             magnet = api.add_trackers_to_magnet(magnet, sources=sources)
 
         title_text = self.stream_queue_title or "Stream"
-        if getattr(self, "stream_queue_item_id", "") and str(self.stream_queue_item_id).startswith("cloudstream:"):
-            from .cloudstream import clean_cloudstream_title
-            title_text, _year = clean_cloudstream_title(title_text)
         stream_name = torrent.get("filename") or torrent.get("name") or torrent.get("stream_title") or "" if isinstance(torrent, dict) else ""
         if stream_name:
             display_title = f"{title_text} ({stream_name})"
@@ -19114,13 +19031,36 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if p_id and failed_st:
             database.clear_working_stream(p_id, season, episode, failed_stream=failed_st)
 
-        # 1. If HTTP stream failed, check if retrying with alternate User-Agent recovers it (e.g. 403 bot blocks vs 428 bot blocks)
+        # 1. If HTTP stream failed, check if retrying with alternate User-Agent recovers it (e.g. 403/428/429 bot blocks)
         last_err = str(getattr(self, "_last_stream_error", "") or "").lower()
-        is_server_error = any(code in last_err for code in ["500", "502", "503", "504", "404", "429", "too many requests", "not found", "internal server error", "bad gateway", "timed out", "timeout"])
-        if not hasattr(self, "_failed_stream_identities"):
+        is_server_error = any(code in last_err for code in [
+            "500", "502", "503", "504", "404", "410", "429", "too many requests",
+            "not found", "internal server error", "bad gateway", "timed out", "timeout",
+            "unrecognized", "invalid data", "could not find codec", "demuxer", "not a valid",
+        ])
+        if not isinstance(getattr(self, "_failed_stream_identities", None), set):
             self._failed_stream_identities = set()
-        if not is_server_error and isinstance(failed_st, dict) and failed_st.get("is_http") and not failed_st.get("_ua_fallback_tried"):
+        if not isinstance(getattr(self, "_failed_ua_fallback_hosts", None), set):
+            self._failed_ua_fallback_hosts = set()
+        if not isinstance(getattr(self, "_refreshed_providers_in_session", None), set):
+            self._refreshed_providers_in_session = set()
+
+        st_url = (failed_st.get("url") or failed_st.get("magnet") or "") if isinstance(failed_st, dict) else ""
+        st_host = ""
+        if isinstance(st_url, str) and st_url.startswith(("http://", "https://")):
+            import urllib.parse
+            st_host = (urllib.parse.urlsplit(st_url).netloc or "").lower()
+
+        if (
+            not is_server_error
+            and isinstance(failed_st, dict)
+            and failed_st.get("is_http")
+            and not failed_st.get("_ua_fallback_tried")
+            and st_host not in self._failed_ua_fallback_hosts
+        ):
             failed_st["_ua_fallback_tried"] = True
+            if st_host:
+                self._failed_ua_fallback_hosts.add(st_host)
             st_headers = api.extract_stream_headers(failed_st)
             magnet = failed_st.get("url") or failed_st.get("magnet")
             if magnet:
@@ -19153,18 +19093,29 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             import urllib.parse
             self._failed_stream_identities.add(("link", urllib.parse.unquote(str(failed_st["url"])).strip().rstrip("/")))
 
-        # 2. If HTTP stream failed and has not been refreshed yet, attempt auto-heal refresh from provider first
-        if isinstance(failed_st, dict) and failed_st.get("is_http") and not failed_st.get("_refreshed"):
+        # 2. If HTTP stream failed and has not been refreshed yet, attempt auto-heal refresh once per provider
+        is_non_media_format_error = any(
+            k in last_err for k in ("unrecognized", "invalid data", "could not find codec", "demuxer", "not a valid")
+        )
+        anames = failed_st.get("addon_names", []) if isinstance(failed_st, dict) else []
+        target_prov = anames[0] if anames else (failed_st.get("addon_name") if isinstance(failed_st, dict) else None)
+        if not target_prov:
+            target_prov = getattr(self, "preferred_direct_provider", None)
+        prov_key = str(target_prov or "").strip().casefold()
+
+        if (
+            isinstance(failed_st, dict)
+            and failed_st.get("is_http")
+            and not failed_st.get("_refreshed")
+            and not is_non_media_format_error
+            and prov_key not in self._refreshed_providers_in_session
+        ):
             failed_st["_refreshed"] = True
+            self._refreshed_providers_in_session.add(prov_key)
             p_id = getattr(self, "_current_playing_item", {}).get("id") or getattr(self, "_current_playing_item", {}).get("imdb_id")
             season = getattr(self, "_current_playing_item", {}).get("season")
             episode = getattr(self, "_current_playing_item", {}).get("episode")
             media_type = getattr(self, "_current_playing_item", {}).get("type", "movie")
-
-            anames = failed_st.get("addon_names", [])
-            target_prov = anames[0] if anames else failed_st.get("addon_name")
-            if not target_prov:
-                target_prov = getattr(self, "preferred_direct_provider", None)
 
             self.show_player_loading(_("Refreshing stream link..."), self.stream_queue_title or "Stream")
 
@@ -19265,10 +19216,34 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self.stream_queue = self.stream_queue[:curr_idx + 1] + remaining
         from . import api
         if target_prov and remaining:
-            same_prov_streams = [s for s in remaining if api.stream_matches_provider(s, target_prov)]
+            failed_url = (failed_st.get("url") or "") if isinstance(failed_st, dict) else ""
+            failed_host = ""
+            if isinstance(failed_url, str) and failed_url.startswith(("http://", "https://")):
+                import urllib.parse
+                failed_host = (urllib.parse.urlsplit(failed_url).netloc or "").lower()
+
+            if not isinstance(getattr(self, "_failed_host_counts", None), dict):
+                self._failed_host_counts = {}
+            host_fail_count = 0
+            if failed_host:
+                self._failed_host_counts[failed_host] = self._failed_host_counts.get(failed_host, 0) + 1
+                host_fail_count = self._failed_host_counts[failed_host]
+
+            def _same_repeatedly_failed_host(stream):
+                if host_fail_count < 2 or not failed_host or not isinstance(stream, dict):
+                    return False
+                u = stream.get("url") or ""
+                if not isinstance(u, str) or not u.startswith(("http://", "https://")):
+                    return False
+                import urllib.parse
+                return (urllib.parse.urlsplit(u).netloc or "").lower() == failed_host
+
+            # Once a host fails repeatedly (>= 2x), try other providers/CDNs before more links on that dead host
+            same_prov_diff_host = [s for s in remaining if api.stream_matches_provider(s, target_prov) and not _same_repeatedly_failed_host(s)]
             other_streams = [s for s in remaining if not api.stream_matches_provider(s, target_prov)]
-            if same_prov_streams:
-                self.stream_queue = self.stream_queue[:curr_idx + 1] + same_prov_streams + other_streams
+            same_prov_same_host = [s for s in remaining if api.stream_matches_provider(s, target_prov) and _same_repeatedly_failed_host(s)]
+            if same_prov_diff_host or same_prov_same_host:
+                self.stream_queue = self.stream_queue[:curr_idx + 1] + same_prov_diff_host + other_streams + same_prov_same_host
 
         self.stream_queue_index += 1
         if self.stream_queue_index < len(self.stream_queue):
@@ -20588,7 +20563,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         return url
 
     def _update_supported_media_types(self):
-        from . import api, cloudstream
+        from . import api, plugins
         all_addons = api.database.get_addons()
 
         def _get_supported_types(addons):
@@ -20612,7 +20587,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         try:
             supported_types.update(
                 str(c.get("type") or "").strip().lower()
-                for c in cloudstream.get_catalogs("all")
+                for c in plugins.get_catalogs("all")
                 if c.get("type")
             )
         except Exception:
@@ -21727,7 +21702,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self.plugin_repo_url_entry.connect("activate", lambda *a: self._on_install_plugin_repo_clicked())
 
         self.plugin_providers_listbox.set_filter_func(self._plugin_provider_filter_func)
-        self._setup_cloudstream_page()
         self._setup_custom_plugins_page()
 
     def _populate_plugins(self):
@@ -21869,6 +21843,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             ver_badge.add_css_class("caption")
             sfx.append(ver_badge)
 
+            if plugins.scraper_has_settings(scraper):
+                cfg_btn = Gtk.Button.new_from_icon_name("emblem-system-symbolic")
+                cfg_btn.set_valign(Gtk.Align.CENTER)
+                cfg_btn.add_css_class("flat")
+                cfg_btn.add_css_class("circular")
+                cfg_btn.set_tooltip_text(_("Provider Settings"))
+                cfg_btn.connect("clicked", lambda b, sid=s_id, sn=s_name: self._on_plugin_settings_clicked(sid, sn))
+                sfx.append(cfg_btn)
+
             test_btn = Gtk.Button(label=_("Test"), valign=Gtk.Align.CENTER)
             test_btn.add_css_class("flat")
             test_btn.add_css_class("pill")
@@ -21917,6 +21900,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     self.plugin_repo_url_entry.set_text("")
                     self.plugin_install_status_label.set_visible(False)
                     self._populate_plugins()
+                    self._refresh_nuvio_catalog_views()
                     self._show_toast(msg)
                 else:
                     self.plugin_install_status_label.set_text(msg)
@@ -21937,6 +21921,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
             def apply_result():
                 self._populate_plugins()
+                self._refresh_nuvio_catalog_views()
                 self._show_toast(msg)
                 return False
 
@@ -21960,6 +21945,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
             def apply_result():
                 self._populate_plugins()
+                self._refresh_nuvio_catalog_views()
                 self._show_toast(_("Refreshed %s repository(s)") % count)
                 return False
 
@@ -21971,7 +21957,18 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         from . import plugins
         plugins.remove_repository(manifest_url)
         self._populate_plugins()
+        self._refresh_nuvio_catalog_views()
         self._show_toast(_("Removed '%s'") % repo_name)
+
+    def _refresh_nuvio_catalog_views(self):
+        self._addons_dirty = True
+        if hasattr(self, "_discover_catalog_list_cache") and isinstance(self._discover_catalog_list_cache, dict):
+            self._discover_catalog_list_cache.clear()
+        if hasattr(self, "_populate_discover_catalog_dropdown"):
+            filter_type = getattr(self, "_current_discover_type", "all")
+            self._populate_discover_catalog_dropdown(filter_type)
+        if hasattr(self, "_update_supported_media_types"):
+            self._update_supported_media_types()
 
     def _on_test_scraper_clicked(self, scraper_id, scraper_name, test_btn):
         test_btn.set_sensitive(False)
@@ -21999,9 +21996,193 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         threading.Thread(target=worker, daemon=True, name="PluginScraperTest").start()
 
+    def _on_plugin_settings_clicked(self, scraper_id, scraper_name):
+        from . import plugins
+
+        dialog = Adw.Dialog(
+            title=_("%s Settings") % scraper_name,
+            content_width=480,
+            content_height=460,
+        )
+        toolbar_view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        cancel_btn = Gtk.Button(label=_("Cancel"))
+        cancel_btn.connect("clicked", lambda _b: dialog.close())
+        save_btn = Gtk.Button(label=_("Save"))
+        save_btn.add_css_class("suggested-action")
+        save_btn.set_sensitive(False)
+        header.pack_start(cancel_btn)
+        header.pack_end(save_btn)
+        toolbar_view.add_top_bar(header)
+
+        loading_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=12,
+            halign=Gtk.Align.CENTER,
+            valign=Gtk.Align.CENTER,
+            vexpand=True,
+        )
+        spinner = Gtk.Spinner(spinning=True)
+        spinner.set_size_request(28, 28)
+        loading_lbl = Gtk.Label(label=_("Loading provider settings..."))
+        loading_lbl.add_css_class("dim-label")
+        loading_box.append(spinner)
+        loading_box.append(loading_lbl)
+        toolbar_view.set_content(loading_box)
+        dialog.set_child(toolbar_view)
+
+        state = {"open": True, "extractors": []}
+        dialog.connect("closed", lambda _d: state.__setitem__("open", False))
+
+        def _on_save_clicked(_btn):
+            new_settings = dict(plugins.get_scraper_settings(scraper_id) or {})
+            for extractor in state["extractors"]:
+                extractor(new_settings)
+            plugins.save_scraper_settings(scraper_id, new_settings)
+            plugins.clear_scraper_cooldown(scraper_id)
+            dialog.close()
+            self._show_toast(_("Saved settings for %s") % scraper_name)
+
+        save_btn.connect("clicked", _on_save_clicked)
+        dialog.present(self)
+
+        def worker():
+            fields = plugins.get_scraper_on_settings(scraper_id)
+            current = dict(plugins.get_scraper_settings(scraper_id) or {})
+
+            def build_form():
+                if not state["open"]:
+                    return False
+
+                page = Adw.PreferencesPage()
+                group = Adw.PreferencesGroup(title=_("Provider Configuration"))
+                has_plugin_fields = False
+
+                for field in fields or []:
+                    if not isinstance(field, dict):
+                        continue
+                    f_type = str(field.get("type") or "text").strip().lower()
+                    f_key = str(field.get("key") or field.get("id") or field.get("name") or "").strip()
+                    f_label = str(field.get("label") or field.get("title") or f_key or "").strip()
+                    f_desc = str(field.get("description") or field.get("subtitle") or "").strip()
+
+                    if f_type in ("header", "info", "label", "description") or not f_key:
+                        if f_label or f_desc:
+                            info_row = Adw.ActionRow(title=f_label or f_desc)
+                            if f_label and f_desc:
+                                info_row.set_subtitle(f_desc)
+                            group.add(info_row)
+                            has_plugin_fields = True
+                        continue
+
+                    val = current.get(f_key, field.get("default"))
+                    options = field.get("options") if isinstance(field.get("options"), list) else []
+
+                    if options or f_type in ("select", "dropdown", "enum", "choice"):
+                        labels = []
+                        values = []
+                        for opt in options:
+                            if isinstance(opt, dict):
+                                labels.append(str(opt.get("label") or opt.get("name") or opt.get("value") or ""))
+                                values.append(opt.get("value") if "value" in opt else opt.get("label"))
+                            else:
+                                labels.append(str(opt))
+                                values.append(opt)
+                        if labels:
+                            combo = Adw.ComboRow(title=f_label)
+                            if f_desc:
+                                combo.set_subtitle(f_desc)
+                            combo.set_model(Gtk.StringList.new(labels))
+                            try:
+                                sel_idx = values.index(val)
+                            except ValueError:
+                                sel_idx = 0
+                            combo.set_selected(sel_idx)
+                            group.add(combo)
+                            has_plugin_fields = True
+                            state["extractors"].append(
+                                lambda out, k=f_key, c=combo, vs=values: out.__setitem__(
+                                    k, vs[c.get_selected()] if 0 <= c.get_selected() < len(vs) else vs[0]
+                                )
+                            )
+                            continue
+
+                    if f_type in ("toggle", "switch", "boolean", "bool", "checkbox") or isinstance(val, bool):
+                        sw_row = Adw.SwitchRow(title=f_label)
+                        if f_desc:
+                            sw_row.set_subtitle(f_desc)
+                        sw_row.set_active(bool(val))
+                        group.add(sw_row)
+                        has_plugin_fields = True
+                        state["extractors"].append(
+                            lambda out, k=f_key, r=sw_row: out.__setitem__(k, bool(r.get_active()))
+                        )
+                        continue
+
+                    is_secret = (
+                        f_type in ("password", "secret", "token")
+                        or any(tok in f_key.lower() for tok in ("password", "secret", "token", "cookie", "key"))
+                    )
+                    entry_row = Adw.PasswordEntryRow(title=f_label) if is_secret else Adw.EntryRow(title=f_label)
+                    if val is not None:
+                        entry_row.set_text(str(val))
+                    group.add(entry_row)
+                    has_plugin_fields = True
+                    if f_type == "number":
+                        def _extract_num(out, k=f_key, r=entry_row):
+                            txt = r.get_text().strip()
+                            try:
+                                out[k] = float(txt) if "." in txt else int(txt)
+                            except ValueError:
+                                out[k] = txt
+                        state["extractors"].append(_extract_num)
+                    else:
+                        state["extractors"].append(
+                            lambda out, k=f_key, r=entry_row: out.__setitem__(k, r.get_text().strip())
+                        )
+
+                if not has_plugin_fields:
+                    empty_row = Adw.ActionRow(
+                        title=_("No custom fields exposed"),
+                        subtitle=_("This provider does not define editable settings fields."),
+                    )
+                    group.add(empty_row)
+                page.add(group)
+
+                net_group = Adw.PreferencesGroup(
+                    title=_("Network Permissions"),
+                    description=_("Optional comma-separated hostnames added to the Deno network allowlist."),
+                )
+                hosts_val = current.get("allowed_hosts") or ""
+                if isinstance(hosts_val, (list, tuple)):
+                    hosts_val = ", ".join(str(h) for h in hosts_val if h)
+                hosts_row = Adw.EntryRow(title=_("Allowed Hosts"))
+                hosts_row.set_text(str(hosts_val))
+                net_group.add(hosts_row)
+
+                def _extract_hosts(out, r=hosts_row):
+                    raw_h = r.get_text().strip()
+                    parsed_h = [h.strip().lower() for h in raw_h.split(",") if h.strip()]
+                    if parsed_h:
+                        out["allowed_hosts"] = parsed_h
+                    else:
+                        out.pop("allowed_hosts", None)
+
+                state["extractors"].append(_extract_hosts)
+                page.add(net_group)
+
+                toolbar_view.set_content(page)
+                save_btn.set_sensitive(True)
+                return False
+
+            GLib.idle_add(build_form)
+
+        threading.Thread(target=worker, daemon=True, name="PluginSettingsLoad").start()
+
     def _on_scraper_switch_toggled(self, switch, scraper_id):
         from . import plugins
         plugins.toggle_scraper(scraper_id, switch.get_active())
+        self._refresh_nuvio_catalog_views()
 
     def _on_plugin_enable_globally_toggled(self, row, _pspec):
         if getattr(self, "_syncing_plugin_switches", False):
@@ -22009,6 +22190,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         active = row.get_active()
         from . import plugins
         plugins.set_plugins_enabled(active)
+        self._refresh_nuvio_catalog_views()
         if active:
             self.plugin_badge_status.set_label(_("Plugins enabled"))
             self.plugin_badge_status.remove_css_class("plugin-disabled")
@@ -22024,631 +22206,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         active = row.get_active()
         from . import plugins
         plugins.set_group_by_repository(active)
-
-    # --- CloudStream UI Support ---
-
-    def _setup_cloudstream_page(self):
-        if not hasattr(self, "cloudstream_repos_listbox") or not self.cloudstream_repos_listbox:
-            return
-
-        from . import cloudstream
-
-        self._syncing_cloudstream_switches = True
-        try:
-            self.cloudstream_enable_globally_row.set_active(cloudstream.is_cloudstream_enabled())
-        finally:
-            self._syncing_cloudstream_switches = False
-
-        self.cloudstream_enable_globally_row.connect("notify::active", self._on_cloudstream_enable_globally_toggled)
-
-        self.cloudstream_provider_search_entry.connect(
-            "search-changed", lambda *a: self.cloudstream_plugins_listbox.invalidate_filter()
-        )
-        self.cloudstream_provider_search_entry.connect(
-            "activate", lambda *a: self.cloudstream_plugins_listbox.invalidate_filter()
-        )
-
-        self.cloudstream_repo_url_entry.connect("activate", lambda *a: self._on_install_cloudstream_repo_clicked())
-        self.cloudstream_install_repo_btn.connect("clicked", lambda *a: self._on_install_cloudstream_repo_clicked())
-        self.cloudstream_refresh_all_btn.connect("clicked", self._on_refresh_all_cloudstream_repos_clicked)
-        self.cloudstream_accept_warning_btn.connect("clicked", self._on_cloudstream_accept_warning_clicked)
-        self.cloudstream_bulk_install_btn.connect("clicked", self._on_cloudstream_bulk_install_clicked)
-
-        self.cloudstream_plugins_listbox.set_filter_func(self._cloudstream_plugin_filter_func)
-
-    def _populate_cloudstream(self):
-        if not hasattr(self, "cloudstream_repos_listbox") or not self.cloudstream_repos_listbox:
-            return
-
-        from . import cloudstream
-
-        repos = cloudstream.get_installed_repositories()
-        plugins_list = cloudstream.get_all_plugins()
-
-        # One-time auto-enable for already installed plugins that were locked by the insensitive switch
-        from . import database
-        hide_adult = database.is_adult_content_hidden()
-        has_changes = False
-
-        # If Hide 18+ is active, ensure no NSFW providers remain enabled
-        if hide_adult:
-            for p in plugins_list:
-                if p.get("enabled") and cloudstream.is_plugin_nsfw(p):
-                    cloudstream.toggle_plugin(p["id"], False)
-                    p["enabled"] = False
-                    has_changes = True
-
-        if not database.get_setting("cloudstream_plugins_auto_enabled_v1", False):
-            for p in plugins_list:
-                if p.get("is_installed") and not p.get("enabled"):
-                    if hide_adult and cloudstream.is_plugin_nsfw(p):
-                        continue
-                    cloudstream.toggle_plugin(p["id"], True)
-                    p["enabled"] = True
-                    has_changes = True
-            database.set_setting("cloudstream_plugins_auto_enabled_v1", True)
-
-        if has_changes:
-            plugins_list = cloudstream.get_all_plugins()
-
-        repo_count = len(repos)
-        installed_count = len([p for p in plugins_list if p.get("is_installed")])
-        active_count = len([p for p in plugins_list if p.get("enabled") and (cloudstream.is_provider_runnable(p) or p.get("is_installed"))])
-
-        self.cloudstream_badge_repos.set_label(f"{repo_count} repo{'s' if repo_count != 1 else ''}")
-        self.cloudstream_badge_installed.set_label(f"{installed_count} installed")
-        self.cloudstream_badge_providers.set_label(f"{active_count} active")
-
-        enabled = cloudstream.is_cloudstream_enabled()
-        if enabled:
-            self.cloudstream_badge_status.set_label(_("CloudStream enabled"))
-            self.cloudstream_badge_status.remove_css_class("plugin-disabled")
-            self.cloudstream_badge_status.add_css_class("plugin-enabled")
-        else:
-            self.cloudstream_badge_status.set_label(_("CloudStream disabled"))
-            self.cloudstream_badge_status.remove_css_class("plugin-enabled")
-            self.cloudstream_badge_status.add_css_class("plugin-disabled")
-
-        self._syncing_cloudstream_switches = True
-        try:
-            self.cloudstream_enable_globally_row.set_active(enabled)
-        finally:
-            self._syncing_cloudstream_switches = False
-
-        warning_accepted = cloudstream.is_security_warning_accepted()
-        if hasattr(self, "cloudstream_security_warning_box") and self.cloudstream_security_warning_box:
-            self.cloudstream_security_warning_box.set_visible(not warning_accepted)
-
-        while self.cloudstream_repos_listbox.get_first_child() is not None:
-            self.cloudstream_repos_listbox.remove(self.cloudstream_repos_listbox.get_first_child())
-
-        if not repos:
-            empty_row = Adw.ActionRow(
-                title=_("No CloudStream repositories installed"),
-                subtitle=_("Enter a repository URL above (e.g. Kraptor or English cs-repos) to install plugins.")
-            )
-            empty_row.set_sensitive(False)
-            self.cloudstream_repos_listbox.append(empty_row)
-        else:
-            for repo in repos:
-                manifest_url = repo.get("manifest_url", "")
-                repo_name = repo.get("name", "Unknown") or "Unknown"
-                repo_desc = repo.get("description") or manifest_url
-                count = repo.get("plugin_count", 0)
-
-                row = Adw.ActionRow(
-                    title=GLib.markup_escape_text(repo_name),
-                    subtitle=GLib.markup_escape_text(repo_desc)
-                )
-
-                icon = Gtk.Image.new_from_icon_name("network-wireless-symbolic")
-                icon.set_pixel_size(18)
-                row.add_prefix(icon)
-
-                suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, valign=Gtk.Align.CENTER)
-
-                count_label = Gtk.Label(label=f"{count} plugin{'s' if count != 1 else ''}", valign=Gtk.Align.CENTER)
-                count_label.add_css_class("dim-label")
-                count_label.add_css_class("caption")
-                suffix_box.append(count_label)
-
-                ref_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text=_("Refresh repository"), valign=Gtk.Align.CENTER)
-                ref_btn.add_css_class("flat")
-                ref_btn.add_css_class("circular")
-                ref_btn.connect("clicked", lambda b, u=manifest_url: self._on_refresh_single_cloudstream_repo(u))
-                suffix_box.append(ref_btn)
-
-                del_btn = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text=_("Remove repository"), valign=Gtk.Align.CENTER)
-                del_btn.add_css_class("flat")
-                del_btn.add_css_class("circular")
-                del_btn.connect("clicked", lambda b, u=manifest_url, n=repo_name: self._on_remove_cloudstream_repo(u, n))
-                suffix_box.append(del_btn)
-
-                row.add_suffix(suffix_box)
-                self.cloudstream_repos_listbox.append(row)
-
-        self._populate_cloudstream_plugins_list(plugins_list)
-
-    def _populate_cloudstream_plugins_list(self, plugins_list=None):
-        if not hasattr(self, "cloudstream_plugins_listbox") or not self.cloudstream_plugins_listbox:
-            return
-
-        from . import cloudstream
-
-        while self.cloudstream_plugins_listbox.get_first_child() is not None:
-            self.cloudstream_plugins_listbox.remove(self.cloudstream_plugins_listbox.get_first_child())
-
-        if plugins_list is None:
-            plugins_list = cloudstream.get_all_plugins()
-
-        if not plugins_list:
-            empty_row = Adw.ActionRow(
-                title=_("No CloudStream plugins available"),
-                subtitle=_("Install a CloudStream repository above to browse extensions and providers.")
-            )
-            empty_row.set_sensitive(False)
-            self.cloudstream_plugins_listbox.append(empty_row)
-            return
-
-        def _plugin_sort_key(item):
-            is_inst = bool(item.get("is_installed", False))
-            is_run = cloudstream.is_provider_runnable(item)
-            name = (item.get("name") or item.get("internal_name") or "").lower()
-            if is_inst and is_run:
-                prio = 0
-            elif is_run:
-                prio = 1
-            elif is_inst:
-                prio = 2
-            else:
-                prio = 3
-            return (prio, name)
-
-        sorted_plugins = sorted(plugins_list, key=_plugin_sort_key)
-
-        for p in sorted_plugins:
-            p_id = p.get("id")
-            p_name = p.get("name") or p.get("internal_name") or "Plugin"
-            p_desc = p.get("description") or ""
-            version = p.get("version", 1)
-            inst_ver = p.get("installed_version")
-            lang = (p.get("language") or "").upper()
-            raw_types = p.get("raw_tv_types") or []
-            types_str = " | ".join(raw_types) if raw_types else ""
-            is_installed = bool(p.get("is_installed", False))
-            is_runnable = cloudstream.is_provider_runnable(p)
-
-            from . import database
-            hide_adult = database.is_adult_content_hidden()
-            is_nsfw = cloudstream.is_plugin_nsfw(p)
-            is_nsfw_blocked = hide_adult and is_nsfw
-
-            escaped_name = GLib.markup_escape_text(p_name)
-            escaped_desc = GLib.markup_escape_text(p_desc)
-
-            row = Adw.ActionRow()
-            row.set_use_markup(True)
-            row.set_title(f"<b>{escaped_name}</b>")
-            if escaped_desc:
-                row.set_subtitle(escaped_desc)
-
-            row._plugin_name = p_name.lower()
-            row._plugin_desc = p_desc.lower()
-            row._plugin_lang = lang.lower()
-            row._plugin_types = [t.lower() for t in raw_types]
-            row._is_runnable = is_runnable
-            row._is_installed = is_installed
-            row._is_enabled = bool(p.get("enabled", False)) and not is_nsfw_blocked
-            row._is_nsfw = is_nsfw
-            row._is_nsfw_blocked = is_nsfw_blocked
-
-            pfx = Gtk.Image.new_from_icon_name("network-wireless-symbolic")
-            pfx.set_pixel_size(18)
-            pfx.add_css_class("accent")
-            row.add_prefix(pfx)
-
-            sfx = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, valign=Gtk.Align.CENTER)
-
-            if lang:
-                lang_badge = Gtk.Label(label=lang, valign=Gtk.Align.CENTER)
-                lang_badge.add_css_class("plugin-tag-label")
-                sfx.append(lang_badge)
-
-            if types_str:
-                type_badge = Gtk.Label(label=types_str, valign=Gtk.Align.CENTER)
-                type_badge.add_css_class("plugin-tag-label")
-                sfx.append(type_badge)
-
-            if is_nsfw_blocked:
-                nsfw_badge = Gtk.Label(label=_("18+ Blocked"), valign=Gtk.Align.CENTER)
-                nsfw_badge.add_css_class("plugin-tag-label")
-                nsfw_badge.add_css_class("destructive-action")
-                nsfw_badge.set_tooltip_text(_("This provider offers adult/NSFW content and is disabled because 'Hide 18+ / Explicit Content' is enabled in Preferences."))
-                sfx.append(nsfw_badge)
-
-            ver_text = f"v{version}" if inst_ver is None else f"v{inst_ver} (repo v{version})"
-            ver_badge = Gtk.Label(label=ver_text, valign=Gtk.Align.CENTER)
-            ver_badge.add_css_class("dim-label")
-            ver_badge.add_css_class("caption")
-            sfx.append(ver_badge)
-
-            # Test button (for runnable providers or installed providers with base URL)
-            prov_inst = cloudstream.get_provider(p_id)
-            has_base = bool(prov_inst and getattr(prov_inst, "get_base_url", None) and prov_inst.get_base_url())
-            if (is_runnable or (is_installed and has_base)) and not is_nsfw_blocked:
-                test_btn = Gtk.Button(label=_("Test"), valign=Gtk.Align.CENTER)
-                test_btn.add_css_class("flat")
-                test_btn.add_css_class("pill")
-                test_btn.connect("clicked", lambda b, pid=p_id, pn=p_name: self._on_test_cloudstream_provider_clicked(pid, pn, b))
-                sfx.append(test_btn)
-
-            # Install / Update / Remove buttons
-            if not is_installed:
-                inst_btn = Gtk.Button(label=_("Install"), valign=Gtk.Align.CENTER)
-                inst_btn.add_css_class("suggested-action")
-                inst_btn.add_css_class("pill")
-                inst_btn.connect("clicked", lambda b, pid=p_id, pn=p_name: self._on_install_cloudstream_plugin_clicked(pid, pn, b))
-                sfx.append(inst_btn)
-            else:
-                if inst_ver is not None and version > inst_ver:
-                    up_btn = Gtk.Button(label=_("Update"), valign=Gtk.Align.CENTER)
-                    up_btn.add_css_class("suggested-action")
-                    up_btn.add_css_class("pill")
-                    up_btn.connect("clicked", lambda b, pid=p_id, pn=p_name: self._on_install_cloudstream_plugin_clicked(pid, pn, b))
-                    sfx.append(up_btn)
-
-                del_btn = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text=_("Uninstall plugin"), valign=Gtk.Align.CENTER)
-                del_btn.add_css_class("flat")
-                del_btn.add_css_class("circular")
-                del_btn.connect("clicked", lambda b, pid=p_id, pn=p_name: self._on_remove_cloudstream_plugin_clicked(pid, pn))
-                sfx.append(del_btn)
-
-            if not is_runnable:
-                badge_text = _("Generic Scraper") if has_base else _("No Scraper")
-                badge = Gtk.Label(label=badge_text, valign=Gtk.Align.CENTER)
-                badge.add_css_class("plugin-tag-label")
-                badge.add_css_class("dim-label")
-                if has_base:
-                    badge.set_tooltip_text(_("This plugin uses Android DEX bytecode with a discovered website domain fallback."))
-                else:
-                    badge.set_tooltip_text(_("This CloudStream plugin contains Android DEX bytecode without an active Python scraper."))
-                sfx.append(badge)
-
-            sw = Gtk.Switch(valign=Gtk.Align.CENTER)
-            sw.set_active(bool(p.get("enabled", False)) and not is_nsfw_blocked)
-            sw.set_sensitive(is_installed and not is_nsfw_blocked)
-            if is_nsfw_blocked:
-                sw.set_tooltip_text(_("Disabled because 'Hide 18+ / Explicit Content' is enabled in Preferences"))
-            elif not is_runnable:
-                sw.set_tooltip_text(_("This plugin uses Android DEX bytecode (Generic scraper engine)"))
-            else:
-                sw.set_tooltip_text(_("Enable or disable this provider"))
-            sw.connect("notify::active", lambda s, pspec, pid=p_id: self._on_cloudstream_switch_toggled(s, pid))
-            sfx.append(sw)
-
-            row.add_suffix(sfx)
-            self.cloudstream_plugins_listbox.append(row)
-
-    def _cloudstream_plugin_filter_func(self, row):
-        if not hasattr(self, "cloudstream_provider_search_entry") or not self.cloudstream_provider_search_entry:
-            return True
-        text = self.cloudstream_provider_search_entry.get_text().strip().lower()
-        if not text:
-            return True
-        p_name = getattr(row, "_plugin_name", "")
-        p_desc = getattr(row, "_plugin_desc", "")
-        p_lang = getattr(row, "_plugin_lang", "")
-        p_types = getattr(row, "_plugin_types", [])
-        is_run = getattr(row, "_is_runnable", False)
-        is_inst = getattr(row, "_is_installed", False)
-        is_enb = getattr(row, "_is_enabled", False)
-
-        if text in ("runnable", "compatible", "supported", "scraper", "python") and is_run:
-            return True
-        if text in ("installed",) and is_inst:
-            return True
-        if text in ("enabled", "active") and is_enb:
-            return True
-        if text in ("no scraper", "unsupported", "dex") and not is_run:
-            return True
-        if text in ("blocked", "18+ blocked", "nsfw blocked") and getattr(row, "_is_nsfw_blocked", False):
-            return True
-        if text in ("nsfw", "18+", "adult") and getattr(row, "_is_nsfw", False):
-            return True
-        if text in p_name or text in p_desc or text == p_lang or any(text in t for t in p_types):
-            return True
-        return False
-
-    def _on_install_cloudstream_repo_clicked(self, *args):
-        url = self.cloudstream_repo_url_entry.get_text().strip()
-        if not url:
-            self._show_toast(_("Please enter a repository URL"))
-            return
-
-        self.cloudstream_install_status_label.set_text(_("Installing CloudStream repository..."))
-        self.cloudstream_install_status_label.set_visible(True)
-        self.cloudstream_install_repo_btn.set_sensitive(False)
-
-        def worker():
-            from . import cloudstream
-            success, msg, _info = cloudstream.add_repository(url)
-
-            def apply_result():
-                self.cloudstream_install_repo_btn.set_sensitive(True)
-                if success:
-                    self.cloudstream_repo_url_entry.set_text("")
-                    self.cloudstream_install_status_label.set_visible(False)
-                    self._populate_cloudstream()
-                    self._show_toast(msg)
-                else:
-                    self.cloudstream_install_status_label.set_text(msg)
-                    self.cloudstream_install_status_label.set_visible(True)
-                    self._show_toast(msg)
-                return False
-
-            GLib.idle_add(apply_result)
-
-        threading.Thread(target=worker, daemon=True, name="CloudStreamRepoInstall").start()
-
-    def _on_refresh_single_cloudstream_repo(self, manifest_url):
-        self._show_toast(_("Refreshing repository..."))
-
-        def worker():
-            from . import cloudstream
-            success, msg, _info = cloudstream.refresh_repository(manifest_url)
-
-            def apply_result():
-                self._populate_cloudstream()
-                if success:
-                    self._refresh_cloudstream_catalog_views()
-                self._show_toast(msg)
-                return False
-
-            GLib.idle_add(apply_result)
-
-        threading.Thread(target=worker, daemon=True, name="CloudStreamRepoRefresh").start()
-
-    def _on_refresh_all_cloudstream_repos_clicked(self, *args):
-        self._show_toast(_("Refreshing all CloudStream repositories..."))
-
-        def worker():
-            from . import cloudstream
-            repos = cloudstream.get_installed_repositories()
-            count = 0
-            for r in repos:
-                u = r.get("manifest_url")
-                if u:
-                    ok, _msg, _info = cloudstream.refresh_repository(u)
-                    if ok:
-                        count += 1
-
-            def apply_result():
-                self._populate_cloudstream()
-                self._show_toast(_("Refreshed %s repository(s)") % count)
-                return False
-
-            GLib.idle_add(apply_result)
-
-        threading.Thread(target=worker, daemon=True, name="CloudStreamRepoRefreshAll").start()
-
-    def _on_remove_cloudstream_repo(self, manifest_url, repo_name):
-        from . import cloudstream
-        cloudstream.remove_repository(manifest_url)
-        self._populate_cloudstream()
-        self._show_toast(_("Removed '%s'") % repo_name)
-
-    def _on_install_cloudstream_plugin_clicked(self, plugin_id, plugin_name, btn):
-        btn.set_sensitive(False)
-        btn.set_label(_("Installing..."))
-
-        def worker():
-            from . import cloudstream, database
-            ok, msg = cloudstream.install_plugin(plugin_id)
-            if ok:
-                plugin = cloudstream.get_plugin(plugin_id)
-                hide_adult = database.is_adult_content_hidden()
-                if hide_adult and cloudstream.is_plugin_nsfw(plugin):
-                    cloudstream.toggle_plugin(plugin_id, False)
-                    msg = _("%s installed (disabled because 'Hide 18+ / Explicit Content' is enabled)") % plugin_name
-                else:
-                    cloudstream.toggle_plugin(plugin_id, True)
-                    prov = cloudstream.get_provider(plugin_id)
-                    if not cloudstream.is_provider_runnable(plugin):
-                        if prov and getattr(prov, "get_base_url", None) and prov.get_base_url():
-                            msg = _("Installed and enabled %s (Generic scraper engine: %s)") % (plugin_name, prov.get_base_url())
-                        else:
-                            msg = _("%s installed (Note: Android DEX bytecode only - no Python scraper adapter yet)") % plugin_name
-                    elif "megaprovider" in plugin_id.lower():
-                        provider = cloudstream.get_provider(plugin_id)
-                        if provider and hasattr(provider, "sync_repositories"):
-                            added, total, _repo_names = provider.sync_repositories()
-                            msg = _("MegaProvider installed: synced %d/%d repositories!") % (added, total)
-                    else:
-                        msg = _("Installed and enabled %s") % plugin_name
-
-            def apply_result():
-                self._populate_cloudstream()
-                if ok:
-                    self._refresh_cloudstream_catalog_views()
-                self._show_toast(msg)
-                return False
-
-            GLib.idle_add(apply_result)
-
-        threading.Thread(target=worker, daemon=True, name="CloudStreamPluginInstall").start()
-
-    def _on_remove_cloudstream_plugin_clicked(self, plugin_id, plugin_name):
-        from . import cloudstream
-        ok, msg = cloudstream.uninstall_plugin(plugin_id)
-        self._populate_cloudstream()
-        if ok:
-            self._refresh_cloudstream_catalog_views()
-        self._show_toast(msg)
-
-    def _refresh_cloudstream_catalog_views(self):
-        """Invalidate Discover's cached catalog lists after CloudStream changes."""
-        from . import api
-        api.invalidate_catalogs_cache()
-        for attr in ("_catalog_list_cache", "_discover_catalog_list_cache", "_discover_catalog_list_cache_timestamps", "_discover_views"):
-            cache = getattr(self, attr, None)
-            if isinstance(cache, dict):
-                cache.clear()
-        self._active_discover_view_key = None
-        self._update_supported_media_types()
-
-        if hasattr(self, "_populate_discover_catalog_dropdown"):
-            chosen_type = self._get_current_discover_type()
-            self._syncing_discover_toolbar = True
-            try:
-                self._populate_discover_catalog_dropdown(chosen_type)
-                self._current_discover_addon = None
-                self._populate_discover_section_dropdown(None, chosen_type)
-            finally:
-                self._syncing_discover_toolbar = False
-
-        library_visible = (
-            getattr(self, "main_stack", None)
-            and self.main_stack.get_visible_child_name() == "library"
-            and getattr(self, "library_stack", None)
-            and self.library_stack.get_visible_child_name() == "discover"
-        )
-        if library_visible:
-            self._refresh_discover_page(
-                filter_media_type=self._get_current_discover_type(),
-                filter_addon_url=getattr(self, "_current_discover_addon", None),
-                force_refresh=True,
-            )
-
-    def _on_cloudstream_switch_toggled(self, switch, plugin_id):
-        from . import cloudstream, database
-        plugin = cloudstream.get_plugin(plugin_id)
-        if switch.get_active() and database.is_adult_content_hidden() and cloudstream.is_plugin_nsfw(plugin):
-            switch.set_active(False)
-            self._show_toast(_("Cannot enable provider with 18+/NSFW content: 'Hide 18+ / Explicit Content' is enabled in Preferences"))
-            return
-        cloudstream.toggle_plugin(plugin_id, switch.get_active())
-        self._refresh_cloudstream_catalog_views()
-
-    def _on_cloudstream_enable_globally_toggled(self, row, _pspec):
-        if getattr(self, "_syncing_cloudstream_switches", False):
-            return
-        active = row.get_active()
-        from . import cloudstream
-        cloudstream.set_cloudstream_enabled(active)
-        self._refresh_cloudstream_catalog_views()
-        if active:
-            self.cloudstream_badge_status.set_label(_("CloudStream enabled"))
-            self.cloudstream_badge_status.remove_css_class("plugin-disabled")
-            self.cloudstream_badge_status.add_css_class("plugin-enabled")
-        else:
-            self.cloudstream_badge_status.set_label(_("CloudStream disabled"))
-            self.cloudstream_badge_status.remove_css_class("plugin-enabled")
-            self.cloudstream_badge_status.add_css_class("plugin-disabled")
-
-    def _on_cloudstream_accept_warning_clicked(self, *args):
-        from . import cloudstream
-        cloudstream.accept_security_warning()
-        if hasattr(self, "cloudstream_security_warning_box") and self.cloudstream_security_warning_box:
-            self.cloudstream_security_warning_box.set_visible(False)
-        self._show_toast(_("CloudStream security notice accepted"))
-
-    def _on_cloudstream_bulk_install_clicked(self, *args):
-        self._show_toast(_("Installing CloudStream plugins..."))
-
-        def worker():
-            from . import cloudstream, database
-            plugins_list = cloudstream.get_all_plugins()
-            if not plugins_list:
-                def on_empty():
-                    self._show_toast(_("No CloudStream plugins available. Please add a repository first."))
-                    return False
-                GLib.idle_add(on_empty)
-                return
-
-            hide_adult = database.is_adult_content_hidden()
-            compatible_ids = [
-                p["id"] for p in plugins_list
-                if cloudstream.is_provider_runnable(p) and not (hide_adult and cloudstream.is_plugin_nsfw(p))
-            ]
-
-            if compatible_ids:
-                res = cloudstream.bulk_install_and_enable(compatible_ids, only_compatible=True)
-            else:
-                all_ids = [
-                    p["id"] for p in plugins_list
-                    if not (hide_adult and cloudstream.is_plugin_nsfw(p))
-                ]
-                res = cloudstream.bulk_install_and_enable(all_ids, only_compatible=False)
-
-            def apply_result():
-                self._populate_cloudstream()
-                self._refresh_cloudstream_catalog_views()
-                inst = res.get("installed", 0)
-                enb = res.get("enabled", 0)
-                errs = res.get("errors", [])
-                if errs and not inst and not enb:
-                    self._show_toast(_("Failed to install providers: %s") % errs[0])
-                else:
-                    self._show_toast(_("Installed %d, enabled %d CloudStream providers") % (inst, enb))
-                return False
-
-            GLib.idle_add(apply_result)
-
-        threading.Thread(target=worker, daemon=True, name="CloudStreamBulkInstall").start()
-
-    def _on_test_cloudstream_provider_clicked(self, provider_id, provider_name, btn):
-        btn.set_sensitive(False)
-        btn.set_label(_("Testing..."))
-
-        def worker():
-            from . import cloudstream
-            started = time.time()
-            provider = cloudstream.get_provider(provider_id)
-            if not provider:
-                success, count, err = False, 0, "No provider adapter found"
-            else:
-                try:
-                    items = provider.search("test") or []
-                    if not items:
-                        main_page = provider.get_main_page() or []
-                        if main_page:
-                            first_entry = main_page[0]
-                            if isinstance(first_entry, (tuple, list)) and len(first_entry) > 1:
-                                items = first_entry[1]
-                            elif isinstance(first_entry, dict):
-                                items = main_page
-                            else:
-                                items = main_page
-                    success, count, err = True, len(items), None
-                except Exception as e:
-                    success, count, err = False, 0, str(e)
-
-            elapsed_ms = int((time.time() - started) * 1000)
-
-            def apply_result():
-                btn.set_sensitive(True)
-                btn.set_label(_("Test"))
-                if success:
-                    if "megaprovider" in provider_name.lower():
-                        self._populate_cloudstream()
-                    self._show_toast(_(f"✓ {provider_name}: {count} item(s) found ({elapsed_ms}ms)"))
-                else:
-                    self._show_toast(_(f"✗ {provider_name} test failed: {err}"))
-                return False
-
-            GLib.idle_add(apply_result)
-
-        threading.Thread(target=worker, daemon=True, name="CloudStreamProviderTest").start()
-
-    def _open_cloudstream_plugins(self, *args):
-        self._cancel_all_background_fetching()
-        self._push_current_nav_state()
-        self._populate_plugins()
-        self._populate_cloudstream()
-        self._populate_custom_plugins()
-        if hasattr(self, "plugins_sub_stack") and self.plugins_sub_stack:
-            self.plugins_sub_stack.set_visible_child_name("cloudstream")
-        self.main_stack.set_visible_child_name("plugins")
 
     # --- Custom Drop-in Plugins UI Support ---
 
@@ -23015,11 +22572,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self.main_stack.set_visible_child_name(main_page)
             self._populate_local_db_page(main_page)
         elif main_page == "addons":
-            self.main_stack.set_visible_child_name("addons")
             self._populate_addons()
-        elif main_page == "plugins":
+            if hasattr(self, "plugins_sub_stack") and self.plugins_sub_stack:
+                self.plugins_sub_stack.set_visible_child_name("addons")
             self.main_stack.set_visible_child_name("plugins")
+        elif main_page == "plugins":
+            self._populate_addons()
             self._populate_plugins()
+            self._populate_custom_plugins()
+            self.main_stack.set_visible_child_name("plugins")
         elif main_page == "player":
             is_active_player = bool(
                 getattr(self, "_current_playing_item", None)
@@ -23126,16 +22687,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self._refresh_active_library_view()
 
     def _open_addons(self, *args):
-        self._cancel_all_background_fetching()
-        self._push_current_nav_state()
-        self._populate_addons()
-        self.main_stack.set_visible_child_name("addons")
+        self._open_plugins(initial_tab="addons")
 
     def _open_plugins(self, *args, initial_tab=None):
         self._cancel_all_background_fetching()
         self._push_current_nav_state()
+        self._populate_addons()
         self._populate_plugins()
-        self._populate_cloudstream()
         self._populate_custom_plugins()
         if hasattr(self, "plugins_sub_stack") and self.plugins_sub_stack:
             self.plugins_sub_stack.set_visible_child_name(initial_tab or "nuvio")
@@ -23262,12 +22820,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 self._populate_addons()
                             if hasattr(self, "_populate_plugins"):
                                 self._populate_plugins()
-                            if hasattr(self, "_populate_cloudstream"):
-                                self._populate_cloudstream()
                             if hasattr(self, "_on_addons_changed"):
                                 self._on_addons_changed()
-                            if hasattr(self, "_refresh_cloudstream_catalog_views"):
-                                self._refresh_cloudstream_catalog_views()
                             if hasattr(self, "_ensure_all_menus_built"):
                                 self._ensure_all_menus_built()
                             if hasattr(self, "_update_continue_watching_section"):
@@ -23371,44 +22925,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 except Exception as e:
                     logger.error(f"Search error ({media_type}): {e}")
 
-            def do_search_cloudstream():
-                if self._current_search_id != current_search_id:
-                    return
-                try:
-                    from . import cloudstream
-                    if not cloudstream.is_cloudstream_enabled():
-                        return
-                    cs_cards = cloudstream.search_all_enabled_providers(query, timeout=8.0)
-                    if not cs_cards or self._current_search_id != current_search_id:
-                        return
-
-                    live_cards = [c for c in cs_cards if c.get("type") in ("tv", "channel")]
-                    movie_cards = [c for c in cs_cards if c.get("type") == "movie"]
-                    series_cards = [c for c in cs_cards if c.get("type") == "series"]
-
-                    def update_ui():
-                        if self._current_search_id != current_search_id or _is_event_set(getattr(self, "_search_abort_event", None)):
-                            return False
-                        if live_cards and hasattr(self, "search_tv_flowbox") and hasattr(self, "search_tv_section"):
-                            self._append_flowbox(self.search_tv_flowbox, live_cards, None)
-                            self.search_tv_section.set_visible(True)
-                        elif live_cards and hasattr(self, "search_movies_flowbox") and hasattr(self, "search_movies_section"):
-                            self._append_flowbox(self.search_movies_flowbox, live_cards, None)
-                            self.search_movies_section.set_visible(True)
-                        if movie_cards and hasattr(self, "search_movies_flowbox") and hasattr(self, "search_movies_section"):
-                            self._append_flowbox(self.search_movies_flowbox, movie_cards, None)
-                            self.search_movies_section.set_visible(True)
-                        if series_cards and hasattr(self, "search_series_flowbox") and hasattr(self, "search_series_section"):
-                            self._append_flowbox(self.search_series_flowbox, series_cards, None)
-                            self.search_series_section.set_visible(True)
-                        return False
-
-                    GLib.idle_add(update_ui)
-                except Exception as e:
-                    logger.debug(f"CloudStream search error: {e}")
-
             if not getattr(self, "_search_pool", None):
-                self._search_pool = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+                self._search_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
                 
             try:
                 self._search_pool.submit(do_search_category, "movie", "search_movies_section", "search_movies_flowbox")
@@ -23417,7 +22935,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     self._search_pool.submit(do_search_category, "anime", "search_anime_section", "search_anime_flowbox")
                 if getattr(self, "tv_supported", False):
                     self._search_pool.submit(do_search_category, "tv", "search_tv_section", "search_tv_flowbox")
-                self._search_pool.submit(do_search_cloudstream)
             except RuntimeError:
                 pass
             return False
