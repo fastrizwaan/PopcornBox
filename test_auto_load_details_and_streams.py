@@ -128,11 +128,13 @@ class TestAutoLoadDetailsAndStreams(unittest.TestCase):
                 {"id": "tt0106179:1:2", "season": 1, "episode": 2, "title": "Deep Throat"},
             ]
         }
-        with patch("src.api.get_torrents_streamed") as mock_get_streams, \
+        called = threading.Event()
+        with patch("src.api.get_torrents_streamed", side_effect=lambda *a, **k: (called.set(), [])[1]) as mock_get_streams, \
              patch("src.window.MovieDetailsPage.load_details_async"):
             page = MovieDetailsPage(movie_stub, on_back=lambda: None)
             self.assertEqual(page.selected_season, 1)
             self.assertEqual(page.selected_episode, 1)
+            self.assertTrue(called.wait(timeout=2))
             mock_get_streams.assert_called()
             args, kwargs = mock_get_streams.call_args
             self.assertEqual(args[1], "series")

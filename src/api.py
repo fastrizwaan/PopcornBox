@@ -5219,6 +5219,24 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
 
     return res
 
+
+_NON_CUSTOM_ROUTE_PREFIXES = (
+    "tt", "tmdb:", "ctmdb.", "http://", "https://", "tpb_ctl:",
+    "cloudstream:", "yt_id:", "kitsu:", "imdb:", "tvdb:", "local.",
+    "mal:", "anilist:",
+)
+
+
+def is_custom_plugin_route_id(item_id):
+    """Return True if item_id looks like a custom plugin route rather than a standard/built-in ID."""
+    if not isinstance(item_id, str):
+        return False
+    s = item_id.strip()
+    if not s or s.startswith(_NON_CUSTOM_ROUTE_PREFIXES):
+        return False
+    return ":" in s or s.startswith("custom.")
+
+
 def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True, poster=None, prefer_tmdb=False, expected_year=None):
     if isinstance(imdb_id, list):
         if not imdb_id: return {}
@@ -5344,10 +5362,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
 
     # Custom plugin route IDs (e.g. "vegamovies:https://...", "moviesdrive:https://...", "custom.scraper:...")
     str_custom_id = str(imdb_id or "").strip()
-    is_custom_plugin_item = (
-        not str_custom_id.startswith(("tt", "tmdb:", "ctmdb.", "http://", "https://", "tpb_ctl:", "cloudstream:"))
-        and (":" in str_custom_id or str_custom_id.startswith("custom."))
-    )
+    is_custom_plugin_item = is_custom_plugin_route_id(str_custom_id)
     if is_custom_plugin_item:
         route_id = str_custom_id
         raw_catalog_title = str(title or "").strip()
@@ -7754,7 +7769,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     target_custom_route = None
     for cand in (custom_plugin_route_id, cloudstream_route_id, original_id):
-        if cand and isinstance(cand, str) and not cand.startswith(("tt", "tmdb:", "ctmdb.", "http://", "https://", "cloudstream:")) and (":" in cand or cand.startswith("custom.")):
+        if is_custom_plugin_route_id(cand):
             target_custom_route = cand
             break
 
@@ -7807,7 +7822,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             except Exception as e:
                 print(f"[STREAM DEBUG] Custom plugin immediate route lookup failed: {e}")
 
-    if not str(imdb_id).startswith(("tt", "tmdb:", "ctmdb.", "http://", "https://", "cloudstream:")) and (":" in str(imdb_id) or str(imdb_id).startswith("custom.")):
+    if is_custom_plugin_route_id(str(imdb_id)):
         canonical_id = f"tmdb:{known_tmdb_id}" if known_tmdb_id else None
         if not canonical_id and title:
             try:
@@ -8114,9 +8129,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         and not has_cached_plugins
         and not provider_scope
     )
+    has_non_youtube_custom = any(
+        getattr(s, "id", "") != "custom.youtube" for s in enabled_custom_scrapers
+    )
     missing_custom_streams = bool(
         custom_plugins.is_custom_plugins_enabled()
-        and enabled_custom_scrapers
+        and has_non_youtube_custom
         and not has_cached_custom
         and not provider_scope
     )
@@ -8563,6 +8581,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 futures.add(resolve_future)
 
             first_stream_at = None
+            last_incremental_cb_at = 0.0
             while futures:
                 if abort_event and abort_event.is_set():
                     return []
@@ -8597,6 +8616,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     print(f"[STREAM DEBUG] provider collection timed out pending={len(futures)}")
                     break
 
+                batch_new_streams = False
+                batch_last_addon = None
                 for future in done:
                     if future == resolve_future:
                         try:
@@ -8668,6 +8689,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                 # Successful response — clear any previous failure count for Stremio addons
                                 if addon_obj and addon_obj.get("manifest_url") and not addon_obj.get("raw_id"):
                                     _record_addon_success(addon_obj.get("manifest_url", ""))
+                                added_any = False
                                 for s in streams:
                                     if check_stream_rate_limit_warning(s):
                                         continue
@@ -8675,19 +8697,27 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                     if not s.get("addon_name"):
                                         s["addon_name"] = addon_name
                                     all_raw_streams.append(s)
-                                if callback and not (abort_event and abort_event.is_set()):
-                                    current_parsed = process_raw_streams(list(all_raw_streams), season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year)
-                                    print(f"[STREAM DEBUG] incremental results addon={addon_name!r} raw_total={len(all_raw_streams)} parsed_cards={len(current_parsed)}")
-                                    if source_scope:
-                                        current_scope = [s for s in current_parsed if _stream_matches_source_scope(s, source_scope)]
-                                        preserved_scope = [s for s in usable_cached if not _stream_matches_source_scope(s, source_scope)]
-                                        callback(preserved_scope + current_scope, is_cached=False, is_complete=False)
-                                    else:
-                                        callback(current_parsed, is_cached=False, is_complete=False)
+                                    added_any = True
+                                if added_any:
+                                    batch_new_streams = True
+                                    batch_last_addon = addon_name
                                 if not torrent_addons_submitted and torrent_stream_addons and any(is_direct_stream(s) for s in streams):
                                     _submit_torrent_addons()
                         except Exception as e:
                             print(f"[STREAM DEBUG] addon future failed addon={addon_obj.get('name') if addon_obj else 'Unknown'!r}: {type(e).__name__}: {e}")
+
+                if batch_new_streams and futures and callback and not (abort_event and abort_event.is_set()):
+                    now_mono = time.monotonic()
+                    if last_incremental_cb_at == 0.0 or (now_mono - last_incremental_cb_at) >= 0.35:
+                        last_incremental_cb_at = now_mono
+                        current_parsed = process_raw_streams(list(all_raw_streams), season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year)
+                        print(f"[STREAM DEBUG] incremental results addon={batch_last_addon!r} raw_total={len(all_raw_streams)} parsed_cards={len(current_parsed)}")
+                        if source_scope:
+                            current_scope = [s for s in current_parsed if _stream_matches_source_scope(s, source_scope)]
+                            preserved_scope = [s for s in usable_cached if not _stream_matches_source_scope(s, source_scope)]
+                            callback(preserved_scope + current_scope, is_cached=False, is_complete=False)
+                        else:
+                            callback(current_parsed, is_cached=False, is_complete=False)
         except RuntimeError as e:
             if "shutdown" in str(e).lower() or "interpreter" in str(e).lower():
                 return []

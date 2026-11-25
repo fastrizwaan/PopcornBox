@@ -1111,6 +1111,8 @@ class MovieDetailsPage(Gtk.Overlay):
         def on_source_toggled(btn):
             if getattr(self, '_ignore_source_toggle_signals', False):
                 return
+            if not btn.get_active():
+                return
             if self.source_all_btn.get_active(): self.source_idx = 0
             elif self.source_direct_btn.get_active(): self.source_idx = 1
             elif self.source_torrent_btn.get_active(): self.source_idx = 2
@@ -1813,6 +1815,8 @@ class MovieDetailsPage(Gtk.Overlay):
             self.streams_list_box.append(blocked_box)
             return
 
+        self._streams_render_gen = getattr(self, "_streams_render_gen", 0) + 1
+        render_gen = self._streams_render_gen
         self._set_provider_spinner_active(
             getattr(self, '_fetching_streams', False)
             and not getattr(self, '_background_fetch', False)
@@ -1877,7 +1881,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self.streams_list_box.append(no_s_lbl)
             return
 
-        for idx, t in enumerate(filtered_streams):
+        def _build_stream_row(idx, t):
             row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             row_box.add_css_class("stream-card-row")
 
@@ -2036,7 +2040,23 @@ class MovieDetailsPage(Gtk.Overlay):
 
             row_gesture.connect("pressed", make_row_click_cb(t, row_box))
             row_box.add_controller(row_gesture)
-            self.streams_list_box.append(row_box)
+            return row_box
+
+        # Render the visible slice immediately, then stream remaining rows in
+        # bounded idle slices so large result sets never stall the GTK main loop.
+        stream_batch_size = 12
+
+        def _append_stream_slice(start_idx):
+            if render_gen != getattr(self, "_streams_render_gen", 0) or getattr(self, "_destroyed", False):
+                return False
+            end_idx = min(start_idx + stream_batch_size, len(filtered_streams))
+            for idx in range(start_idx, end_idx):
+                self.streams_list_box.append(_build_stream_row(idx, filtered_streams[idx]))
+            if end_idx < len(filtered_streams):
+                GLib.idle_add(_append_stream_slice, end_idx)
+            return False
+
+        _append_stream_slice(0)
 
     def _is_current_details_page(self):
         if self._destroyed:
@@ -2111,11 +2131,6 @@ class MovieDetailsPage(Gtk.Overlay):
                 lookup_ids.append(str(a))
         primary_id = lookup_ids[0] if lookup_ids else None
 
-        has_stream_addons = (
-            api.has_stream_addons(self.media_type, primary_id, only_working=False)
-            or api.has_stream_addons(self.media_type, None, only_working=False)
-        )
-
         working_stream = database.get_working_stream(lookup_ids, self.selected_season, self.selected_episode) if lookup_ids else None
         cw_item = database.get_continue_watching_item(lookup_ids) if lookup_ids else None
         details = getattr(self, "movie_details", None) or {}
@@ -2127,6 +2142,11 @@ class MovieDetailsPage(Gtk.Overlay):
             or (details.get("stream_url") or details.get("magnet"))
         )
 
+        has_stream_addons = has_direct_playable or (
+            api.has_stream_addons(self.media_type, primary_id, only_working=False)
+            or api.has_stream_addons(self.media_type, None, only_working=False)
+        )
+
         should_show = bool(has_stream_addons or has_direct_playable)
         self.sidebar_box.set_visible(should_show)
 
@@ -2134,6 +2154,7 @@ class MovieDetailsPage(Gtk.Overlay):
         """Drop provider-dependent state after the addon list/caches change."""
         self._rearm_background_fetching(force=True)
         self.torrents = []
+        self._last_torrents_hash = None
         self.current_t_list = []
         self.selected_torrent = None
         self._stream_item_key = None
@@ -2354,6 +2375,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self._live_check_abort_event.set()
         self._fetching_streams = False
         self.torrents = []
+        self._last_torrents_hash = None
         self.current_t_list = []
         self.selected_torrent = None
         if hasattr(self, "continue_btn") and self.continue_btn:
@@ -2577,16 +2599,16 @@ class MovieDetailsPage(Gtk.Overlay):
         elif working_stream:
             has_progress = True
 
-        has_stream_provider = (
-            api.has_stream_addons(self.media_type, primary_id, only_working=False)
-            or api.has_stream_addons(self.media_type, None, only_working=False)
-        )
         has_direct_playable = bool(
             working_stream
             or has_progress
             or (self.movie_stub.get("stream_url") or self.movie_stub.get("magnet"))
             or (details and (details.get("stream_url") or details.get("magnet")))
             or getattr(self, "torrents", None)
+        )
+        has_stream_provider = has_direct_playable or (
+            api.has_stream_addons(self.media_type, primary_id, only_working=False)
+            or api.has_stream_addons(self.media_type, None, only_working=False)
         )
 
         if not has_stream_provider and not has_direct_playable:
@@ -3454,11 +3476,11 @@ class MovieDetailsPage(Gtk.Overlay):
         custom_plugin_route_id = movie_details.get("custom_plugin_route_id")
         if not custom_plugin_route_id:
             stub_route_id = self.movie_stub.get("id")
-            if isinstance(stub_route_id, str) and not stub_route_id.startswith(("tt", "tmdb:", "ctmdb.", "http://", "https://", "cloudstream:")) and (":" in stub_route_id or stub_route_id.startswith("custom.")):
+            if api.is_custom_plugin_route_id(stub_route_id):
                 custom_plugin_route_id = stub_route_id
             elif selected_video and isinstance(selected_video, dict):
                 vid_cand = str(selected_video.get("id", ""))
-                if not vid_cand.startswith(("tt", "tmdb:", "ctmdb.", "http://", "https://", "cloudstream:")) and (":" in vid_cand or vid_cand.startswith("custom.")):
+                if api.is_custom_plugin_route_id(vid_cand):
                     custom_plugin_route_id = vid_cand
         details_id = movie_details.get("id")
         if str(movie_details.get("metadata_source", "")).lower() == "tmdb" and movie_details.get("tmdb_id"):
@@ -3533,6 +3555,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self._pending_forced_stream_refresh = False
             self._set_provider_spinner_active(False)
             self.torrents = []
+            self._last_torrents_hash = None
             self.current_t_list = []
             self.render_streams_list()
             return
@@ -3609,6 +3632,7 @@ class MovieDetailsPage(Gtk.Overlay):
         if not same_stream_item:
             self.current_t_list = []
             self.torrents = []
+            self._last_torrents_hash = None
             self._user_explicitly_selected_stream = False
             from . import database
             lookup_ids = []
@@ -3695,6 +3719,7 @@ class MovieDetailsPage(Gtk.Overlay):
                 if not background and hasattr(self, 'progress_label') and self.progress_label:
                     self.progress_label.set_text("Loaded cached streams... (Updating)")
 
+            had_torrents = bool(getattr(self, "torrents", None))
             new_streams = torrents or []
             if background:
                 # A silent source refresh must never drop the cards already on
@@ -3709,9 +3734,30 @@ class MovieDetailsPage(Gtk.Overlay):
                 "streams batch applied",
                 f"cards={len(self.torrents)} cached={is_cached} complete={is_complete}",
             )
-            self.update_quality_dropdown()
-            self.update_continue_btn()
-            self.update_sidebar_visibility()
+            sel_prov_sig = None
+            if hasattr(self, "provider_dropdown"):
+                p_model = self.provider_dropdown.get_model()
+                p_idx = self.provider_dropdown.get_selected()
+                if p_model and p_idx != Gtk.INVALID_LIST_POSITION and p_idx < p_model.get_n_items():
+                    sel_prov_sig = p_model.get_string(p_idx)
+            streams_sig = (
+                tuple(_stream_identity(s) for s in new_streams),
+                tuple(tuple(s.get("addon_names") or ()) for s in new_streams if isinstance(s, dict)),
+                getattr(self, "source_idx", 0),
+                sel_prov_sig,
+                sel_season,
+                sel_episode,
+            )
+            if streams_sig != getattr(self, "_last_torrents_hash", None):
+                self._last_torrents_hash = streams_sig
+                self.update_quality_dropdown()
+            elif is_complete and not new_streams:
+                # Spinner was active while fetching; replace it with the empty state.
+                self.render_streams_list()
+
+            if is_complete or had_torrents != bool(self.torrents):
+                self.update_continue_btn()
+                self.update_sidebar_visibility()
 
             if self.window and getattr(self.window, "stream_queue", None) is not None:
                 q_page = getattr(self.window, "stream_queue_details_page", None)
@@ -4127,15 +4173,18 @@ class MovieDetailsPage(Gtk.Overlay):
                     def make_click_cb(b, label, tl):
                         def cb(*args):
                             if b.get_active():
+                                is_prog = getattr(self, "_programmatic_quality_switch", False)
                                 self.user_selected_quality = label
                                 if hasattr(self, 'window') and self.window:
                                     self.window.user_selected_quality = label
-                                from . import database
-                                item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
-                                primary_id = item_id[0] if isinstance(item_id, list) else item_id
-                                if primary_id:
-                                    database.set_setting(f"preferred_quality_{primary_id}", label)
-                                database.set_setting("preferred_quality", label)
+                                if not is_prog:
+                                    from . import database
+                                    item_id = self.movie_stub.get("alias_ids") or self.movie_stub.get("id") or self.movie_stub.get("imdb_id")
+                                    primary_id = item_id[0] if isinstance(item_id, list) else item_id
+                                    settings_updates = {"preferred_quality": label}
+                                    if primary_id:
+                                        settings_updates[f"preferred_quality_{primary_id}"] = label
+                                    database.set_settings_batch(settings_updates)
                                 on_quality_btn_clicked(b, tl)
                         return cb
                         
@@ -16878,6 +16927,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         def bg_prepare():
             try:
                 debug_log(f"bg_prepare menus thread START (gen={cur_gen})")
+                try:
+                    from . import custom_plugins
+                    custom_plugins.load_all_custom_scrapers()
+                except Exception:
+                    pass
                 built_menus = {}
 
                 # 1. Discover menu with Catalog submenu

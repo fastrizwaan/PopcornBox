@@ -24,6 +24,10 @@ logger = logging.getLogger("PopcornBox.CustomPlugins")
 _LOAD_LOCK = threading.Lock()
 _LOADED_SCRAPERS = {}  # {scraper_id: scraper_instance}
 _LOADED_MODULES = {}   # {filename: module}
+_SCRAPERS_LOADED = False
+_LOADED_BASE_DIR = None
+_LOADED_COUNT = 0
+_PRELOAD_INFLIGHT = False
 
 RUNNER_FILENAME = "custom_plugins_runner.py"
 
@@ -142,6 +146,7 @@ def is_custom_plugins_enabled() -> bool:
 def set_custom_plugins_enabled(enabled: bool):
     """Enable or disable custom plugins globally."""
     database.set_setting("custom_plugins_enabled", bool(enabled))
+    database.clear_all_cached_streams_async()
 
 
 def is_scraper_enabled(scraper_id: str) -> bool:
@@ -160,6 +165,47 @@ def toggle_scraper(scraper_id: str, enabled: bool):
     else:
         disabled.add(str(scraper_id))
     database.set_setting("disabled_custom_scrapers", list(disabled))
+    database.clear_all_cached_streams_async()
+
+
+def _is_scrapers_cache_ready(cur_base_dir: str) -> bool:
+    """Return True if scrapers for cur_base_dir are loaded and not externally cleared."""
+    if not _SCRAPERS_LOADED or _LOADED_BASE_DIR != cur_base_dir:
+        return False
+    if _LOADED_COUNT > 0 and not _LOADED_SCRAPERS:
+        return False
+    return True
+
+
+def preload_custom_scrapers_async():
+    """Preload custom scrapers on a background daemon thread without blocking the UI."""
+    global _PRELOAD_INFLIGHT
+    cur_base_dir = str(getattr(database, "BASE_DIR", "") or "")
+    if _is_scrapers_cache_ready(cur_base_dir) or _PRELOAD_INFLIGHT:
+        return
+    _PRELOAD_INFLIGHT = True
+
+    def _worker():
+        global _PRELOAD_INFLIGHT
+        try:
+            load_all_custom_scrapers()
+        except Exception as e:
+            logger.debug(f"Background custom plugin preload failed: {e}")
+        finally:
+            _PRELOAD_INFLIGHT = False
+
+    threading.Thread(target=_worker, daemon=True, name="CustomPluginsPreload").start()
+
+
+def _get_scrapers_for_caller() -> list:
+    """Return loaded scrapers; never block the GTK main thread on subprocess probes."""
+    cur_base_dir = str(getattr(database, "BASE_DIR", "") or "")
+    if _is_scrapers_cache_ready(cur_base_dir):
+        return list(_LOADED_SCRAPERS.values())
+    if threading.current_thread() is threading.main_thread() and not database._is_testing():
+        preload_custom_scrapers_async()
+        return list(_LOADED_SCRAPERS.values()) if _LOADED_BASE_DIR == cur_base_dir else []
+    return load_all_custom_scrapers()
 
 
 def load_all_custom_scrapers(force_reload: bool = False):
@@ -167,15 +213,19 @@ def load_all_custom_scrapers(force_reload: bool = False):
     Scans the custom plugins directory, imports all valid .py scraper files,
     and updates the internal registry.
     """
-    global _LOADED_SCRAPERS, _LOADED_MODULES
+    global _LOADED_SCRAPERS, _LOADED_MODULES, _SCRAPERS_LOADED, _LOADED_BASE_DIR, _LOADED_COUNT
     with _LOAD_LOCK:
-        if _LOADED_SCRAPERS and not force_reload:
+        cur_base_dir = str(getattr(database, "BASE_DIR", "") or "")
+        if not force_reload and _is_scrapers_cache_ready(cur_base_dir):
             return list(_LOADED_SCRAPERS.values())
 
         plugins_dir = get_custom_plugins_dir()
         if not plugins_dir.exists():
             _LOADED_SCRAPERS = {}
             _LOADED_MODULES = {}
+            _SCRAPERS_LOADED = True
+            _LOADED_BASE_DIR = cur_base_dir
+            _LOADED_COUNT = 0
             return []
 
         # Auto-provision companion helper files like _common.py if present in ~/plugins
@@ -274,6 +324,9 @@ def load_all_custom_scrapers(force_reload: bool = False):
 
         _LOADED_SCRAPERS = new_scrapers
         _LOADED_MODULES = new_modules
+        _SCRAPERS_LOADED = True
+        _LOADED_BASE_DIR = cur_base_dir
+        _LOADED_COUNT = len(new_scrapers)
         return list(_LOADED_SCRAPERS.values())
 
 
@@ -306,7 +359,7 @@ def get_enabled_scrapers_for_type(media_type: str = "movie") -> list:
         return []
 
     norm_type = "series" if media_type in ["series", "tv", "anime"] else "movie"
-    all_scrapers = load_all_custom_scrapers()
+    all_scrapers = _get_scrapers_for_caller()
     enabled = []
     for s in all_scrapers:
         if not is_scraper_enabled(s.id):
@@ -638,7 +691,7 @@ def get_catalogs(media_type: str = "all") -> list[dict]:
     catalogs = []
     seen = set()
 
-    for scraper in load_all_custom_scrapers():
+    for scraper in _get_scrapers_for_caller():
         if not is_scraper_enabled(scraper.id):
             continue
 

@@ -3667,14 +3667,18 @@ class GenericCloudStreamProvider(CloudStreamProvider):
         self.name = name
         self.supported_types = list(supported_types) if supported_types else ["movie", "series", "live", "tv", "other"]
         self._base_url = base_url
+        self._base_url_resolved = base_url is not None
 
     def get_base_url(self):
         if getattr(self, "_base_url", None):
             return self._base_url
+        if getattr(self, "_base_url_resolved", False):
+            return None
 
         with _BASE_URL_CACHE_LOCK:
             if self.id in _BASE_URL_CACHE:
                 self._base_url = _BASE_URL_CACHE[self.id]
+                self._base_url_resolved = True
                 return self._base_url
 
         plugin = get_plugin(self.id)
@@ -3728,6 +3732,9 @@ class GenericCloudStreamProvider(CloudStreamProvider):
                     return self._base_url
 
         self._base_url = None
+        self._base_url_resolved = True
+        with _BASE_URL_CACHE_LOCK:
+            _BASE_URL_CACHE[self.id] = None
         return None
 
     @property
