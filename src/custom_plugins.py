@@ -178,6 +178,19 @@ def load_all_custom_scrapers(force_reload: bool = False):
             _LOADED_MODULES = {}
             return []
 
+        # Auto-provision companion helper files like _common.py if present in ~/plugins
+        if not (plugins_dir / "_common.py").is_file():
+            user_common = Path.home() / "plugins" / "_common.py"
+            if user_common.is_file():
+                try:
+                    shutil.copy2(user_common, plugins_dir / "_common.py")
+                except Exception:
+                    pass
+
+        p_dir_str = str(plugins_dir)
+        if p_dir_str not in sys.path:
+            sys.path.insert(0, p_dir_str)
+
         new_scrapers = {}
         new_modules = {}
 
@@ -313,7 +326,7 @@ def execute_custom_scraper(
     title: str = None,
     year: str = None,
     tmdb_id: str = None,
-    timeout: float = 15.0
+    timeout: float = 25.0
 ) -> list[dict]:
     """
     Safely executes a custom scraper's get_streams method with a timeout guard
@@ -460,7 +473,14 @@ def execute_custom_scraper(
             "size": s.get("size"),
             "seeders": s.get("seeders", s.get("seeds", 0)),
             "behaviorHints": s.get("behaviorHints", {}),
+            "is_hls": bool(s.get("is_hls", False)),
+            "is_dash": bool(s.get("is_dash", False)),
         }
+        if isinstance(s.get("headers"), dict) and s["headers"]:
+            card["headers"] = dict(s["headers"])
+        for opt_key in ("subtitles", "has_expiring_credentials", "created_at", "expires_at", "binge_group", "stream_type"):
+            if s.get(opt_key) is not None:
+                card[opt_key] = s[opt_key]
         formatted_streams.append(card)
 
     return formatted_streams
@@ -525,6 +545,14 @@ def import_plugin_file(src_path: str) -> tuple[bool, str]:
 
     try:
         shutil.copy2(src, target_path)
+        # Also copy companion helper files (_*.py) if present in the same directory
+        try:
+            for helper in src.parent.glob("_*.py"):
+                dest_helper = target_dir / helper.name
+                if not dest_helper.exists():
+                    shutil.copy2(helper, dest_helper)
+        except Exception:
+            pass
         load_all_custom_scrapers(force_reload=True)
         return True, f"Successfully imported '{src.name}'"
     except Exception as e:
@@ -645,6 +673,9 @@ def get_catalogs(media_type: str = "all") -> list[dict]:
             seen.add(key)
 
             genres = list(sec.get("genres") or [])
+            if not genres:
+                from . import database
+                genres = database.get_available_genres(sec_type if sec_type != "all" else "movie")
             catalogs.append({
                 "addon_name": s_name,
                 "manifest_url": catalog_url(s_id),
@@ -653,8 +684,11 @@ def get_catalogs(media_type: str = "all") -> list[dict]:
                 "catalog_name": sec_name,
                 "display_name": f"{s_name} - {sec_name}",
                 "genres": genres,
-                "extra": [{"name": "genre", "isRequired": False, "options": genres}] if genres else [],
-                "extraSupported": ["genre", "skip", "search"] if genres else ["skip", "search"],
+                "extra": [
+                    {"name": "genre", "isRequired": False, "options": genres},
+                    {"name": "year", "isRequired": False},
+                ],
+                "extraSupported": ["genre", "year", "skip", "search"],
                 "type": sec_type,
                 "supports_pagination": bool(sec.get("supports_pagination", True)),
                 "_source": "custom_plugin",
@@ -672,7 +706,9 @@ def fetch_catalog_items(
     limit: int = 50,
     query: str = None,
     is_cancelled = None,
-    timeout: float = 12.0
+    timeout: float = 12.0,
+    year: str = None,
+    extra_filters: dict = None,
 ) -> list[dict]:
     """
     Fetch catalog or search items from a custom plugin.
@@ -706,6 +742,8 @@ def fetch_catalog_items(
                 "page": page,
                 "query": query,
                 "limit": limit,
+                "year": year,
+                "extra_filters": extra_filters,
             },
         }
         proc = None
@@ -762,6 +800,10 @@ def fetch_catalog_items(
                 kwargs["query"] = query
             if "limit" in params:
                 kwargs["limit"] = limit
+            if "year" in params:
+                kwargs["year"] = year
+            if "extra_filters" in params:
+                kwargs["extra_filters"] = extra_filters
 
             if not kwargs and len(params) >= 1:
                 return scraper.get_catalog_items(catalog_id)

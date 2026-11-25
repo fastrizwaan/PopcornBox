@@ -291,6 +291,8 @@ sys.exit(99)
         p_dir = custom_plugins.get_custom_plugins_dir()
         root_plugin = Path(__file__).parent / "plugins" / "youtube_scraper.py"
         if not root_plugin.exists():
+            root_plugin = Path.home() / "plugins" / "youtube_scraper.py"
+        if not root_plugin.exists():
             import subprocess
             try:
                 res = subprocess.run(["git", "show", "HEAD:plugins/youtube_scraper.py"], capture_output=True, text=True, cwd=str(Path(__file__).parent))

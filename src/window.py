@@ -108,9 +108,9 @@ from gi.repository import Adw, Gio, Gdk, GLib, Gtk, GObject, Pango
 DISCOVER_ROW_CARD_LIMIT = 30
 MAX_ADDON_SEARCH_PAGES = 500
 
-STREAM_LOADING_TIMEOUT_SECONDS = 10
+STREAM_LOADING_TIMEOUT_SECONDS = 20
 # Torrents must find peers before any bytes arrive, so metadata discovery
-# routinely outlasts the HTTP-oriented 10s window.
+# routinely outlasts the HTTP-oriented 20s window.
 TORRENT_LOADING_TIMEOUT_SECONDS = 180
 
 # Resuming only a few seconds in skips the intro, and since the position is
@@ -3451,6 +3451,15 @@ class MovieDetailsPage(Gtk.Overlay):
                 cloudstream_route_id = stub_route_id
             elif selected_video and isinstance(selected_video, dict) and str(selected_video.get("id", "")).startswith("cloudstream:"):
                 cloudstream_route_id = str(selected_video.get("id"))
+        custom_plugin_route_id = movie_details.get("custom_plugin_route_id")
+        if not custom_plugin_route_id:
+            stub_route_id = self.movie_stub.get("id")
+            if isinstance(stub_route_id, str) and not stub_route_id.startswith(("tt", "tmdb:", "ctmdb.", "http://", "https://", "cloudstream:")) and (":" in stub_route_id or stub_route_id.startswith("custom.")):
+                custom_plugin_route_id = stub_route_id
+            elif selected_video and isinstance(selected_video, dict):
+                vid_cand = str(selected_video.get("id", ""))
+                if not vid_cand.startswith(("tt", "tmdb:", "ctmdb.", "http://", "https://", "cloudstream:")) and (":" in vid_cand or vid_cand.startswith("custom.")):
+                    custom_plugin_route_id = vid_cand
         details_id = movie_details.get("id")
         if str(movie_details.get("metadata_source", "")).lower() == "tmdb" and movie_details.get("tmdb_id"):
             resolved_imdb_id = movie_details.get("imdb_id")
@@ -3842,6 +3851,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     expected_year=expected_year,
                     cloudstream_route_id=cloudstream_route_id,
                     catalog_title=catalog_title,
+                    custom_plugin_route_id=custom_plugin_route_id,
                 )
                 print(f"[STREAM DEBUG] worker API returned generation={current_gen}")
             except RuntimeError as e:
@@ -19052,7 +19062,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         # 1. If HTTP stream failed, check if retrying with alternate User-Agent recovers it (e.g. 403 bot blocks vs 428 bot blocks)
         last_err = str(getattr(self, "_last_stream_error", "") or "").lower()
-        is_server_error = any(code in last_err for code in ["500", "502", "503", "504", "404", "429", "too many requests", "not found", "internal server error", "bad gateway"])
+        is_server_error = any(code in last_err for code in ["500", "502", "503", "504", "404", "429", "too many requests", "not found", "internal server error", "bad gateway", "timed out", "timeout"])
         if not hasattr(self, "_failed_stream_identities"):
             self._failed_stream_identities = set()
         if not is_server_error and isinstance(failed_st, dict) and failed_st.get("is_http") and not failed_st.get("_ua_fallback_tried"):

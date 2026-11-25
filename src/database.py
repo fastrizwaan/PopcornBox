@@ -127,7 +127,7 @@ def _sanitize_for_json(obj, depth=0):
         return None
     if isinstance(obj, dict):
         clean = {}
-        for k, v in obj.items():
+        for k, v in list(obj.items()):
             if callable(v) or k == "_on_hydrated":
                 continue
             clean_v = _sanitize_for_json(v, depth + 1)
@@ -136,7 +136,7 @@ def _sanitize_for_json(obj, depth=0):
         return clean
     elif isinstance(obj, (list, tuple, set)):
         clean_list = []
-        for item in obj:
+        for item in list(obj):
             if callable(item):
                 continue
             clean_item = _sanitize_for_json(item, depth + 1)
@@ -1793,6 +1793,7 @@ def _normalize_stream_for_storage(stream):
         "saved_at", "binge_group", "expires_at", "has_expiring_credentials",
         "is_nuvio_plugin", "plugin_scraper_id", "plugin_scraper_tmdb_id",
         "headers", "is_cloudstream", "cloudstream_provider_id",
+        "is_custom_plugin", "custom_plugin_id", "is_hls", "is_dash",
         "audio_track_id", "audio_track_lang", "audio_track_title", "audio_disabled",
         "sub_track_id", "sub_track_lang", "sub_track_title", "sub_visibility", "sub_disabled", "sub_is_external"
     ]

@@ -12,8 +12,29 @@ import inspect
 import importlib.util
 from pathlib import Path
 
+# Add runner directory to sys.path and initialize DoH for censorship bypass
+runner_dir = str(Path(__file__).resolve().parent)
+if runner_dir not in sys.path:
+    sys.path.insert(0, runner_dir)
+
+try:
+    import doh
+    doh.enable_global_doh()
+except Exception:
+    pass
+
+if "popcornbox" not in sys.modules:
+    try:
+        import popcornbox
+    except ImportError:
+        import types
+        pkg = types.ModuleType("popcornbox")
+        pkg.__path__ = [runner_dir]
+        sys.modules["popcornbox"] = pkg
+
 
 def _load_module(file_path: str):
+
     """Load a Python module from file_path in an isolated module namespace."""
     path = Path(file_path).resolve()
     if not path.is_file():
@@ -103,6 +124,9 @@ def run_get_streams(file_path: str, class_name: str, kwargs: dict) -> list[dict]
 
     sig = inspect.signature(instance.get_streams)
     params = sig.parameters
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return instance.get_streams(**kwargs) or []
+
     bound_kwargs = {k: v for k, v in kwargs.items() if k in params}
 
     # Fallback to positional imdb_id if no keyword matches but parameters expected
@@ -128,6 +152,9 @@ def run_get_catalog_items(file_path: str, class_name: str, kwargs: dict) -> list
 
     sig = inspect.signature(instance.get_catalog_items)
     params = sig.parameters
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return instance.get_catalog_items(**kwargs) or []
+
     bound_kwargs = {k: v for k, v in kwargs.items() if k in params}
 
     if not bound_kwargs and len(params) >= 1:

@@ -2543,22 +2543,10 @@ def get_addon_directory_catalogs():
     """Return list of available addon directory catalog sources."""
     sources = [
         {
-            "id": "community",
-            "name": "Community Addons",
-            "url": "https://v3-cinemeta.strem.io/addon_catalog/all/community.json",
-            "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"
-        },
-        {
             "id": "official",
             "name": "Official Addons",
             "url": "https://v3-cinemeta.strem.io/addon_catalog/all/official.json",
             "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"
-        },
-        {
-            "id": "stremio-addons.net",
-            "name": "STREMIO-ADDONS.NET",
-            "url": "https://stremio-addons.net/api/addon_catalog/all/stremio-addons.net.json",
-            "manifest_url": "https://stremio-addons.net/api/manifest.json"
         }
     ]
 
@@ -3895,6 +3883,9 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
         plugin_id = custom_plugins.plugin_id_from_catalog_url(catalog_url)
         if not plugin_id:
             return []
+        year_filter = None
+        if isinstance(extra_filters, dict):
+            year_filter = extra_filters.get("year")
         items = custom_plugins.fetch_catalog_items(
             plugin_id,
             target_catalog_id or catalog_id,
@@ -3903,6 +3894,8 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             limit=page_limit,
             query=query,
             is_cancelled=is_cancelled,
+            year=year_filter,
+            extra_filters=extra_filters,
         )
         if items and on_item_found and not (is_cancelled and is_cancelled()):
             on_item_found(items)
@@ -5349,6 +5342,121 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
             database.save_cached_metadata(imdb_id, media_type, meta)
             return meta
 
+    # Custom plugin route IDs (e.g. "vegamovies:https://...", "moviesdrive:https://...", "custom.scraper:...")
+    str_custom_id = str(imdb_id or "").strip()
+    is_custom_plugin_item = (
+        not str_custom_id.startswith(("tt", "tmdb:", "ctmdb.", "http://", "https://", "tpb_ctl:", "cloudstream:"))
+        and (":" in str_custom_id or str_custom_id.startswith("custom."))
+    )
+    if is_custom_plugin_item:
+        route_id = str_custom_id
+        raw_catalog_title = str(title or "").strip()
+        from . import cloudstream
+        if not raw_catalog_title and ":" in route_id:
+            slug = route_id.split(":", 1)[1].rstrip("/").split("/")[-1]
+            raw_catalog_title = slug.replace("-", " ").replace("_", " ").title()
+
+        if media_type not in ("series", "anime", "tv") and re.search(
+            r"\b(season\s*\d+|series|s\d{1,2}(?:e\d{1,2})?|episodes?|ep\s*\d+)\b",
+            f"{raw_catalog_title} {route_id}",
+            re.IGNORECASE,
+        ):
+            media_type = "series"
+
+        clean_name, extracted_year = cloudstream.clean_cloudstream_title(raw_catalog_title)
+        year_text_match = re.search(r"\b((?:18|19|20)\d{2})\b", str(expected_year or extracted_year or ""))
+        year_text = year_text_match.group(1) if year_text_match else None
+        release_title = clean_name or raw_catalog_title
+
+        cached_route_meta = database.get_cached_metadata(route_id, media_type) if use_cache else None
+        if cached_route_meta and is_valid_meta(cached_route_meta):
+            if poster and not database.is_scraper_image_url(poster):
+                cached_route_meta["medium_cover_image"] = poster
+                cached_route_meta["poster"] = poster
+            if raw_catalog_title:
+                cached_route_meta.setdefault("catalog_title", raw_catalog_title)
+                cached_route_meta.setdefault("original_title", raw_catalog_title)
+            return cached_route_meta
+
+        title_candidates = [release_title]
+        if raw_catalog_title and raw_catalog_title not in title_candidates:
+            title_candidates.append(raw_catalog_title)
+
+        clean_poster = None if database.is_scraper_image_url(poster) else poster
+        for search_title in title_candidates:
+            if not search_title:
+                continue
+            try:
+                tmdb_meta = tmdb_helper.fetch_tmdb_standalone_metadata(
+                    None,
+                    media_type=media_type,
+                    title=search_title,
+                    poster=clean_poster,
+                    year=year_text,
+                )
+            except Exception as e:
+                print(f"[TMDB] Custom plugin search resolution failed for {search_title!r}: {e}")
+                tmdb_meta = None
+
+            if tmdb_meta and is_valid_meta(tmdb_meta):
+                tmdb_meta["type"] = media_type
+                tmdb_meta["id"] = route_id
+                tmdb_meta["custom_plugin_route_id"] = route_id
+                tmdb_meta["is_custom_plugin"] = True
+                if raw_catalog_title:
+                    tmdb_meta["catalog_title"] = raw_catalog_title
+                    tmdb_meta["original_title"] = raw_catalog_title
+                return _save_and_return_meta(
+                    tmdb_meta,
+                    route_id,
+                    media_type,
+                    title=search_title,
+                    poster=poster,
+                    expected_year=year_text,
+                )
+
+        # Standalone fallback metadata so movie details page always renders cleanly
+        fallback_title = clean_name or raw_catalog_title or "Media Item"
+        fallback_meta = {
+            "id": route_id,
+            "title": fallback_title,
+            "name": fallback_title,
+            "year": str(year_text or ""),
+            "medium_cover_image": poster or "",
+            "poster": poster or "",
+            "background": poster or "",
+            "description": raw_catalog_title if raw_catalog_title else "No synopsis available.",
+            "runtime": "",
+            "genre": "",
+            "genres": [],
+            "imdbRating": "",
+            "trailer": None,
+            "type": media_type,
+            "is_custom_plugin": True,
+            "catalog_title": raw_catalog_title,
+            "original_title": raw_catalog_title,
+            "videos": [],
+        }
+        if media_type in ("series", "anime", "tv"):
+            fallback_meta["videos"] = [{
+                "id": f"{route_id}:1:1",
+                "season": 1,
+                "episode": 1,
+                "number": 1,
+                "title": fallback_title,
+                "name": fallback_title,
+                "overview": fallback_meta["description"],
+                "thumbnail": poster or "",
+            }]
+        return _save_and_return_meta(
+            fallback_meta,
+            route_id,
+            media_type,
+            title=fallback_title,
+            poster=poster,
+            expected_year=year_text,
+        )
+
     if str(imdb_id).startswith("http://") or str(imdb_id).startswith("https://"):
         parts = str(imdb_id).split("||")
         stream_url = parts[0]
@@ -6575,7 +6683,6 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
         is_embed_or_html = any(d in stream_url_lower for d in ["vidfast.pro", "vidfast.vc", "vidsrc.", "/embed/"])
         is_preview_clip = (
             "index_preview" in stream_url_lower
-            or "/hls_mps/" in stream_url_lower
             or "_preview_" in stream_url_lower
         )
         if not info_hash and not yt_id and (is_external or is_embed_or_html or is_preview_clip):
@@ -7541,7 +7648,7 @@ def _merge_parsed_streams(primary, secondary):
     return merged
 
 
-def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None, known_tmdb_id=None, expected_year=None, cloudstream_route_id=None, catalog_title=None):
+def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None, known_tmdb_id=None, expected_year=None, cloudstream_route_id=None, catalog_title=None, custom_plugin_route_id=None):
     if database.is_adult_content_hidden():
         check_item = {"id": imdb_id, "title": title}
         if is_adult_item(check_item):
@@ -7644,6 +7751,76 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                         return parsed_initial
         except Exception as e:
             print(f"[STREAM DEBUG] CloudStream immediate route lookup failed: {e}")
+
+    target_custom_route = None
+    for cand in (custom_plugin_route_id, cloudstream_route_id, original_id):
+        if cand and isinstance(cand, str) and not cand.startswith(("tt", "tmdb:", "ctmdb.", "http://", "https://", "cloudstream:")) and (":" in cand or cand.startswith("custom.")):
+            target_custom_route = cand
+            break
+
+    initial_custom_streams = []
+    clean_source_scope_pre = str(source_scope).strip().lower() if source_scope else None
+    if target_custom_route and clean_source_scope_pre == "direct":
+        from . import custom_plugins
+        print(f"[STREAM DEBUG] Custom plugin immediate route lookup starting: {target_custom_route!r} s={season} e={episode}")
+        if target_custom_route.lstrip().startswith("{") and "movieid" in target_custom_route.lower():
+            prefix = "castletv"
+        else:
+            prefix = target_custom_route.split(":", 1)[0].lower().replace("custom.", "")
+        scrapers = (
+            custom_plugins.get_enabled_scrapers_for_type(media_type)
+            if custom_plugins.is_custom_plugins_enabled()
+            else []
+        )
+        matching_scraper = None
+        for s in scrapers:
+            s_name = (getattr(s, "name", None) or (s.get("name") if isinstance(s, dict) else "")).lower().replace(" ", "")
+            s_id = (getattr(s, "id", None) or (s.get("id") if isinstance(s, dict) else "")).lower().replace("custom.", "")
+            if prefix in (s_name, s_id) or s_name in prefix or s_id in prefix:
+                matching_scraper = s
+                break
+        if matching_scraper:
+            try:
+                c_streams = custom_plugins.execute_custom_scraper(
+                    matching_scraper,
+                    imdb_id=target_custom_route,
+                    media_type=media_type,
+                    season=season,
+                    episode=episode,
+                    title=title,
+                    year=expected_year,
+                    tmdb_id=known_tmdb_id,
+                    timeout=12.0
+                )
+                if c_streams:
+                    print(f"[STREAM DEBUG] Custom plugin immediate route lookup returned {len(c_streams)} stream(s)")
+                    initial_custom_streams = list(c_streams)
+                    parsed_initial = process_raw_streams(c_streams, season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year)
+                    is_only_custom = bool(not initial_cs_streams)
+                    if parsed_initial and callback:
+                        callback(parsed_initial, is_cached=False, is_complete=is_only_custom)
+                    if is_only_custom and len(parsed_initial) >= 1:
+                        cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
+                        if cache_key:
+                            database.save_cached_streams(cache_key, parsed_initial)
+                        return parsed_initial
+            except Exception as e:
+                print(f"[STREAM DEBUG] Custom plugin immediate route lookup failed: {e}")
+
+    if not str(imdb_id).startswith(("tt", "tmdb:", "ctmdb.", "http://", "https://", "cloudstream:")) and (":" in str(imdb_id) or str(imdb_id).startswith("custom.")):
+        canonical_id = f"tmdb:{known_tmdb_id}" if known_tmdb_id else None
+        if not canonical_id and title:
+            try:
+                resolved_tmdb_id = tmdb_helper.resolve_to_tmdb_id(
+                    None, media_type, title, year=expected_year
+                )
+                if resolved_tmdb_id:
+                    canonical_id = f"tmdb:{resolved_tmdb_id}"
+            except Exception as e:
+                print(f"[STREAM DEBUG] Custom plugin route title resolution failed: {e}")
+        if canonical_id:
+            print(f"[STREAM DEBUG] Custom plugin route fallback to canonical {canonical_id!r}")
+            imdb_id = canonical_id
 
     if str(imdb_id).startswith("cloudstream:"):
         # A search-card route may have no playable links on its own. Try its
@@ -8145,17 +8322,34 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             return getattr(scraper_obj, "name", "Custom Plugin"), []
         from . import custom_plugins
         scraper_name = getattr(scraper_obj, "name", "Custom Plugin")
+        scraper_id = getattr(scraper_obj, "id", "")
+
+        # If already fetched during immediate custom route lookup, reuse
+        plugin_imdb_id = imdb_id
+        if target_custom_route:
+            if target_custom_route.lstrip().startswith("{") and "movieid" in target_custom_route.lower():
+                prefix = "castletv"
+            else:
+                prefix = target_custom_route.split(":", 1)[0].lower().replace("custom.", "")
+            s_name_clean = scraper_name.lower().replace(" ", "")
+            s_id_clean = scraper_id.lower().replace("custom.", "")
+            if prefix in (s_name_clean, s_id_clean) or s_name_clean in prefix or s_id_clean in prefix:
+                if initial_custom_streams:
+                    return scraper_name, initial_custom_streams
+                plugin_imdb_id = target_custom_route
+
         try:
+            custom_timeout = min(20.0, max(12.0, float(provider_timeout or 15.0)))
             streams = custom_plugins.execute_custom_scraper(
                 scraper_obj,
-                imdb_id=imdb_id,
+                imdb_id=plugin_imdb_id,
                 media_type=actual_media,
                 season=season,
                 episode=episode,
                 title=title,
                 year=expected_year,
                 tmdb_id=initial_tmdb_id,
-                timeout=provider_timeout
+                timeout=custom_timeout
             )
             print(f"[STREAM DEBUG] custom scraper done scraper={scraper_name!r} raw_cards={len(streams or [])}")
             return scraper_name, streams
@@ -8163,7 +8357,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             print(f"[STREAM DEBUG] custom scraper failed scraper={scraper_name!r}: {e}")
             return scraper_name, []
 
-    all_raw_streams = list(initial_cs_streams)
+    all_raw_streams = list(initial_cs_streams) + list(initial_custom_streams)
     if cached and not force_refresh:
         cache_seed_streams = usable_cache_candidates if source_scope else usable_cached
         for c in cache_seed_streams:
@@ -8368,6 +8562,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             if resolve_future:
                 futures.add(resolve_future)
 
+            first_stream_at = None
             while futures:
                 if abort_event and abort_event.is_set():
                     return []
@@ -8379,10 +8574,18 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     if has_direct_streams or deadline_passed or all_direct_done:
                         _submit_torrent_addons()
 
+                if all_raw_streams and first_stream_at is None:
+                    first_stream_at = time.monotonic()
+
+                active_deadline = collection_deadline
+                resolve_pending = bool(resolve_future and resolve_future in futures)
+                if first_stream_at is not None and not resolve_pending and (torrent_addons_submitted or not torrent_stream_addons):
+                    active_deadline = min(collection_deadline, first_stream_at + 15.0)
+
                 if not torrent_addons_submitted and torrent_stream_addons:
-                    wait_timeout = max(0.0, min(direct_priority_deadline - time.monotonic(), collection_deadline - time.monotonic()))
+                    wait_timeout = max(0.0, min(direct_priority_deadline - time.monotonic(), active_deadline - time.monotonic()))
                 else:
-                    wait_timeout = max(0.0, collection_deadline - time.monotonic())
+                    wait_timeout = max(0.0, active_deadline - time.monotonic())
 
                 done, futures = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED, timeout=wait_timeout)
                 if abort_event and abort_event.is_set():

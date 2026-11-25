@@ -73,19 +73,15 @@ class TestAddonCatalogs(unittest.TestCase):
             self.assertFalse(getattr(win, "tv_supported", False))
             self.assertFalse(getattr(win, "anime_supported", False))
 
-    def test_get_addon_directory_catalogs_includes_stremio_addons(self):
-        """get_addon_directory_catalogs returns Official, Community, STREMIO-ADDONS.NET, and Installed."""
-        catalogs = api.get_addon_directory_catalogs()
+    def test_get_addon_directory_catalogs_excludes_third_party_directory_by_default(self):
+        """get_addon_directory_catalogs returns Official and Installed without bundling third-party catalogs."""
+        with patch("src.database.get_addons", return_value=[]):
+            catalogs = api.get_addon_directory_catalogs()
         cat_ids = [c["id"] for c in catalogs]
-        self.assertIn("community", cat_ids)
         self.assertIn("official", cat_ids)
-        self.assertIn("stremio-addons.net", cat_ids)
         self.assertIn("installed", cat_ids)
-
-        # STREMIO-ADDONS.NET URL points to the addon_catalog endpoint
-        stremio_net = next(c for c in catalogs if c["id"] == "stremio-addons.net")
-        self.assertEqual(stremio_net["url"], "https://stremio-addons.net/api/addon_catalog/all/stremio-addons.net.json")
-        self.assertEqual(stremio_net["manifest_url"], "https://stremio-addons.net/api/manifest.json")
+        self.assertNotIn("community", cat_ids)
+        self.assertNotIn("stremio-addons.net", cat_ids)
 
     def test_fetch_addon_directory_catalog_parsing(self):
         """fetch_addon_directory_catalog properly parses normalized addon entries."""
