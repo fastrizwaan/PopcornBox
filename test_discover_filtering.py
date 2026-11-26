@@ -94,6 +94,23 @@ class TestDiscoverFiltering(unittest.TestCase):
         self.assertIn("trending", cat_ids)
         self.assertIn("top-rated", cat_ids)
         self.assertIn("new-on-streaming", cat_ids)
+        for cat in catalogs:
+            supports_net, _ = api.catalog_supports_extra(cat, ["network", "networks", "provider", "providers"])
+            self.assertTrue(supports_net)
+
+    @patch("src.tmdb_helper._get_cached_request", return_value={})
+    def test_fetch_default_tmdb_catalog_page_unknown_network_returns_empty(self, mock_get):
+        items, total_pages = tmdb_helper.fetch_default_tmdb_catalog_page(
+            catalog_id="popular",
+            media_type="movie",
+            page=1,
+            network="NonExistentNetworkXYZ123",
+        )
+        self.assertEqual(items, [])
+        self.assertEqual(total_pages, 0)
+        # Only the company search request should be made; never an unfiltered /discover call.
+        for call in mock_get.call_args_list:
+            self.assertNotIn("/discover/", call[0][0])
 
     @patch("src.tmdb_helper._get_cached_request")
     def test_fetch_default_tmdb_catalog_page_filters(self, mock_get):
@@ -269,6 +286,160 @@ class TestDiscoverFiltering(unittest.TestCase):
         self.assertEqual(filters["catalog_id"], "popular")
         self.assertEqual(filters["section"], "Popular")
         self.assertIsNone(filters["sort_by"])
+
+    def test_unique_tmdb_catalog_preserves_network_filtered_cards(self):
+        import threading
+        import time
+
+        win = MagicMock()
+        win.unique_request_id = 1
+        win.is_fetching_unique = False
+        win.has_more_unique = True
+        win.current_network = "Amazon MX Player"
+        win.current_genre = None
+        win.current_year = None
+        win.current_language = None
+        win.current_country = None
+        win.current_sort = "Popular"
+        win._current_discover_type = "all"
+        win._current_unique_media_type = "all"
+        win._unique_abort_event = None
+        win._unique_lock = threading.Lock()
+        win.unique_seen_ids = set()
+        win.unique_seen_keys = set()
+        win.unique_page_per_catalog = {}
+        win.unique_exhausted_catalogs = set()
+        win.unique_retryable_catalogs = set()
+        win.unique_productive_catalogs = []
+        win.unique_empty_streak = {}
+        win.unique_catalog_idx = 0
+        win.unique_flowbox = Gtk.FlowBox()
+        win._is_unique_mode_active.return_value = True
+        win._is_unique_item = lambda it: PopcornBoxWindow._is_unique_item(win, it)
+
+        delivered = []
+        win._append_unique_slice_to_ui = lambda items, req_id: delivered.extend(items)
+
+        series_cat = {
+            "_source": "tmdb_catalog",
+            "addon_name": "PopcornBox Catalog",
+            "manifest_url": tmdb_helper.TMDB_BUILTIN_MANIFEST_URL,
+            "catalog_id": "popular",
+            "catalog_name": "Popular",
+            "media_type": "series",
+            "supports_pagination": True,
+        }
+        win.unique_catalogs = [series_cat]
+        win.unique_catalogs_by_key = {
+            (tmdb_helper.TMDB_BUILTIN_MANIFEST_URL, "popular", "series"): series_cat
+        }
+
+        tmdb_items = [
+            {
+                "id": "tmdb:9001",
+                "title": "Campus Diaries",
+                "name": "Campus Diaries",
+                "type": "series",
+                "media_type": "series",
+                "year": "2022",
+                "poster": "https://image.tmdb.org/t/p/w300/campus.jpg",
+            }
+        ]
+
+        with patch("src.database.get_cached_catalog", return_value=None), \
+             patch("src.database.save_cached_catalog"), \
+             patch("src.tmdb_helper.fetch_default_tmdb_catalog_page", return_value=(tmdb_items, 3)), \
+             patch("src.api.filter_items_by_network", side_effect=AssertionError("must not post-filter tmdb_catalog")):
+            PopcornBoxWindow._load_next_unique_batch(win)
+            for _ in range(100):
+                time.sleep(0.01)
+                context = GLib.MainContext.default()
+                while context.iteration(False):
+                    pass
+                if delivered:
+                    break
+
+        self.assertEqual([it["id"] for it in delivered], ["tmdb:9001"])
+
+    def test_content_tmdb_catalog_preserves_network_filtered_cards_and_skips_cinemeta_fallback(self):
+        import time
+
+        win = MagicMock()
+        win.content_request_id = 1
+        win.content_page = 1
+        win.has_more_content = True
+        win.is_fetching_content = False
+        win.content_seen_ids = set()
+        win.content_error_count = 0
+        win.content_flowbox = Gtk.FlowBox()
+        win.current_genre = None
+        win.current_year = None
+        win.current_language = None
+        win.current_country = None
+        win.current_network = "Amazon MX Player"
+        win.current_sort = "Popular"
+        win.current_media_type = "series"
+        win._current_discover_type = "series"
+        win._content_abort_event = None
+        win._discover_result_search_query.return_value = ""
+        win.current_catalog = {
+            "_source": "tmdb_catalog",
+            "manifest_url": tmdb_helper.TMDB_BUILTIN_MANIFEST_URL,
+            "catalog_id": "popular",
+            "catalog_name": "Popular",
+            "media_type": "series",
+        }
+
+        populated = []
+        win._populate_flowbox = lambda fb, items, seen: populated.extend(items)
+
+        tmdb_items = [
+            {
+                "id": "tmdb:9002",
+                "title": "Half CA",
+                "name": "Half CA",
+                "type": "series",
+                "media_type": "series",
+                "year": "2023",
+                "poster": "https://image.tmdb.org/t/p/w300/halfca.jpg",
+            }
+        ]
+
+        with patch("src.database.get_cached_catalog", return_value=None), \
+             patch("src.database.save_cached_catalog"), \
+             patch("src.database.hydrate_items_from_metadata"), \
+             patch("src.api.hydrate_missing_catalog_items"), \
+             patch("src.tmdb_helper.fetch_default_tmdb_catalog_page", return_value=(tmdb_items, 2)), \
+             patch("src.api.filter_items_by_network", side_effect=AssertionError("must not post-filter tmdb_catalog")):
+            PopcornBoxWindow._fetch_content_page(win)
+            for _ in range(100):
+                time.sleep(0.01)
+                context = GLib.MainContext.default()
+                while context.iteration(False):
+                    pass
+                if populated:
+                    break
+
+        self.assertEqual([it["id"] for it in populated], ["tmdb:9002"])
+
+        # When a network-filtered TMDb query returns empty (e.g. movies on Amazon MX Player),
+        # _fetch_content_page must NOT fall back to unfiltered Cinemeta.
+        win.content_request_id = 2
+        win.is_fetching_content = False
+        win.current_media_type = "movie"
+        win._current_discover_type = "movie"
+        with patch("src.database.get_cached_catalog", return_value=None), \
+             patch("src.tmdb_helper.fetch_default_tmdb_catalog_page", return_value=([], 1)), \
+             patch("src.api.fetch_items", side_effect=AssertionError("must not fall back to Cinemeta when filtered")) as mock_cinemeta:
+            PopcornBoxWindow._fetch_content_page(win)
+            for _ in range(50):
+                time.sleep(0.01)
+                context = GLib.MainContext.default()
+                while context.iteration(False):
+                    pass
+                if not win.is_fetching_content:
+                    break
+            mock_cinemeta.assert_not_called()
 
 
 if __name__ == "__main__":

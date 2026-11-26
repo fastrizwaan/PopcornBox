@@ -444,6 +444,34 @@ def normalize_media_type(media_type):
     return "movie"
 
 
+def plugin_content_id(video_id, season=None, episode=None):
+    """Extract normalized plugin content ID matching NuvioDesktop PluginContentIds."""
+    trimmed = "" if video_id is None else str(video_id).strip()
+    if not trimmed:
+        return trimmed
+    without_prefix = trimmed
+    lower_trimmed = trimmed.lower()
+    if lower_trimmed.startswith("tmdb:"):
+        without_prefix = trimmed[5:]
+    elif lower_trimmed.startswith("tmdb/"):
+        without_prefix = trimmed[5:]
+    if season is not None and episode is not None:
+        episode_suffix = f":{season}:{episode}"
+        if without_prefix.endswith(episode_suffix):
+            without_prefix = without_prefix[: -len(episode_suffix)]
+    base_id = without_prefix.split("/", 1)[0].strip()
+    return base_id or trimmed
+
+
+def js_plugin_media_type(media_type, supported_types, season=None, episode=None):
+    """Map normalized media type to JS runtime mediaType matching NuvioDesktop."""
+    norm = "" if media_type is None else str(media_type).strip().lower()
+    supported = {str(t).strip().lower() for t in (supported_types or []) if t}
+    if norm == "tv" and season is not None and episode is not None and "series" in supported:
+        return "series"
+    return media_type
+
+
 def scraper_supports_type(scraper, media_type):
     supported = [normalize_media_type(t) for t in scraper.get("supported_types", ["movie", "tv"])]
     return normalize_media_type(media_type) in supported
@@ -1073,11 +1101,17 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
         )
         return _err(SCRAPER_ERROR_NO_CODE)
 
-    tmdb_id_str = "" if tmdb_id is None else str(tmdb_id).strip()
+    tmdb_id_str = plugin_content_id(tmdb_id, season=season, episode=episode)
     if not tmdb_id_str or tmdb_id_str.lower() in ("none", "null"):
         return _err(SCRAPER_ERROR_EMPTY)
 
     norm_type = normalize_media_type(media_type)
+    js_media_type = js_plugin_media_type(
+        norm_type,
+        scraper.get("supported_types"),
+        season=season,
+        episode=episode,
+    )
     # Scraper repositories are third-party code. Keep user-configured keys in
     # the application and pass only the public built-in key for compatibility.
     tmdb_key = tmdb_helper.DEFAULT_TMDB_API_KEY
@@ -1087,7 +1121,7 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
         "code": code,
         "scraperId": scraper.get("id"),
         "tmdbId": tmdb_id_str,
-        "mediaType": norm_type,
+        "mediaType": js_media_type,
         "season": season,
         "episode": episode,
         "settings": get_scraper_settings(scraper.get("id")),

@@ -13290,7 +13290,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             cat_info = self.unique_catalogs_by_key.get(cat_key, {})
                             if (
                                 cur_network
-                                and cat_info.get("_source") != "tmdb_network"
+                                and cat_info.get("_source") not in ("tmdb_network", "tmdb_catalog")
                                 and not api.catalog_supports_extra(cat_info, ["network", "networks", "provider", "providers"])[0]
                             ):
                                 network_media_type = (
@@ -13530,8 +13530,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     if catalog.get("_source") != "tmdb_catalog" else False
                 )
                 supports_network_extra = (
-                    api.catalog_supports_extra(catalog, ["network", "networks", "provider", "providers"])[0]
-                    if catalog.get("_source") != "tmdb_catalog" else False
+                    True if catalog.get("_source") == "tmdb_catalog"
+                    else api.catalog_supports_extra(catalog, ["network", "networks", "provider", "providers"])[0]
                 )
                 supports_year_filter = bool(
                     year
@@ -13539,7 +13539,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     and api.catalog_supports_genre(catalog, year)
                 )
 
-                genre_unsupported = bool(genre and not api.catalog_supports_genre(catalog, genre))
+                genre_unsupported = bool(
+                    genre
+                    and catalog.get("_source") != "tmdb_catalog"
+                    and not api.catalog_supports_genre(catalog, genre)
+                )
 
                 if cur_sort_val == "Year" or (cat_id == "year" and not genre):
                     fetch_genre = str(year) if year and str(year) not in ("All Years", "All", _("All Years"), "Year", _("Year")) else ""
@@ -13811,9 +13815,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 limit=40,
                                 genre=genre,
                                 year=year,
-                                language=language,
-                                country=country,
-                                network=network,
+                                language=cur_lang,
+                                country=cur_country,
+                                network=cur_network,
                             )
                             items_by_type.append(typed_items or [])
                             total_pages = max(total_pages, int(typed_pages or 0))
@@ -13831,11 +13835,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             limit=80,
                             genre=genre,
                             year=year,
-                            language=language,
-                            country=country,
-                            network=network,
+                            language=cur_lang,
+                            country=cur_country,
+                            network=cur_network,
                         )
-                    if not items:
+                    if not items and not (genre or year or cur_lang or cur_country or cur_network):
                         cinemeta_cat_id = "year" if cat_id == "new-on-streaming" else ("imdbRating" if cat_id == "top-rated" else "top")
                         fallback_types = ("movie", "series") if media_type in ("all", "movie_series", "discover") else (media_type,)
                         fallback_by_type = [
@@ -15663,7 +15667,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                     network=r_network,
                                 )
                                 total_pages = max(total_pages, int(page_total or 0))
-                                if not items:
+                                if not items and not (r_genre or r_year or r_lang or r_country or r_network):
                                     # Fallback to Cinemeta if TMDb is unreachable
                                     cinemeta_cat_id = "year" if c_id == "new-on-streaming" else ("imdbRating" if c_id == "top-rated" else "top")
                                     items = api.fetch_items(

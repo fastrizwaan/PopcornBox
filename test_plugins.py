@@ -277,6 +277,29 @@ class TestNuvioPlugins(unittest.TestCase):
         self.assertEqual(captured["payload"]["tmdbId"], "1421")
         self.assertEqual(captured["payload"]["mediaType"], "series")
 
+    def test_runner_strips_leading_shebang(self):
+        runtime_cmd = plugins.find_js_runtime()
+        if runtime_cmd is None:
+            bundle_path = Path("src/nuvio_runner.bundle.js")
+            self.assertIn("cleanedCode", bundle_path.read_text())
+            return
+
+        scraper = {
+            "id": "repo:shebang_scraper",
+            "name": "ShebangScraper",
+            "supported_types": ["movie"],
+            "code": (
+                "#!/usr/bin/env node\n"
+                "async function getStreams(tmdbId, mediaType) {\n"
+                "  return [{ name: 'ShebangTest', title: 'Test 1080p', url: 'https://cdn.example.com/' + tmdbId + '.mp4' }];\n"
+                "}\n"
+                "module.exports = { getStreams };\n"
+            ),
+        }
+        streams = plugins.execute_scraper(scraper, "603", "movie", timeout=10)
+        self.assertEqual(len(streams), 1)
+        self.assertEqual(streams[0]["url"], "https://cdn.example.com/603.mp4")
+
 
 if __name__ == "__main__":
     unittest.main()

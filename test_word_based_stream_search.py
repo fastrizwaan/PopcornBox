@@ -368,6 +368,47 @@ class TestWordBasedStreamSearch(unittest.TestCase):
                 f"Expected 'See' to reject {s}",
             )
 
+    def test_nuvio_provider_streams_survive_process_raw_streams(self):
+        raw_streams = [
+            {
+                "name": "4KHDHub - HubCloud 10Gbps 2160p",
+                "title": "The Matrix (1999) REMASTERED UHD 2160p 10bit HDR BluRay\n💾 12.5 GB • HUBCLOUD",
+                "url": "https://pixel.hubcloud.mov/?id=23b18ca583293b84aacf8398",
+                "addon_name": "4KHDHub",
+                "is_nuvio_plugin": True,
+            },
+            {
+                "name": "Torrentio | 👤 372 | 2160P",
+                "title": "🎬 The Matrix - 1999\n🔥 2160p | DV • HDR10 • English • 👥 372",
+                "infoHash": "0123456789abcdef0123456789abcdef01234567",
+                "addon_name": "Torrentio",
+                "is_nuvio_plugin": True,
+            },
+            {
+                "name": "StreamFlix",
+                "title": "The Matrix - Premium Quality\n1080p • 2h 16m",
+                "url": "https://s3.ap-southeast-1.wasabisys.com/streamflix/movies/1999/thematrix.mkv",
+                "addon_name": "StreamFlix",
+                "is_nuvio_plugin": True,
+            },
+            {
+                "name": "StreamFlix",
+                "title": "The Matrix - Standard Quality\n720p • 2h 16m",
+                "url": "https://bb.streamflixserver.site/file/streamflix/movies/1999/thematrix.mkv",
+                "addon_name": "StreamFlix",
+                "is_nuvio_plugin": True,
+            },
+            {
+                "name": "Purstream | hd | Dual-Audio",
+                "title": "🎬 The Matrix - 1999\n🔥 hdp | 🔊 Dual-Audio",
+                "url": "https://cdn.example.com/purstream/matrix.m3u8",
+                "addon_name": "Purstream",
+                "is_nuvio_plugin": True,
+            },
+        ]
+        processed = api.process_raw_streams(raw_streams, title="The Matrix")
+        self.assertEqual(len(processed), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1766,6 +1766,7 @@ def get_default_tmdb_catalogs(media_type="all"):
                 "display_name": display_name,
                 "title": display_name,
                 "manifest_url": TMDB_BUILTIN_MANIFEST_URL,
+                "extraSupported": ["genre", "year", "language", "country", "network", "skip"],
                 "tmdb_sort": tmdb_sort,
                 "supports_pagination": True,
             })
@@ -1908,6 +1909,8 @@ def fetch_default_tmdb_catalog_page(
                             break
                 if company_id:
                     params["with_companies"] = company_id
+                else:
+                    return [], 0
 
         if database.is_kids_safe_mode():
             params["certification_country"] = "US"

@@ -6383,25 +6383,34 @@ _RELEASE_DESCRIPTOR_WORDS = {
     'episode', 'ep', 'pilot', 'part', 'pt', 'vol', 'volume', 'complete', 'collection',
     'extended', 'uncut', 'unrated', 'remastered', 'directors', 'director', 'cut',
     'theatrical', 'special', 'edition', 'proper', 'repack', 'imax', '3d', 'hdr', 'hdr10',
-    'dv', 'dolby', 'vision', 'atmos', '10bit', '8bit', 'x264', 'x265', 'h264', 'h265',
-    'hevc', 'avc', 'aac', 'dts', 'ac3', 'eac3', 'ddp', 'flac', 'mp3', 'web', 'webdl',
-    'webrip', 'bluray', 'bdrip', 'brrip', 'dvdrip', 'hdrip', 'hdtv', 'pdtv', 'hdtc',
-    'hdcam', 'cam', 'camrip', 'remux', 'mkv', 'mp4', 'avi', 'webm', 'm4v', 'ts', 'm3u8',
-    '4k', 'uhd', 'fhd', 'hd', 'sd', '2160p', '1080p', '720p', '480p', '360p',
+    'hdr10plus', 'dv', 'dovi', 'dolby', 'vision', 'atmos', '10bit', '8bit', 'x264', 'x265',
+    'h264', 'h265', 'hevc', 'avc', 'av1', 'vp9', 'xvid', 'divx', 'aac', 'dts', 'ac3', 'eac3',
+    'ddp', 'flac', 'mp3', 'web', 'webdl', 'webrip', 'bluray', 'bdrip', 'brrip', 'dvdrip',
+    'hdrip', 'hdtv', 'pdtv', 'hdtc', 'hdcam', 'cam', 'camrip', 'remux', 'mkv', 'mp4', 'avi',
+    'webm', 'm4v', 'ts', 'm3u8', '4k', 'uhd', 'fhd', 'hd', 'sd', 'hdp', '2160p', '1080p',
+    '720p', '480p', '360p', 'quality', 'standard', 'vf', 'vfq', 'vff', 'vostfr', 'truefrench',
+    'gb', 'mb', 'kb', 'tb', 'gbps', 'mbps', 'kbps', 'fps',
     'download', 'watch', 'online', 'free',
 }
 
 _PROVIDER_PREFIX_WORDS = {
     '1shows', 'vidrock', 'vidsrc', 'vidfast', 'vidlink', 'vidlove', 'movix', 'castle',
-    'dahmermovies', 'cinestream', 'torrentio', 'yts', 'topcartoons', 'uhdmovies',
-    'hdhub4u', '4khdhub', 'moviesmod', 'vegamovies', 'moviesdrive', 'moviebox',
+    'dahmermovies', 'cinestream', 'torrentio', 'yts', 'yify', 'eztv', 'nyaa', 'rarbg', '1337x',
+    'topcartoons', 'uhdmovies', 'hdhub4u', '4khdhub', 'hdhub', 'movies4u', 'bollyflix',
+    'moviesmod', 'vegamovies', 'moviesdrive', 'moviebox', 'purstream', 'streamflix',
     'fibwatch', 'desiflix', 'einthustan', 'hindmoviez', 'cinefreak', 'cinemacity',
     'moonflix', 'allmovieland', 'reanime', 'hianime', 'allanime', 'animekai', 'animepahe',
-    'fast', 'server', 'premium', 'shared', 'hubcloud', 'driveseed', 'pixeldrain',
-    'unknown', 'direct', 'stream', 'popcorn', 'nebula', 'nova',
+    'fast', 'server', 'premium', 'shared', 'hubcloud', 'hubdrive', 'hubcdn', 'driveseed',
+    'gdflix', 'gdtot', 'filepress', 'vcloud', 'fsl', 'gofile', 'vikingfile', 'buzzheavier',
+    'dropgalaxy', 'pixeldrain', 'unknown', 'direct', 'stream', 'popcorn', 'nebula', 'nova',
     'torbox', 'realdebrid', 'alldebrid', 'debrid', 'mediafusion', 'comet',
     'knightcrawler', 'annatar', 'stremthru', 'jackettio', 'nuvio', 'showbox', 'addon',
 }
+
+_RE_NOISE_UNIT_TOKEN = re.compile(
+    r'^\d+(?:gbps|mbps|kbps|gb|mb|kb|tb|fps|hz|bit|k|p)$',
+    re.IGNORECASE,
+)
 
 _RE_SCENE_BOUNDARY = re.compile(
     r'[\.\s\-_\(\[](?:(?:18|19|20)\d{2}|S\d{1,2}(?:E\d{1,2})?|\d{1,2}x\d{1,2}|'
@@ -6422,19 +6431,37 @@ def _tokenize_clean_words(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", normalized)
 
 
-def _strip_leading_provider_prefix(text: str) -> str:
-    """Strip emojis, bracket tags, domain tags, and known 'Provider - ' prefixes."""
+def _is_title_noise_token(token: str, ignored_words: set[str]) -> bool:
+    """Return True if token is a pure provider/descriptor/numeric-unit metadata tag."""
+    if not token:
+        return True
+    t = token.lower()
+    return t in ignored_words or t.isdigit() or bool(_RE_NOISE_UNIT_TOKEN.match(t))
+
+
+def _strip_leading_provider_prefix(text: str, extra_ignored_words=None, protected_words=None) -> str:
+    """Strip emojis, bracket tags, domain tags, and leading 'Provider | badge - ' prefixes."""
     s = re.sub(r'^\ufeff|\u200b', '', str(text or '')).strip()
     s = re.sub(r'\[[^\]]*\]', ' ', s)
     s = re.sub(r'www\.[^\s\.]+\.[a-z]{2,4}', ' ', s, flags=re.I)
     s = re.sub(r'^[^\w\(\[]+', '', s).strip()
-    # Strip "Provider [tag] - " or "Provider • " if left side is solely provider/quality metadata
-    sep_match = re.match(r'^([^|\-\u2022]+?)\s*(?:\-|•|\|)\s*(.+)$', s)
-    if sep_match:
+    ignored = _PROVIDER_PREFIX_WORDS | _RELEASE_DESCRIPTOR_WORDS | MOVIE_STOP_WORDS
+    if extra_ignored_words:
+        ignored = ignored | {str(w).lower() for w in extra_ignored_words if w}
+    if protected_words:
+        ignored = ignored - {str(w).lower() for w in protected_words if w}
+    # Strip multi-part leading provider/badge/quality prefixes (e.g.
+    # "Torrentio | 👤 372 | 2160P - ..." or "4KHDHub - HubCloud 10Gbps 2160p - ...")
+    for _ in range(6):
+        sep_match = re.match(r'^([^|\-\u2022]+?)\s*(?:\-|•|\|)\s*(.+)$', s)
+        if not sep_match:
+            break
         left_tokens = _tokenize_clean_words(sep_match.group(1))
-        if left_tokens and all(w in _PROVIDER_PREFIX_WORDS or w in _RELEASE_DESCRIPTOR_WORDS or w in MOVIE_STOP_WORDS or w.isdigit() for w in left_tokens):
+        if not left_tokens or all(_is_title_noise_token(w, ignored) for w in left_tokens):
             s = sep_match.group(2).strip()
             s = re.sub(r'^[^\w\(\[]+', '', s).strip()
+        else:
+            break
     return s
 
 
@@ -6450,15 +6477,6 @@ def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None)
     if not target_title or not filename or is_opaque_identifier(filename):
         return False
 
-    ignored_words = _PROVIDER_PREFIX_WORDS | _RELEASE_DESCRIPTOR_WORDS | MOVIE_STOP_WORDS
-    if extra_ignored_words:
-        ignored_words = ignored_words | {str(w).lower() for w in extra_ignored_words if w}
-
-    raw_str = str(filename).strip()
-    fn = _strip_leading_provider_prefix(raw_str)
-    if not fn:
-        return False
-
     clean_title = re.sub(r"[\'’]", "", str(target_title).lower())
     target_all_words = re.findall(r"[a-z0-9]+", clean_title)
     title_words = [w for w in target_all_words if w not in MOVIE_STOP_WORDS and len(w) > 0]
@@ -6468,28 +6486,55 @@ def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None)
         return False
     title_word_set = set(title_words)
 
+    ignored_words = _PROVIDER_PREFIX_WORDS | _RELEASE_DESCRIPTOR_WORDS | MOVIE_STOP_WORDS
+    if extra_ignored_words:
+        ignored_words = ignored_words | {str(w).lower() for w in extra_ignored_words if w}
+
+    raw_str = str(filename).strip()
+    fn = _strip_leading_provider_prefix(
+        raw_str,
+        extra_ignored_words=extra_ignored_words,
+        protected_words=target_all_words,
+    )
+    if not fn:
+        return False
+
     fn_words_list = _tokenize_clean_words(fn)
     fn_words = set(fn_words_list)
     if not fn_words:
         return False
 
+    joined_all = "".join(target_all_words) if len(target_all_words) >= 2 else ""
+    joined_sig = "".join(title_words) if len(title_words) >= 2 else ""
+
+    def _matches_joined_target(tok: str) -> bool:
+        for j in (joined_all, joined_sig):
+            if j and (tok == j or (tok.startswith(j) and tok[len(j):].isdigit())):
+                return True
+        return False
+
     # Ignore pure provider/quality/descriptor badges with no release title content
     non_noise_fn = [
         w for w in fn_words_list
-        if w not in ignored_words and not w.isdigit()
+        if not _is_title_noise_token(w, ignored_words)
     ]
     if not non_noise_fn:
         return False
 
     matched = {w for w in title_words if w in fn_words}
+    if any(_matches_joined_target(w) for w in fn_words):
+        matched.update(title_words)
 
     # If candidate has pipe-separated UI segments (e.g. "S1 E1 - Pilot | Modern Family"),
     # accept immediately if any segment contains all target words as whole words without conflict.
     if "|" in raw_str:
-        segments = [_strip_leading_provider_prefix(seg) for seg in raw_str.split("|")]
+        segments = [
+            _strip_leading_provider_prefix(seg, extra_ignored_words=extra_ignored_words, protected_words=target_all_words)
+            for seg in raw_str.split("|")
+        ]
         for seg in segments:
             seg_tokens = _tokenize_clean_words(seg)
-            seg_core = [w for w in seg_tokens if w not in ignored_words]
+            seg_core = [w for w in seg_tokens if not _is_title_noise_token(w, ignored_words)]
             if seg_core and all(tw in seg_core for tw in title_words):
                 seg_extra = [w for w in seg_core if w not in title_word_set]
                 first_pos = min((i for i, w in enumerate(seg_core) if w in title_word_set), default=0)
@@ -6506,10 +6551,14 @@ def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None)
         prefix = prefix.strip(' .-_:|•')
         if prefix:
             prefix_tokens = _tokenize_clean_words(prefix)
-            prefix_core = [
-                w for w in prefix_tokens
-                if w not in ignored_words
-            ]
+            prefix_core = []
+            for w in prefix_tokens:
+                if _is_title_noise_token(w, ignored_words):
+                    continue
+                if _matches_joined_target(w):
+                    prefix_core.extend(title_words)
+                else:
+                    prefix_core.append(w)
             if prefix_core:
                 # 1. Forward check: every significant target word must be a whole word in release title
                 # (catches 'Family (2023) Malayalam' for 'Modern Family', or 'See 1080p' for 'You Can See Everything')
@@ -8543,6 +8592,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             return []
         future_to_addon = {}
         futures = set()
+        plugin_futures = set()
         queried_addon_urls = set()
         queried_plugin_ids = set()
         effective_collection_timeout = provider_collection_timeout
@@ -8602,6 +8652,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     p_fut = executor.submit(fetch_from_plugin, scraper, initial_tmdb_id)
                     future_to_addon[p_fut] = (scraper, initial_tmdb_id)
                     futures.add(p_fut)
+                    plugin_futures.add(p_fut)
                     queried_plugin_ids.add(scraper.get("id"))
 
             # 1b. Custom drop-in Python scrapers
@@ -8691,7 +8742,13 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
                 active_deadline = collection_deadline
                 resolve_pending = bool(resolve_future and resolve_future in futures)
-                if first_stream_at is not None and not resolve_pending and (torrent_addons_submitted or not torrent_stream_addons):
+                plugin_pending = bool(plugin_futures & futures)
+                if (
+                    first_stream_at is not None
+                    and not resolve_pending
+                    and not plugin_pending
+                    and (torrent_addons_submitted or not torrent_stream_addons)
+                ):
                     active_deadline = min(collection_deadline, first_stream_at + 15.0)
 
                 if not torrent_addons_submitted and torrent_stream_addons:
@@ -8769,6 +8826,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                                             future_to_addon[new_fut] = (scraper, resolved_tmdb)
                                             queried_plugin_ids.add(scraper.get("id"))
                                             futures.add(new_fut)
+                                            plugin_futures.add(new_fut)
                         except Exception as e:
                             print(f"Error resolving IDs: {e}")
                     else:
