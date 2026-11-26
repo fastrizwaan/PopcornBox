@@ -5341,10 +5341,30 @@ def clean_media_title(raw_title):
     if not text:
         return "", None
     year_match = re.search(r"[\s(\[-]*((?:19|20)\d{2})[\s)\]-]*$", text)
+    if not year_match:
+        # Scraper slugs often put the year before release labels rather than at
+        # the very end (e.g. "Title 2026 English Short Film 720p HDRip").
+        # Use the last embedded year so the release tail cannot become part of
+        # the title sent to metadata and stream matching.
+        release_tail_marker = re.compile(
+            r"\b(?:short\s+film|web\s+series|english|hindi|dual\s+audio|"
+            r"dubbed|subbed|hdrip|web-?dl|webrip|bluray|blu-ray|2160p|1080p|"
+            r"720p|480p|4k|x264|x265|h\.?265|h\.?264|aac|hevc)\b",
+            re.IGNORECASE,
+        )
+        embedded_years = [
+            match for match in re.finditer(r"(?<!\d)((?:19|20)\d{2})(?!\d)", text)
+            if (
+                match.start(1) > 0
+                and release_tail_marker.search(text[match.end(1):])
+            )
+        ]
+        if embedded_years:
+            year_match = embedded_years[-1]
     extracted_year = year_match.group(1) if year_match else None
     clean_name = text
     if year_match:
-        clean_name = text[:year_match.start()].strip(" .-_([")
+        clean_name = text[:year_match.start(1)].strip(" .-_([")
     clean_name = re.sub(
         r"\s*(?:\b(?:4k|2160p|1080p|720p|480p|hdrip|web-?dl|webrip|bluray|dual audio|hindi dubbed)\b.*)$",
         "",
@@ -6478,11 +6498,13 @@ _PROVIDER_PREFIX_WORDS = {
     '1shows', 'vidrock', 'vidsrc', 'vidfast', 'vidlink', 'vidlove', 'movix', 'castle',
     'dahmermovies', 'cinestream', 'torrentio', 'yts', 'yify', 'eztv', 'nyaa', 'rarbg', '1337x',
     'topcartoons', 'uhdmovies', 'hdhub4u', '4khdhub', 'hdhub', 'movies4u', 'bollyflix',
-    'moviesmod', 'vegamovies', 'moviesdrive', 'moviebox', 'purstream', 'streamflix',
+    'moviesmod', 'vegamovies', 'moviesdrive', '9kmovies', 'moviebox', 'purstream', 'streamflix',
     'fibwatch', 'desiflix', 'einthustan', 'hindmoviez', 'cinefreak', 'cinemacity',
     'moonflix', 'allmovieland', 'reanime', 'hianime', 'allanime', 'animekai', 'animepahe',
-    'fast', 'server', 'premium', 'shared', 'hubcloud', 'hubdrive', 'hubcdn', 'driveseed',
-    'gdflix', 'gdtot', 'filepress', 'vcloud', 'fsl', 'gofile', 'vikingfile', 'buzzheavier',
+    'fast', 'server', 'premium', 'shared', 'hubcloud', 'hubdrive', 'hubcdn', 'cloud', 'google', 'cdn', 'driveseed',
+    'gdflix', 'gdtot', 'filepress', 'vcloud', 'fsl', 'gofile', 'frdl', 'lplaygo',
+    'streamtape', 'savefiles', 'megaup', 'vinovo', 'voe', 'linksddr', 'uptobhai',
+    'vikingfile', 'buzzheavier',
     'dropgalaxy', 'pixeldrain', 'unknown', 'direct', 'stream', 'popcorn', 'nebula', 'nova',
     'torbox', 'realdebrid', 'alldebrid', 'debrid', 'mediafusion', 'comet',
     'knightcrawler', 'annatar', 'stremthru', 'jackettio', 'nuvio', 'showbox', 'addon',
@@ -6512,6 +6534,102 @@ def _tokenize_clean_words(text: str) -> list[str]:
     nfkc = unicodedata.normalize("NFKC", unescaped).lower()
     normalized = re.sub(r"[\'\u2018\u2019\u02bc\u2032`]", "", nfkc)
     return re.findall(r"[a-z0-9]+", normalized)
+
+
+def _tokenize_strict_title_words(text: str) -> list[str]:
+    """Tokenize a direct-stream title with case folding and Unicode letters."""
+    if not text:
+        return []
+    unescaped = html.unescape(str(text))
+    nfkc = unicodedata.normalize("NFKC", unescaped).casefold()
+    decomposed = unicodedata.normalize("NFKD", nfkc)
+    without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+    normalized = re.sub(r"[\'\u2018\u2019\u02bc\u2032`]", "", without_marks)
+    normalized = normalized.replace("&", " and ").replace("+", " plus ").replace("#", " sharp ")
+    return re.findall(r"[^\W_]+", normalized, flags=re.UNICODE)
+
+
+def strict_stream_title_matches(target_title, candidate_title, extra_ignored_words=None):
+    """Return True when a stream title starts with every requested title token in order.
+
+    Punctuation is normalized consistently, so ``Kill Me, Heal Me`` matches
+    the same words separated by dots or hyphens. Meaningful ``+``, ``#``, and
+    ``&`` marks are retained as words to avoid collisions such as C++ and C#.
+    Provider labels and release metadata may precede the title; arbitrary title
+    words may not.
+    """
+    target_words = _tokenize_strict_title_words(target_title)
+    if not target_words or not candidate_title:
+        return False
+
+    protected_words = set(target_words)
+    ignored_words = _PROVIDER_PREFIX_WORDS | _RELEASE_DESCRIPTOR_WORDS | MOVIE_STOP_WORDS
+    if extra_ignored_words:
+        if isinstance(extra_ignored_words, str):
+            extra_ignored_words = [extra_ignored_words]
+        for word in extra_ignored_words:
+            ignored_words.update(_tokenize_strict_title_words(word))
+    ignored_words -= protected_words
+
+    def _is_prefix_noise(text):
+        tokens = _tokenize_strict_title_words(text)
+        return bool(tokens) and all(
+            _is_title_noise_token(token, ignored_words)
+            or re.fullmatch(r"(?:s|e)\d{1,3}|\d{1,2}x\d{1,3}", token)
+            for token in tokens
+        )
+
+    raw = unicodedata.normalize("NFKC", html.unescape(str(candidate_title))).strip()
+    # Providers sometimes put the release name in one side of a UI separator.
+    # Check each segment independently, but only strip recognized provider or
+    # metadata prefixes from a segment.
+    segments = [raw]
+    pipe_parts = [part.strip() for part in re.split(r"[|•]", raw) if part.strip()]
+    prefix_is_metadata = True
+    for index, part in enumerate(pipe_parts):
+        if index == 0:
+            continue
+        prefix_is_metadata = prefix_is_metadata and _is_prefix_noise(pipe_parts[index - 1])
+        if prefix_is_metadata:
+            segments.append(part)
+
+    for segment in segments:
+        text = segment
+        # Remove only bracketed tags that are known provider/quality metadata;
+        # a title itself may legitimately be enclosed in brackets.
+        while True:
+            tag_match = re.match(r"^\[([^\]]+)\]\s*(.*)$", text)
+            if not tag_match or not _is_prefix_noise(tag_match.group(1)):
+                break
+            text = tag_match.group(2).strip()
+
+        text = re.sub(r"^[^\w\[(]+", "", text, flags=re.UNICODE).strip()
+        for _ in range(5):
+            prefix_match = re.match(r"^([^:|•\-–—]+?)\s*(?:[:|•\-–—])\s*(.+)$", text)
+            if not prefix_match or not _is_prefix_noise(prefix_match.group(1)):
+                break
+            text = prefix_match.group(2).strip()
+
+        words = _tokenize_strict_title_words(text)
+        while words and words[0] not in protected_words and (
+            _is_title_noise_token(words[0], ignored_words)
+            or re.fullmatch(r"(?:s|e)\d{1,3}|\d{1,2}x\d{1,3}", words[0])
+        ):
+            words.pop(0)
+        joined_target = "".join(target_words)
+        joined_prefix = False
+        for token_count in range(1, len(words) + 1):
+            if "".join(words[:token_count]) == joined_target:
+                joined_prefix = True
+                break
+        if (
+            words[:len(target_words)] == target_words
+            or joined_prefix
+            or (words and re.fullmatch(re.escape(joined_target) + r"\d+", words[0]))
+        ):
+            return True
+
+    return False
 
 
 def _is_title_noise_token(token: str, ignored_words: set[str]) -> bool:
@@ -6777,6 +6895,88 @@ def is_direct_stream(stream):
     if url.startswith(("http://", "https://")):
         return True
     return False
+
+
+def strict_stream_title_mismatch(stream, target_title):
+    """Return MATCH_MISMATCH when a direct stream exposes a different title.
+
+    Opaque URLs and provider/quality-only labels remain unknown. Torrent streams
+    are deliberately excluded so their existing matching and retrieval path is
+    unchanged.
+    """
+    if not isinstance(stream, dict) or not target_title or is_torrent_stream(stream):
+        return MATCH_UNKNOWN
+
+    provider_words = set()
+    addon_names = stream.get("addon_names") or []
+    if isinstance(addon_names, str):
+        addon_names = [addon_names]
+    for value in (stream.get("addon_name"), *addon_names):
+        if isinstance(value, str) and value:
+            provider_words.update(_tokenize_strict_title_words(value))
+    if not provider_words and isinstance(stream.get("name"), str):
+        # Some Stremio streams use `name` only for a provider/quality label.
+        # Prefer explicit provider fields when present, since custom scrapers
+        # also use `name` for the actual movie or episode title.
+        provider_words.update(_tokenize_strict_title_words(stream["name"]))
+    target_words = set(_tokenize_strict_title_words(target_title))
+    provider_words -= target_words
+
+    candidates = []
+    url = stream.get("url") or stream.get("externalUrl") or stream.get("magnet")
+    url_filename = get_stream_url_filename(url)
+    if url_filename and not is_opaque_identifier(url_filename):
+        candidates.append((url_filename, True))
+
+    hints = stream.get("behaviorHints") or {}
+    if isinstance(hints, dict):
+        for key in ("filename", "videoFilename"):
+            value = hints.get(key)
+            if isinstance(value, str) and value.strip():
+                candidates.append((value, True))
+    if isinstance(stream.get("filename"), str) and stream.get("filename").strip():
+        candidates.append((stream.get("filename"), True))
+    for field_name in ("stream_title", "title", "description", "name"):
+        value = stream.get(field_name)
+        if isinstance(value, str) and value.strip():
+            candidates.append((value, False))
+
+    ignored_words = (
+        _PROVIDER_PREFIX_WORDS
+        | _RELEASE_DESCRIPTOR_WORDS
+        | MOVIE_STOP_WORDS
+        | provider_words
+    ) - target_words
+    has_title_evidence = False
+    checked_candidates = set()
+    matched_title = False
+    for candidate, authoritative in candidates:
+        if candidate in checked_candidates or is_opaque_identifier(candidate):
+            continue
+        checked_candidates.add(candidate)
+
+        lines = [line.strip() for line in candidate.splitlines() if line.strip()]
+        title_forms = lines[:]
+        if len(lines) >= 2:
+            title_forms.append(" ".join(lines[:2]))
+        for form in title_forms:
+            if strict_stream_title_matches(target_title, form, extra_ignored_words=provider_words):
+                matched_title = True
+                continue
+            words = _tokenize_strict_title_words(form)
+            core_words = [
+                word for word in words
+                if not _is_title_noise_token(word, ignored_words)
+                and not re.fullmatch(r"(?:s|e)\d{1,3}|\d{1,2}x\d{1,3}", word)
+            ]
+            if core_words:
+                has_title_evidence = True
+                if authoritative:
+                    return MATCH_MISMATCH
+
+    if matched_title:
+        return MATCH_UNKNOWN
+    return MATCH_MISMATCH if has_title_evidence else MATCH_UNKNOWN
 
 
 def is_youtube_stream(stream):
@@ -8037,7 +8237,10 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     expected_year = str(expected_year or "").strip()[:4]
     if len(expected_year) != 4 or not expected_year.isdigit():
         expected_year = ""
-    is_movie_request = str(media_type or "movie").strip().lower() not in ("series", "show", "tvshow", "tv_show", "anime", "tv")
+    requested_media_type = str(media_type or "movie").strip().lower()
+    is_non_anime_media_request = requested_media_type in (
+        "movie", "series", "show", "tvshow", "tv_show", "tv"
+    )
 
     if not title and imdb_id:
         try:
@@ -8058,6 +8261,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         for stream in filtered_list:
             if not isinstance(stream, dict):
                 accepted.append(stream)
+                continue
+            if (
+                not is_torrent_stream(stream)
+                and strict_stream_title_mismatch(stream, title) == MATCH_MISMATCH
+            ):
+                print(f"[STREAM DEBUG] discarded direct stream without exact title sequence title={title!r} url={(stream.get('url') or '')[:80]}")
                 continue
             if season is not None and episode is not None:
                 if match_stream_to_episode(stream, season, episode, ep_title=ep_title, series_title=title) == MATCH_MISMATCH:
@@ -8098,27 +8307,60 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             target_custom_route = cand
             break
 
-    initial_custom_streams = []
-    clean_source_scope_pre = str(source_scope).strip().lower() if source_scope else None
-    if target_custom_route and clean_source_scope_pre == "direct":
-        from . import custom_plugins
-        print(f"[STREAM DEBUG] Custom plugin immediate route lookup starting: {target_custom_route!r} s={season} e={episode}")
+    # A custom catalog item already has a provider-authored title and route.
+    # Prefer that title over a possibly ambiguous TMDB title for stream
+    # matching, especially for short films and catalog-only releases.
+    if target_custom_route:
+        route_catalog_title = str(catalog_title or "").strip()
+        if not route_catalog_title:
+            route_data = target_custom_route.split(":", 1)[1] if ":" in target_custom_route else ""
+            route_path = urllib.parse.urlsplit(route_data).path
+            route_slug = route_path.rstrip("/").split("/")[-1]
+            route_catalog_title = route_slug.replace("-", " ").replace("_", " ").strip()
+        if route_catalog_title:
+            clean_route_title, route_year = clean_media_title(route_catalog_title)
+            if clean_route_title:
+                title = clean_route_title
+                if route_year:
+                    expected_year = str(route_year)
+                print(
+                    f"[STREAM DEBUG] custom route catalog title selected "
+                    f"title={title!r} year={expected_year!r} route={target_custom_route[:120]!r}"
+                )
+
+    from . import custom_plugins
+    matching_custom_route_scraper = None
+    if target_custom_route:
         if target_custom_route.lstrip().startswith("{") and "movieid" in target_custom_route.lower():
-            prefix = "castletv"
+            route_provider_prefix = "castletv"
         else:
-            prefix = target_custom_route.split(":", 1)[0].lower().replace("custom.", "")
-        scrapers = (
+            route_provider_prefix = target_custom_route.split(":", 1)[0].lower().replace("custom.", "")
+        route_scrapers = (
             custom_plugins.get_enabled_scrapers_for_type(media_type)
             if custom_plugins.is_custom_plugins_enabled()
             else []
         )
-        matching_scraper = None
-        for s in scrapers:
-            s_name = (getattr(s, "name", None) or (s.get("name") if isinstance(s, dict) else "")).lower().replace(" ", "")
-            s_id = (getattr(s, "id", None) or (s.get("id") if isinstance(s, dict) else "")).lower().replace("custom.", "")
-            if prefix in (s_name, s_id) or s_name in prefix or s_id in prefix:
-                matching_scraper = s
+        for scraper in route_scrapers:
+            scraper_name = (getattr(scraper, "name", None) or "").lower().replace(" ", "")
+            scraper_id = (getattr(scraper, "id", None) or "").lower().replace("custom.", "")
+            if (
+                route_provider_prefix in (scraper_name, scraper_id)
+                or scraper_name in route_provider_prefix
+                or scraper_id in route_provider_prefix
+            ):
+                matching_custom_route_scraper = scraper
                 break
+        if str(source_scope or "").strip().lower() != "torrent":
+            provider_scope = (
+                getattr(matching_custom_route_scraper, "name", None)
+                or route_provider_prefix
+            )
+
+    initial_custom_streams = []
+    clean_source_scope_pre = str(source_scope).strip().lower() if source_scope else None
+    if target_custom_route and clean_source_scope_pre == "direct":
+        print(f"[STREAM DEBUG] Custom plugin immediate route lookup starting: {target_custom_route!r} s={season} e={episode}")
+        matching_scraper = matching_custom_route_scraper
         if matching_scraper:
             try:
                 c_streams = custom_plugins.execute_custom_scraper(
@@ -8132,6 +8374,11 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     tmdb_id=known_tmdb_id,
                     timeout=12.0
                 )
+                if c_streams:
+                    c_streams = [
+                        stream for stream in c_streams
+                        if strict_stream_title_mismatch(stream, title) != MATCH_MISMATCH
+                    ]
                 if c_streams:
                     print(f"[STREAM DEBUG] Custom plugin immediate route lookup returned {len(c_streams)} stream(s)")
                     initial_custom_streams = list(c_streams)
@@ -8323,6 +8570,47 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         cached = [s for s in cached if not _has_wrong_tmdb(s)]
         cache_candidates = [s for s in cache_candidates if not _has_wrong_tmdb(s)]
 
+    if is_non_anime_media_request and source_scope != "torrent":
+        cached_type_scrapers = [
+            scraper for scraper in plugins.get_all_scrapers()
+            if plugins.scraper_is_anime_only(scraper)
+        ]
+        anime_only_ids = {str(scraper.get("id") or "") for scraper in cached_type_scrapers}
+        anime_only_provider_names = {
+            str(name).strip().casefold()
+            for scraper in cached_type_scrapers
+            for name in (scraper.get("name"), scraper.get("raw_id"))
+            if name
+        }
+        if anime_only_ids:
+            def _keep_non_anime_cache_stream(stream):
+                if not isinstance(stream, dict) or is_torrent_stream(stream):
+                    return True
+                scraper_id = str(stream.get("plugin_scraper_id") or "")
+                if stream.get("is_nuvio_plugin") and scraper_id in anime_only_ids:
+                    return False
+                cached_names = stream.get("addon_names") or []
+                if isinstance(cached_names, str):
+                    cached_names = [cached_names]
+                else:
+                    cached_names = list(cached_names)
+                if stream.get("addon_name"):
+                    cached_names.append(stream.get("addon_name"))
+                return not any(
+                    str(name).strip().casefold() in anime_only_provider_names
+                    for name in cached_names
+                    if name
+                )
+
+            before_cache_type_filter = len(cached)
+            cached = [s for s in cached if _keep_non_anime_cache_stream(s)]
+            cache_candidates = [s for s in cache_candidates if _keep_non_anime_cache_stream(s)]
+            if len(cached) != before_cache_type_filter:
+                print(
+                    f"[STREAM DEBUG] removed cached anime-only Nuvio direct streams "
+                    f"count={before_cache_type_filter - len(cached)}"
+                )
+
     cached = _filter_mismatched_movie_streams(cached)
     cache_candidates = _filter_mismatched_movie_streams(cache_candidates)
 
@@ -8380,6 +8668,23 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         plugin_scrapers = [s for s in plugin_scrapers if plugins.is_torrent_capable_scraper(s)]
     elif source_scope == "direct":
         plugin_scrapers = [s for s in plugin_scrapers if not plugins.is_torrent_capable_scraper(s)]
+    if is_non_anime_media_request and source_scope != "torrent":
+        anime_only_scrapers = [s for s in plugin_scrapers if plugins.scraper_is_anime_only(s)]
+        if source_scope == "direct":
+            plugin_scrapers = [s for s in plugin_scrapers if not plugins.scraper_is_anime_only(s)]
+        else:
+            # A mixed search still preserves explicitly torrent-capable anime
+            # scrapers, but they cannot contribute direct streams to a regular
+            # TV-series request.
+            plugin_scrapers = [
+                s for s in plugin_scrapers
+                if not plugins.scraper_is_anime_only(s) or plugins.is_torrent_capable_scraper(s)
+            ]
+        if anime_only_scrapers:
+            print(
+                f"[STREAM DEBUG] filtered anime-only Nuvio scrapers for non-anime request "
+                f"request count={len(anime_only_scrapers)} source_scope={source_scope!r}"
+            )
     if provider_scope:
         plugin_scrapers = [
             s for s in plugin_scrapers
@@ -8931,6 +9236,18 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                             addon_orig_info = future_to_addon.get(future, (None, None))
                             addon_obj = addon_orig_info[0] if addon_orig_info else None
                             addon_name, streams = future.result()
+                            if (
+                                isinstance(addon_obj, dict)
+                                and is_non_anime_media_request
+                                and plugins.scraper_is_anime_only(addon_obj)
+                            ):
+                                before_type_filter = len(streams or [])
+                                streams = [s for s in (streams or []) if is_torrent_stream(s)]
+                                if len(streams) != before_type_filter:
+                                    print(
+                                        f"[STREAM DEBUG] removed direct output from anime-only Nuvio scraper "
+                                        f"provider={addon_name!r} count={before_type_filter - len(streams)}"
+                                    )
                             if streams and addon_obj and addon_obj.get("id"):
                                 streams = _filter_mismatched_movie_streams(streams, allow_html_probe=True)
                             else:

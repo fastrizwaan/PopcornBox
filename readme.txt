@@ -80,6 +80,24 @@ Search and plugin retrieval:
 - Nuvio search passes the original trimmed query in the runner's JSON payload.
   Poll cancellation while a catalog runner is active and terminate it promptly
   when the search is superseded.
+- Exclude anime-focused Nuvio scrapers from non-anime movie and TV-series stream
+  requests, even when a legacy manifest declares broad `movie`/`tv` support. For
+  mixed searches, preserve torrent results from torrent-capable anime scrapers
+  but discard their direct results; remove matching cached direct cards too.
+- Keep custom-plugin route searches bound to the route's owning provider so an
+  unrelated provider cannot add streams to a 9kmovies or similar route. Clean
+  release slugs by extracting an embedded year before title matching. When a
+  custom catalog route supplies its own title and year, use those values for
+  stream matching instead of a potentially ambiguous metadata-provider title.
+- For direct streams from Nuvio, CloudStream, Stremio, and custom providers,
+  validate any informative title or filename against the complete requested
+  title-token sequence, in order and at the start of the title after recognized
+  provider, CDN, and release labels are removed. Normalize case, accents, punctuation,
+  and symbols consistently; preserve short and repeated title words. Reject
+  partial and out-of-order matches, and apply the same check to cached direct
+  streams. Generic provider labels and opaque URLs provide no title evidence, so
+  they remain subject to the existing checks. Keep torrent results on their
+  existing matching path; do not apply this stricter direct-stream check to them.
 
 Stack Homogeneity & Layout Integrity:
 - Both `main_stack` and `library_stack` must have `hhomogeneous: false` and
@@ -386,14 +404,21 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   and freezes the host operating system.
 - ALWAYS RUN INDIVIDUAL TESTS SEPARATELY:
   All unit tests live in `tests/`. Only execute the single test file relevant
-  to the modified component, e.g.:
-    python3 tests/test_genre_dropdown.py
-    python3 tests/test_media_type_genre_separation.py
-    python3 tests/test_catalog_filter_empty_recovery.py
-    python3 tests/test_robust_filter_and_spinners.py
+  to the modified component, inside the Flatpak runtime. From the repository
+  root, expose the checkout and run one test file at a time, e.g.:
+    project_dir="$(pwd)"
+    flatpak run --filesystem="$project_dir" --command=sh io.github.fastrizwaan.PopcornBox \
+      -c 'cd "$1" && PYTHONPATH=. python3 "$2"' sh "$project_dir" tests/test_genre_dropdown.py
+  Substitute the relevant test path, for example
+  `tests/test_media_type_genre_separation.py`,
+  `tests/test_catalog_filter_empty_recovery.py`, or
+  `tests/test_robust_filter_and_spinners.py`.
 - RUN SPECIFIC METHODS WHEN DEBUGGING:
   For fast turnaround and minimal memory overhead, isolate specific test cases:
-    python3 -m unittest tests/test_file.py -k TestClass.test_method
+    project_dir="$(pwd)"
+    flatpak run --filesystem="$project_dir" --command=sh io.github.fastrizwaan.PopcornBox \
+      -c 'cd "$1" && PYTHONPATH=. python3 -m unittest -k "$3" "$2"' \
+      sh "$project_dir" tests/test_file.py TestClass.test_method
 - SERIAL EXECUTION ONLY:
   Never run multiple unit test files in parallel background jobs or loops. Always
   wait for one test process to finish cleanly before launching another.

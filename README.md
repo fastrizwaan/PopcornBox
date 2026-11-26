@@ -15,6 +15,7 @@ A Linux media client for discovering and playing movies, series, anime, and othe
 - Use **Unique** to combine matching catalog results while removing duplicates. Discover opens with Unique enabled by default.
 - Search while filtering. Search checks titles across addon catalogs, handles punctuation and Unicode in search terms, supports title-only matching, and loads additional pages as you scroll.
 - Use the separate search view to search available catalogs and browse results by media type.
+- Direct stream results are checked against the complete title in order using consistent punctuation and symbol normalization, to avoid unrelated matches. Torrent retrieval keeps its separate existing matching behavior.
 
 ### Library and addons
 

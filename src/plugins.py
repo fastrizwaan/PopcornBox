@@ -477,6 +477,38 @@ def scraper_supports_type(scraper, media_type):
     return normalize_media_type(media_type) in supported
 
 
+def scraper_is_anime_only(scraper):
+    """Identify anime-focused scrapers that should not serve general TV series."""
+    if not isinstance(scraper, dict):
+        return False
+    raw_types = scraper.get("supported_types") or ["movie", "tv"]
+    if isinstance(raw_types, str):
+        raw_types = [raw_types]
+    types = {str(value).strip().casefold() for value in raw_types if value}
+    if "all" in types:
+        return False
+    anime_types = {"anime", "ova"}
+    general_series_types = {"series", "tv", "show", "tvshow", "tv_show"}
+    if types & anime_types and not types & general_series_types:
+        return True
+
+    identity = " ".join(
+        str(scraper.get(key) or "")
+        for key in ("name", "raw_id", "id", "description")
+    ).casefold()
+    anime_identity_markers = (
+        "anime", "anilist", "myanimelist", "hianime", "animepahe", "animekai",
+    )
+    general_scope_markers = (
+        "all media", "all genres", "general tv", "general series", "movies and tv",
+        "movies, series", "all movies and series",
+    )
+    return (
+        any(marker in identity for marker in anime_identity_markers)
+        and not any(marker in identity for marker in general_scope_markers)
+    )
+
+
 def get_enabled_scrapers_for_type(media_type):
     """Return all enabled scrapers that support the given media type."""
     if not is_plugins_enabled():
@@ -1221,21 +1253,57 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
 
         # Find the last valid JSON line.
         selected_title = _extract_scraper_selected_title(lines)
+
+        def _raw_items_include_torrent(items):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                raw_url = item.get("url")
+                if isinstance(raw_url, dict):
+                    raw_url = raw_url.get("url")
+                url_text = str(raw_url or "").strip().lower()
+                if (
+                    item.get("infoHash")
+                    or item.get("info_hash")
+                    or item.get("magnet")
+                    or str(item.get("stream_type") or "").lower() == "torrent"
+                    or url_text.startswith("magnet:")
+                    or url_text.split("?", 1)[0].endswith(".torrent")
+                    or (item.get("is_http") is False and (item.get("seeders") or item.get("seeds")))
+                ):
+                    return True
+            return False
+
         for line in reversed(lines):
             if (line.startswith("[") and line.endswith("]")) or (line.startswith("{") and line.endswith("}")):
                 try:
                     items = _unwrap_items(json.loads(line))
                     if items is not None:
-                        if expected_title and selected_title and items:
+                        if (
+                            expected_title
+                            and selected_title
+                            and items
+                            and not is_torrent_capable_scraper(scraper)
+                        ):
                             from . import api
-                            if api.check_movie_title_mismatch(expected_title, selected_title, require_scene_boundary=False):
+                            selected_title_matches = api.strict_stream_title_matches(
+                                expected_title,
+                                selected_title,
+                                extra_ignored_words={
+                                    get_scraper_provider_name(scraper),
+                                    scraper.get("name") or "",
+                                },
+                            )
+                            if not selected_title_matches:
                                 logger.warning(
-                                    "Discarding mismatched results from scraper %r: selected %r for expected %r",
+                                    "Discarding mismatched direct results from scraper %r: selected %r for expected %r",
                                     scraper.get("name"),
                                     selected_title,
                                     expected_title,
                                 )
-                                return _err(SCRAPER_ERROR_EMPTY)
+                                items = [item for item in items if _raw_items_include_torrent([item])]
+                                if not items:
+                                    return _err(SCRAPER_ERROR_EMPTY)
                         formatted = _format_scraper_results(items, scraper, queried_tmdb_id=tmdb_id)
                         _record_scraper_success(
                             scraper_id,

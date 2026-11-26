@@ -25,6 +25,7 @@ import codecs
 import base64
 import threading
 import html as html_lib
+import unicodedata
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -3451,34 +3452,8 @@ _RELEASE_TAG_WORDS = {
 
 
 def matches_all_query_terms(query, candidate_title):
-    """
-    Returns True if ALL significant query terms are present in candidate_title
-    (case-insensitive, equivalent to piping multiple grep -i commands:
-    e.g. query 'American Greed' requires candidate to match 'American' AND 'Greed').
-    """
-    if not query or not candidate_title:
-        return False
-    q_clean, _ = clean_cloudstream_title(query)
-    c_clean, _ = clean_cloudstream_title(candidate_title)
-
-    raw_q_words = re.findall(r"\w+", (q_clean or query).lower())
-    q_words = [w for w in raw_q_words if w not in _STOP_WORDS and len(w) >= 2]
-    if not q_words:
-        q_words = [w for w in raw_q_words if len(w) >= 1]
-    if not q_words:
-        return False
-
-    c_text = (c_clean or candidate_title).lower()
-    c_norm = re.sub(r"[^\w\s]", " ", c_text)
-
-    for word in q_words:
-        pattern = r"\b" + re.escape(word) + r"\b"
-        if not re.search(pattern, c_norm):
-            if len(word) >= 4 and word in c_norm:
-                continue
-            return False
-
-    return True
+    """Compatibility wrapper for exact ordered CloudStream title matching."""
+    return _is_strict_title_match(query, candidate_title)
 
 
 def _is_strict_title_match(query, candidate):
@@ -3486,69 +3461,53 @@ def _is_strict_title_match(query, candidate):
         return False
     q_clean, _ = clean_cloudstream_title(query)
     c_clean, _ = clean_cloudstream_title(candidate)
+    def _tokens(value):
+        normalized = unicodedata.normalize("NFKC", html_lib.unescape(str(value or ""))).casefold()
+        normalized = unicodedata.normalize("NFKD", normalized)
+        normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+        normalized = normalized.replace("&", " and ").replace("+", " plus ").replace("#", " sharp ")
+        return re.findall(r"[^\W_]+", normalized, flags=re.UNICODE)
 
-    q_norm = re.sub(r"[^\w\s]", "", (q_clean or query).lower()).strip()
-    c_norm = re.sub(r"[^\w\s]", "", (c_clean or candidate).lower()).strip()
-    if not q_norm or not c_norm:
+    query_words = _tokens(q_clean or query)
+    if not query_words:
         return False
-    if q_norm == c_norm:
-        return True
 
-    for text in (candidate, c_clean):
-        if not text:
+    # Catalog titles may carry only release metadata after the exact title.
+    # Keep all title words, including short words such as "me" and "the".
+    allowed_suffix_words = _RELEASE_TAG_WORDS | {
+        "tv", "drama", "kdrama", "series", "show", "season", "episode", "ep",
+        "complete", "all", "episodes", "part", "vol", "volume", "collection",
+    }
+    candidates = [candidate, c_clean]
+    for raw_candidate in candidates:
+        words = _tokens(raw_candidate)
+        if not words:
             continue
-        for sep in (" - ", " : ", " | ", " – ", " — "):
-            if sep in text:
-                prefix = text.split(sep, 1)[0].strip()
-                p_clean, _ = clean_cloudstream_title(prefix)
-                prefix_norm = re.sub(r"[^\w\s]", "", (p_clean or prefix).lower()).strip()
-                if prefix_norm == q_norm:
-                    return True
-
-    for text in (query, q_clean):
-        if not text:
+        prefix_length = None
+        if words[:len(query_words)] == query_words:
+            prefix_length = len(query_words)
+        else:
+            joined_query = "".join(query_words)
+            for count in range(1, len(words) + 1):
+                if "".join(words[:count]) == joined_query:
+                    prefix_length = count
+                    break
+        if prefix_length is None:
             continue
-        for sep in (" - ", " : ", " | ", " – ", " — "):
-            if sep in text:
-                q_prefix = text.split(sep, 1)[0].strip()
-                qp_clean, _ = clean_cloudstream_title(q_prefix)
-                qp_norm = re.sub(r"[^\w\s]", "", (qp_clean or q_prefix).lower()).strip()
-                if qp_norm == c_norm:
-                    return True
-
-    q_words = [w for w in q_norm.split() if w not in _STOP_WORDS] or q_norm.split()
-    c_words = [w for w in c_norm.split() if w not in _STOP_WORDS] or c_norm.split()
-
-    q_filtered = [w for w in q_words if w not in _RELEASE_TAG_WORDS] or q_words
-    c_filtered = [w for w in c_words if w not in _RELEASE_TAG_WORDS] or c_words
-
-    q_set = set(q_filtered)
-    c_set = set(c_filtered)
-
-    if not matches_all_query_terms(query, candidate):
-        return False
-
-    if q_set == c_set:
-        return True
-
-    overlap = q_set.intersection(c_set)
-    if not overlap:
-        return False
-
-    if len(q_set) == 1 or len(c_set) == 1:
-        if q_set == c_set:
+        suffix = words[prefix_length:]
+        if all(
+            word in allowed_suffix_words
+            or re.fullmatch(r"(?:18|19|20)\d{2}", word)
+            or re.fullmatch(r"(?:s|e)\d{1,3}|\d{1,2}x\d{1,3}", word)
+            or (
+                word.isdigit()
+                and index > 0
+                and suffix[index - 1] in {"season", "episode", "episodes", "ep", "part", "vol", "volume"}
+            )
+            for index, word in enumerate(suffix)
+        ):
             return True
-        if q_set.issubset(c_set):
-            # If the raw normalized query had multiple words (e.g. 'the outsider')
-            # and the whole phrase appears in candidate:
-            if len(q_norm.split()) >= 2 and re.search(r"\b" + re.escape(q_norm) + r"\b", c_norm):
-                return True
-        return False
-
-    q_ratio = len(overlap) / len(q_set)
-    c_ratio = len(overlap) / len(c_set)
-
-    return q_ratio >= 0.75 and c_ratio >= 0.75
+    return False
 
 
 CLOUDSTREAM_URL_SKIP_DOMAINS = {
