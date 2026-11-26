@@ -458,10 +458,27 @@ button.continue-play-btn:active {
 }
 
 .discover-row-box {
-  padding-top: 4px;
-  padding-bottom: 6px;
+  padding-top: 6px;
+  padding-bottom: 8px;
   padding-left: 8px;
   padding-right: 8px;
+}
+
+button.carousel-nav-btn {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0px;
+  background: rgba(18, 18, 24, 0.84);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+  transition: background-color 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+button.carousel-nav-btn:hover {
+  background: rgba(53, 132, 228, 0.92);
+  border-color: rgba(255, 255, 255, 0.55);
+  transform: scale(1.06);
 }
 
 .discover-toolbar-scroll {
@@ -774,9 +791,9 @@ button.category-filter-btn:checked {
 .details-sidebar {
   background: rgba(15, 15, 20, 0.38);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 20px;
+  border-radius: 16px;
   backdrop-filter: blur(24px);
-  padding: 16px;
+  padding: 10px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
 }
 
@@ -946,7 +963,23 @@ button.category-filter-btn:checked {
 
 .details-horizontal-scroll {
   background: transparent;
-  padding-bottom: 6px;
+}
+
+.details-horizontal-scroll scrollbar,
+.details-horizontal-scroll scrollbar.horizontal {
+  opacity: 0;
+  min-height: 0px;
+  min-width: 0px;
+  margin: 0px;
+  padding: 0px;
+  border: none;
+  background: transparent;
+}
+
+.details-horizontal-scroll scrollbar slider {
+  min-height: 0px;
+  min-width: 0px;
+  opacity: 0;
 }
 
 /* Cast & Creator Cards */

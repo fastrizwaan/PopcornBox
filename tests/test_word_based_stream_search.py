@@ -409,6 +409,53 @@ class TestWordBasedStreamSearch(unittest.TestCase):
         processed = api.process_raw_streams(raw_streams, title="The Matrix")
         self.assertEqual(len(processed), 5)
 
+    def test_apostrophe_unicode_and_html_entity_matching(self):
+        target = "Dexter's Laboratory"
+        # Valid forms: apostrophe, curly Unicode apostrophe, HTML entity, space-split, or dropped 's
+        for valid_name in (
+            "Dexter's Laboratory 1996 S01E01",
+            "Dexter’s Laboratory 1996 S01E01",
+            "Dexter&#39;s Laboratory 1996 S01E01",
+            "Dexter s Laboratory 1996 S01E01",
+            "Dexter Laboratory 1996 S01E01",
+        ):
+            self.assertFalse(
+                api.check_movie_title_mismatch(target, valid_name),
+                f"Expected match for {valid_name!r}",
+            )
+        # Invalid forms: must require 'laboratory' too, rejecting plain 'Dexter'
+        for wrong_name in (
+            "Dexter S01E01 1080p",
+            "Dexter (2006) S01E01",
+            "Dexter: Resurrection",
+        ):
+            self.assertTrue(
+                api.check_movie_title_mismatch(target, wrong_name, require_scene_boundary=False),
+                f"Expected mismatch for {wrong_name!r}",
+            )
+
+    def test_double_encoded_url_and_episode_title_in_filename(self):
+        # Double-encoded Dahmermovies URL
+        s_dahmer = {
+            "name": "DahmerMovies",
+            "title": "Dexter&#39;s Laboratory 1996 S01E02",
+            "url": "https://a.111477.xyz/tvs/Dexter's%20Laboratory/Season%201/tvs%2FDexter%2527s%2520Laboratory%25201996%2520S01E02.mkv",
+        }
+        self.assertEqual(
+            api.match_stream_to_episode(s_dahmer, 1, 2, ep_title="Changes", series_title="Dexter's Laboratory"),
+            api.MATCH_EXACT,
+        )
+        # Episode title appended to series filename (TopCartoons)
+        s_top = {
+            "name": "TopCartoons",
+            "title": "TopCartoons\nUnknown",
+            "url": "https://ww.topcartoons.tv/video/Dexters-Laboratory-Changes.mp4",
+        }
+        self.assertNotEqual(
+            api.match_stream_to_episode(s_top, 1, 2, ep_title="Changes", series_title="Dexter's Laboratory"),
+            api.MATCH_MISMATCH,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

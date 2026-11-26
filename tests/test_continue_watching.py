@@ -223,7 +223,8 @@ class TestContinueWatching(unittest.TestCase):
             c = c.get_next_sibling()
 
         self.assertIsNotNone(cw_scroll)
-        viewport = cw_scroll.get_child()
+        scrolled = getattr(cw_scroll, "_carousel_scroll", cw_scroll)
+        viewport = scrolled.get_child()
         cw_row = viewport.get_child() if hasattr(viewport, "get_child") else viewport
 
         card_count = 0

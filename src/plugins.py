@@ -1039,7 +1039,8 @@ SCRAPER_ERROR_EMPTY = "empty"
 
 
 _RE_SCRAPER_SELECTED_LOG = re.compile(
-    r'(?:Selected|Found\s+post|Matched(?:\s+(?:title|post|media))?)\s*:\s*["\']([^"\']+)["\']',
+    r'(?:Selected|Found\s+post|Matched(?:\s+(?:title|post|media))?|Using(?:\s+first)?\s+result)\s*:\s*'
+    r'(?:["\']([^"\']+)["\']|(.+?)(?:\s*\(\s*id\s*:[^)]*\))?\s*$)',
     re.IGNORECASE,
 )
 
@@ -1051,7 +1052,7 @@ def _extract_scraper_selected_title(lines: list[str]) -> str | None:
             continue
         m = _RE_SCRAPER_SELECTED_LOG.search(line)
         if m:
-            candidate = m.group(1).strip()
+            candidate = (m.group(1) or m.group(2) or "").strip()
             if candidate:
                 return candidate
     return None
@@ -1192,7 +1193,7 @@ def execute_scraper(scraper, tmdb_id, media_type, season=None, episode=None, tim
                     if items is not None:
                         if expected_title and selected_title and items:
                             from . import api
-                            if api.check_movie_title_mismatch(expected_title, selected_title):
+                            if api.check_movie_title_mismatch(expected_title, selected_title, require_scene_boundary=False):
                                 logger.warning(
                                     "Discarding mismatched results from scraper %r: selected %r for expected %r",
                                     scraper.get("name"),

@@ -20,6 +20,8 @@ import threading
 import queue
 import contextlib
 import re
+import html
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
@@ -5991,7 +5993,6 @@ def fetch_trailer_link_fast(imdb_id, media_type="movie", abort_event=None):
 
 
 def find_matching_file_index(files, season=None, episode=None, title=None, strict=False):
-    import re
     if not files:
         return None
 
@@ -6105,7 +6106,6 @@ def get_stream_cache_key(imdb_id, media_type="movie", season=None, episode=None)
 
 def _extract_quality(text):
     """Extract video quality label and numeric rank from text. Hoisted to avoid re-creation per stream."""
-    import re
     t = str(text).lower()
     if "2160p" in t or re.search(r'\b4k\b', t): return "4K", 4
     if "1080p" in t or re.search(r'\b1080\b', t): return "1080p", 3
@@ -6270,8 +6270,10 @@ def match_stream_to_episode(stream, target_season, target_episode, ep_title=None
     if t_episode is None:
         return MATCH_UNKNOWN
 
-    if series_title and match_stream_to_movie(stream, target_title=series_title) == MATCH_MISMATCH:
-        return MATCH_MISMATCH
+    if series_title:
+        ep_words = _tokenize_clean_words(ep_title) if ep_title else None
+        if match_stream_to_movie(stream, target_title=series_title, extra_ignored_words=ep_words) == MATCH_MISMATCH:
+            return MATCH_MISMATCH
 
     text = get_stream_search_text(stream)
     if not text.strip():
@@ -6334,6 +6336,8 @@ def get_stream_url_filename(url):
     try:
         clean_url = url.split("?")[0].split("#")[0]
         unquoted = urllib.parse.unquote(clean_url)
+        if "%" in unquoted:
+            unquoted = urllib.parse.unquote(unquoted)
         last_seg = unquoted.rstrip("/").rsplit("/", 1)[-1]
         exts = (".mkv", ".mp4", ".avi", ".webm", ".m4v", ".ts", ".iso", ".mov", ".flv", ".wmv")
         if any(last_seg.lower().endswith(ext) for ext in exts):
@@ -6424,10 +6428,12 @@ _VIDEO_FILE_EXTS = ('.mkv', '.mp4', '.avi', '.webm', '.m4v', '.ts')
 
 
 def _tokenize_clean_words(text: str) -> list[str]:
-    """Normalize apostrophes/punctuation and extract lowercase whole-word tokens."""
+    """Unescape HTML, normalize Unicode/apostrophes, and extract lowercase whole-word tokens."""
     if not text:
         return []
-    normalized = re.sub(r"[\'’]", "", str(text).lower())
+    unescaped = html.unescape(str(text))
+    nfkc = unicodedata.normalize("NFKC", unescaped).lower()
+    normalized = re.sub(r"[\'\u2018\u2019\u02bc\u2032`]", "", nfkc)
     return re.findall(r"[a-z0-9]+", normalized)
 
 
@@ -6465,7 +6471,7 @@ def _strip_leading_provider_prefix(text: str, extra_ignored_words=None, protecte
     return s
 
 
-def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None):
+def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None, require_scene_boundary=True):
     """
     Return True if filename explicitly represents a DIFFERENT title using
     bidirectional whole-word matching (e.g. 'Modern Family' vs 'Family',
@@ -6477,14 +6483,16 @@ def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None)
     if not target_title or not filename or is_opaque_identifier(filename):
         return False
 
-    clean_title = re.sub(r"[\'’]", "", str(target_title).lower())
+    raw_title_nfkc = unicodedata.normalize("NFKC", html.unescape(str(target_title))).lower()
+    possessive_stems = set(re.findall(r"([a-z0-9]+)[\'\u2018\u2019\u02bc\u2032`]s\b", raw_title_nfkc))
+    clean_title = re.sub(r"[\'\u2018\u2019\u02bc\u2032`]", "", raw_title_nfkc)
     target_all_words = re.findall(r"[a-z0-9]+", clean_title)
     title_words = [w for w in target_all_words if w not in MOVIE_STOP_WORDS and len(w) > 0]
     if not title_words:
         title_words = list(target_all_words)
     if not title_words:
         return False
-    title_word_set = set(title_words)
+    title_word_set = set(title_words) | possessive_stems
 
     ignored_words = _PROVIDER_PREFIX_WORDS | _RELEASE_DESCRIPTOR_WORDS | MOVIE_STOP_WORDS
     if extra_ignored_words:
@@ -6546,8 +6554,12 @@ def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None)
     has_video_ext = any(lower_raw.endswith(ext) for ext in _VIDEO_FILE_EXTS)
     scene_match = _RE_SCENE_BOUNDARY.search(fn)
 
-    if scene_match or has_video_ext:
-        prefix = fn[:scene_match.start()] if scene_match else os.path.splitext(fn)[0]
+    if scene_match or has_video_ext or not require_scene_boundary:
+        prefix = (
+            fn[:scene_match.start()]
+            if scene_match
+            else (os.path.splitext(fn)[0] if has_video_ext else fn)
+        )
         prefix = prefix.strip(' .-_:|•')
         if prefix:
             prefix_tokens = _tokenize_clean_words(prefix)
@@ -6564,11 +6576,16 @@ def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None)
                 # (catches 'Family (2023) Malayalam' for 'Modern Family', or 'See 1080p' for 'You Can See Everything')
                 for tw in title_words:
                     if tw not in prefix_core:
+                        if tw.endswith("s") and tw[:-1] in possessive_stems and tw[:-1] in prefix_core:
+                            continue
                         return True
 
                 # 2. Reverse check: release title must not be a different title containing target word
                 # (catches 'Modern Family S01E01' or 'You Can See Everything' when target is 'See'/'Family')
-                extra_core = [w for w in prefix_core if w not in title_word_set]
+                extra_core = [
+                    w for w in prefix_core
+                    if w not in title_word_set and not (w == "s" and possessive_stems)
+                ]
                 if extra_core:
                     first_target_pos = min(
                         (i for i, w in enumerate(prefix_core) if w in title_word_set),
@@ -6588,7 +6605,7 @@ def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None)
     return False
 
 
-def match_stream_to_movie(stream, target_title=None, expected_year=None):
+def match_stream_to_movie(stream, target_title=None, expected_year=None, extra_ignored_words=None):
     """
     Evaluates whether a stream corresponds to the requested movie/series title.
     Does NOT evaluate release year (title word matching only).
@@ -6603,6 +6620,8 @@ def match_stream_to_movie(stream, target_title=None, expected_year=None):
     for p_src in (stream.get("addon_name"), stream.get("name"), *(stream.get("addon_names") or [])):
         if p_src and isinstance(p_src, str):
             provider_words.update(_tokenize_clean_words(p_src))
+    if extra_ignored_words:
+        provider_words.update(str(w).lower() for w in extra_ignored_words if w)
     # Never ignore words that are part of the target title itself
     target_tokens = set(_tokenize_clean_words(target_title))
     provider_words -= target_tokens
@@ -7963,13 +7982,13 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             if not isinstance(stream, dict):
                 accepted.append(stream)
                 continue
-            if match_stream_to_movie(stream, target_title=title) == MATCH_MISMATCH:
-                print(f"[STREAM DEBUG] discarded mismatched stream title={title!r} url={(stream.get('url') or '')[:80]}")
-                continue
             if season is not None and episode is not None:
                 if match_stream_to_episode(stream, season, episode, ep_title=ep_title, series_title=title) == MATCH_MISMATCH:
                     print(f"[STREAM DEBUG] discarded episode/movie-mismatched stream title={title!r} url={(stream.get('url') or '')[:80]}")
                     continue
+            elif match_stream_to_movie(stream, target_title=title) == MATCH_MISMATCH:
+                print(f"[STREAM DEBUG] discarded mismatched stream title={title!r} url={(stream.get('url') or '')[:80]}")
+                continue
             accepted.append(stream)
         return accepted
 

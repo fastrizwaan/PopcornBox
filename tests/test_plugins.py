@@ -300,6 +300,28 @@ class TestNuvioPlugins(unittest.TestCase):
         self.assertEqual(len(streams), 1)
         self.assertEqual(streams[0]["url"], "https://cdn.example.com/603.mp4")
 
+    def test_discards_unquoted_mismatched_selected_result(self):
+        scraper = {
+            "id": "repo:castle_mock",
+            "name": "Castle",
+            "supported_types": ["movie", "series"],
+            "code": "module.exports = { getStreams: async () => [] };",
+        }
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.poll.return_value = 0
+        proc.communicate.return_value = (
+            "[Castle] Using first result: Dexter: Resurrection (id: 10270796681198818)\n"
+            '[{"name": "Castle - 1080P", "title": "Dexter\'s Laboratory S01E01", "url": "https://cdn.example.com/dexter.m3u8"}]\n',
+            "",
+        )
+        with patch.object(plugins, "build_scraper_command", return_value=["deno", "run", "runner.js"]), \
+             patch("subprocess.Popen", return_value=proc):
+            streams = plugins.execute_scraper(
+                scraper, "4229", "tv", season=1, episode=1, expected_title="Dexter's Laboratory"
+            )
+        self.assertEqual(streams, [])
+
 
 if __name__ == "__main__":
     unittest.main()

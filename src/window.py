@@ -184,6 +184,97 @@ def _is_event_set(event):
         return fn() is True
     return False
 
+def _wrap_horizontal_carousel(scrolled_window):
+    """Hide horizontal scrollbar and wrap a ScrolledWindow with < and > nav buttons."""
+    scrolled_window.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
+    h_sb = scrolled_window.get_hscrollbar()
+    if h_sb:
+        h_sb.set_visible(False)
+
+    overlay = Gtk.Overlay()
+    overlay.set_hexpand(True)
+    overlay.set_vexpand(False)
+    overlay.set_child(scrolled_window)
+
+    left_btn = Gtk.Button(icon_name="go-previous-symbolic")
+    left_btn.add_css_class("circular")
+    left_btn.add_css_class("carousel-nav-btn")
+    left_btn.set_halign(Gtk.Align.START)
+    left_btn.set_valign(Gtk.Align.CENTER)
+    left_btn.set_margin_start(6)
+    left_btn.set_tooltip_text("Scroll Left")
+    left_btn.set_visible(False)
+
+    right_btn = Gtk.Button(icon_name="go-next-symbolic")
+    right_btn.add_css_class("circular")
+    right_btn.add_css_class("carousel-nav-btn")
+    right_btn.set_halign(Gtk.Align.END)
+    right_btn.set_valign(Gtk.Align.CENTER)
+    right_btn.set_margin_end(6)
+    right_btn.set_tooltip_text("Scroll Right")
+    right_btn.set_visible(False)
+
+    overlay.add_overlay(left_btn)
+    overlay.add_overlay(right_btn)
+
+    hadj = scrolled_window.get_hadjustment()
+
+    def _update_nav_buttons(*_args):
+        val = hadj.get_value()
+        page_size = hadj.get_page_size()
+        upper = hadj.get_upper()
+        left_btn.set_visible(val > 2.0)
+        right_btn.set_visible(
+            page_size > 0
+            and upper > page_size + 2.0
+            and (val + page_size) < (upper - 2.0)
+        )
+
+    def _scroll_carousel(direction):
+        anim_id = getattr(overlay, "_carousel_anim_id", 0)
+        if anim_id:
+            try:
+                GLib.source_remove(anim_id)
+            except Exception:
+                pass
+            overlay._carousel_anim_id = 0
+
+        start_val = hadj.get_value()
+        page_size = hadj.get_page_size()
+        max_val = max(0.0, hadj.get_upper() - page_size)
+        step = max(180.0, page_size * 0.75)
+        target_val = max(0.0, min(max_val, start_val + direction * step))
+        if abs(target_val - start_val) < 1.0:
+            _update_nav_buttons()
+            return
+
+        duration_ms = 220.0
+        start_us = GLib.get_monotonic_time()
+
+        def _tick():
+            elapsed_ms = (GLib.get_monotonic_time() - start_us) / 1000.0
+            t = min(1.0, elapsed_ms / duration_ms)
+            eased = 1.0 - ((1.0 - t) ** 3)
+            hadj.set_value(start_val + (target_val - start_val) * eased)
+            if t >= 1.0:
+                hadj.set_value(target_val)
+                overlay._carousel_anim_id = 0
+                return False
+            return True
+
+        overlay._carousel_anim_id = GLib.timeout_add(16, _tick)
+
+    hadj.connect("value-changed", _update_nav_buttons)
+    hadj.connect("changed", _update_nav_buttons)
+    left_btn.connect("clicked", lambda _b: _scroll_carousel(-1))
+    right_btn.connect("clicked", lambda _b: _scroll_carousel(1))
+    overlay._carousel_left_btn = left_btn
+    overlay._carousel_right_btn = right_btn
+    overlay._carousel_scroll = scrolled_window
+    overlay._update_carousel_nav = _update_nav_buttons
+    return overlay
+
+
 def _find_stream_index(stream, stream_list):
     if not stream or not stream_list: return 0
     idx = _find_stream_index_exact(stream, stream_list)
@@ -743,11 +834,11 @@ class MovieDetailsPage(Gtk.Overlay):
         self.main_box.append(self.header_bar)
 
         # Split Layout Container (Left: Overview, Right: Fixed Sidebar)
-        self.split_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
-        self.split_hbox.set_margin_start(24)
-        self.split_hbox.set_margin_end(24)
-        self.split_hbox.set_margin_top(12)
-        self.split_hbox.set_margin_bottom(24)
+        self.split_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.split_hbox.set_margin_start(16)
+        self.split_hbox.set_margin_end(14)
+        self.split_hbox.set_margin_top(8)
+        self.split_hbox.set_margin_bottom(14)
         self.split_hbox.set_vexpand(True)
         self.split_hbox.set_hexpand(True)
         self.main_box.append(self.split_hbox)
@@ -786,6 +877,10 @@ class MovieDetailsPage(Gtk.Overlay):
 
         action_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         action_hbox.set_valign(Gtk.Align.CENTER)
+        action_hbox.set_margin_top(4)
+        action_hbox.set_margin_bottom(4)
+        action_hbox.set_margin_start(4)
+        action_hbox.set_margin_end(4)
 
         self.copy_btn = Gtk.Button(icon_name="edit-copy-symbolic")
         self.copy_btn.set_tooltip_text("Copy Title")
@@ -922,14 +1017,17 @@ class MovieDetailsPage(Gtk.Overlay):
         self.cast_section_box.append(self.cast_title_label)
 
         self.cast_scrolled = Gtk.ScrolledWindow()
-        self.cast_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
         self.cast_scrolled.set_vexpand(False)
         self.cast_scrolled.add_css_class("details-horizontal-scroll")
 
         self.cast_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
-        self.cast_hbox.set_margin_bottom(6)
+        self.cast_hbox.set_margin_top(6)
+        self.cast_hbox.set_margin_bottom(8)
+        self.cast_hbox.set_margin_start(6)
+        self.cast_hbox.set_margin_end(6)
         self.cast_scrolled.set_child(self.cast_hbox)
-        self.cast_section_box.append(self.cast_scrolled)
+        self.cast_carousel = _wrap_horizontal_carousel(self.cast_scrolled)
+        self.cast_section_box.append(self.cast_carousel)
         self.info_vbox.append(self.cast_section_box)
 
         # Crew Section Box (Horizontal Scroll)
@@ -943,14 +1041,17 @@ class MovieDetailsPage(Gtk.Overlay):
         self.crew_section_box.append(self.crew_title_label)
 
         self.crew_scrolled = Gtk.ScrolledWindow()
-        self.crew_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
         self.crew_scrolled.set_vexpand(False)
         self.crew_scrolled.add_css_class("details-horizontal-scroll")
 
         self.crew_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
-        self.crew_hbox.set_margin_bottom(6)
+        self.crew_hbox.set_margin_top(6)
+        self.crew_hbox.set_margin_bottom(8)
+        self.crew_hbox.set_margin_start(6)
+        self.crew_hbox.set_margin_end(6)
         self.crew_scrolled.set_child(self.crew_hbox)
-        self.crew_section_box.append(self.crew_scrolled)
+        self.crew_carousel = _wrap_horizontal_carousel(self.crew_scrolled)
+        self.crew_section_box.append(self.crew_carousel)
         self.info_vbox.append(self.crew_section_box)
 
         # Production / Network Companies Section Box (Horizontal Scroll)
@@ -965,14 +1066,17 @@ class MovieDetailsPage(Gtk.Overlay):
         self.prod_section_box.append(self.prod_title_label)
 
         self.prod_scrolled = Gtk.ScrolledWindow()
-        self.prod_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
         self.prod_scrolled.set_vexpand(False)
         self.prod_scrolled.add_css_class("details-horizontal-scroll")
 
         self.prod_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        self.prod_hbox.set_margin_bottom(6)
+        self.prod_hbox.set_margin_top(6)
+        self.prod_hbox.set_margin_bottom(10)
+        self.prod_hbox.set_margin_start(6)
+        self.prod_hbox.set_margin_end(6)
         self.prod_scrolled.set_child(self.prod_hbox)
-        self.prod_section_box.append(self.prod_scrolled)
+        self.prod_carousel = _wrap_horizontal_carousel(self.prod_scrolled)
+        self.prod_section_box.append(self.prod_carousel)
         self.info_vbox.append(self.prod_section_box)
 
         self.split_hbox.append(left_scroll)
@@ -1031,6 +1135,10 @@ class MovieDetailsPage(Gtk.Overlay):
         episodes_scroll.set_vexpand(True)
         episodes_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.episodes_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.episodes_list_box.set_margin_top(4)
+        self.episodes_list_box.set_margin_bottom(4)
+        self.episodes_list_box.set_margin_start(4)
+        self.episodes_list_box.set_margin_end(2)
         episodes_scroll.set_child(self.episodes_list_box)
         self.episodes_page_vbox.append(episodes_scroll)
 
@@ -1230,12 +1338,14 @@ class MovieDetailsPage(Gtk.Overlay):
         # Streams List Scrolled Box
         streams_scroll = Gtk.ScrolledWindow()
         streams_scroll.set_vexpand(True)
-        streams_scroll.set_overlay_scrolling(False)
+        streams_scroll.set_overlay_scrolling(True)
         streams_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
 
         self.streams_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        self.streams_list_box.set_margin_end(8)
-        self.streams_list_box.set_margin_start(2)
+        self.streams_list_box.set_margin_top(4)
+        self.streams_list_box.set_margin_bottom(4)
+        self.streams_list_box.set_margin_start(4)
+        self.streams_list_box.set_margin_end(2)
         streams_scroll.set_child(self.streams_list_box)
         self.streams_page_vbox.append(streams_scroll)
 
@@ -15203,25 +15313,29 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         if not existing_scroll:
             cw_scroll = Gtk.ScrolledWindow()
-            cw_scroll.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
             cw_scroll.set_hexpand(True)
             cw_scroll.add_css_class("discover-row-scroll")
-            cw_scroll.add_css_class("continue-watching-scroll")
-            cw_scroll._is_cw_scroll = True
-            h_sb = cw_scroll.get_hscrollbar()
-            if h_sb:
-                h_sb.set_visible(False)
-            target_box.insert_child_after(cw_scroll, cw_header)
-            existing_scroll = cw_scroll
+            cw_container = _wrap_horizontal_carousel(cw_scroll)
+            cw_container.add_css_class("continue-watching-scroll")
+            cw_container._is_cw_scroll = True
+            target_box.insert_child_after(cw_container, cw_header)
+            existing_scroll = cw_container
         else:
-            cw_scroll = existing_scroll
+            cw_container = existing_scroll
+            cw_scroll = (
+                cw_container.get_child()
+                if isinstance(cw_container, Gtk.Overlay)
+                else cw_container
+            )
             cw_scroll.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
             h_sb = cw_scroll.get_hscrollbar()
             if h_sb:
                 h_sb.set_visible(False)
-            cw_scroll.add_css_class("continue-watching-scroll")
-            cw_scroll._is_cw_scroll = True
+            cw_container.add_css_class("continue-watching-scroll")
+            cw_container._is_cw_scroll = True
 
+        cw_container._cw_item_ids = new_cw_ids
+        cw_container._cw_card_width = card_width
         cw_scroll._cw_item_ids = new_cw_ids
         cw_scroll._cw_card_width = card_width
         cw_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -16306,12 +16420,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         sec_header.append(see_all_btn)
 
         sec_scroll = Gtk.ScrolledWindow()
-        sec_scroll.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
         sec_scroll.set_hexpand(True)
         sec_scroll.add_css_class("discover-row-scroll")
-        h_sb = sec_scroll.get_hscrollbar()
-        if h_sb:
-            h_sb.set_visible(False)
+        sec_carousel = _wrap_horizontal_carousel(sec_scroll)
 
         sec_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         sec_row.add_css_class("discover-row-box")
@@ -16365,7 +16476,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         sec_scroll.set_child(sec_row)
         slot.append(sec_header)
-        slot.append(sec_scroll)
+        slot.append(sec_carousel)
         slot._is_populated = True
         slot._is_catalog_row = True
         debug_log(f"_populate_discover_row_slot appended row: '{row_title}' ({len(display_items)} cards)")

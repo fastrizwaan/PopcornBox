@@ -210,6 +210,65 @@ class TestStreamProvidersWidgetVisibility(unittest.TestCase):
             page = MovieDetailsPage(series_stub, on_back=lambda: None)
             self.assertTrue(page.sidebar_box.get_visible())
 
+    def test_horizontal_carousel_hides_scrollbar_and_toggles_nav_arrows(self):
+        """Horizontal carousels hide scrollbars, show > when scrollable, and toggle < with scroll position."""
+        from gi.repository import Gtk
+        from src.window import _wrap_horizontal_carousel
+
+        sw = Gtk.ScrolledWindow()
+        overlay = _wrap_horizontal_carousel(sw)
+        h_policy, v_policy = sw.get_policy()
+        self.assertEqual(h_policy, Gtk.PolicyType.EXTERNAL)
+        self.assertEqual(v_policy, Gtk.PolicyType.NEVER)
+        h_sb = sw.get_hscrollbar()
+        if h_sb:
+            self.assertFalse(h_sb.get_visible())
+
+        left_btn = overlay._carousel_left_btn
+        right_btn = overlay._carousel_right_btn
+        self.assertFalse(left_btn.get_visible())
+        self.assertFalse(right_btn.get_visible())
+
+        hadj = sw.get_hadjustment()
+        hadj.configure(0.0, 0.0, 1200.0, 20.0, 200.0, 400.0)
+        self.assertFalse(left_btn.get_visible())
+        self.assertTrue(right_btn.get_visible())
+
+        # Scrolling right reveals <
+        hadj.set_value(250.0)
+        self.assertTrue(left_btn.get_visible())
+        self.assertTrue(right_btn.get_visible())
+
+        # Reaching the far right hides >
+        hadj.set_value(800.0)
+        self.assertTrue(left_btn.get_visible())
+        self.assertFalse(right_btn.get_visible())
+
+        # Returning to original position hides <
+        hadj.set_value(0.0)
+        self.assertFalse(left_btn.get_visible())
+        self.assertTrue(right_btn.get_visible())
+
+    def test_details_carousels_and_compact_provider_padding(self):
+        """Details carousels wrap with nav arrows and reserve hover margins to prevent clipping."""
+        from src.window import MovieDetailsPage
+
+        movie_stub = {"id": "tt0106179", "title": "Iron Man", "type": "movie"}
+        with patch("src.database.get_addons", return_value=list(self.catalog_addons)), \
+             patch("src.plugins.is_plugins_enabled", return_value=False), \
+             patch("src.custom_plugins.is_custom_plugins_enabled", return_value=False), \
+             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
+             patch("src.window.MovieDetailsPage.load_details_async"), \
+             patch("src.window.MovieDetailsPage.fetch_torrents_async"):
+            page = MovieDetailsPage(movie_stub, on_back=lambda: None)
+            self.assertIsNotNone(page.cast_carousel._carousel_right_btn)
+            self.assertIsNotNone(page.crew_carousel._carousel_right_btn)
+            self.assertIsNotNone(page.prod_carousel._carousel_right_btn)
+            self.assertGreaterEqual(page.cast_hbox.get_margin_top(), 6)
+            self.assertGreaterEqual(page.prod_hbox.get_margin_top(), 6)
+            self.assertLessEqual(page.streams_list_box.get_margin_end(), 4)
+            self.assertLessEqual(page.split_hbox.get_margin_end(), 16)
+
 
 if __name__ == "__main__":
     unittest.main()
