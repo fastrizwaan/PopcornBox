@@ -7,6 +7,7 @@ import tempfile
 import time
 import logging
 import re
+import unicodedata
 import atexit
 from pathlib import Path
 
@@ -4324,29 +4325,81 @@ def get_cached_items_by_year(year, media_type=None, genre=None, sort_mode=None, 
         hydrate_items_from_metadata(items, media_type=media_type)
     return items
 
+def _normalized_search_text(value):
+    normalized = unicodedata.normalize("NFKD", str(value or "").casefold())
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+def _normalized_search_tokens(value):
+    normalized = _normalized_search_text(value)
+    return re.findall(r"[^\W_]+", normalized, flags=re.UNICODE)
+
+
+def _search_text_matches(query_tokens, text, require_phrase=False):
+    text_tokens = _normalized_search_tokens(text)
+    if not query_tokens:
+        return False
+    if require_phrase and len(query_tokens) > 1:
+        phrase = re.compile(
+            r"(?<!\w)" + r"\W+".join(re.escape(word) for word in query_tokens) + r"(?!\w)"
+        )
+        if phrase.search(" ".join(text_tokens)):
+            return True
+    elif all(word in text_tokens for word in query_tokens):
+        return True
+    compact_query = "".join(query_tokens)
+    if len(compact_query) <= 1:
+        return False
+    for start in range(len(text_tokens)):
+        joined = ""
+        for token in text_tokens[start:]:
+            joined += token
+            if joined == compact_query:
+                return True
+            if len(joined) >= len(compact_query):
+                break
+    return False
+
+
+def _escape_like(value):
+    return str(value or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def get_cached_items_by_search(query, media_type=None, genre=None, year=None, sort_mode=None, limit=60, offset=0, title_only=False, language=None, country=None):
     """Retrieve catalog item dicts from SQLite cache matching a search keyword and optional media_type/genre/year/language/country."""
     if not query or not str(query).strip():
         return []
-    q_str = str(query).strip().lower()
+    q_str = _normalized_search_text(str(query).strip())
+    q_clean_tokens = _normalized_search_tokens(q_str)
+    sql_patterns = [f"%{_escape_like(q_str)}%"]
+    compact_query = "".join(q_clean_tokens)
+    if len(compact_query) >= 2:
+        compact_pattern = f"%{_escape_like(compact_query)}%"
+        if compact_pattern not in sql_patterns:
+            sql_patterns.append(compact_pattern)
+    if len(q_clean_tokens) >= 2:
+        token_pattern = "%" + "%".join(_escape_like(token) for token in q_clean_tokens) + "%"
+        if token_pattern not in sql_patterns:
+            sql_patterns.append(token_pattern)
     items = []
     seen_ids = set()
     try:
         with _cache_db_lock:
             conn = _get_cache_db()
+            conn.create_function("popcorn_search_normalize", 1, _normalized_search_text)
             cursor = conn.cursor()
-            if title_only:
-                search_condition = "(lower(json_extract(m.data, '$.title')) LIKE ? OR lower(json_extract(m.data, '$.name')) LIKE ?)"
-                cond_params = [f"%{q_str}%", f"%{q_str}%"]
-            else:
-                search_condition = """(
-                    lower(json_extract(m.data, '$.title')) LIKE ?
-                    OR lower(json_extract(m.data, '$.name')) LIKE ?
-                    OR lower(json_extract(m.data, '$.description')) LIKE ?
-                    OR lower(json_extract(m.data, '$.overview')) LIKE ?
-                    OR lower(json_extract(m.data, '$.genres')) LIKE ?
-                )"""
-                cond_params = [f"%{q_str}%"] * 5
+            search_fields = ["$.title", "$.name"]
+            if not title_only:
+                search_fields.extend(["$.description", "$.overview", "$.genres"])
+            search_clauses = []
+            cond_params = []
+            for field in search_fields:
+                for pattern in sql_patterns:
+                    search_clauses.append(
+                        f"popcorn_search_normalize(json_extract(m.data, '{field}')) LIKE ? ESCAPE '\\'"
+                    )
+                    cond_params.append(pattern)
+            search_condition = "(" + " OR ".join(search_clauses) + ")"
 
             effective_genre = genre
             if (not effective_genre or effective_genre in ("All", "All Genres", "Genre", "all")) and language and language not in ("All", "All Languages", "Language", "all"):
@@ -4406,7 +4459,7 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
             if sort_mode == "Recent":
                 sql += """
                     ORDER BY 
-                        CASE WHEN lower(json_extract(m.data, '$.title')) LIKE ? OR lower(json_extract(m.data, '$.name')) LIKE ? THEN 0 ELSE 1 END,
+                        CASE WHEN popcorn_search_normalize(json_extract(m.data, '$.title')) LIKE ? ESCAPE '\\' OR popcorn_search_normalize(json_extract(m.data, '$.name')) LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
                         COALESCE(json_extract(m.data, '$.year'), 0) DESC,
                         COALESCE(json_extract(m.data, '$.rating'), json_extract(m.data, '$.imdbRating'), 0) DESC,
                         m.updated_at DESC
@@ -4415,30 +4468,21 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
             else:
                 sql += """
                     ORDER BY 
-                        CASE WHEN lower(json_extract(m.data, '$.title')) LIKE ? OR lower(json_extract(m.data, '$.name')) LIKE ? THEN 0 ELSE 1 END,
+                        CASE WHEN popcorn_search_normalize(json_extract(m.data, '$.title')) LIKE ? ESCAPE '\\' OR popcorn_search_normalize(json_extract(m.data, '$.name')) LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
                         COALESCE(json_extract(m.data, '$.rating'), json_extract(m.data, '$.imdbRating'), 0) DESC,
                         m.updated_at DESC
                     LIMIT ? OFFSET ?
                 """
             sql_limit = max(int(limit or 60) * 4, 250)
-            params.extend([f"%{q_str}%", f"%{q_str}%", sql_limit, 0])
+            params.extend([sql_patterns[0], sql_patterns[0], sql_limit, 0])
             cursor.execute(sql, params)
-            q_clean_tokens = re.findall(r"\w+", re.sub(r"[\'’]", "", q_str))
-            q_phrase_re = (
-                re.compile(r"(?<!\w)" + r"\W+".join(re.escape(w) for w in q_clean_tokens) + r"(?!\w)")
-                if len(q_clean_tokens) >= 2
-                else None
-            )
 
             def _whole_word_match(text_val, require_phrase_for_multi=False):
-                norm = re.sub(r"[\'’]", "", str(text_val or "").lower())
-                if not norm:
-                    return False
-                if q_phrase_re is not None and require_phrase_for_multi:
-                    return bool(q_phrase_re.search(norm))
-                if q_clean_tokens:
-                    return all(re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", norm) for w in q_clean_tokens)
-                return q_str in norm
+                if not q_clean_tokens:
+                    return q_str in str(text_val or "").casefold()
+                return _search_text_matches(
+                    q_clean_tokens, text_val, require_phrase=require_phrase_for_multi
+                )
 
             ranked_items = []
             for row in cursor.fetchall():
@@ -4454,10 +4498,10 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                             if title_only:
                                 if title_hit:
                                     seen_ids.add(iid)
-                                    t_tokens = re.findall(r"\w+", re.sub(r"[\'’]", "", raw_title.lower()))
+                                    t_tokens = _normalized_search_tokens(raw_title)
                                     if t_tokens == q_clean_tokens:
                                         rank = 0
-                                    elif q_phrase_re and q_phrase_re.search(raw_title.lower()):
+                                    elif len(q_clean_tokens) > 1 and _search_text_matches(q_clean_tokens, raw_title, require_phrase=True):
                                         rank = 1
                                     else:
                                         rank = 2
@@ -4467,8 +4511,8 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                                 genres = str(it.get("genres") or "")
                                 if title_hit:
                                     seen_ids.add(iid)
-                                    t_tokens = re.findall(r"\w+", re.sub(r"[\'’]", "", raw_title.lower()))
-                                    rank = 0 if t_tokens == q_clean_tokens else (1 if (q_phrase_re and q_phrase_re.search(raw_title.lower())) else 2)
+                                    t_tokens = _normalized_search_tokens(raw_title)
+                                    rank = 0 if t_tokens == q_clean_tokens else (1 if (len(q_clean_tokens) > 1 and _search_text_matches(q_clean_tokens, raw_title, require_phrase=True)) else 2)
                                     ranked_items.append((rank, it))
                                 elif _whole_word_match(desc, require_phrase_for_multi=True) or _whole_word_match(genres, require_phrase_for_multi=False):
                                     seen_ids.add(iid)

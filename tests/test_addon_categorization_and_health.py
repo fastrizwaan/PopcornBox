@@ -240,6 +240,38 @@ class TestAddonCategorizationAndHealth(unittest.TestCase):
             self.assertTrue(any("online-catalog.com" in u for u in queried_urls))
             self.assertFalse(any("stream-addon.com" in u for u in queried_urls))
 
+    def test_search_encodes_reserved_query_characters_in_one_path_segment(self):
+        from src import api, database
+        query = "AC/DC + 100%?"
+        addon = {
+            "id": "search.test",
+            "name": "Search Test",
+            "manifest_url": "https://online-catalog.com/manifest.json",
+            "enabled": True,
+            "catalogs_enabled": True,
+            "resources": ["catalog"],
+            "catalogs": [{
+                "type": "movie",
+                "id": "top",
+                "name": "Top",
+                "extraSupported": ["SeArCh"],
+            }],
+        }
+        queried_urls = []
+
+        def mock_get_cached(url, **kwargs):
+            queried_urls.append(url)
+            return {"metas": [{"id": "tt1234567", "name": "ACDC 100 Percent", "type": "movie"}]}
+
+        with patch.object(database, "get_addons", return_value=[addon]), \
+             patch.object(database, "get_addon_health", return_value=self.fake_db["settings"]["addon_health"]), \
+             patch.object(api, "_get_cached_request", side_effect=mock_get_cached):
+            results = api.fetch_items(media_type="movie", query=query, cache_only=True)
+
+        self.assertEqual([item["id"] for item in results], ["tt1234567"])
+        self.assertEqual(len(queried_urls), 1)
+        self.assertIn("/search=AC%2FDC%20%2B%20100%25%3F.json", queried_urls[0])
+
     def test_stream_fetch_avoids_catalog_only_addons(self):
         from src import api, database
         catalog_addon = {

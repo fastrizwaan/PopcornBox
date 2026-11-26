@@ -64,6 +64,23 @@ Key Source Files (`src/`):
 3. `"search_results"`:
    Categorized search grids (Movies, Series, Anime).
 
+Search and plugin retrieval:
+- Search catalog discovery includes enabled Nuvio plugins only when their inspected
+  code exports a real `search` handler. Catalog browsing still requires a real
+  `getCatalog` / `getHome` handler.
+- Nuvio catalogs use `nuvio://catalog/<encoded plugin id>` virtual URLs. Both the
+  search picker and Unique search must pass those URLs through `api.fetch_items()`
+  to `plugins.fetch_catalog_items()`; do not treat them as HTTP manifest URLs.
+- Stremio catalog search terms are URL path components. Encode them with
+  `urllib.parse.quote(term, safe="")` so `/`, `?`, `#`, `%`, `&`, `+`, spaces,
+  and non-ASCII text cannot change the route. Keep catalog IDs encoded separately.
+- Search matching folds case and accents and treats punctuation as a separator,
+  including joined/split title forms such as `Spider-Man` and `SpiderMan`. SQL
+  `LIKE` searches must escape literal `%`, `_`, and backslashes.
+- Nuvio search passes the original trimmed query in the runner's JSON payload.
+  Poll cancellation while a catalog runner is active and terminate it promptly
+  when the search is superseded.
+
 Stack Homogeneity & Layout Integrity:
 - Both `main_stack` and `library_stack` must have `hhomogeneous: false` and
   `vhomogeneous: false` in `.blp`, `.ui`, and runtime window initialization.
@@ -299,6 +316,9 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   All three pace themselves on ONE per-host clock (`_PROVIDER_LAST_REQUEST_TIME`),
   so a host never sees the rates added together. Feature modules must never issue
   a bare `urlopen`.
+- Search and subtitle catalog lookups use `_get_cached_request()` too. A new
+  search URL must retain its bounded cache lifetime and the host pacing/cancel
+  behavior; do not add a direct `urlopen` just for a search fallback.
 - THE CATALOG WINDOW IS BOUNDED, NOT SERIAL: at most `_CATALOG_HOST_PERMITS` (3)
   requests in flight per host, starts at least `_CATALOG_MIN_INTERVAL` (250 ms)
   apart, queueing capped at `_CATALOG_SLOT_WAIT` (4 s). Streams stay stricter at

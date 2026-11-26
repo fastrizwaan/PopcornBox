@@ -3745,6 +3745,40 @@ def get_available_catalogs(c_type="movie", cache_only=True):
     return catalogs
 
 
+def _normalized_search_tokens(value):
+    """Return case-folded, accent-insensitive alphanumeric search tokens."""
+    normalized = unicodedata.normalize("NFKD", str(value or "").casefold())
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return re.findall(r"[^\W_]+", normalized, flags=re.UNICODE)
+
+
+def _search_text_matches_tokens(words, value, require_phrase=False):
+    """Match words across punctuation and common joined/split title variants."""
+    if not words:
+        return False
+    value_tokens = _normalized_search_tokens(value)
+    if require_phrase and len(words) > 1:
+        phrase = re.compile(
+            r"(?<!\w)" + r"\W+".join(re.escape(word) for word in words) + r"(?!\w)"
+        )
+        if phrase.search(" ".join(value_tokens)):
+            return True
+    elif all(word in value_tokens for word in words):
+        return True
+    compact_query = "".join(words)
+    if len(compact_query) <= 1:
+        return False
+    for start in range(len(value_tokens)):
+        joined = ""
+        for token in value_tokens[start:]:
+            joined += token
+            if joined == compact_query:
+                return True
+            if len(joined) >= len(compact_query):
+                break
+    return False
+
+
 def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
     if not has_catalog_resource(addon, media_type=c_type):
         return []
@@ -3765,20 +3799,26 @@ def _get_search_catalogs_for_addon(addon, c_type, cache_only=False):
         extra = cat.get("extra") or []
         extra_sup = cat.get("extraSupported") or []
         extra_req = cat.get("extraRequired") or []
+        if not isinstance(extra, (list, tuple)):
+            extra = []
+        if not isinstance(extra_sup, (list, tuple, set)):
+            extra_sup = []
+        if not isinstance(extra_req, (list, tuple, set)):
+            extra_req = []
         
         is_search = False
         if addon.get("id") == "cinemeta" and cat_id == "top":
             is_search = True
         elif "search" in str(cat_id).lower() or "search" in str(cat_name).lower():
             is_search = True
-        elif "search" in extra_sup or "search" in extra_req:
+        elif any(str(item or "").strip().casefold() == "search" for item in (*extra_sup, *extra_req)):
             is_search = True
         else:
             for ex in extra:
-                if ex == "search":
+                if isinstance(ex, str) and ex.strip().casefold() == "search":
                     is_search = True
                     break
-                elif isinstance(ex, dict) and ex.get("name") == "search":
+                elif isinstance(ex, dict) and str(ex.get("name") or "").strip().casefold() == "search":
                     is_search = True
                     break
                     
@@ -3801,6 +3841,7 @@ def get_available_search_catalogs(c_type="movie", only_working=True):
     if not addons and only_working:
         addons = get_search_addons(media_type=c_type, only_working=False)
 
+    seen = set()
     for addon in addons:
         addon_name = addon.get("name", "Unknown Addon")
         manifest_url = addon.get("manifest_url", "")
@@ -3811,6 +3852,10 @@ def get_available_search_catalogs(c_type="movie", only_working=True):
         for cat in addon_catalogs:
             cat_id = cat.get("id", "")
             if cat_id in search_cat_ids:
+                key = (manifest_url, cat_id, c_type)
+                if key in seen:
+                    continue
+                seen.add(key)
                 cat_name = cat.get("name") or cat_id
                 catalogs.append({
                     "addon_name": addon_name,
@@ -3821,6 +3866,32 @@ def get_available_search_catalogs(c_type="movie", only_working=True):
                     "media_type": c_type,
                     "supports_pagination": catalog_supports_pagination(cat),
                 })
+
+    # Nuvio plugins use virtual catalog URLs and execute search handlers in the
+    # plugin runner. They do not appear in database.get_addons().
+    try:
+        for cat in plugins.get_search_catalogs(c_type):
+            manifest_url = cat.get("manifest_url", "")
+            cat_id = cat.get("catalog_id", "")
+            key = (manifest_url, cat_id, c_type)
+            if not manifest_url or not cat_id or key in seen:
+                continue
+            seen.add(key)
+            cat_name = cat.get("catalog_name") or cat_id
+            addon_name = cat.get("addon_name") or "Nuvio Plugin"
+            catalogs.append({
+                "addon_name": addon_name,
+                "manifest_url": manifest_url,
+                "catalog_id": cat_id,
+                "catalog_name": cat_name,
+                "display_name": cat.get("display_name") or f"{addon_name} - {cat_name}",
+                "media_type": cat.get("type") or c_type,
+                "supports_pagination": bool(cat.get("supports_pagination", True)),
+                "_source": "nuvio_plugin",
+            })
+    except Exception as e:
+        logger.debug("Unable to load Nuvio plugin search catalogs: %s", e)
+
     return catalogs
 
 
@@ -3835,11 +3906,14 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
     if not target_catalog_id and catalog_id and catalog_id != "top":
         target_catalog_id = catalog_id
 
-    if isinstance(catalog_url, str) and catalog_url.startswith("nuvio://catalog/"):
+    nuvio_catalog_url = catalog_url
+    if not (isinstance(nuvio_catalog_url, str) and nuvio_catalog_url.startswith("nuvio://catalog/")):
+        nuvio_catalog_url = target_manifest_url
+    if isinstance(nuvio_catalog_url, str) and nuvio_catalog_url.startswith("nuvio://catalog/"):
         if cache_only:
             return []
         from . import plugins
-        scraper_id = plugins.scraper_id_from_catalog_url(catalog_url)
+        scraper_id = plugins.scraper_id_from_catalog_url(nuvio_catalog_url)
         if not scraper_id:
             return []
         year_filter = None
@@ -3857,6 +3931,11 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
             year=year_filter,
             extra_filters=extra_filters,
         )
+        for item in items or []:
+            item.setdefault("addon_name", item.get("nuvio_provider_name") or "Nuvio")
+            item.setdefault("manifest_url", nuvio_catalog_url)
+            item.setdefault("catalog_id", target_catalog_id or catalog_id)
+            item.setdefault("catalog_name", "Search" if query else str(target_catalog_id or catalog_id))
         if items and on_item_found and not (is_cancelled and is_cancelled()):
             on_item_found(items)
         return items
@@ -3926,13 +4005,13 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                     break
                 if page > 1:
                     skip_val = (page - 1) * page_limit
-                    search_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(query)}/skip={skip_val}.json"
+                    search_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(str(query), safe='')}/skip={skip_val}.json"
                 else:
-                    search_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(query)}.json"
+                    search_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(str(query), safe='')}.json"
                 fetch_kw = {"is_cancelled": is_cancelled} if is_cancelled is not None else {}
                 data = _get_cached_request(search_url, max_age_hours=2, cache_only=cache_only, timeout=3.5, **fetch_kw)
                 if not data and page > 1:
-                    alt_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(query)}.json?skip={skip_val}"
+                    alt_url = f"{base_url}catalog/{c_type}/{urllib.parse.quote(str(cat_id), safe=':')}/search={urllib.parse.quote(str(query), safe='')}.json?skip={skip_val}"
                     data = _get_cached_request(alt_url, max_age_hours=2, cache_only=cache_only, timeout=3.5, **fetch_kw)
                 if data and isinstance(data.get("metas"), list):
                     addon_items.extend(data["metas"])
@@ -3979,10 +4058,11 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                 try:
                     addon_items = future.result()
                     new_batch = []
-                    q_lower = query.lower().strip()
-                    q_words = [w for w in re.findall(r"\w+", q_lower) if w not in MOVIE_STOP_WORDS and len(w) >= 2]
+                    q_lower = query.casefold().strip()
+                    all_q_words = _normalized_search_tokens(q_lower)
+                    q_words = [w for w in all_q_words if w not in MOVIE_STOP_WORDS and len(w) >= 2]
                     if not q_words:
-                        q_words = [w for w in re.findall(r"\w+", q_lower) if len(w) >= 1]
+                        q_words = all_q_words
                     q_phrase_re = (
                         re.compile(
                             r"(?<!\w)" + r"\W+".join(re.escape(w) for w in q_words) + r"(?!\w)"
@@ -3998,14 +4078,11 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                             continue
                         title = m.get("name") or m.get("title") or ""
                         desc = m.get("description") or m.get("overview") or ""
-                        title_clean = re.sub(r"[\'’]", "", str(title).lower())
-                        desc_clean = re.sub(r"[\'’]", "", str(desc).lower())
+                        title_clean = re.sub(r"[\'’]", "", str(title).casefold())
+                        desc_clean = re.sub(r"[\'’]", "", str(desc).casefold())
 
                         if q_words:
-                            title_matches_all = all(
-                                re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", title_clean)
-                                for w in q_words
-                            )
+                            title_matches_all = _search_text_matches_tokens(q_words, title)
                         else:
                             title_matches_all = q_lower in title_clean
 
@@ -4015,24 +4092,24 @@ def fetch_items(media_type="movie", query="", genre="", catalog_id="top", catalo
                         else:
                             if not title_matches_all:
                                 if q_phrase_re is not None:
-                                    desc_matches_all = bool(q_phrase_re.search(desc_clean))
-                                elif q_words:
-                                    desc_matches_all = all(
-                                        re.search(r"(?<!\w)" + re.escape(w) + r"(?!\w)", desc_clean)
-                                        for w in q_words
+                                    desc_matches_all = _search_text_matches_tokens(
+                                        q_words, desc, require_phrase=True
                                     )
+                                elif q_words:
+                                    desc_matches_all = _search_text_matches_tokens(q_words, desc)
                                 else:
                                     desc_matches_all = q_lower in desc_clean
                                 if not desc_matches_all:
                                     continue
 
                         # Rank exact & whole-phrase title matches ahead of loose matches
-                        norm_title_tokens = re.findall(r"\w+", title_clean)
+                        norm_title_tokens = _normalized_search_tokens(title)
                         norm_title_str = " ".join(norm_title_tokens)
-                        norm_q_str = " ".join(re.findall(r"\w+", re.sub(r"[\'’]", "", q_lower)))
+                        norm_q_tokens = _normalized_search_tokens(q_lower)
+                        norm_q_str = " ".join(norm_q_tokens)
                         if norm_title_str == norm_q_str:
                             search_rank = 0
-                        elif title_matches_all and q_phrase_re and q_phrase_re.search(title_clean):
+                        elif title_matches_all and q_phrase_re and q_phrase_re.search(norm_title_str):
                             search_rank = 1
                         elif title_matches_all and q_words and norm_title_tokens[:len(q_words)] == q_words:
                             search_rank = 2
@@ -5577,7 +5654,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
                 m_title = cm.get("name")
                 if m_title:
                     try:
-                        search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(m_title)}.json"
+                        search_url = f"https://v3-cinemeta.strem.io/catalog/{c_type}/top/search={urllib.parse.quote(str(m_title), safe='')}.json"
                         search_data = _get_cached_request(search_url, max_age_hours=METADATA_CACHE_HOURS)
                         if search_data and "metas" in search_data:
                             for m in search_data["metas"]:
@@ -9581,22 +9658,14 @@ def search_subtitles_online(query="", imdb_id=None, media_type="movie", season=N
         search_types = [actual_media, "series" if actual_media == "movie" else "movie"]
         for stype in search_types:
             try:
-                c_url = f"https://v3-cinemeta.strem.io/catalog/{stype}/top/search={urllib.parse.quote(clean_query)}.json"
-                req = urllib.request.Request(c_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
-                with urllib.request.urlopen(req, timeout=4.0, context=_SSL_CONTEXT) as resp:
-                    data = json.loads(resp.read().decode('utf-8'))
-                    metas = data.get("metas", [])
-                    if metas and metas[0].get("id", "").startswith("tt"):
-                        clean_imdb = metas[0]["id"]
-                        if stype == "series":
-                            actual_media = "series"
-                        break
-            except urllib.error.HTTPError as e:
-                try:
-                    e.close()
-                except Exception:
-                    pass
-                logging.debug(f"Cinemeta subtitle search HTTP error: {e}")
+                c_url = f"https://v3-cinemeta.strem.io/catalog/{stype}/top/search={urllib.parse.quote(clean_query, safe='')}.json"
+                data = _get_cached_request(c_url, max_age_hours=2, timeout=4.0)
+                metas = data.get("metas", []) if isinstance(data, dict) else []
+                if metas and metas[0].get("id", "").startswith("tt"):
+                    clean_imdb = metas[0]["id"]
+                    if stype == "series":
+                        actual_media = "series"
+                    break
             except Exception as e:
                 logging.debug(f"Cinemeta subtitle search error: {e}")
 
@@ -9631,35 +9700,12 @@ def search_subtitles_online(query="", imdb_id=None, media_type="movie", season=N
 
     def _fetch_sub_url(source_name, sub_url):
         try:
-            req = urllib.request.Request(
-                sub_url,
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Accept-Encoding': 'gzip, deflate'
-                }
-            )
-            with urllib.request.urlopen(req, timeout=4.5, context=_SSL_CONTEXT) as response:
-                raw_data = response.read()
-                encoding = response.headers.get("Content-Encoding", "").lower()
-                if encoding == "gzip" or raw_data.startswith(b"\x1f\x8b"):
-                    import gzip
-                    try:
-                        raw_data = gzip.decompress(raw_data)
-                    except Exception:
-                        pass
-                data = json.loads(raw_data.decode('utf-8'))
-                items = data.get("subtitles", [])
-                for it in items:
-                    if isinstance(it, dict):
-                        it["_source"] = source_name
-                return items
-        except urllib.error.HTTPError as e:
-            try:
-                e.close()
-            except Exception:
-                pass
-            logging.debug(f"HTTP error {e.code} fetching subtitles from {sub_url}")
-            return []
+            data = _get_cached_request(sub_url, max_age_hours=24, timeout=4.5)
+            items = data.get("subtitles", []) if isinstance(data, dict) else []
+            for it in items:
+                if isinstance(it, dict):
+                    it["_source"] = source_name
+            return items
         except Exception as e:
             logging.debug(f"Error fetching subtitles from {sub_url}: {e}")
             return []

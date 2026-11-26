@@ -13,7 +13,7 @@ A Linux media client for discovering and playing movies, series, anime, and othe
 - Browse movies, series, anime, live TV, and other catalog types when supported by your addons.
 - Filter Discover by media type, addon catalog, section, genre, year, language, and country.
 - Use **Unique** to combine matching catalog results while removing duplicates. Discover opens with Unique enabled by default.
-- Search while filtering. Search checks titles across addon catalogs, supports title-only matching, and loads additional pages as you scroll.
+- Search while filtering. Search checks titles across addon catalogs, handles punctuation and Unicode in search terms, supports title-only matching, and loads additional pages as you scroll.
 - Use the separate search view to search available catalogs and browse results by media type.
 
 ### Library and addons
@@ -21,6 +21,7 @@ A Linux media client for discovering and playing movies, series, anime, and othe
 - Keep Favorites, History, Watched, and Continue Watching lists, with progress saved for playback.
 - Search and filter local library lists by media type.
 - Browse Community, Official, and Stremio-Addons.net directories to find compatible addons; install by manifest URL and import or export addon configurations.
+- Install Nuvio plugin repositories and search results from plugins that provide a search handler.
 - Optionally sync supported library, playback progress, and addon data with a connected Stremio or Nuvio account.
 - Manage downloads and resume saved playback sessions.
 

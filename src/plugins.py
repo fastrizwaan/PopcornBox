@@ -667,7 +667,7 @@ def _static_inspect_js(code):
     }
 
 
-def _run_scraper_process(scraper, payload, timeout=15.0):
+def _run_scraper_process(scraper, payload, timeout=15.0, is_cancelled=None):
     """Execute the Deno runner bundle with *payload* and return (returncode, stdout, stderr)."""
     cmd = build_scraper_command(scraper)
     if not cmd:
@@ -683,7 +683,28 @@ def _run_scraper_process(scraper, payload, timeout=15.0):
             text=True,
             env=_get_scraper_subprocess_env(),
         )
-        stdout, stderr = proc.communicate(json.dumps(payload), timeout=timeout)
+        input_data = json.dumps(payload)
+        if is_cancelled is None:
+            stdout, stderr = proc.communicate(input_data, timeout=timeout)
+        else:
+            deadline = time.monotonic() + max(0.0, float(timeout))
+            first_call = True
+            while True:
+                if is_cancelled():
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                    return -1, stdout or "", stderr or "Cancelled"
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                try:
+                    stdout, stderr = proc.communicate(
+                        input_data if first_call else None,
+                        timeout=min(0.1, remaining),
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    first_call = False
         return proc.returncode, stdout or "", stderr or ""
     finally:
         if proc and proc.poll() is None:
@@ -774,6 +795,20 @@ def scraper_has_catalog(scraper):
     if static_caps.get("isCatalogStub"):
         return False
     return bool(static_caps.get("hasGetCatalog"))
+
+
+def scraper_has_search(scraper):
+    """Return True only when a Nuvio scraper exports a search handler."""
+    if not isinstance(scraper, dict):
+        return False
+    code = str(scraper.get("code") or "")
+    if not code.strip():
+        return False
+
+    caps = scraper.get("capabilities")
+    if isinstance(caps, dict) and "hasSearch" in caps:
+        return bool(caps.get("hasSearch")) and not bool(caps.get("isSearchStub"))
+    return bool(_static_inspect_js(code).get("hasSearch"))
 
 
 def scraper_has_settings(scraper):
@@ -1639,9 +1674,8 @@ def _resolve_scraper_catalog_entries(scraper):
 
 def get_catalogs(media_type: str = "all") -> list[dict]:
     """
-    Return browsable catalog entries ONLY for enabled Nuvio plugins that
-    genuinely implement a non-stub catalog handler (never fabricated for
-    stream-only scrapers).
+    Return browsable virtual catalogs for enabled Nuvio plugins with real,
+    non-stub catalog handlers. Search-only providers are exposed separately.
     """
     if not is_plugins_enabled():
         return []
@@ -1653,7 +1687,9 @@ def get_catalogs(media_type: str = "all") -> list[dict]:
     for scraper in get_all_scrapers():
         if not isinstance(scraper, dict) or not scraper.get("enabled", True):
             continue
-        if not scraper_has_catalog(scraper):
+        has_catalog = scraper_has_catalog(scraper)
+        has_search = scraper_has_search(scraper)
+        if not has_catalog:
             continue
         if not _catalog_type_matches(scraper, norm_type):
             continue
@@ -1687,11 +1723,24 @@ def get_catalogs(media_type: str = "all") -> list[dict]:
                     sec_genres = default_genres
                 sec_extra = entry.get("extraSupported")
                 if not isinstance(sec_extra, list):
-                    sec_extra = ["genre", "year", "skip", "search"]
+                    sec_extra = ["genre", "year", "skip"]
+                    if has_search:
+                        sec_extra.append("search")
+                elif not has_search:
+                    sec_extra = [
+                        extra for extra in sec_extra
+                        if str(
+                            (extra.get("name") if isinstance(extra, dict) else extra) or ""
+                        ).strip().casefold() != "search"
+                    ]
                 sections.append((c_id, c_name, c_type or app_type, sec_genres, sec_extra))
         else:
-            # Non-stub getCatalog / getHome handler without explicit manifest sections
-            sections.append(("popular", "Catalog", app_type, default_genres, ["genre", "year", "skip", "search"]))
+            # Plugins without sections still get a virtual search target. Only
+            # advertise search when the runtime can invoke an actual handler.
+            sec_extra = ["genre", "year", "skip"]
+            if has_search:
+                sec_extra.append("search")
+            sections.append(("popular", "Catalog", app_type, default_genres, sec_extra))
 
         for cid, cname, sec_type, sec_genres, sec_extra in sections:
             key = (s_id, cid, sec_type)
@@ -1720,6 +1769,79 @@ def get_catalogs(media_type: str = "all") -> list[dict]:
     return catalogs
 
 
+def get_search_catalogs(media_type: str = "all") -> list[dict]:
+    """Return enabled Nuvio search targets without exposing search-only plugins to Discover."""
+    if not is_plugins_enabled():
+        return []
+
+    norm_type = str(media_type or "all").strip().lower()
+    catalogs = []
+    seen = set()
+    for cat in get_catalogs(media_type):
+        extras = cat.get("extraSupported") or []
+        if any(str(extra or "").strip().casefold() == "search" for extra in extras):
+            key = (cat.get("manifest_url"), cat.get("catalog_id"), cat.get("type"))
+            seen.add(key)
+            catalogs.append(cat)
+
+    for scraper in get_all_scrapers():
+        if not isinstance(scraper, dict) or not scraper.get("enabled", True):
+            continue
+        if scraper_has_catalog(scraper) or not scraper_has_search(scraper):
+            continue
+        if not _catalog_type_matches(scraper, norm_type):
+            continue
+
+        scraper_id = str(scraper.get("id") or "").strip()
+        if not scraper_id:
+            continue
+        app_type = _scraper_app_media_type(scraper, norm_type)
+        declared = _resolve_scraper_catalog_entries(scraper)
+        sections = []
+        if isinstance(declared, list) and declared:
+            for entry in declared:
+                if not isinstance(entry, dict):
+                    continue
+                catalog_id = str(entry.get("id") or entry.get("catalog_id") or "").strip()
+                catalog_type = str(entry.get("type") or app_type).strip().lower()
+                if catalog_type == "tv":
+                    catalog_type = "series"
+                if not catalog_id:
+                    continue
+                if norm_type in ("movie", "series", "anime") and catalog_type not in ("", "all", norm_type):
+                    continue
+                sections.append((
+                    catalog_id,
+                    str(entry.get("name") or entry.get("catalog_name") or catalog_id.title()).strip(),
+                    catalog_type or app_type,
+                ))
+        else:
+            sections.append(("popular", "Search", app_type))
+
+        for catalog_id, catalog_name, catalog_type in sections:
+            key = (catalog_url(scraper_id), catalog_id, catalog_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            name = str(scraper.get("name") or scraper_id).strip()
+            catalogs.append({
+                "addon_name": name,
+                "repository_url": scraper.get("repository_url") or "",
+                "manifest_url": catalog_url(scraper_id),
+                "plugin_id": scraper_id,
+                "catalog_id": catalog_id,
+                "catalog_name": catalog_name,
+                "display_name": f"{name} - {catalog_name}",
+                "extra": [{"name": "search", "isRequired": False}],
+                "extraSupported": ["search"],
+                "type": catalog_type,
+                "supports_pagination": True,
+                "_source": "nuvio_plugin",
+            })
+
+    return catalogs
+
+
 def execute_scraper_catalog(
     scraper,
     catalog_id="popular",
@@ -1729,6 +1851,7 @@ def execute_scraper_catalog(
     query="",
     timeout=10.0,
     year="",
+    is_cancelled=None,
 ):
     """
     Query a Nuvio plugin's sandboxed `getCatalog` / `search` handler.
@@ -1739,7 +1862,8 @@ def execute_scraper_catalog(
     if not is_runtime_available():
         return []
 
-    action = "search" if query else "getCatalog"
+    query_text = str(query or "").strip()
+    action = "search" if query_text else "getCatalog"
     req_type = str(media_type or "all").strip().lower()
     norm_type = normalize_media_type(req_type if req_type not in ("", "all", "movie_series") else "movie")
     page_num = max(1, int(page or 1))
@@ -1753,12 +1877,14 @@ def execute_scraper_catalog(
         "skip": (page_num - 1) * 24,
         "genre": str(genre or ""),
         "year": str(year or ""),
-        "query": str(query or ""),
+        "query": query_text,
         "settings": get_scraper_settings(scraper.get("id")),
         "tmdbApiKey": tmdb_helper.DEFAULT_TMDB_API_KEY,
     }
     try:
-        rc, stdout, _ = _run_scraper_process(scraper, payload, timeout=timeout)
+        rc, stdout, _ = _run_scraper_process(
+            scraper, payload, timeout=timeout, is_cancelled=is_cancelled
+        )
         if rc != 0 or not stdout.strip():
             return []
         for line in reversed([ln.strip() for ln in stdout.strip().split("\n") if ln.strip()]):
@@ -1888,7 +2014,11 @@ def fetch_catalog_items(
     scraper = get_scraper(scraper_id)
     if not scraper or not scraper.get("enabled", True):
         return []
-    if not scraper_has_catalog(scraper):
+    query_text = str(query or "").strip()
+    if query_text:
+        if not scraper_has_search(scraper):
+            return []
+    elif not scraper_has_catalog(scraper):
         return []
 
     provider_name = scraper.get("name") or "Nuvio"
@@ -1899,8 +2029,9 @@ def fetch_catalog_items(
         media_type=media_type,
         page=page,
         genre=genre,
-        query=query,
+        query=query_text,
         year=str(year_val or ""),
+        is_cancelled=is_cancelled,
     )
     if not raw_plugin_items or (is_cancelled and is_cancelled()):
         return []

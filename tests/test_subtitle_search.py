@@ -52,8 +52,8 @@ class TestSubtitleSearch(unittest.TestCase):
         self.assertEqual(api.get_language_name("xyz123"), "XYZ123")
         self.assertEqual(api.get_language_name(""), "Unknown")
 
-    @patch("urllib.request.urlopen")
-    def test_search_subtitles_movie(self, mock_urlopen):
+    @patch("src.api._get_cached_request")
+    def test_search_subtitles_movie(self, mock_cached_request):
         sample_response = {
             "subtitles": [
                 {
@@ -84,11 +84,7 @@ class TestSubtitleSearch(unittest.TestCase):
             ]
         }
 
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps(sample_response).encode("utf-8")
-        mock_resp.headers = {}
-        mock_resp.__enter__.return_value = mock_resp
-        mock_urlopen.return_value = mock_resp
+        mock_cached_request.return_value = sample_response
 
         results = api.search_subtitles_online(
             query="Inception",
@@ -108,8 +104,8 @@ class TestSubtitleSearch(unittest.TestCase):
         self.assertEqual(r1["lang"], "spa")
         self.assertEqual(r1["lang_name"], "Spanish")
 
-    @patch("urllib.request.urlopen")
-    def test_search_subtitles_series_and_cinemeta_resolution(self, mock_urlopen):
+    @patch("src.api._get_cached_request")
+    def test_search_subtitles_series_and_cinemeta_resolution(self, mock_cached_request):
         cinemeta_response = {
             "metas": [
                 {
@@ -132,19 +128,13 @@ class TestSubtitleSearch(unittest.TestCase):
             ]
         }
 
-        def mock_urlopen_side_effect(req, *args, **kwargs):
-            url = req.full_url if hasattr(req, "full_url") else str(req)
-            resp = MagicMock()
-            resp.headers = {}
-            resp.__enter__.return_value = resp
+        def cached_request_side_effect(url, *args, **kwargs):
             if "cinemeta" in url:
-                resp.read.return_value = json.dumps(cinemeta_response).encode("utf-8")
-            else:
-                self.assertIn("series/tt0903747:1:1.json", url)
-                resp.read.return_value = json.dumps(subtitles_response).encode("utf-8")
-            return resp
+                return cinemeta_response
+            self.assertIn("series/tt0903747:1:1.json", url)
+            return subtitles_response
 
-        mock_urlopen.side_effect = mock_urlopen_side_effect
+        mock_cached_request.side_effect = cached_request_side_effect
 
         results = api.search_subtitles_online(
             query="Breaking Bad",

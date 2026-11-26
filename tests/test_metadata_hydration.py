@@ -449,6 +449,35 @@ class TestMetadataHydration(unittest.TestCase):
         found_ids = [r.get("id") for r in results]
         self.assertIn("tt3333333", found_ids)
 
+    def test_cached_search_matches_punctuation_and_treats_like_wildcards_literally(self):
+        database.save_cached_metadata("tt4444001", "movie", {
+            "id": "tt4444001", "title": "ACDC", "type": "movie"
+        })
+        database.save_cached_metadata("tt4444002", "movie", {
+            "id": "tt4444002", "title": "100% Film", "type": "movie"
+        })
+        database.save_cached_metadata("tt4444003", "movie", {
+            "id": "tt4444003", "title": "1000 Film", "type": "movie"
+        })
+        database.save_cached_metadata("tt4444004", "movie", {
+            "id": "tt4444004", "title": "Amélie", "type": "movie"
+        })
+
+        punctuation_results = database.get_cached_items_by_search(
+            "AC/DC", media_type="movie", title_only=True
+        )
+        self.assertIn("tt4444001", {item.get("id") for item in punctuation_results})
+
+        percent_results = database.get_cached_items_by_search(
+            "100%", media_type="movie", title_only=True
+        )
+        self.assertEqual({item.get("id") for item in percent_results}, {"tt4444002"})
+
+        accent_results = database.get_cached_items_by_search(
+            "Amelie", media_type="movie", title_only=True
+        )
+        self.assertIn("tt4444004", {item.get("id") for item in accent_results})
+
     def test_fetch_items_pre_hydrates_before_genre_filter(self):
         """api.fetch_items hydrates bare manifest items from DB before applying genre filter."""
         meta = {

@@ -156,6 +156,69 @@ class TestNuvioCatalogsRobustnessAndUI(unittest.TestCase):
             self.assertEqual(items[0]["id"], "tmdb:603")
             self.assertEqual(items[0]["title"], "The Matrix")
 
+    def test_nuvio_search_catalog_is_discovered_and_retrieved(self):
+        query = "Fargo & Co./? 100%"
+        scraper = {
+            "id": "https://repo.test/manifest.json:searcher",
+            "name": "Search Provider",
+            "supported_types": ["movie"],
+            "enabled": True,
+            "catalogs": [{"id": "popular", "name": "Popular", "type": "movie"}],
+            "code": "module.exports = { search: async () => [] };",
+        }
+        catalog_searcher = {
+            "id": "https://repo.test/manifest.json:browse-search",
+            "name": "Browse Search Provider",
+            "supported_types": ["movie"],
+            "enabled": True,
+            "catalogs": [{"id": "featured", "name": "Featured", "type": "movie"}],
+            "code": "module.exports = { getCatalog: async () => [{ id: 'tmdb:1' }], search: async () => [] };",
+        }
+        catalog_url = plugins.catalog_url(scraper["id"])
+        payloads = []
+
+        def fake_runner(_scraper, payload, timeout=15.0, is_cancelled=None):
+            payloads.append(payload)
+            return 0, json.dumps([{"id": "tmdb:603", "name": "Fargo", "type": "movie"}]), ""
+
+        with patch.object(api, "get_search_addons", return_value=[]), \
+             patch.object(plugins, "is_plugins_enabled", return_value=True), \
+             patch.object(plugins, "get_all_scrapers", return_value=[scraper, catalog_searcher]), \
+             patch.object(database, "get_available_genres", return_value=[]):
+            search_catalogs = api.get_available_search_catalogs("movie", only_working=False)
+            browsable = plugins.get_catalogs("movie")
+            self.assertEqual(len(browsable), 1)
+            self.assertEqual(browsable[0]["plugin_id"], catalog_searcher["id"])
+
+        self.assertEqual(len(search_catalogs), 2)
+        self.assertEqual(
+            {(cat["manifest_url"], cat["catalog_id"]) for cat in search_catalogs},
+            {
+                (catalog_url, "popular"),
+                (plugins.catalog_url(catalog_searcher["id"]), "featured"),
+            },
+        )
+
+        with patch.object(plugins, "is_plugins_enabled", return_value=True), \
+             patch.object(plugins, "get_scraper", return_value=scraper), \
+             patch.object(plugins, "is_runtime_available", return_value=True), \
+             patch.object(plugins, "get_scraper_settings", return_value={}), \
+             patch.object(plugins, "_run_scraper_process", side_effect=fake_runner), \
+             patch.object(database, "is_adult_content_hidden", return_value=False), \
+             patch.object(tmdb_helper, "is_future_item", return_value=False):
+            items = api.fetch_items(
+                media_type="movie",
+                query=query,
+                target_manifest_url=catalog_url,
+                target_catalog_id="popular",
+            )
+
+        self.assertEqual([item["id"] for item in items], ["tmdb:603"])
+        self.assertEqual(items[0]["addon_name"], "Search Provider")
+        self.assertEqual(items[0]["manifest_url"], catalog_url)
+        self.assertEqual(payloads[0]["action"], "search")
+        self.assertEqual(payloads[0]["query"], query)
+
     def test_execute_scraper_guards_and_cooldown(self):
         scraper = {
             "id": "https://repo.test/manifest.json:broken",
