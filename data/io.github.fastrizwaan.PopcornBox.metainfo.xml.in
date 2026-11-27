@@ -70,6 +70,14 @@
   </requires>
 
   <releases>
+    <release version="3.0" date="2026-11-27">
+      <description translate="no">
+        <ul>
+          <li>Added plugin repositories for custom Python plugins: install from a GitHub repo, manifest.json or .py URL, with automatic updates every 6 hours</li>
+          <li>Updated the application version to 3.0</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.5" date="2026-11-24">
       <description translate="no">
         <ul>

@@ -53,7 +53,9 @@ Key Source Files (`src/`):
   Deno through the runner bundle (`getStreams`, `getCatalog`/`getHome`,
   `search`, `onSettings`), with per-scraper network host allow-lists.
 - `src/custom_plugins.py` & `src/custom_plugins_runner.py`:
-  Drop-in Python scrapers, isolated in a separate process.
+  Drop-in Python plugins (streams and/or catalogs), isolated in a separate process.
+  `README_CONTENT` in `custom_plugins.py` is the plugin-author contract written to
+  the plugins folder as README.txt (only when missing).
 
 --------------------------------------------------------------------------------
 2. UI STRUCTURE & VIEW HIERARCHY
@@ -120,6 +122,28 @@ Nuvio plugins (reference: NuvioDesktop/ `features/plugins`):
   background thread.
 - A stream-only scraper has no Discover rows. Do not synthesize TMDb rows
   for it; tests assert this.
+
+Custom Python plugins (`src/custom_plugins.py`):
+- Plugins live in `<data dir>/custom_plugins/*.py` (Flatpak:
+  `~/.var/app/io.github.fastrizwaan.PopcornBox/data/popcorn-box/custom_plugins`).
+  Files starting with `_` or `.` are ignored; sub-folders are not scanned.
+- Name files after the source in lowercase (`bollyflix.py`, not
+  `bollyflix_scraper.py`). The class `name` is the `[tag]` shown after each stream
+  in the stream list; stream `name` values should start with the same spelling.
+- User state (enabled, Stream/Catalog roles) is keyed by the plugin `id`, never by
+  file name, so files can be renamed freely. Never change an existing `id`.
+- `import_plugin_file()` accepts a `.py` or a `.zip`. Zips are flattened; README,
+  `_`/hidden files, `__MACOSX`, files over 5 MB and files that do not compile are
+  skipped. An imported file whose plugin `id` belongs to an installed file with a
+  different name replaces that file (`_remove_renamed_duplicates()`), so renamed
+  plugins never load twice.
+- `import_plugin_url()` accepts `https://`, `http://`, `file://` or a plain path to
+  a `.py`/`.zip` (GitHub `/blob/` links are rewritten to raw). It downloads once
+  (50 MB cap, zip detected by magic bytes, HTML pages rejected) and hands off to
+  `import_plugin_file()`. There is deliberately no repository/manifest system and
+  no automatic updating of custom plugins.
+- The UI runs imports on a background thread and always confirms first, because
+  plugins execute with the user's privileges.
 
 Stack Homogeneity & Layout Integrity:
 - Both `main_stack` and `library_stack` must have `hhomogeneous: false` and

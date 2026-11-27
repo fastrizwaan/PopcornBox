@@ -78,6 +78,33 @@ class TestStreamTrustOrder(unittest.TestCase):
         resorted = sorted(ranked, key=lambda t: stream_sort_key_all(t, rem_st=remembered), reverse=True)
         self.assertEqual(_providers(resorted)[0], "SomeAddon")
 
+    def test_auto_picked_stream_is_not_pinned(self):
+        """A stream auto-selected before the catalog's own streams arrived must not stay on top."""
+        from types import SimpleNamespace
+        from src.window import MovieDetailsPage, stream_sort_key_all
+        ranked = api.process_raw_streams(_streams(), title="Love", preferred_provider="9kMovies")
+        early_pick = next(s for s in ranked if s["addon_names"][0] == "NuvioThing")
+        page = SimpleNamespace(remembered_working_stream=None, selected_torrent=early_pick,
+                               _user_explicitly_selected_stream=False, window=None)
+        rem_st = MovieDetailsPage._pinned_stream(page)
+        self.assertIsNone(rem_st)
+        resorted = sorted(ranked, key=lambda t: stream_sort_key_all(t, rem_st=rem_st), reverse=True)
+        self.assertEqual(_providers(resorted)[0], "9kMovies")
+
+    def test_user_picked_and_remembered_streams_are_pinned(self):
+        from types import SimpleNamespace
+        from src.window import MovieDetailsPage
+        picked, remembered, global_rem = {"url": "a"}, {"url": "b"}, {"url": "c"}
+        page = SimpleNamespace(remembered_working_stream=None, selected_torrent=picked,
+                               _user_explicitly_selected_stream=True, window=None)
+        self.assertIs(MovieDetailsPage._pinned_stream(page), picked)
+        page.remembered_working_stream = remembered
+        self.assertIs(MovieDetailsPage._pinned_stream(page), remembered)
+        page = SimpleNamespace(remembered_working_stream=None, selected_torrent=picked,
+                               _user_explicitly_selected_stream=False,
+                               window=SimpleNamespace(remembered_working_stream=global_rem, selected_torrent=picked))
+        self.assertIs(MovieDetailsPage._pinned_stream(page), global_rem)
+
 
 def _tiered_streams():
     return [

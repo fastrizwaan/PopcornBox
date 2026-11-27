@@ -1,6 +1,6 @@
 <div align="center">
   <img src="data/icons/scalable/apps/io.github.fastrizwaan.PopcornBox.svg" alt="PopcornBox logo" width="128" height="128">
-  <h1>PopcornBox 2.5</h1>
+  <h1>PopcornBox 3.0</h1>
 </div>
 
 A Linux media client for discovering and playing movies, series, anime, and other media through Stremio-compatible addons. PopcornBox combines catalog browsing, search, a local library, and an integrated MPV-based player in a GTK4 and Libadwaita desktop app.
@@ -23,6 +23,7 @@ A Linux media client for discovering and playing movies, series, anime, and othe
 - Search and filter local library lists by media type.
 - Browse Community, Official, and Stremio-Addons.net directories to find compatible addons; install by manifest URL and import or export addon configurations.
 - Install Nuvio plugin repositories and search results from plugins that provide a search handler.
+- Add your own Python plugins for streams and browsable catalogs: drop `.py` files into the plugins folder, or import a `.py` or `.zip` from a file or a URL (`https://`, `file://`, or a GitHub file link) under **Preferences → Custom Plugins**. Each plugin's Stream and Catalog roles can be switched on and off separately. PopcornBox ships no plugins; the plugins folder's `README.txt` documents how to write one.
 - Optionally sync supported library, playback progress, and addon data with a connected Stremio or Nuvio account.
 - Manage downloads and resume saved playback sessions.
 
@@ -66,7 +67,7 @@ flatpak build-bundle ~/.local/share/flatpak/repo io.github.fastrizwaan.PopcornBo
 
 ## Project details
 
-- **Version:** 2.5
+- **Version:** 3.0
 - **Platform:** GNU/Linux (Flatpak)
 - **UI:** Python, GTK4, Libadwaita
 - **Playback:** MPV with libtorrent-backed streaming support

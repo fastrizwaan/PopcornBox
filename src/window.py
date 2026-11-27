@@ -676,6 +676,19 @@ DEFAULT_WIDTH, DEFAULT_HEIGHT = 1120, 630
 
 
 class MovieDetailsPage(Gtk.Overlay):
+    def _pinned_stream(self):
+        """The stream to keep on top of the list: a remembered working stream or
+        one the user picked. An automatic pick made while streams were still
+        arriving is not pinned, so it cannot stay above better-ranked streams
+        (such as the opened catalog's own) that arrive later."""
+        rem_st = getattr(self, 'remembered_working_stream', None)
+        if not rem_st and getattr(self, '_user_explicitly_selected_stream', False):
+            rem_st = getattr(self, 'selected_torrent', None)
+        window = getattr(self, 'window', None)
+        if not rem_st and window:
+            rem_st = getattr(window, 'remembered_working_stream', None)
+        return rem_st
+
     def __init__(self, movie, on_back, window=None):
         super().__init__()
         self.movie_stub = movie
@@ -4172,9 +4185,7 @@ class MovieDetailsPage(Gtk.Overlay):
             self.quality_button_box.remove(child)
 
         pref_prov = getattr(self, 'preferred_direct_provider', None)
-        rem_st = getattr(self, 'remembered_working_stream', None) or getattr(self, 'selected_torrent', None)
-        if not rem_st and hasattr(self, 'window') and self.window:
-            rem_st = getattr(self.window, 'remembered_working_stream', None) or getattr(self.window, 'selected_torrent', None)
+        rem_st = self._pinned_stream()
 
         def _stream_sort_key_all(t):
             return stream_sort_key_all(t, sel_s=sel_s, sel_e=sel_e, ep_t=ep_t, pref_prov=pref_prov, rem_st=rem_st)
@@ -4564,6 +4575,15 @@ class MovieDetailsPage(Gtk.Overlay):
                 self.selected_torrent = rem_st
             else:
                 self.selected_torrent = None
+        elif not user_explicit and t_list:
+            # Source/provider filtered view: follow the best-ranked stream too,
+            # instead of keeping whatever was auto-picked from an earlier batch.
+            pref_prov = getattr(self, 'preferred_direct_provider', None)
+            rem_st = getattr(self, 'remembered_working_stream', None)
+            self.selected_torrent = max(
+                t_list,
+                key=lambda t: stream_sort_key_all(t, sel_s=sel_s, sel_e=sel_e, ep_t=ep_t, pref_prov=pref_prov, rem_st=rem_st),
+            )
         elif selected:
             sel_ident = _stream_identity(selected)
             exact_match = next((t for t in t_list if _stream_identity(t) == sel_ident), None) if sel_ident and sel_ident[0] != "object" else None
@@ -5398,6 +5418,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     custom_plugin_enable_globally_row: Adw.SwitchRow = Gtk.Template.Child()
     custom_plugin_open_folder_row: Adw.ActionRow = Gtk.Template.Child()
     custom_plugin_import_row: Adw.ActionRow = Gtk.Template.Child()
+    custom_plugin_url_row: Adw.EntryRow = Gtk.Template.Child()
     custom_plugin_refresh_btn: Gtk.Button = Gtk.Template.Child()
     custom_plugin_listbox: Gtk.ListBox = Gtk.Template.Child()
     video_overlay: Gtk.Overlay = Gtk.Template.Child()
@@ -23029,6 +23050,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self.custom_plugin_enable_globally_row.connect("notify::active", self._on_custom_plugin_enable_globally_toggled)
         self.custom_plugin_open_folder_row.connect("activated", lambda *a: custom_plugins.open_plugins_directory(self))
         self.custom_plugin_import_row.connect("activated", self._on_custom_plugin_import_clicked)
+        self.custom_plugin_url_row.connect("apply", self._on_custom_plugin_url_apply)
         self.custom_plugin_refresh_btn.connect("clicked", self._on_custom_plugin_refresh_clicked)
         # Plugins load in the background at startup; rebuild catalog lists once they are ready.
         custom_plugins.add_load_listener(lambda _scrapers: GLib.idle_add(self._on_custom_plugins_loaded))
@@ -23068,7 +23090,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if not scrapers:
             empty_row = Adw.ActionRow(
                 title=_("No custom plugins installed"),
-                subtitle=_("Click 'Open Plugins Folder' above to add .py scrapers, or click 'Import Plugin File'.")
+                subtitle=_("Click 'Open Plugins Folder' above to add .py plugins, or click 'Import Plugins' to add a .py or .zip.")
             )
             empty_row.set_sensitive(False)
             self.custom_plugin_listbox.append(empty_row)
@@ -23174,12 +23196,20 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._trigger_custom_plugin_reload(show_toast=True)
 
     def _on_custom_plugin_import_clicked(self, *args):
-        dialog = Gtk.FileDialog(title=_("Import Python Plugin"))
+        dialog = Gtk.FileDialog(title=_("Import Plugins"))
+        filter_all = Gtk.FileFilter()
+        filter_all.set_name(_("Plugins (*.py, *.zip)"))
+        filter_all.add_pattern("*.py")
+        filter_all.add_pattern("*.zip")
         filter_py = Gtk.FileFilter()
         filter_py.set_name(_("Python Files (*.py)"))
         filter_py.add_pattern("*.py")
+        filter_zip = Gtk.FileFilter()
+        filter_zip.set_name(_("Zip Archives (*.zip)"))
+        filter_zip.add_pattern("*.zip")
         filters = Gio.ListStore.new(Gtk.FileFilter)
-        filters.append(filter_py)
+        for f in (filter_all, filter_py, filter_zip):
+            filters.append(f)
         dialog.set_filters(filters)
 
         def on_open_response(d, result):
@@ -23195,20 +23225,39 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 fname = os.path.basename(path)
 
                 def do_import():
-                    ok, msg = custom_plugins.import_plugin_file(path)
-                    self._populate_custom_plugins()
-                    self._show_toast(msg)
+                    self._show_toast(_("Importing plugins…"))
 
-                confirm_dlg = Adw.MessageDialog(
-                    heading=_("Import Custom Plugin?"),
-                    body=_(
-                        f"'{fname}' is an external Python script that will execute locally with your user account privileges.\n\n"
+                    def worker():
+                        ok, msg = custom_plugins.import_plugin_file(path)
+
+                        def apply():
+                            self._populate_custom_plugins()
+                            if ok:
+                                self._refresh_nuvio_catalog_views()
+                            self._show_toast(msg)
+                            return False
+
+                        GLib.idle_add(apply)
+
+                    threading.Thread(target=worker, daemon=True, name="CustomPluginImport").start()
+
+                if fname.lower().endswith(".zip"):
+                    body = _(
+                        "'{name}' contains Python scripts that will run locally with your user account privileges.\n\n"
                         "Only import plugins from authors and sources you trust."
-                    ),
+                    )
+                else:
+                    body = _(
+                        "'{name}' is a Python script that will run locally with your user account privileges.\n\n"
+                        "Only import plugins from authors and sources you trust."
+                    )
+                confirm_dlg = Adw.MessageDialog(
+                    heading=_("Import Custom Plugins?"),
+                    body=body.format(name=fname),
                     transient_for=self,
                 )
                 confirm_dlg.add_response("cancel", _("Cancel"))
-                confirm_dlg.add_response("import", _("Import Plugin"))
+                confirm_dlg.add_response("import", _("Import"))
                 confirm_dlg.set_response_appearance("import", Adw.ResponseAppearance.SUGGESTED)
 
                 def on_confirm(dlg, response):
@@ -23221,6 +23270,47 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 logger.error(f"Failed to import plugin: {e}")
 
         dialog.open(self, None, on_open_response)
+
+    def _on_custom_plugin_url_apply(self, row, *args):
+        url = row.get_text().strip()
+        if not url:
+            self._show_toast(_("Enter a link to a .zip or .py plugin"))
+            return
+
+        def do_install():
+            row.set_sensitive(False)
+            self._show_toast(_("Downloading plugins…"))
+
+            def worker():
+                from . import custom_plugins
+                ok, msg = custom_plugins.import_plugin_url(url)
+
+                def apply():
+                    row.set_sensitive(True)
+                    if ok:
+                        row.set_text("")
+                        self._refresh_nuvio_catalog_views()
+                    self._populate_custom_plugins()
+                    self._show_toast(msg)
+                    return False
+
+                GLib.idle_add(apply)
+
+            threading.Thread(target=worker, daemon=True, name="CustomPluginUrlImport").start()
+
+        confirm_dlg = Adw.MessageDialog(
+            heading=_("Install Plugins from URL?"),
+            body=_(
+                "Plugins from this link are Python scripts that will run locally with your user account privileges.\n\n"
+                "Only install plugins from authors and sources you trust.\n\n{url}"
+            ).format(url=url),
+            transient_for=self,
+        )
+        confirm_dlg.add_response("cancel", _("Cancel"))
+        confirm_dlg.add_response("install", _("Install"))
+        confirm_dlg.set_response_appearance("install", Adw.ResponseAppearance.SUGGESTED)
+        confirm_dlg.connect("response", lambda d, r: do_install() if r == "install" else None)
+        confirm_dlg.present()
 
     def _on_custom_scraper_switch_toggled(self, switch, scraper_id, row_ctl=None):
         if row_ctl and row_ctl.get("syncing"):

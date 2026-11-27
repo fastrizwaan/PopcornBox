@@ -2244,8 +2244,8 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                     </child>
                                                     <child>
                                                       <object class="AdwActionRow" id="custom_plugin_import_row">
-                                                        <property name="title" translatable="yes">Import Plugin File</property>
-                                                        <property name="subtitle" translatable="yes">Copy a .py scraper file into your plugins folder</property>
+                                                        <property name="title" translatable="yes">Import Plugins</property>
+                                                        <property name="subtitle" translatable="yes">Copy a .py plugin, or every plugin in a .zip, into your plugins folder</property>
                                                         <property name="activatable">true</property>
                                                         <child type="suffix">
                                                           <object class="GtkImage">
@@ -2253,6 +2253,13 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                             <property name="valign">3</property>
                                                           </object>
                                                         </child>
+                                                      </object>
+                                                    </child>
+                                                    <child>
+                                                      <object class="AdwEntryRow" id="custom_plugin_url_row">
+                                                        <property name="title" translatable="yes">Install from URL (.zip or .py, https:// or file://)</property>
+                                                        <property name="show-apply-button">true</property>
+                                                        <property name="input-purpose">5</property>
                                                       </object>
                                                     </child>
                                                   </object>

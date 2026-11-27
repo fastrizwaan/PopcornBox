@@ -523,8 +523,6 @@ sys.exit(99)
             self.assertEqual(legit_movie[0]["url"], "https://www.youtube.com/watch?v=rev_legit")
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestCustomPluginLoaderThread(unittest.TestCase):
@@ -558,3 +556,165 @@ class TestCustomPluginLoaderThread(unittest.TestCase):
         self.assertEqual(seen, [("CustomPluginsLoader", False), ("CustomPluginsLoader", True)])
         self.assertEqual(sorted(c[0] for c in callbacks), ["a", "b", "c"])
         self.assertFalse(custom_plugins._PRELOAD_INFLIGHT)
+
+
+def _zip_plugin(plugin_id, name):
+    return f'''
+class Scraper:
+    id = "{plugin_id}"
+    name = "{name}"
+    version = "1.0.0"
+    media_types = ["movie"]
+
+    def get_streams(self, imdb_id, media_type="movie", **kwargs):
+        return []
+'''
+
+
+class TestCustomPluginZipImport(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="popcorn_test_plugin_zip_")
+        self.orig_base_dir = getattr(database, "BASE_DIR", None)
+        database.BASE_DIR = Path(self.test_dir) / "base"
+        custom_plugins._LOADED_SCRAPERS.clear()
+        custom_plugins._LOADED_MODULES.clear()
+        custom_plugins.set_custom_plugins_enabled(True)
+        database.set_setting("disabled_custom_scrapers", [])
+        database.set_setting("disabled_custom_scraper_capabilities", {})
+
+    def tearDown(self):
+        database.BASE_DIR = self.orig_base_dir
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def _make_zip(self, members):
+        import zipfile
+        path = Path(self.test_dir) / "plugins.zip"
+        with zipfile.ZipFile(path, "w") as zf:
+            for name, data in members.items():
+                zf.writestr(name, data)
+        return str(path)
+
+    def test_imports_every_plugin_in_zip(self):
+        zpath = self._make_zip({
+            "PopcornBox-plugins/bollyflix.py": _zip_plugin("custom.bollyflix", "BollyFlix"),
+            "PopcornBox-plugins/yts.py": _zip_plugin("custom.yts", "YTS"),
+            "PopcornBox-plugins/README.txt": "readme",
+            "PopcornBox-plugins/_helper.py": "x = 1",
+            "__MACOSX/PopcornBox-plugins/._yts.py": "junk",
+            "PopcornBox-plugins/broken.py": "<html>",
+        })
+        ok, msg = custom_plugins.import_plugin_file(zpath)
+        self.assertTrue(ok, msg)
+        self.assertIn("2 plugins", msg)
+        self.assertIn("1 skipped", msg)
+        p_dir = custom_plugins.get_custom_plugins_dir()
+        self.assertEqual(sorted(p.name for p in p_dir.glob("*.py")), ["bollyflix.py", "yts.py"])
+        self.assertNotEqual((p_dir / "README.txt").read_text(), "readme")
+        ids = sorted(s["id"] for s in custom_plugins.get_all_custom_scrapers())
+        self.assertEqual(ids, ["custom.bollyflix", "custom.yts"])
+
+    def test_renamed_plugin_replaces_old_file(self):
+        p_dir = custom_plugins.get_custom_plugins_dir()
+        (p_dir / "bollyflix_scraper.py").write_text(_zip_plugin("custom.bollyflix", "Bollyflix"), encoding="utf-8")
+        (p_dir / "mine.py").write_text(_zip_plugin("custom.mine", "Mine"), encoding="utf-8")
+        custom_plugins.load_all_custom_scrapers(force_reload=True)
+
+        zpath = self._make_zip({"bollyflix.py": _zip_plugin("custom.bollyflix", "BollyFlix")})
+        ok, msg = custom_plugins.import_plugin_file(zpath)
+        self.assertTrue(ok, msg)
+        self.assertEqual(sorted(p.name for p in p_dir.glob("*.py")), ["bollyflix.py", "mine.py"])
+        names = {s["id"]: s["name"] for s in custom_plugins.get_all_custom_scrapers()}
+        self.assertEqual(names["custom.bollyflix"], "BollyFlix")
+
+    def test_zip_without_plugins_fails(self):
+        zpath = self._make_zip({"README.txt": "nothing here"})
+        ok, msg = custom_plugins.import_plugin_file(zpath)
+        self.assertFalse(ok)
+        self.assertIn("No plugins", msg)
+
+    def test_rejects_other_file_types(self):
+        other = Path(self.test_dir) / "notes.txt"
+        other.write_text("hi")
+        ok, _msg = custom_plugins.import_plugin_file(str(other))
+        self.assertFalse(ok)
+
+
+class TestCustomPluginUrlImport(TestCustomPluginZipImport):
+    """Install from https:// / file:// links, served by a local HTTP server."""
+
+    def setUp(self):
+        super().setUp()
+        import http.server
+        import threading as _threading
+        self.www = Path(self.test_dir) / "www"
+        self.www.mkdir()
+        handler = lambda *a, **kw: http.server.SimpleHTTPRequestHandler(*a, directory=str(self.www), **kw)
+        http.server.SimpleHTTPRequestHandler.log_message = lambda *a: None
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        _threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        super().tearDown()
+
+    def _installed(self):
+        return sorted(p.name for p in custom_plugins.get_custom_plugins_dir().glob("*.py"))
+
+    def test_zip_over_http(self):
+        import zipfile
+        with zipfile.ZipFile(self.www / "pack.zip", "w") as zf:
+            zf.writestr("pack/yts.py", _zip_plugin("custom.yts", "YTS"))
+            zf.writestr("pack/torrentio.py", _zip_plugin("custom.torrentio", "Torrentio"))
+        ok, msg = custom_plugins.import_plugin_url(f"{self.base}/pack.zip")
+        self.assertTrue(ok, msg)
+        self.assertEqual(self._installed(), ["torrentio.py", "yts.py"])
+
+    def test_py_over_http(self):
+        (self.www / "yts.py").write_text(_zip_plugin("custom.yts", "YTS"), encoding="utf-8")
+        ok, msg = custom_plugins.import_plugin_url(f"{self.base}/yts.py")
+        self.assertTrue(ok, msg)
+        self.assertEqual(self._installed(), ["yts.py"])
+
+    def test_zip_without_extension_is_detected(self):
+        import zipfile
+        with zipfile.ZipFile(self.www / "download", "w") as zf:
+            zf.writestr("yts.py", _zip_plugin("custom.yts", "YTS"))
+        ok, msg = custom_plugins.import_plugin_url(f"{self.base}/download")
+        self.assertTrue(ok, msg)
+        self.assertEqual(self._installed(), ["yts.py"])
+
+    def test_html_page_is_rejected(self):
+        (self.www / "page").write_text("<html><body>Not found</body></html>")
+        ok, msg = custom_plugins.import_plugin_url(f"{self.base}/page")
+        self.assertFalse(ok)
+        self.assertEqual(self._installed(), [])
+
+    def test_missing_url_fails_cleanly(self):
+        ok, msg = custom_plugins.import_plugin_url(f"{self.base}/nope.zip")
+        self.assertFalse(ok)
+        self.assertIn("Download failed", msg)
+
+    def test_file_url_and_plain_path(self):
+        src = Path(self.test_dir) / "local.py"
+        src.write_text(_zip_plugin("custom.local", "Local"), encoding="utf-8")
+        ok, msg = custom_plugins.import_plugin_url(src.as_uri())
+        self.assertTrue(ok, msg)
+        self.assertEqual(self._installed(), ["local.py"])
+        ok, msg = custom_plugins.import_plugin_url(str(src))
+        self.assertTrue(ok, msg)
+
+    def test_other_schemes_rejected(self):
+        ok, _msg = custom_plugins.import_plugin_url("ftp://example.com/p.zip")
+        self.assertFalse(ok)
+
+    def test_github_blob_link_becomes_raw(self):
+        self.assertEqual(
+            custom_plugins._github_raw_url("https://github.com/u/r/blob/main/pack.zip"),
+            "https://raw.githubusercontent.com/u/r/main/pack.zip",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

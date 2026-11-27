@@ -1277,14 +1277,19 @@ template $PopcornBoxWindow: Adw.ApplicationWindow {
                             }
                           }
                           Adw.ActionRow custom_plugin_import_row {
-                            title: _("Import Plugin File");
-                            subtitle: _("Copy a .py scraper file into your plugins folder");
+                            title: _("Import Plugins");
+                            subtitle: _("Copy a .py plugin, or every plugin in a .zip, into your plugins folder");
                             activatable: true;
                             [suffix]
                             Image {
                               icon-name: "document-open-symbolic";
                               valign: center;
                             }
+                          }
+                          Adw.EntryRow custom_plugin_url_row {
+                            title: _("Install from URL (.zip or .py, https:// or file://)");
+                            show-apply-button: true;
+                            input-purpose: url;
                           }
                         }
                       }

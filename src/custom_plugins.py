@@ -6,6 +6,7 @@ in the core application.
 """
 
 import os
+import re
 import sys
 import json
 import logging
@@ -13,6 +14,7 @@ import inspect
 import shutil
 import subprocess
 import threading
+import urllib.parse
 import importlib.util
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -55,9 +57,22 @@ def get_runner_path() -> str:
 
 README_CONTENT = """# PopcornBox Custom Plugins Directory
 
-Put standalone Python (.py) scraper files in this folder. PopcornBox discovers
+Put standalone Python (.py) plugin files in this folder. PopcornBox discovers
 them automatically and uses them for streams and/or browsable catalogs.
 Files whose names start with "_" or "." are ignored.
+
+Name each file after its source, in lowercase: bollyflix.py, yts.py,
+internet_archive.py (not bollyflix_scraper.py). The plugin's `name` attribute
+is the [tag] after each of its streams in the stream list, e.g. "[BollyFlix]",
+so give it the source's proper spelling; start each stream's own "name" with
+the same spelling ("BollyFlix 1080p (HubCloud)").
+
+To install several plugins at once, use Preferences > Custom Plugins >
+Import Plugins and pick a .zip: every .py plugin inside it is copied here,
+replacing older copies of the same plugin even if the file was renamed.
+"Install from URL" does the same for a link to a .zip or .py: https://...,
+file:///path/to/plugins.zip, or a GitHub file page (github.com/.../blob/...).
+It downloads once; it does not check the link for updates later.
 
 Each plugin can be switched on/off in Preferences > Custom Plugins, and its
 Stream and Catalog roles can be toggled separately.
@@ -193,7 +208,7 @@ When in doubt, return NOTHING rather than a guess.
 - In PopcornBox: Preferences > Custom Plugins > Refresh, then press "Test"
   on your plugin. Open one of its catalog cards and check the streams.
 - From a terminal (inside this folder):
-      python3 -c "import importlib.util as u; s=u.spec_from_file_location('p','example_scraper.py'); m=u.module_from_spec(s); s.loader.exec_module(m); sc=m.Scraper(); print(sc.get_catalog_items(sc.catalog_sections[0]['id'])[:2]); print(sc.get_streams('tt1375666', 'movie', title='Inception', year='2010'))"
+      python3 -c "import importlib.util as u; s=u.spec_from_file_location('p','example.py'); m=u.module_from_spec(s); s.loader.exec_module(m); sc=m.Scraper(); print(sc.get_catalog_items(sc.catalog_sections[0]['id'])[:2]); print(sc.get_streams('tt1375666', 'movie', title='Inception', year='2010'))"
 - Check: correct qualities, no wrong films (try a short common title such as
   "Love" with a year), no adult results for normal titles, page 2 works.
 
@@ -912,25 +927,217 @@ def test_custom_scraper(scraper_id: str) -> tuple[bool, int, str]:
         return False, 0, str(e)
 
 
+MAX_PLUGIN_FILE_BYTES = 5 * 1024 * 1024
+_SCRAPER_ID_RE = re.compile(r"^class\s+Scraper\b.*?^\s+id\s*=\s*[\"']([^\"']+)[\"']", re.MULTILINE | re.DOTALL)
+
+
+def _declared_plugin_id(code: str, filename: str) -> str:
+    """Best-effort plugin id of a not-yet-loaded plugin file, without running it."""
+    m = _SCRAPER_ID_RE.search(code)
+    return m.group(1) if m else f"custom.{Path(filename).stem}"
+
+
+def _remove_renamed_duplicates(target_dir: Path, new_files: dict):
+    """Delete installed files whose plugin id now ships under a different file name.
+
+    Without this, importing bollyflix.py next to an old bollyflix_scraper.py would
+    load the same plugin twice and whichever file sorts last would win.
+    """
+    by_id = {}
+    for s in load_all_custom_scrapers():
+        path = getattr(s, "_file_path", None)
+        if path:
+            by_id[str(s.id)] = Path(path)
+    for filename, code in new_files.items():
+        old = by_id.get(_declared_plugin_id(code, filename))
+        if old is not None and old.name != filename and old.parent == target_dir and old.is_file():
+            try:
+                old.unlink()
+                logger.info(f"Removed {old.name}: replaced by {filename}")
+            except OSError as e:
+                logger.warning(f"Could not remove old plugin file {old}: {e}")
+
+
+def _read_plugins_from_zip(src: Path) -> tuple[dict, list]:
+    """Return ({filename: code}, skipped) for the plugin .py files in a zip.
+
+    Folders inside the zip are flattened; README files, hidden files, files
+    starting with "_" and macOS metadata are ignored.
+    """
+    import zipfile
+    files, skipped = {}, []
+    with zipfile.ZipFile(src) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            parts = info.filename.replace("\\", "/").split("/")
+            name = parts[-1]
+            if any(p.startswith(("__MACOSX", ".")) for p in parts) or not name.lower().endswith(".py"):
+                continue
+            if name.startswith("_"):
+                continue
+            if info.file_size > MAX_PLUGIN_FILE_BYTES:
+                skipped.append(f"{name} (too large)")
+                continue
+            try:
+                code = zf.read(info).decode("utf-8")
+                compile(code, name, "exec")
+            except (UnicodeDecodeError, SyntaxError, ValueError) as e:
+                skipped.append(f"{name} ({e.__class__.__name__})")
+                continue
+            if name in files:
+                skipped.append(f"{name} (duplicate in zip)")
+                continue
+            files[name] = code
+    return files, skipped
+
+
 def import_plugin_file(src_path: str) -> tuple[bool, str]:
     """
-    Copies a .py file from src_path into the custom plugins folder and reloads plugins.
-    Returns (success: bool, message: str).
+    Copies a .py plugin, or every .py plugin inside a .zip, into the custom
+    plugins folder and reloads plugins. Returns (success: bool, message: str).
     """
     src = Path(src_path)
-    if not src.is_file() or src.suffix.lower() != ".py":
-        return False, "File must be a valid .py Python script."
+    suffix = src.suffix.lower()
+    if not src.is_file() or suffix not in (".py", ".zip"):
+        return False, "Choose a .py plugin or a .zip of plugins."
 
     target_dir = get_custom_plugins_dir()
-    target_path = target_dir / src.name
-
+    skipped = []
     try:
-        shutil.copy2(src, target_path)
-        load_all_custom_scrapers(force_reload=True)
-        return True, f"Successfully imported '{src.name}'"
+        if suffix == ".zip":
+            files, skipped = _read_plugins_from_zip(src)
+            if not files:
+                detail = f": {', '.join(skipped)}" if skipped else ""
+                return False, f"No plugins found in '{src.name}'{detail}"
+        else:
+            code = src.read_text(encoding="utf-8")
+            try:
+                compile(code, src.name, "exec")
+            except SyntaxError as e:
+                return False, f"'{src.name}' is not valid Python: {e.msg} (line {e.lineno})"
+            files = {src.name: code}
+
+        _remove_renamed_duplicates(target_dir, files)
+        for filename, code in files.items():
+            tmp = target_dir / f".{filename}.tmp"
+            tmp.write_text(code, encoding="utf-8")
+            os.replace(tmp, target_dir / filename)
+        loaded = load_all_custom_scrapers(force_reload=True)
     except Exception as e:
-        logger.error(f"Failed to import plugin file {src_path}: {e}")
+        logger.error(f"Failed to import plugins from {src_path}: {e}")
         return False, str(e)
+
+    loaded_files = {getattr(s, "_filename", "") for s in loaded}
+    not_plugins = sorted(f for f in files if f not in loaded_files)
+    if suffix == ".py":
+        if not_plugins:
+            return True, f"Copied '{src.name}', but it has no Scraper class or failed to load"
+        return True, f"Imported '{src.name}'"
+    msg = f"Imported {len(files)} plugin{'s' if len(files) != 1 else ''} from '{src.name}'"
+    if not_plugins:
+        logger.warning(f"Not loaded as plugins from {src.name}: {', '.join(not_plugins)}")
+        msg += f" ({len(not_plugins)} did not load)"
+    if skipped:
+        logger.warning(f"Skipped in {src.name}: {', '.join(skipped)}")
+        msg += f" ({len(skipped)} skipped)"
+    return True, msg
+
+
+MAX_PLUGIN_DOWNLOAD_BYTES = 50 * 1024 * 1024
+_SAFE_DOWNLOAD_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _github_raw_url(url: str) -> str:
+    """github.com/<u>/<r>/blob/<ref>/<path> -> raw.githubusercontent.com/<u>/<r>/<ref>/<path>."""
+    m = re.match(r"^https?://github\.com/([^/]+)/([^/]+)/blob/(.+)$", url)
+    return f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/{m.group(3)}" if m else url
+
+
+def _download_plugin_file(url: str, dest_dir: Path, timeout: float = 30.0) -> Path:
+    """Download a .py or .zip into dest_dir and return its path, named so its type is clear."""
+    import ssl
+    import urllib.request
+    from email.message import Message
+
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) PopcornBox",
+        "Accept": "*/*",
+    })
+    try:
+        context = ssl.create_default_context()
+    except Exception:
+        context = None
+    with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
+        data = resp.read(MAX_PLUGIN_DOWNLOAD_BYTES + 1)
+        final_url = resp.geturl() or url
+        disposition = resp.headers.get("Content-Disposition") or ""
+    if len(data) > MAX_PLUGIN_DOWNLOAD_BYTES:
+        raise ValueError(f"Download is larger than {MAX_PLUGIN_DOWNLOAD_BYTES // (1024 * 1024)} MB")
+    if not data:
+        raise ValueError("Download is empty")
+
+    name = ""
+    if disposition:
+        msg = Message()
+        msg["Content-Disposition"] = disposition
+        name = msg.get_filename() or ""
+    if not name:
+        name = urllib.parse.unquote(urllib.parse.urlparse(final_url).path.rsplit("/", 1)[-1])
+    name = _SAFE_DOWNLOAD_NAME_RE.sub("_", os.path.basename(name)).strip("._") or "plugin"
+
+    stem, ext = os.path.splitext(name)
+    if data[:4] == b"PK\x03\x04":
+        name = (stem if ext.lower() == ".zip" else name) + ".zip"
+    elif ext.lower() != ".py":
+        # Not a zip: accept it only as a Python plugin, never as an HTML page.
+        try:
+            compile(data.decode("utf-8"), name, "exec")
+        except (UnicodeDecodeError, SyntaxError, ValueError):
+            raise ValueError("The URL did not return a .zip or a Python plugin")
+        name = name + ".py"
+
+    path = dest_dir / name
+    path.write_bytes(data)
+    return path
+
+
+def import_plugin_url(raw_url: str) -> tuple[bool, str]:
+    """
+    Install plugins from a link to a .py file or a .zip of plugins: https://,
+    http:// or file://. GitHub "blob" page links are fetched as raw files.
+    This is a one-time import; nothing is tracked or updated afterwards.
+    Returns (success: bool, message: str).
+    """
+    import tempfile
+    import urllib.request
+
+    url = str(raw_url or "").strip()
+    if not url:
+        return False, "Enter a URL to a .py plugin or a .zip of plugins."
+    if url.startswith("/") or url.startswith("~"):
+        url = "file://" + os.path.expanduser(url)
+    scheme = urllib.parse.urlparse(url).scheme.lower()
+
+    if scheme == "file":
+        path = Path(urllib.request.url2pathname(urllib.parse.urlparse(url).path))
+        if not path.is_file():
+            return False, f"File not found: {path}"
+        return import_plugin_file(str(path))
+    if scheme not in ("http", "https"):
+        return False, "Use an https://, http:// or file:// URL."
+
+    url = _github_raw_url(url)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="popcornbox-plugin-download-"))
+    try:
+        try:
+            downloaded = _download_plugin_file(url, tmp_dir)
+        except Exception as e:
+            logger.error(f"Failed to download plugins from {url}: {e}")
+            return False, f"Download failed: {e}"
+        return import_plugin_file(str(downloaded))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def delete_plugin_file(filename_or_id: str) -> tuple[bool, str]:
