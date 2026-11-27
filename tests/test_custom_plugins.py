@@ -401,3 +401,36 @@ sys.exit(99)
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCustomPluginLoaderThread(unittest.TestCase):
+    def test_reloads_run_on_one_background_thread_and_coalesce(self):
+        import threading
+        import time
+
+        seen = []
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_load(force_reload=False):
+            seen.append((threading.current_thread().name, force_reload))
+            started.set()
+            release.wait(5)
+            return ["scraper"]
+
+        callbacks = []
+        with unittest.mock.patch.object(custom_plugins, "load_all_custom_scrapers", side_effect=fake_load):
+            custom_plugins.reload_custom_scrapers_async(force=False, callback=lambda s: callbacks.append(("a", s)))
+            self.assertTrue(started.wait(5))
+            # Two requests while the first pass runs: merged into one forced pass.
+            custom_plugins.reload_custom_scrapers_async(force=True, callback=lambda s: callbacks.append(("b", s)))
+            custom_plugins.reload_custom_scrapers_async(force=False, callback=lambda s: callbacks.append(("c", s)))
+            release.set()
+            deadline = time.time() + 5
+            while custom_plugins._LOADER_THREAD is not None and time.time() < deadline:
+                time.sleep(0.01)
+
+        self.assertIsNone(custom_plugins._LOADER_THREAD)
+        self.assertEqual(seen, [("CustomPluginsLoader", False), ("CustomPluginsLoader", True)])
+        self.assertEqual(sorted(c[0] for c in callbacks), ["a", "b", "c"])
+        self.assertFalse(custom_plugins._PRELOAD_INFLIGHT)

@@ -265,5 +265,182 @@ en-us.[CC].vtt
             self.assertIn("TYPE=AUDIO", body)
         hls_proxy.close_session("test_master_proxy")
 
+
+# SPS payloads (after the NAL header byte) captured from a real provider whose
+# master playlist labels a 640x360 decoy as 1920x1080.
+SPS_1080 = bytes.fromhex("0028acca501e0089f9701100000303e90000bb80e440001312d00002faf0a4c30078c18cb0")
+SPS_360 = bytes.fromhex("001eacd940a02ff97016a02020280000030008000003019078b16cb0")
+SPS_720 = bytes.fromhex("001facca5014016ec04400000fa40002ee038980006acfc0003567e930c01e30632c")
+
+
+def _make_ts(sps: bytes, prefix: bytes = b"") -> bytes:
+    """Build two MPEG-TS packets whose video PES carries the given H.264 SPS."""
+    pes = b"\x00\x00\x01\xe0\x00\x00\x80\x80\x05\x21\x00\x01\x00\x01"
+    es = b"\x00\x00\x00\x01\x09\xf0" + b"\x00\x00\x00\x01\x67" + sps + b"\x00\x00\x00\x01\x68\xeb\xe3\xcb"
+    payload = (pes + es).ljust(184, b"\xff")
+    first = b"\x47\x41\x00\x10" + payload
+    second = b"\x47\x01\x00\x11" + b"\xff" * 184
+    return prefix + first + second
+
+
+DECOY_MASTER = """#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",LANGUAGE="eng",NAME="English",DEFAULT=YES,URI="track_english.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,AUDIO="aac",RESOLUTION=1920x1080
+tiles.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO="aac",DEFAULT=YES,RESOLUTION=1280x720
+video_720p.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO="aac",RESOLUTION=854x480
+video_480p.m3u8
+"""
+
+
+class TestHlsVariantCorrection(unittest.TestCase):
+    def test_sps_height(self):
+        self.assertEqual(hls_proxy._h264_sps_height(SPS_1080), 1080)
+        self.assertEqual(hls_proxy._h264_sps_height(SPS_360), 360)
+        self.assertEqual(hls_proxy._h264_sps_height(SPS_720), 720)
+
+    def test_mpegts_video_height(self):
+        self.assertEqual(hls_proxy._mpegts_video_height(_make_ts(SPS_1080)), 1080)
+        # Disguised segment with a fake PNG header in front of the TS packets
+        self.assertEqual(hls_proxy._mpegts_video_height(_make_ts(SPS_360, b"\x89PNG\r\n\x1a\n" + b"\x00" * 40)), 360)
+        self.assertEqual(hls_proxy._mpegts_video_height(b"not a transport stream" * 20), 0)
+
+    def test_rewrite_reranks_decoy(self):
+        variants = hls_proxy._parse_master_variants(DECOY_MASTER)
+        text = hls_proxy._rewrite_variant_attributes(DECOY_MASTER, variants, [360, 1080, 720])
+        ranked = hls_proxy._parse_master_variants(text)
+        best = max(ranked, key=lambda v: v["bandwidth"])
+        self.assertEqual(best["uri"], "video_720p.m3u8")
+        self.assertEqual((best["width"], best["height"]), (1920, 1080))
+        by_uri = {v["uri"]: v for v in ranked}
+        self.assertEqual(by_uri["tiles.m3u8"]["bandwidth"], 800000)
+        self.assertEqual((by_uri["tiles.m3u8"]["width"], by_uri["tiles.m3u8"]["height"]), (640, 360))
+
+    def test_rewrite_keeps_correct_master(self):
+        variants = hls_proxy._parse_master_variants(DECOY_MASTER)
+        self.assertEqual(hls_proxy._rewrite_variant_attributes(DECOY_MASTER, variants, [1080, 720, 480]), DECOY_MASTER)
+
+    def _fake_cdn(self, segments):
+        from unittest.mock import MagicMock
+
+        def urlopen(req, timeout=None):
+            url = req.full_url if hasattr(req, "full_url") else req
+            name = url.rsplit("/", 1)[-1].split("?", 1)[0]
+            if name == "master.m3u8":
+                body = DECOY_MASTER.encode()
+            elif name.endswith(".m3u8") and name[:-5] in segments:
+                body = f"#EXTM3U\n#EXTINF:6.0,\n{name[:-5]}/00000.png\n#EXT-X-ENDLIST\n".encode()
+            elif name == "00000.png":
+                body = segments[url.rsplit("/", 2)[-2]]
+            else:
+                raise urllib.error.HTTPError(url, 404, "not found", {}, None)
+            resp = MagicMock()
+            resp.read.side_effect = io.BytesIO(body).read
+            resp.__enter__.return_value = resp
+            resp.__exit__.return_value = False
+            return resp
+
+        return urlopen
+
+    def test_fetch_and_parse_corrects_decoy_variant(self):
+        from unittest.mock import patch
+        segments = {"tiles": _make_ts(SPS_360), "video_720p": _make_ts(SPS_1080), "video_480p": _make_ts(SPS_720)}
+        with patch("urllib.request.urlopen", side_effect=self._fake_cdn(segments)):
+            session = hls_proxy.HlsSession("decoy", "https://cdn.example.com/media/master.m3u8?api_key=k")
+            session.fetch_and_parse()
+        self.assertTrue(session.is_master_proxy)
+        self.assertTrue(session.variants_corrected)
+        best = max(hls_proxy._parse_master_variants(session.master_sanitized_text), key=lambda v: v["bandwidth"])
+        self.assertEqual(best["uri"], "https://cdn.example.com/media/video_720p.m3u8?api_key=k")
+        hls_proxy._sessions["decoy"] = session
+        self.assertTrue(hls_proxy.session_has_corrected_variants("decoy"))
+        hls_proxy.close_session("decoy")
+
+    def test_fetch_and_parse_passes_through_when_labels_are_right(self):
+        from unittest.mock import patch
+        segments = {"tiles": _make_ts(SPS_1080), "video_720p": _make_ts(SPS_720), "video_480p": _make_ts(SPS_360)}
+        with patch("urllib.request.urlopen", side_effect=self._fake_cdn(segments)):
+            session = hls_proxy.HlsSession("honest", "https://cdn.example.com/media/master.m3u8")
+            session.fetch_and_parse()
+        self.assertFalse(session.is_master_proxy)
+        self.assertFalse(session.variants_corrected)
+
+    def test_split_variant_pin(self):
+        url = "https://cdn.example.com/media/master.m3u8?api_key=k"
+        self.assertEqual(hls_proxy.split_variant_pin(url), (url, None))
+        self.assertEqual(hls_proxy.split_variant_pin(url + "#pb-variant=video_720p.m3u8"), (url, "video_720p.m3u8"))
+        # Unrelated fragments are left alone
+        self.assertEqual(hls_proxy.split_variant_pin(url + "#t=10"), (url + "#t=10", None))
+
+    def test_keep_only_variant(self):
+        text = hls_proxy._keep_only_variant(DECOY_MASTER, "video_720p.m3u8")
+        variants = hls_proxy._parse_master_variants(text)
+        self.assertEqual([v["uri"] for v in variants], ["video_720p.m3u8"])
+        self.assertIn("TYPE=AUDIO", text)
+        self.assertIsNone(hls_proxy._keep_only_variant(DECOY_MASTER, "missing.m3u8"))
+
+    def test_fetch_and_parse_with_pin_serves_single_variant(self):
+        from unittest.mock import patch
+        segments = {"tiles": _make_ts(SPS_360), "video_720p": _make_ts(SPS_1080), "video_480p": _make_ts(SPS_720)}
+        with patch("urllib.request.urlopen", side_effect=self._fake_cdn(segments)):
+            session = hls_proxy.HlsSession(
+                "pinned", "https://cdn.example.com/media/master.m3u8?api_key=k#pb-variant=video_480p.m3u8"
+            )
+            session.fetch_and_parse()
+        self.assertTrue(session.is_master_proxy)
+        self.assertTrue(session.variant_pinned)
+        self.assertEqual(session.url, "https://cdn.example.com/media/master.m3u8?api_key=k")
+        uris = [v["uri"] for v in hls_proxy._parse_master_variants(session.master_sanitized_text)]
+        self.assertEqual(uris, ["https://cdn.example.com/media/video_480p.m3u8?api_key=k"])
+        hls_proxy._sessions["pinned"] = session
+        self.assertTrue(hls_proxy.session_has_corrected_variants("pinned"))
+        hls_proxy.close_session("pinned")
+
+    def test_disguised_multi_audio_master_routes_every_playlist(self):
+        import http.client
+        from unittest.mock import patch
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 62
+        segments = {
+            "tiles": _make_ts(SPS_1080, png), "video_720p": _make_ts(SPS_720, png),
+            "video_480p": _make_ts(SPS_360, png), "track_english": _make_ts(SPS_360, png),
+        }
+        with patch("urllib.request.urlopen", side_effect=self._fake_cdn(segments)):
+            session = hls_proxy.HlsSession("routed", "https://cdn.example.com/media/master.m3u8")
+            session.fetch_and_parse()
+            self.assertTrue(session.is_master_proxy)
+            self.assertEqual(session.default_audio_language, "eng")
+            # 3 variants + 1 audio rendition, all pointing at the local proxy
+            self.assertEqual(len(session.routed_media), 4)
+            self.assertNotIn("cdn.example.com", session.master_sanitized_text)
+            self.assertIn("/hls/routed/media/0.m3u8", session.master_sanitized_text)
+            hls_proxy._sessions["routed"] = session
+            self.assertTrue(hls_proxy.session_has_corrected_variants("routed"))
+            self.assertEqual(hls_proxy.session_default_audio_language("routed"), "eng")
+
+            port = hls_proxy.start_proxy_server()
+            audio_index = next(i for i, u in session.routed_media.items() if "track_english" in u)
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", f"/hls/routed/media/{audio_index}.m3u8")
+            body = conn.getresponse().read().decode()
+            self.assertIn(f"/hls/routed-m{audio_index}/seg/0.ts", body)
+            conn.request("GET", f"/hls/routed-m{audio_index}/seg/0.ts")
+            seg = conn.getresponse().read()
+            self.assertEqual(seg[:1], b"\x47")  # fake PNG header stripped
+            conn.close()
+
+        hls_proxy.close_session("routed")
+        self.assertNotIn(f"routed-m{audio_index}", hls_proxy._sessions)
+
+    def test_probe_failure_leaves_master_untouched(self):
+        from unittest.mock import patch
+        segments = {"tiles": _make_ts(SPS_360), "video_720p": b"garbage" * 50, "video_480p": _make_ts(SPS_720)}
+        with patch("urllib.request.urlopen", side_effect=self._fake_cdn(segments)):
+            session = hls_proxy.HlsSession("unknown", "https://cdn.example.com/media/master.m3u8")
+            session.fetch_and_parse()
+        self.assertFalse(session.variants_corrected)
+
+
 if __name__ == "__main__":
     unittest.main()

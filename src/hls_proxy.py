@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from gi.repository import GLib
 
@@ -111,11 +112,229 @@ def _resolve_relative_url(base_url: str, relative_url: str) -> str:
     return _sanitize_url(full_url)
 
 
+_H264_HIGH_PROFILES = {100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135}
+_VARIANT_PROBE_BYTES = 256 * 1024
+_VARIANT_PROBE_TIMEOUT = 5.0
+_VARIANT_PROBE_MAX = 6
+
+
+class _BitReader:
+    def __init__(self, data: bytes):
+        self.data = data
+        self.pos = 0
+
+    def u(self, n: int) -> int:
+        value = 0
+        for _ in range(n):
+            byte = self.data[self.pos >> 3]  # IndexError on truncated data is handled by caller
+            value = (value << 1) | ((byte >> (7 - (self.pos & 7))) & 1)
+            self.pos += 1
+        return value
+
+    def ue(self) -> int:
+        zeros = 0
+        while self.u(1) == 0:
+            zeros += 1
+            if zeros > 31:
+                raise ValueError("invalid Exp-Golomb code")
+        return (1 << zeros) - 1 + self.u(zeros)
+
+    def se(self) -> int:
+        k = self.ue()
+        return (k + 1) // 2 if k & 1 else -(k // 2)
+
+
+def _h264_sps_height(sps: bytes) -> int:
+    """Return the cropped frame height from an H.264 SPS NAL payload (after the NAL header byte)."""
+    rbsp = re.sub(b"\x00\x00\x03", b"\x00\x00", bytes(sps))
+    r = _BitReader(rbsp)
+    profile_idc = r.u(8)
+    r.u(16)  # constraint flags + level_idc
+    r.ue()  # seq_parameter_set_id
+    chroma_format_idc = 1
+    if profile_idc in _H264_HIGH_PROFILES:
+        chroma_format_idc = r.ue()
+        if chroma_format_idc == 3:
+            r.u(1)
+        r.ue()
+        r.ue()
+        r.u(1)
+        if r.u(1):  # seq_scaling_matrix_present_flag
+            for i in range(8 if chroma_format_idc != 3 else 12):
+                if r.u(1):
+                    last, nxt = 8, 8
+                    for _ in range(16 if i < 6 else 64):
+                        if nxt != 0:
+                            nxt = (last + r.se() + 256) % 256
+                        last = nxt if nxt != 0 else last
+    r.ue()  # log2_max_frame_num_minus4
+    poc_type = r.ue()
+    if poc_type == 0:
+        r.ue()
+    elif poc_type == 1:
+        r.u(1)
+        r.se()
+        r.se()
+        for _ in range(r.ue()):
+            r.se()
+    r.ue()  # max_num_ref_frames
+    r.u(1)
+    r.ue()  # pic_width_in_mbs_minus1
+    height_map_units = r.ue() + 1
+    frame_mbs_only = r.u(1)
+    if not frame_mbs_only:
+        r.u(1)
+    r.u(1)
+    height = (2 - frame_mbs_only) * height_map_units * 16
+    if r.u(1):  # frame_cropping_flag
+        r.ue()
+        r.ue()
+        crop_top = r.ue()
+        crop_bottom = r.ue()
+        unit_y = (2 - frame_mbs_only) * (2 if chroma_format_idc == 1 else 1)
+        height -= (crop_top + crop_bottom) * unit_y
+    return height
+
+
+def _mpegts_video_height(data: bytes) -> int:
+    """Return the H.264 frame height found in the first SPS of an MPEG-TS chunk, or 0."""
+    offset = _find_mpegts_sync_offset(data)
+    if len(data) < offset + 188 or data[offset] != 0x47:
+        return 0
+    streams = {}
+    for pos in range(offset, len(data) - 187, 188):
+        if data[pos] != 0x47:
+            break
+        pid = ((data[pos + 1] & 0x1F) << 8) | data[pos + 2]
+        afc = (data[pos + 3] >> 4) & 3
+        start = pos + 4
+        if afc & 2:
+            start += 1 + data[pos + 4]
+        if afc & 1 and start < pos + 188:
+            streams.setdefault(pid, bytearray()).extend(data[start:pos + 188])
+    for payload in streams.values():
+        idx = payload.find(b"\x00\x00\x01")
+        while idx != -1 and idx + 4 < len(payload):
+            if payload[idx + 3] & 0x1F == 7:
+                end = payload.find(b"\x00\x00\x01", idx + 4)
+                nal = payload[idx + 4:end if end != -1 else len(payload)]
+                try:
+                    height = _h264_sps_height(nal)
+                except (IndexError, ValueError):
+                    height = 0
+                if 64 <= height <= 4320:
+                    return height
+            idx = payload.find(b"\x00\x00\x01", idx + 3)
+    return 0
+
+
+def _parse_master_variants(master_text: str) -> list[dict]:
+    """Return the #EXT-X-STREAM-INF entries of a master playlist with their line indices."""
+    lines = master_text.splitlines()
+    variants = []
+    for i, line in enumerate(lines):
+        if not line.startswith("#EXT-X-STREAM-INF:"):
+            continue
+        j = i + 1
+        while j < len(lines) and (not lines[j].strip() or lines[j].startswith("#")):
+            j += 1
+        if j >= len(lines):
+            continue
+        bw = re.search(r"(?<![-A-Z])BANDWIDTH=(\d+)", line)
+        res = re.search(r"RESOLUTION=(\d+)x(\d+)", line)
+        variants.append({
+            "inf_index": i,
+            "uri": lines[j].strip(),
+            "bandwidth": int(bw.group(1)) if bw else 0,
+            "width": int(res.group(1)) if res else 0,
+            "height": int(res.group(2)) if res else 0,
+        })
+    return variants
+
+
+def _rewrite_variant_attributes(master_text: str, variants: list[dict], actual_heights: list[int]) -> str:
+    """
+    Rewrite RESOLUTION/BANDWIDTH so the variant ranking matches the measured
+    video heights. Players pick the highest BANDWIDTH, so the advertised
+    bandwidths are redistributed in order of real height. Returns the original
+    text when the variant a player would pick is already the sharpest one, so
+    harmless mislabels lower down never force the app to reload the stream.
+    """
+    by_real = sorted(range(len(variants)), key=lambda k: actual_heights[k], reverse=True)
+    by_bw = sorted(range(len(variants)), key=lambda k: variants[k]["bandwidth"], reverse=True)
+    if actual_heights[by_bw[0]] == actual_heights[by_real[0]]:
+        return master_text
+
+    bandwidths = sorted((v["bandwidth"] for v in variants), reverse=True)
+    lines = master_text.splitlines()
+    for rank, k in enumerate(by_real):
+        v = variants[k]
+        height = actual_heights[k]
+        line = lines[v["inf_index"]]
+        if v["bandwidth"]:
+            line = re.sub(r"(?<![-A-Z])BANDWIDTH=\d+", f"BANDWIDTH={bandwidths[rank]}", line, count=1)
+        if v["height"]:
+            width = round(v["width"] * height / v["height"]) if v["width"] else round(height * 16 / 9)
+            width += width & 1
+            line = re.sub(r"RESOLUTION=\d+x\d+", f"RESOLUTION={width}x{height}", line, count=1)
+        lines[v["inf_index"]] = line
+    return "\n".join(lines)
+
+
+_VARIANT_PIN_KEY = "pb-variant"
+
+
+def split_variant_pin(url):
+    """
+    Split a quality pin off a stream URL. Providers that list each quality as
+    its own stream append `#pb-variant=<variant playlist name>` to the master
+    URL; the fragment never reaches the network. Returns (clean_url, pin|None).
+    """
+    if not isinstance(url, str) or "#" not in url:
+        return url, None
+    base, _sep, fragment = url.partition("#")
+    params = urllib.parse.parse_qs(fragment, keep_blank_values=False)
+    pin = (params.get(_VARIANT_PIN_KEY) or [None])[0]
+    if not pin:
+        return url, None
+    return base, pin
+
+
+def _keep_only_variant(master_text: str, variant_pin: str) -> str | None:
+    """Return the master with only the #EXT-X-STREAM-INF entry whose URI matches the pin."""
+    variants = _parse_master_variants(master_text)
+    if not variants:
+        return None
+    pin = variant_pin.split("?", 1)[0]
+
+    def _matches(uri):
+        path = uri.split("?", 1)[0]
+        return path == pin or path.rsplit("/", 1)[-1] == pin.rsplit("/", 1)[-1]
+
+    keep = [v for v in variants if _matches(v["uri"])]
+    if len(keep) != 1:
+        return None
+    lines = master_text.splitlines()
+    drop = set()
+    for v in variants:
+        if v is keep[0]:
+            continue
+        drop.add(v["inf_index"])
+        j = v["inf_index"] + 1
+        while j < len(lines) and (not lines[j].strip() or lines[j].startswith("#")):
+            j += 1
+        drop.add(j)
+    return "\n".join(line for i, line in enumerate(lines) if i not in drop)
+
+
 class HlsSession:
     """Represents a parsed HLS VOD playlist session."""
 
-    def __init__(self, session_id: str, url: str, headers: dict = None):
+    def __init__(self, session_id: str, url: str, headers: dict = None, variant_pin: str = None):
         self.session_id = session_id
+        url, url_pin = split_variant_pin(url)
+        self.variant_pin = variant_pin or url_pin
+        self.variant_pinned = False
         self.url = _sanitize_url(url)
         self.headers = dict(headers or {})
         self.header_lines = []
@@ -133,6 +352,11 @@ class HlsSession:
         self.master_sanitized_text = ""
         self.extracted_subtitles = []
         self.variant_url = ""
+        self.variants_corrected = False
+        # Masters whose segments carry fake image headers get every variant and
+        # rendition routed through child sessions: index -> upstream playlist URL.
+        self.routed_media = {}
+        self.default_audio_language = ""
         self.created_at = time.time()
 
     def fetch_and_parse(self, timeout: float = 15.0):
@@ -175,12 +399,35 @@ class HlsSession:
             # following only a video variant strips the audio entirely and results in silent video.
             # Direct MPV playback handles multi-rendition master playlists with separate audio natively.
             if "#EXT-X-MEDIA:" in text and re.search(r'#EXT-X-MEDIA:[^\n\r]*TYPE=AUDIO', text, re.IGNORECASE):
-                if self.extracted_subtitles:
+                # MPV picks the variant with the highest BANDWIDTH. Some providers
+                # mislabel a low-resolution decoy as the top variant, so measure
+                # the real heights and re-rank before MPV sees the master.
+                pinned = _keep_only_variant(text, self.variant_pin) if self.variant_pin else None
+                if pinned:
+                    text = pinned
+                    self.variant_pinned = True
+                else:
+                    corrected = self._correct_mislabeled_variants(text, current_url, req_headers)
+                    if corrected != text:
+                        text = corrected
+                        self.variants_corrected = True
+                default_audio = re.search(
+                    r'#EXT-X-MEDIA:(?=[^\n]*TYPE=AUDIO)(?=[^\n]*DEFAULT=YES)[^\n]*LANGUAGE="([^"]+)"', text
+                )
+                self.default_audio_language = default_audio.group(1) if default_audio else ""
+                disguised = self._master_segments_disguised(text, current_url, req_headers)
+                if self.extracted_subtitles or self.variants_corrected or self.variant_pinned or disguised:
                     self.master_sanitized_text = self._strip_subtitles_from_master(text, current_url)
+                    if disguised:
+                        self.master_sanitized_text = self._route_master_media(self.master_sanitized_text)
                     self.is_master_proxy = True
                     self.is_fmp4 = False
                     self.is_ready = True
-                    logger.info(f"[HLSProxy] Master playlist has separate audio and subtitles; serving sanitized master without subtitles: {current_url}")
+                    logger.info(
+                        f"[HLSProxy] Serving sanitized master (subtitles={len(self.extracted_subtitles)}, "
+                        f"variants_corrected={self.variants_corrected}, pinned={self.variant_pin if self.variant_pinned else None}, "
+                        f"routed_media={len(self.routed_media)}): {current_url}"
+                    )
                     return self
                 else:
                     logger.info(f"[HLSProxy] Master playlist has separate audio tracks (#EXT-X-MEDIA:TYPE=AUDIO), passing through for native MPV playback: {current_url}")
@@ -188,7 +435,14 @@ class HlsSession:
                     self.is_ready = True
                     return self
 
-            variant_url = self._extract_best_variant_url(text, current_url)
+            variant_url = ""
+            if self.variant_pin:
+                pinned = _keep_only_variant(text, self.variant_pin)
+                if pinned:
+                    variant_url = self._extract_best_variant_url(pinned, current_url)
+                    self.variant_pinned = bool(variant_url)
+            if not variant_url:
+                variant_url = self._extract_best_variant_url(text, current_url)
             if variant_url:
                 logger.info(f"[HLSProxy] Master playlist detected, following variant: {variant_url}")
                 current_url = variant_url
@@ -305,6 +559,118 @@ class HlsSession:
                 )
         except Exception as e:
             logger.debug(f"[HLSProxy] Segment header probe skipped ({e})")
+
+    def _master_segments_disguised(self, master_text: str, base_url: str, req_headers: dict) -> bool:
+        """True when the first variant's segments hide MPEG-TS behind a fake image header."""
+        variants = _parse_master_variants(master_text)
+        if not variants:
+            return False
+        try:
+            variant_url = _resolve_relative_url(base_url, variants[0]["uri"])
+            req = urllib.request.Request(variant_url, headers=req_headers)
+            with urllib.request.urlopen(req, timeout=_VARIANT_PROBE_TIMEOUT) as resp:
+                playlist = _read_playlist_text(resp)
+            if "#EXT-X-MAP" in playlist:
+                return False
+            first_seg = next((l.strip() for l in playlist.splitlines() if l.strip() and not l.startswith("#")), "")
+            if not first_seg:
+                return False
+            probe_headers = dict(req_headers)
+            probe_headers["Range"] = "bytes=0-1023"
+            req = urllib.request.Request(_resolve_relative_url(variant_url, first_seg), headers=probe_headers)
+            with urllib.request.urlopen(req, timeout=_VARIANT_PROBE_TIMEOUT) as resp:
+                sample = resp.read(1024)
+            return _find_mpegts_sync_offset(sample) > 0
+        except Exception as e:
+            logger.debug(f"[HLSProxy] Disguised-segment probe of master skipped ({e})")
+            return False
+
+    def _route_master_media(self, master_text: str) -> str:
+        """
+        Point every variant and rendition of an (absolute-URI) master at local
+        /media/<n>.m3u8 endpoints. Each is served by a child session whose
+        segments go through the header-stripping segment proxy, so MPV can play
+        multi-audio masters whose segments are disguised as images.
+        """
+        port = start_proxy_port()
+        out = []
+        expect_variant_uri = False
+
+        def route(url):
+            index = len(self.routed_media)
+            self.routed_media[index] = url
+            return f"http://127.0.0.1:{port}/hls/{self.session_id}/media/{index}.m3u8"
+
+        for line in master_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#EXT-X-MEDIA:"):
+                m = re.search(r'URI="([^"]+)"', stripped)
+                if m and m.group(1).startswith(("http://", "https://")):
+                    line = stripped.replace(f'URI="{m.group(1)}"', f'URI="{route(m.group(1))}"')
+            elif stripped.startswith("#EXT-X-STREAM-INF:"):
+                expect_variant_uri = True
+            elif expect_variant_uri and stripped and not stripped.startswith("#"):
+                if stripped.startswith(("http://", "https://")):
+                    line = route(stripped)
+                expect_variant_uri = False
+            out.append(line)
+        return "\n".join(out)
+
+    def media_child(self, index: int):
+        """Return (creating on first use) the child session for a routed media playlist."""
+        child_id = f"{self.session_id}-m{index}"
+        child = _sessions.get(child_id)
+        if child is None and index in self.routed_media:
+            child = HlsSession(child_id, self.routed_media[index], headers=self.headers).fetch_and_parse(timeout=10.0)
+            _sessions[child_id] = child
+        return child
+
+    def _probe_variant_height(self, variant_url: str, req_headers: dict) -> int:
+        """Return the real video height of a variant's first MPEG-TS segment, or 0 if unknown."""
+        req = urllib.request.Request(variant_url, headers=req_headers)
+        with urllib.request.urlopen(req, timeout=_VARIANT_PROBE_TIMEOUT) as resp:
+            playlist = _read_playlist_text(resp)
+        if "#EXT-X-MAP" in playlist or re.search(r"#EXT-X-KEY:(?![^\n]*METHOD=NONE)", playlist):
+            return 0  # fMP4 or encrypted segments cannot be read as plain TS
+        first_seg = next(
+            (l.strip() for l in playlist.splitlines() if l.strip() and not l.startswith("#")), ""
+        )
+        if not first_seg:
+            return 0
+        seg_url = _resolve_relative_url(variant_url, first_seg)
+        seg_headers = dict(req_headers)
+        seg_headers["Range"] = f"bytes=0-{_VARIANT_PROBE_BYTES - 1}"
+        req = urllib.request.Request(seg_url, headers=seg_headers)
+        with urllib.request.urlopen(req, timeout=_VARIANT_PROBE_TIMEOUT) as resp:
+            data = resp.read(_VARIANT_PROBE_BYTES)
+        return _mpegts_video_height(data)
+
+    def _correct_mislabeled_variants(self, master_text: str, base_url: str, req_headers: dict) -> str:
+        variants = _parse_master_variants(master_text)
+        if not 2 <= len(variants) <= _VARIANT_PROBE_MAX:
+            return master_text
+        urls = [_resolve_relative_url(base_url, v["uri"]) for v in variants]
+        heights = [0] * len(variants)
+        pool = ThreadPoolExecutor(max_workers=len(variants), thread_name_prefix="HlsVariantProbe")
+        try:
+            futures = [pool.submit(self._probe_variant_height, u, req_headers) for u in urls]
+            deadline = time.monotonic() + _VARIANT_PROBE_TIMEOUT * 2
+            for k, fut in enumerate(futures):
+                try:
+                    heights[k] = fut.result(timeout=max(0.0, deadline - time.monotonic()))
+                except Exception as e:
+                    logger.debug(f"[HLSProxy] Variant probe failed for {urls[k][:100]}: {e}")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        if not all(heights):
+            return master_text
+        corrected = _rewrite_variant_attributes(master_text, variants, heights)
+        if corrected != master_text:
+            summary = ", ".join(
+                f"{v['uri'].rsplit('/', 1)[-1][:40]} {v['height'] or '?'}p->{h}p" for v, h in zip(variants, heights)
+            )
+            logger.info(f"[HLSProxy] Corrected mislabeled HLS variants: {summary}")
+        return corrected
 
     def _extract_best_variant_url(self, master_text: str, base_url: str) -> str:
         lines = master_text.splitlines()
@@ -551,6 +917,25 @@ class _HlsProxyHandler(BaseHTTPRequestHandler):
                     self._serve_stripped_segment(session, seg_idx)
                     return
 
+                if len(parts) >= 4 and parts[2] == "media" and session.routed_media:
+                    try:
+                        child = session.media_child(int(parts[3].split(".", 1)[0]))
+                    except Exception as e:
+                        logger.warning(f"[HLSProxy] Routed media playlist failed: {e}")
+                        child = None
+                    if child is None or not child.segments:
+                        self.send_response(502 if child is None else 404)
+                        self.end_headers()
+                        return
+                    body, _actual = child.slice_manifest(0.0, local_port=_proxy_port)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
                 if session.is_master_proxy:
                     body = session.master_sanitized_text.encode("utf-8")
                     self.send_response(200)
@@ -638,6 +1023,9 @@ def close_session(session_id: str):
             del _sessions[session_id]
         except KeyError:
             pass
+    # Child sessions of a routed master (see HlsSession.media_child)
+    for child_id in [k for k in list(_sessions) if k.startswith(f"{session_id}-m")]:
+        _sessions.pop(child_id, None)
 
 
 def is_segment_proxy_session(session_id: str | None) -> bool:
@@ -648,7 +1036,26 @@ def is_segment_proxy_session(session_id: str | None) -> bool:
     return bool(session and session.is_segment_proxy)
 
 
-def prepare_hls_stream_async(url: str, headers: dict = None, seek_target: float = 0.0, callback = None):
+def session_has_corrected_variants(session_id: str | None) -> bool:
+    """Return True if the session's master differs in its variants from the original
+    (mislabeled variants re-ranked, or a single quality pinned)."""
+    session = _sessions.get(session_id) if session_id else None
+    return bool(session and (session.variants_corrected or session.variant_pinned or session.routed_media))
+
+
+def session_default_audio_language(session_id: str | None) -> str:
+    """
+    Language of the master's DEFAULT audio rendition for routed masters. Their
+    video segments often carry an extra, untagged audio track that MPV would
+    otherwise prefer over the declared renditions.
+    """
+    session = _sessions.get(session_id) if session_id else None
+    if session and session.routed_media:
+        return session.default_audio_language
+    return ""
+
+
+def prepare_hls_stream_async(url: str, headers: dict = None, seek_target: float = 0.0, callback = None, variant_pin: str = None):
     """
     Asynchronously prepare an HLS stream.
     If the stream is fragmented MP4 (fMP4 with #EXT-X-MAP), parses the manifest
@@ -668,7 +1075,7 @@ def prepare_hls_stream_async(url: str, headers: dict = None, seek_target: float 
                 return
 
             session_id = hashlib.md5(f"{url}_{time.time()}".encode()).hexdigest()[:12]
-            session = HlsSession(session_id, url, headers=headers).fetch_and_parse(timeout=10.0)
+            session = HlsSession(session_id, url, headers=headers, variant_pin=variant_pin).fetch_and_parse(timeout=10.0)
             if session.is_master_proxy:
                 _sessions[session_id] = session
                 master_url = get_master_proxy_url(session_id)

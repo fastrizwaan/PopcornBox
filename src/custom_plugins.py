@@ -177,24 +177,80 @@ def _is_scrapers_cache_ready(cur_base_dir: str) -> bool:
     return True
 
 
+_LOADER_STATE_LOCK = threading.Lock()
+_LOADER_THREAD = None
+_LOADER_PENDING_FORCE = None  # None: no request queued; False: load; True: forced reload
+_LOADER_CALLBACKS = []
+
+
+def _loader_worker():
+    """Serve queued (re)load requests one at a time on the single loader thread."""
+    global _LOADER_THREAD, _LOADER_PENDING_FORCE, _PRELOAD_INFLIGHT
+    while True:
+        with _LOADER_STATE_LOCK:
+            force = _LOADER_PENDING_FORCE
+            callbacks = list(_LOADER_CALLBACKS)
+            _LOADER_PENDING_FORCE = None
+            _LOADER_CALLBACKS.clear()
+            if force is None:
+                _LOADER_THREAD = None
+                _PRELOAD_INFLIGHT = False
+                return
+        scrapers = []
+        try:
+            scrapers = load_all_custom_scrapers(force_reload=force)
+            logger.info(f"Custom plugins {'reloaded' if force else 'loaded'}: {len(scrapers)} scraper(s)")
+        except Exception as e:
+            logger.warning(f"Background custom plugin {'reload' if force else 'load'} failed: {e}")
+        for callback in callbacks:
+            try:
+                callback(scrapers)
+            except Exception as e:
+                logger.debug(f"Custom plugin reload callback failed: {e}")
+
+
+def reload_custom_scrapers_async(force: bool = True, callback=None):
+    """
+    (Re)load custom plugins on one dedicated background thread, never the
+    caller's. Only one loader thread exists at a time: requests made while it
+    runs are merged into a single follow-up pass (forced if any request was),
+    and every callback runs on the loader thread after that pass with the
+    loaded scrapers, so GTK callers must hop back with GLib.idle_add.
+    """
+    global _LOADER_THREAD, _LOADER_PENDING_FORCE, _PRELOAD_INFLIGHT
+    with _LOADER_STATE_LOCK:
+        _LOADER_PENDING_FORCE = bool(force) or bool(_LOADER_PENDING_FORCE)
+        if callback is not None:
+            _LOADER_CALLBACKS.append(callback)
+        _PRELOAD_INFLIGHT = True
+        if _LOADER_THREAD is not None:
+            return
+        _LOADER_THREAD = threading.Thread(target=_loader_worker, daemon=True, name="CustomPluginsLoader")
+        _LOADER_THREAD.start()
+
+
 def preload_custom_scrapers_async():
-    """Preload custom scrapers on a background daemon thread without blocking the UI."""
-    global _PRELOAD_INFLIGHT
+    """Preload custom scrapers on the background loader thread without blocking the UI."""
     cur_base_dir = str(getattr(database, "BASE_DIR", "") or "")
     if _is_scrapers_cache_ready(cur_base_dir) or _PRELOAD_INFLIGHT:
         return
-    _PRELOAD_INFLIGHT = True
+    reload_custom_scrapers_async(force=False)
 
-    def _worker():
-        global _PRELOAD_INFLIGHT
-        try:
-            load_all_custom_scrapers()
-        except Exception as e:
-            logger.debug(f"Background custom plugin preload failed: {e}")
-        finally:
-            _PRELOAD_INFLIGHT = False
 
-    threading.Thread(target=_worker, daemon=True, name="CustomPluginsPreload").start()
+def wait_for_custom_scrapers(timeout: float = 30.0) -> list:
+    """
+    Return the loaded scrapers, letting the loader thread do any loading and
+    waiting up to `timeout` for it. Background threads use this so plugin files
+    are only ever probed and imported on the single loader thread.
+    """
+    cur_base_dir = str(getattr(database, "BASE_DIR", "") or "")
+    if _is_scrapers_cache_ready(cur_base_dir):
+        return list(_LOADED_SCRAPERS.values())
+    done = threading.Event()
+    reload_custom_scrapers_async(force=False, callback=lambda _scrapers: done.set())
+    if not done.wait(timeout):
+        logger.warning(f"Timed out after {timeout}s waiting for custom plugins to load")
+    return list(_LOADED_SCRAPERS.values()) if _LOADED_BASE_DIR == cur_base_dir else []
 
 
 def _get_scrapers_for_caller() -> list:
@@ -202,10 +258,12 @@ def _get_scrapers_for_caller() -> list:
     cur_base_dir = str(getattr(database, "BASE_DIR", "") or "")
     if _is_scrapers_cache_ready(cur_base_dir):
         return list(_LOADED_SCRAPERS.values())
-    if threading.current_thread() is threading.main_thread() and not database._is_testing():
+    if database._is_testing():
+        return load_all_custom_scrapers()
+    if threading.current_thread() is threading.main_thread():
         preload_custom_scrapers_async()
         return list(_LOADED_SCRAPERS.values()) if _LOADED_BASE_DIR == cur_base_dir else []
-    return load_all_custom_scrapers()
+    return wait_for_custom_scrapers()
 
 
 def load_all_custom_scrapers(force_reload: bool = False):
@@ -214,6 +272,10 @@ def load_all_custom_scrapers(force_reload: bool = False):
     and updates the internal registry.
     """
     global _LOADED_SCRAPERS, _LOADED_MODULES, _SCRAPERS_LOADED, _LOADED_BASE_DIR, _LOADED_COUNT
+    # Serve a loaded registry without waiting on _LOAD_LOCK, so stream lookups
+    # keep using the current plugins while a background reload is probing files.
+    if not force_reload and _is_scrapers_cache_ready(str(getattr(database, "BASE_DIR", "") or "")):
+        return list(_LOADED_SCRAPERS.values())
     with _LOAD_LOCK:
         cur_base_dir = str(getattr(database, "BASE_DIR", "") or "")
         if not force_reload and _is_scrapers_cache_ready(cur_base_dir):

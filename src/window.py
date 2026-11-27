@@ -7552,6 +7552,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     # Select the best audio track based on user's priority order (e.g. en, hi -> en over hi)
                     matched_track = api.find_best_audio_track(audio_tracks)
 
+                fallback_lang = getattr(self, "_hls_fallback_audio_lang", None)
+                if not matched_track and fallback_lang:
+                    # Routed HLS master (see _on_hls_prepared): its video segments also
+                    # carry an untagged audio track, so pick the declared default rendition.
+                    matched_track = next(
+                        (t for t in audio_tracks if api.languages_match(t.get("lang"), fallback_lang)), None
+                    )
+
                 if not matched_track and audio_tracks:
                     # Absolute fallback: always ensure audio is active if audio tracks exist
                     matched_track = next((t for t in audio_tracks if t.get("default")), audio_tracks[0])
@@ -8868,6 +8876,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     if hasattr(self, "_restore_audio_and_subtitle_preferences"):
                         self._restore_audio_and_subtitle_preferences()
 
+
                     if hasattr(self, "_try_add_pending_subtitles"):
                         self._try_add_pending_subtitles()
 
@@ -10077,6 +10086,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         # Trigger background Stremio sync once on startup (deferred 3s to keep startup instantaneous)
         GLib.timeout_add(3000, lambda: (self._trigger_background_stremio_sync(), False)[1])
 
+        # Reload custom plugins from disk on the single background loader thread,
+        # so edited or newly added plugin files are picked up at every start.
+        self._trigger_custom_plugin_reload()
+
         # Refresh Nuvio plugin repositories older than 6 h, as Nuvio does.
         # Deferred well past startup, then rechecked hourly.
         GLib.timeout_add_seconds(45, lambda: (self._trigger_plugin_repository_refresh(), False)[1])
@@ -10100,6 +10113,25 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             api.check_addons_health_background(callback=on_health_checked, live=live)
         except Exception as e:
             logger.debug(f"Failed to start background addon health check: {e}")
+
+    def _trigger_custom_plugin_reload(self, show_toast=False):
+        """Reload custom plugins off the main thread, then refresh their UI."""
+        from . import custom_plugins
+
+        def apply(scrapers):
+            if hasattr(self, "_populate_custom_plugins"):
+                try:
+                    self._populate_custom_plugins()
+                except Exception as e:
+                    logger.debug(f"Failed to repopulate custom plugins after reload: {e}")
+            if show_toast:
+                self._show_toast(_("Custom plugins reloaded ({count})").format(count=len(scrapers)))
+            return False
+
+        custom_plugins.reload_custom_scrapers_async(
+            force=True,
+            callback=lambda scrapers: GLib.idle_add(apply, scrapers),
+        )
 
     def _trigger_plugin_repository_refresh(self):
         def worker():
@@ -17184,7 +17216,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 debug_log(f"bg_prepare menus thread START (gen={cur_gen})")
                 try:
                     from . import custom_plugins
-                    custom_plugins.load_all_custom_scrapers()
+                    # Loading happens on the custom plugin loader thread; wait for it.
+                    custom_plugins.wait_for_custom_scrapers()
                 except Exception:
                     pass
                 built_menus = {}
@@ -17758,6 +17791,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         )
         self._playback_trace_first_frame = False
         self._pending_local_subtitle = None
+        # A provider listing each HLS quality as its own stream marks the chosen
+        # variant with a `#pb-variant=` fragment. Strip it here so MPV and every
+        # network request see the real URL; the HLS proxy applies the pin.
+        from . import hls_proxy as _hls_pin_proxy
+        url, self._hls_variant_pin = _hls_pin_proxy.split_variant_pin(url)
         # Don't carry stale status/error toasts over to the next video. The
         # template child can be an unbound descriptor on partially constructed
         # windows, so verify the widget actually exposes dismiss_all().
@@ -18110,6 +18148,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         # Apply user preferred audio and subtitle languages to MPV
         try:
             pref_audios = api.get_user_preferred_audio_languages()
+            self._has_audio_language_preference = bool(pref_audios)
+            # Reset any per-stream fallback set for a previous file.
+            self.mpv["alang"] = ""
             if pref_audios:
                 expanded_a = api.expand_language_codes_for_mpv(pref_audios)
                 if expanded_a:
@@ -18165,6 +18206,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         )
 
         self._hls_prep_url = url if is_hls else None
+        self._hls_fallback_audio_lang = None
         self._hls_fast_start_error = False
         self._mpv_file_loaded = False
         self._tracks_restored_for_file = False
@@ -18192,7 +18234,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             # start plays the original URL immediately while the manifest is
             # probed in the background; waiting for that probe added the
             # provider's full playlist round-trip to every first frame.
-            fast_start = target_offset <= 5.0
+            # A pinned quality must not fast-start: the original master would
+            # play its default variant until the proxy master replaces it.
+            variant_pin = getattr(self, "_hls_variant_pin", None)
+            fast_start = target_offset <= 5.0 and not variant_pin
 
             def _on_hls_prepared(is_fmp4, session_id, playback_url, total_dur, actual_offset, is_blocked=False, extracted_subtitles=None):
                 playback_trace("hls prepared", f"fmp4={is_fmp4} blocked={is_blocked} fast_start={fast_start}")
@@ -18260,7 +18305,20 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             err_msg = getattr(self, "_last_stream_error", "") or _("Stream failed to load")
                             self._show_toast(_("File Error") + f": {err_msg}")
                         return
-                    need_switch = bool(self._extracted_hls_subtitles and target_url != url)
+                    # Switch off the fast-start URL when the proxy master differs
+                    # from it: subtitles moved out, or mislabeled variants re-ranked.
+                    # Routed masters (disguised segments) also carry an untagged audio
+                    # track inside the video; without a user preference, prefer the
+                    # master's declared default rendition instead.
+                    # MPV keeps the audio packed with the chosen video even when
+                    # alang matches a rendition, so the track is picked on file-loaded.
+                    fallback_lang = hls_proxy.session_default_audio_language(session_id)
+                    if fallback_lang and not getattr(self, "_has_audio_language_preference", False):
+                        self._hls_fallback_audio_lang = fallback_lang
+                    need_switch = bool(
+                        (self._extracted_hls_subtitles or hls_proxy.session_has_corrected_variants(session_id))
+                        and target_url != url
+                    )
                     if fast_start and not need_switch:
                         pass
                     else:
@@ -18294,7 +18352,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 url,
                 headers=all_headers,
                 seek_target=target_offset,
-                callback=_on_hls_prepared
+                callback=_on_hls_prepared,
+                **({"variant_pin": variant_pin} if variant_pin else {}),
             )
             self.mpv.pause = False
             self.is_inactive = False
@@ -18500,6 +18559,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     self._apply_extracted_hls_subtitles(subtitles)
                 return False
             GLib.timeout_add(200, _retry)
+            return
+
+        if getattr(self, "_mpv_file_loaded", None) is False:
+            # A loadfile is in flight (e.g. the switch from the fast-start URL
+            # to the proxy master). sub-add now would target the file being
+            # replaced and fail; the file-loaded handler applies these
+            # through _check_and_configure_subtitles instead.
             return
 
         # Check if user has disabled subtitles for this media
@@ -22745,10 +22811,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self.custom_plugin_badge_status.add_css_class("plugin-disabled")
 
     def _on_custom_plugin_refresh_clicked(self, *args):
-        from . import custom_plugins
-        custom_plugins.load_all_custom_scrapers(force_reload=True)
-        self._populate_custom_plugins()
-        self._show_toast(_("Custom plugins reloaded"))
+        self._show_toast(_("Reloading custom plugins…"))
+        self._trigger_custom_plugin_reload(show_toast=True)
 
     def _on_custom_plugin_import_clicked(self, *args):
         dialog = Gtk.FileDialog(title=_("Import Python Plugin"))
