@@ -1157,35 +1157,21 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._refresh_unique_combined_view.assert_called_once()
         self.win._refresh_discover_page.assert_not_called()
 
-    def test_title_only_toggled_refreshes_unique_when_query_active(self):
-        """When an active search query is present, toggling title only switches to 'unique' and refreshes."""
-        self.win.current_discover_search_query = "final"
-        self.win._discover_result_search_query = MagicMock(return_value="final")
-        self.win.library_stack.set_visible_child_name("discover")
-        self.win.discover_title_only_check.set_active(True)
-
-        PopcornBoxWindow._on_discover_title_only_toggled(self.win, self.win.discover_title_only_check)
-        self.assertEqual(self.win.library_stack.get_visible_child_name(), "unique")
-        self.win._refresh_unique_combined_view.assert_called_once()
-
     def test_filter_matches_when_unique_disabled(self):
         """_discover_result_matches_item and _is_unique_item with unique disabled allow matching items."""
         self.win.current_discover_search_query = "final"
         self.win._discover_result_search_query = MagicMock(return_value="final")
         self.win._is_unique_mode_active = MagicMock(return_value=False)
 
-        # Title only disabled: matches title or description
-        self.win.discover_title_only_check.set_active(False)
+        # Search is title-only; the quick filter extends to description.
+        self.win.discover_quick_filter_entry = Gtk.Entry()
+        self.win.advanced_search_box = Gtk.Box()
+        self.win._discover_quick_filter_text = lambda: PopcornBoxWindow._discover_quick_filter_text(self.win)
+        self.win._discover_quick_filter_matches = PopcornBoxWindow._discover_quick_filter_matches
         item_title_match = {"title": "Final Destination", "id": "tt01", "manifest_url": "url1"}
         item_desc_match = {"title": "Some Movie", "description": "The final battle", "id": "tt02", "manifest_url": "url1"}
         item_no_match = {"title": "Unrelated Movie", "description": "Nothing here", "id": "tt03", "manifest_url": "url1"}
 
-        self.assertTrue(PopcornBoxWindow._discover_result_matches_item(self.win, item_title_match))
-        self.assertTrue(PopcornBoxWindow._discover_result_matches_item(self.win, item_desc_match))
-        self.assertFalse(PopcornBoxWindow._discover_result_matches_item(self.win, item_no_match))
-
-        # Title only enabled: matches title only
-        self.win.discover_title_only_check.set_active(True)
         self.assertTrue(PopcornBoxWindow._discover_result_matches_item(self.win, item_title_match))
         self.assertFalse(PopcornBoxWindow._discover_result_matches_item(self.win, item_desc_match))
         self.assertFalse(PopcornBoxWindow._discover_result_matches_item(self.win, item_no_match))
@@ -1626,24 +1612,143 @@ class TestDiscoverToolbar(unittest.TestCase):
         self.win._on_discover_results_search_changed.assert_called_once()
         self.win.reload_catalog_grid.assert_not_called()
 
-    def test_discover_search_mode_toggled_off_clears_query_and_filters_locally(self):
-        """Toggling search mode off clears entry and filters locally without calling reload_catalog_grid."""
+    def test_home_search_rows_keep_each_source_separate(self):
+        """Home search lists TMDb plus one row per addon search catalog, title-only."""
+        self.win.anime_supported = False
+        catalogs = {
+            "movie": [{"manifest_url": "https://a/manifest.json", "catalog_id": "search", "addon_name": "Addon A", "catalog_name": "Search"}],
+            "series": [{"manifest_url": "https://a/manifest.json", "catalog_id": "search", "addon_name": "Addon A", "catalog_name": "Search"},
+                       {"manifest_url": "https://b/manifest.json", "catalog_id": "find", "addon_name": "Addon B", "catalog_name": "Addon B"},
+                       # Plugins are never searched from Home.
+                       {"manifest_url": "nuvio://catalog/slowsite", "catalog_id": "popular", "addon_name": "Slow Site", "catalog_name": "Search"}],
+        }
+        with patch.object(api, "get_available_search_catalogs", side_effect=lambda mt, only_working=True: catalogs.get(mt, [])):
+            rows = PopcornBoxWindow._get_home_search_catalog_list(self.win, "maid")
+
+        self.assertEqual(rows[0]["_source"], "tmdb_search")
+        self.assertEqual([(r["manifest_url"], r["media_type"]) for r in rows[1:]],
+                         [("https://a/manifest.json", "movie"), ("https://a/manifest.json", "series"),
+                          ("https://b/manifest.json", "series")])
+        self.assertTrue(all(r["query"] == "maid" and r["title_only"] for r in rows))
+        self.assertEqual(rows[3]["title"], "Addon B — Series")
+
+    def test_plugin_catalogs_searched_only_when_selected(self):
+        """A custom plugin's searchable sections are searched only when it is the selected catalog."""
+        from src import window as window_mod
+        custom_cats = [
+            {"manifest_url": "custom://catalog/site", "catalog_id": "movies", "type": "movie", "extraSupported": ["search"]},
+            {"manifest_url": "custom://catalog/site", "catalog_id": "shows", "type": "series", "extraSupported": ["search"]},
+            {"manifest_url": "custom://catalog/site", "catalog_id": "nosearch", "type": "movie", "extraSupported": ["skip"]},
+            {"manifest_url": "custom://catalog/other", "catalog_id": "movies", "type": "movie", "extraSupported": ["search"]},
+        ]
+        with patch("src.custom_plugins.get_catalogs", return_value=custom_cats):
+            self.assertEqual(window_mod._selected_plugin_search_catalogs(None, None, "movie"), [])
+            self.assertEqual(window_mod._selected_plugin_search_catalogs("https://a/manifest.json", None, "movie"), [])
+            picked = window_mod._selected_plugin_search_catalogs("custom://catalog/site", None, "movie")
+            self.assertEqual([c["catalog_id"] for c in picked], ["movies"])
+            scoped = window_mod._selected_plugin_search_catalogs(
+                "custom://catalog/site", {"catalog_id": "shows"}, "series")
+            self.assertEqual([c["catalog_id"] for c in scoped], ["shows"])
+        self.assertTrue(window_mod._is_plugin_catalog_url("nuvio://catalog/x"))
+        self.assertFalse(window_mod._is_plugin_catalog_url("https://x/manifest.json"))
+
+    def test_home_view_key_includes_query_only_on_home(self):
+        self.win.category_btn_stack = MagicMock()
+        self.win._discover_result_search_query = MagicMock(return_value="maid")
+        self.win.current_discover_search_query = "maid"
+        self.win.category_btn_stack.get_visible_child_name.return_value = "home"
+        self.assertTrue(PopcornBoxWindow._get_discover_view_key(self.win).endswith("|q:maid"))
+        self.win.category_btn_stack.get_visible_child_name.return_value = "discover"
+        self.assertNotIn("|q:", PopcornBoxWindow._get_discover_view_key(self.win))
+
+    def test_home_search_change_stays_on_home_rows(self):
+        """Typing on Home schedules a Home row refresh instead of switching to Unique."""
+        self.win.category_btn_stack = MagicMock()
+        self.win.category_btn_stack.get_visible_child_name.return_value = "home"
+        self.win.library_stack = MagicMock()
+        self.win.library_stack.get_visible_child_name.return_value = "discover"
+        self.win._discover_result_search_query = MagicMock(return_value="maid")
+        self.win._discover_search_debounce_timer = None
+        self.win._clearing_search_for_filter = False
+        self.win._refresh_discover_page = MagicMock()
+        with patch("src.window.GLib.timeout_add", side_effect=lambda ms, fn: fn() or 1):
+            PopcornBoxWindow._on_discover_search_changed(self.win, None)
+        self.win.library_stack.set_visible_child_name.assert_not_called()
+        self.win._refresh_discover_page.assert_called_once_with()
+
+    def test_discover_filter_toggled_off_clears_only_quick_filter(self):
+        """Turning the filter button off hides and clears the quick filter but keeps the search."""
         self.win.discover_search_entry = Gtk.Entry()
         self.win.discover_search_entry.set_text("maid")
-        self.win.advanced_search_box = Gtk.Box()
+        self.win.discover_quick_filter_entry = Gtk.Entry()
+        self.win.discover_quick_filter_entry.set_text("2020")
+        self.win.discover_quick_filter_entry.set_visible(True)
+        self.win._syncing_discover_filter_btn = False
+        self.win._clear_discover_quick_filter = lambda: PopcornBoxWindow._clear_discover_quick_filter(self.win)
         self.win.reload_catalog_grid = MagicMock()
-        self.win._on_discover_results_search_changed = MagicMock()
-        self.win.current_discover_search_query = "maid"
-        self.win._discover_search_debounce_timer = None
 
         btn = Gtk.ToggleButton()
         btn.set_active(False)
         PopcornBoxWindow._on_discover_search_mode_toggled(self.win, btn)
 
-        self.assertEqual(self.win.discover_search_entry.get_text(), "")
-        self.assertEqual(self.win.current_discover_search_query, "")
-        self.win._on_discover_results_search_changed.assert_called_once()
+        self.assertEqual(self.win.discover_quick_filter_entry.get_text(), "")
+        self.assertFalse(self.win.discover_quick_filter_entry.get_visible())
+        self.assertEqual(self.win.discover_search_entry.get_text(), "maid")
+        self.assertTrue(btn.get_visible())
         self.win.reload_catalog_grid.assert_not_called()
+
+    def test_discover_filter_button_swaps_with_entry(self):
+        """The filter button hides while its entry is open; the entry's filter icon closes it again."""
+        self.win.discover_quick_filter_entry = Gtk.Entry()
+        self.win._syncing_discover_filter_btn = False
+        self.win._clear_discover_quick_filter = lambda: PopcornBoxWindow._clear_discover_quick_filter(self.win)
+        btn = Gtk.ToggleButton()
+        self.win.discover_search_btn = btn
+        btn.connect("toggled", lambda b: PopcornBoxWindow._on_discover_search_mode_toggled(self.win, b))
+
+        btn.set_active(True)
+        self.assertFalse(btn.get_visible())
+        self.assertTrue(self.win.discover_quick_filter_entry.get_visible())
+
+        self.win.discover_quick_filter_entry.set_text("2020")
+        PopcornBoxWindow._on_discover_quick_filter_icon_release(
+            self.win, self.win.discover_quick_filter_entry, Gtk.EntryIconPosition.PRIMARY)
+        self.assertFalse(btn.get_active())
+        self.assertTrue(btn.get_visible())
+        self.assertFalse(self.win.discover_quick_filter_entry.get_visible())
+        self.assertEqual(self.win.discover_quick_filter_entry.get_text(), "")
+
+    def test_header_search_exit_clears_search_and_filter(self):
+        """Toggling the header search off clears both entries and hides the row."""
+        self.win.discover_search_entry = Gtk.SearchEntry()
+        self.win.discover_search_entry.set_text("maid")
+        self.win.discover_quick_filter_entry = Gtk.Entry()
+        self.win.discover_quick_filter_entry.set_text("2020")
+        self.win.advanced_search_box = Gtk.Box()
+        self.win.advanced_search_box.set_visible(True)
+        self.win.search_btn = Gtk.ToggleButton()
+        self.win.discover_search_btn = Gtk.ToggleButton()
+        self.win.discover_search_btn.set_active(True)
+        self.win.discover_options_revealer = Gtk.Revealer()
+        self.win.discover_options_revealer.set_reveal_child(True)
+        self.win._discover_search_restore = {"revealed": True}
+        self.win._discover_search_standalone = True
+        self.win._discover_search_debounce_timer = None
+        self.win._is_unique_mode_active = MagicMock(return_value=True)
+        self.win._on_discover_results_search_changed = MagicMock()
+        for name in ("_end_discover_search_query", "_set_discover_results_search_visible",
+                     "_clear_discover_search_on_filter_change", "_clear_discover_quick_filter",
+                     "_set_header_search_active"):
+            setattr(self.win, name, getattr(PopcornBoxWindow, name).__get__(self.win))
+
+        PopcornBoxWindow._exit_discover_search_mode(self.win)
+
+        self.assertEqual(self.win.discover_search_entry.get_text(), "")
+        self.assertEqual(self.win.discover_quick_filter_entry.get_text(), "")
+        self.assertFalse(self.win.advanced_search_box.get_visible())
+        self.assertFalse(self.win.discover_search_btn.get_active())
+        # The standalone (Home/Movies/...) row collapses its revealer.
+        self.assertFalse(self.win.discover_options_revealer.get_reveal_child())
 
     def test_discover_filter_popover_close_refocuses_search_entry(self):
         """A click that dismisses a filter popover is eaten by the popover grab, so closing it over the entry must restore focus."""
@@ -1737,29 +1842,39 @@ class TestDiscoverToolbar(unittest.TestCase):
         connect_mock.assert_called_once()
         self.assertEqual(connect_mock.call_args.args[0], "closed")
 
-    def test_discover_search_title_only_matching(self):
-        """When Title Only is enabled, matches title/name only and ignores genre/description."""
+    def test_discover_search_is_title_only_and_quick_filter_extends(self):
+        """The search matches titles only; the quick filter matches title, description, date and genre."""
         item = {
             "id": "tt123",
             "title": "The Dark Knight",
             "description": "Batman fights the Joker in an action packed thriller",
-            "genres": ["Action", "Crime", "Drama"]
+            "genres": ["Action", "Crime", "Drama"],
+            "releaseInfo": "2008",
         }
+        self.win.discover_quick_filter_entry = Gtk.Entry()
+        self.win.advanced_search_box = Gtk.Box()
+        self.win.advanced_search_box.set_visible(True)
+        self.win._discover_quick_filter_text = lambda: PopcornBoxWindow._discover_quick_filter_text(self.win)
+        self.win._discover_quick_filter_matches = PopcornBoxWindow._discover_quick_filter_matches
+
+        # Search: 'action' is only in genres/description, so it does not match.
         self.win._discover_result_search_query = MagicMock(return_value="action")
         self.win.current_discover_search_query = "action"
-        
-        # 1. When Title Only is OFF, matches because 'action' is in genres and description
-        self.win.discover_title_only_check = MagicMock()
-        self.win.discover_title_only_check.get_active.return_value = False
-        self.assertTrue(PopcornBoxWindow._discover_result_matches_item(self.win, item))
-
-        # 2. When Title Only is ON, does NOT match because 'action' is not in title
-        self.win.discover_title_only_check.get_active.return_value = True
         self.assertFalse(PopcornBoxWindow._discover_result_matches_item(self.win, item))
-
-        # 3. When Title Only is ON and query is 'knight', DOES match
         self.win._discover_result_search_query = MagicMock(return_value="knight")
         self.win.current_discover_search_query = "knight"
+        self.assertTrue(PopcornBoxWindow._discover_result_matches_item(self.win, item))
+
+        # Quick filter on top of the search: description, genre and date match.
+        for text, expected in (("joker", True), ("crime", True), ("2008", True), ("comedy", False)):
+            self.win.discover_quick_filter_entry.set_text(text)
+            self.assertEqual(PopcornBoxWindow._discover_result_matches_item(self.win, item), expected, text)
+
+        # A hidden search row ignores the quick filter.
+        self.win.advanced_search_box.set_visible(False)
+        self.win.discover_quick_filter_entry.set_text("comedy")
+        self.win._discover_result_search_query = MagicMock(return_value="")
+        self.win.current_discover_search_query = ""
         self.assertTrue(PopcornBoxWindow._discover_result_matches_item(self.win, item))
 
     def test_get_cached_items_by_search_title_only(self):
@@ -1781,6 +1896,21 @@ class TestDiscoverToolbar(unittest.TestCase):
         title_ids = [it.get("id") for it in title_matches]
         self.assertIn("tt9001", title_ids)
         self.assertNotIn("tt9002", title_ids)
+
+    def test_get_cached_items_by_search_excludes_plugin_items(self):
+        """Cached plugin titles stay out of search unless their plugin is the allowed catalog."""
+        from src import database
+        database.save_cached_metadata("tt9101", "movie", {"id": "tt9101", "title": "Robot Dreams", "manifest_url": "https://v3-cinemeta.strem.io/manifest.json"})
+        database.save_cached_metadata("site:https://a/robot", "movie", {"id": "site:https://a/robot", "title": "Robot Love",
+                                       "manifest_url": "custom://catalog/custom.site", "is_custom_plugin": True})
+        database.save_cached_metadata("nv:robot", "movie", {"id": "nv:robot", "title": "Robot Wars", "manifest_url": "nuvio://catalog/slow"})
+        database.save_cached_metadata("cs:robot", "movie", {"id": "cs:robot", "title": "Robot City", "manifest_url": "cloudstream://catalog/old"})
+
+        ids = lambda **kw: {it.get("id") for it in database.get_cached_items_by_search("robot", title_only=True, **kw)}
+        self.assertEqual(ids(), {"tt9101", "site:https://a/robot", "nv:robot", "cs:robot"})
+        self.assertEqual(ids(exclude_plugins=True), {"tt9101"})
+        self.assertEqual(ids(exclude_plugins=True, allowed_manifest_url="custom://catalog/custom.site"),
+                         {"tt9101", "site:https://a/robot"})
 
     def test_get_cached_items_by_genre_with_language_filter(self):
         """database.get_cached_items_by_genre returns hydrated items when filtering by language."""

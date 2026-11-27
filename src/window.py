@@ -329,6 +329,42 @@ def _discover_item_release_sort_key(item):
                 return value
     return ""
 
+def _is_plugin_catalog_url(url) -> bool:
+    """Nuvio and custom plugin catalogs use virtual URLs instead of manifests."""
+    return str(url or "").startswith(("custom://", "nuvio://"))
+
+
+def _selected_plugin_search_catalogs(filter_addon, section_scope, media_type):
+    """Search targets of the plugin picked in Discover's catalog dropdown.
+
+    Plugin catalogs are slow, so global search skips them; they are searched
+    only once the user narrows Discover to that plugin (or one of its sections).
+    Custom plugins are not part of api.get_available_search_catalogs, so their
+    searchable sections are listed here directly.
+    """
+    if not _is_plugin_catalog_url(filter_addon):
+        return []
+    entries = []
+    try:
+        if str(filter_addon).startswith("custom://"):
+            from . import custom_plugins
+            for cat in custom_plugins.get_catalogs(media_type):
+                if cat.get("manifest_url") != filter_addon:
+                    continue
+                if "search" not in (cat.get("extraSupported") or []):
+                    continue
+                cat_type = str(cat.get("type") or "").lower()
+                if media_type in ("movie", "series", "anime") and cat_type not in ("", "all", media_type):
+                    continue
+                entries.append(cat)
+    except Exception as e:
+        logger.debug(f"Unable to list custom plugin search catalogs: {e}")
+    if isinstance(section_scope, dict) and section_scope.get("catalog_id"):
+        scoped_id = str(section_scope.get("catalog_id"))
+        entries = [c for c in entries if str(c.get("catalog_id")) == scoped_id]
+    return entries
+
+
 def _extract_active_discover_query(win) -> str:
     q_fn = getattr(win, "_discover_result_search_query", None)
     if callable(q_fn):
@@ -5256,13 +5292,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     discover_grid_title: Gtk.Label = Gtk.Template.Child()
     library_header: Adw.HeaderBar = Gtk.Template.Child()
     search_header: Adw.HeaderBar = Gtk.Template.Child()
-    search_btn: Gtk.Button = Gtk.Template.Child()
+    search_btn: Gtk.ToggleButton = Gtk.Template.Child()
     search_entry: Gtk.SearchEntry = Gtk.Template.Child()
     search_catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
     discover_search_btn: Gtk.ToggleButton = Gtk.Template.Child()
     advanced_search_box: Gtk.Box = Gtk.Template.Child()
     discover_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
-    discover_title_only_check: Gtk.CheckButton = Gtk.Template.Child()
+    discover_search_clamp: Adw.Clamp = Gtk.Template.Child()
+    discover_search_column: Gtk.Box = Gtk.Template.Child()
+    discover_quick_filter_entry: Gtk.Entry = Gtk.Template.Child()
     type_dropdown: Gtk.DropDown = Gtk.Template.Child()
     catalog_dropdown: Gtk.DropDown = Gtk.Template.Child()
     section_dropdown: Gtk.DropDown = Gtk.Template.Child()
@@ -9428,6 +9466,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         def on_discover_revealer_notify(revealer, pspec):
             is_revealed = revealer.get_reveal_child()
+            if is_revealed and not getattr(self, "_discover_search_standalone", False):
+                self._set_discover_search_layout(standalone=False)
             if hasattr(self, "filter_toggle_btn") and self.filter_toggle_btn is not None:
                 if self.filter_toggle_btn.get_active() != is_revealed:
                     self.filter_toggle_btn.set_active(is_revealed)
@@ -10067,6 +10107,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         
         self.search_entry.connect("search-changed", self._on_search_changed)
         self.discover_search_btn.connect("toggled", self._on_discover_search_mode_toggled)
+        self.search_btn.connect("toggled", self._on_header_search_toggled)
         search_key_ctrl = Gtk.EventControllerKey()
         def on_search_key_pressed(controller, keyval, keycode, state):
             if keyval in [Gdk.KEY_Return, Gdk.KEY_KP_Enter]:
@@ -11055,10 +11096,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             if hasattr(self, "discover_search_entry") and self.discover_search_entry:
                 self.discover_search_entry.connect("search-changed", self._on_discover_search_changed)
                 self.discover_search_entry.connect("activate", self._on_discover_search_activated)
-            if hasattr(self, "discover_title_only_check") and self.discover_title_only_check:
-                title_only_saved = database.get_setting("discover_title_only", True)
-                self.discover_title_only_check.set_active(bool(title_only_saved))
-                self.discover_title_only_check.connect("toggled", self._on_discover_title_only_toggled)
+                self.discover_search_entry.connect("stop-search", self._on_discover_search_stop)
+            if getattr(self, "discover_quick_filter_entry", None):
+                self.discover_quick_filter_entry.connect("changed", self._on_discover_quick_filter_changed)
+                self.discover_quick_filter_entry.connect("icon-release", self._on_discover_quick_filter_icon_release)
             for flowbox_name in ("content_flowbox", "unique_flowbox"):
                 flowbox = getattr(self, flowbox_name, None)
                 if flowbox:
@@ -11147,11 +11188,35 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         box = getattr(self, "advanced_search_box", None)
         if box and hasattr(box, "set_visible"):
             box.set_visible(bool(visible))
-        button = getattr(self, "discover_search_btn", None)
-        if button and hasattr(button, "get_active") and button.get_active() != bool(visible):
-            button.set_active(bool(visible))
         if not visible:
+            # Navigation closed the search row: drop search mode without
+            # restoring anything, and turn both toggles off quietly.
+            self._discover_search_restore = None
+            self._set_header_search_active(False)
+            self._syncing_discover_filter_btn = True
+            try:
+                button = getattr(self, "discover_search_btn", None)
+                if button and hasattr(button, "get_active") and button.get_active():
+                    button.set_active(False)
+                if button and hasattr(button, "set_visible"):
+                    button.set_visible(True)
+            finally:
+                self._syncing_discover_filter_btn = False
+            quick = getattr(self, "discover_quick_filter_entry", None)
+            if quick is not None and hasattr(quick, "set_visible"):
+                quick.set_visible(False)
+            if getattr(self, "_discover_search_debounce_timer", None):
+                GLib.source_remove(self._discover_search_debounce_timer)
+                self._discover_search_debounce_timer = None
             self._clear_discover_search_on_filter_change()
+            self._clear_discover_quick_filter()
+            if getattr(self, "_discover_search_standalone", False):
+                # The row was shown without the dropdowns: collapse it. The
+                # dropdown row comes back the next time the revealer opens.
+                self._discover_search_standalone = False
+                revealer = getattr(self, "discover_options_revealer", None)
+                if revealer is not None and hasattr(revealer, "set_reveal_child"):
+                    revealer.set_reveal_child(False)
 
     def _create_empty_filter_box(self, message):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
@@ -11166,7 +11231,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         box.append(lbl)
 
         active_q = _extract_active_discover_query(self)
-        if active_q:
+        if PopcornBoxWindow._discover_quick_filter_text(self):
+            clear_btn = Gtk.Button(label=_("Clear Filter"))
+            clear_btn.set_halign(Gtk.Align.CENTER)
+            clear_btn.add_css_class("suggested-action")
+            clear_btn.add_css_class("pill")
+            clear_btn.connect("clicked", lambda _b: self._clear_discover_quick_filter())
+            box.append(clear_btn)
+        elif active_q:
             clear_btn = Gtk.Button(label=_("Clear Search Filter"))
             clear_btn.set_halign(Gtk.Align.CENTER)
             clear_btn.add_css_class("suggested-action")
@@ -11218,7 +11290,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 cur_genre = getattr(self, "current_genre", None)
                 if cur_genre in ("All Genres", _("All Genres"), "Genre", _("Genre"), "All"):
                     cur_genre = None
-                if active_q and cur_genre:
+                quick_q = PopcornBoxWindow._discover_quick_filter_text(self)
+                if quick_q:
+                    msg = _(f"No results matching filter '{quick_q}'.")
+                elif active_q and cur_genre:
                     msg = _(f"No {cur_genre} items matching '{active_q}'.")
                 elif active_q:
                     msg = _(f"No items matching '{active_q}'.")
@@ -11249,10 +11324,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         root = getattr(self, "discover_box", None)
         if root is not None:
             active_q = _extract_active_discover_query(self)
+            quick_q = PopcornBoxWindow._discover_quick_filter_text(self)
+            filtering = bool(active_q or quick_q)
             pending = [root]
             while pending:
                 widget = pending.pop()
                 item = getattr(widget, "movie_data", None)
+                if not isinstance(item, dict) and getattr(widget, "_is_cw_card", False):
+                    item = getattr(widget, "item_data", None)
                 if isinstance(item, dict) and hasattr(widget, "set_visible"):
                     widget.set_visible(self._discover_result_matches_item(item))
                 if hasattr(widget, "get_first_child"):
@@ -11269,7 +11348,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     slot = slot.get_next_sibling()
                     continue
                 if hasattr(slot, "set_visible") and hasattr(slot, "get_first_child"):
-                    if not active_q:
+                    if not filtering:
                         slot.set_visible(True)
                         any_slot_visible = True
                     else:
@@ -11291,10 +11370,40 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 any_slot_visible = True
                 slot = slot.get_next_sibling()
 
+            # Continue Watching is a header + carousel pair rather than a row
+            # slot; show both only while one of its cards matches.
+            cw_header = cw_scroll = None
+            child = root.get_first_child()
+            while child is not None:
+                if getattr(child, "_is_cw_header", False):
+                    cw_header = child
+                elif getattr(child, "_is_cw_scroll", False):
+                    cw_scroll = child
+                child = child.get_next_sibling()
+            if cw_scroll is not None:
+                cw_visible = True
+                if filtering:
+                    cw_visible = False
+                    sub_pending = [cw_scroll]
+                    while sub_pending and not cw_visible:
+                        w = sub_pending.pop()
+                        if getattr(w, "_is_cw_card", False):
+                            cw_visible = w.get_visible()
+                        elif hasattr(w, "get_first_child"):
+                            ch = w.get_first_child()
+                            while ch is not None:
+                                sub_pending.append(ch)
+                                ch = ch.get_next_sibling()
+                cw_scroll.set_visible(cw_visible)
+                if cw_header is not None:
+                    cw_header.set_visible(cw_visible)
+                if cw_visible:
+                    any_slot_visible = True
+
             empty_banner = getattr(root, "_discover_empty_banner", None)
-            if not any_slot_visible and active_q:
+            if not any_slot_visible and filtering:
                 if not empty_banner or empty_banner.get_parent() != root:
-                    msg = _(f"No items matching '{active_q}'.")
+                    msg = _(f"No items matching '{quick_q or active_q}'.")
                     empty_banner = self._create_empty_filter_box(msg)
                     root._discover_empty_banner = empty_banner
                     root.append(empty_banner)
@@ -11323,36 +11432,81 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         return ""
 
     def _is_discover_search_title_only(self) -> bool:
-        check = getattr(self, "discover_title_only_check", None)
-        if check is not None and hasattr(check, "get_active"):
-            try:
-                return bool(check.get_active())
-            except Exception:
-                pass
-        return False
-
-    def _on_discover_title_only_toggled(self, button):
-        from . import database
-        is_active = button.get_active() if hasattr(button, "get_active") else False
-        database.set_setting("discover_title_only", bool(is_active))
-        self._on_discover_results_search_changed()
-        active_q = _extract_active_discover_query(self)
-        stack = getattr(self, "library_stack", None)
-        visible_page = stack.get_visible_child_name() if stack else ""
-        if active_q:
-            if visible_page != "unique":
-                if hasattr(self, "library_stack"):
-                    self.library_stack.set_visible_child_name("unique")
-            self._refresh_unique_combined_view()
-        elif visible_page == "unique":
-            self._refresh_unique_combined_view()
-        elif visible_page == "content":
-            self._refresh_content()
+        # "Search PopcornBox..." always searches titles; the quick filter
+        # beside it is what matches descriptions, dates and genres.
+        return True
 
     def _get_active_discover_search_query(self) -> str:
         return _extract_active_discover_query(self)
 
+    def _discover_quick_filter_text(self) -> str:
+        """Text of the local quick filter shown beside the Discover search."""
+        box = getattr(self, "advanced_search_box", None)
+        if box is not None and hasattr(box, "get_visible"):
+            try:
+                vis = box.get_visible()
+                if isinstance(vis, bool) and not vis:
+                    return ""
+            except Exception:
+                pass
+        entry = getattr(self, "discover_quick_filter_entry", None)
+        if entry is not None and hasattr(entry, "get_text"):
+            try:
+                txt = entry.get_text()
+                if isinstance(txt, str):
+                    return txt.strip().casefold()
+            except Exception:
+                pass
+        return ""
+
+    @staticmethod
+    def _discover_quick_filter_matches(item, text) -> bool:
+        """Substring match of the quick filter on title, description, date and genre."""
+        if not text:
+            return True
+        if not isinstance(item, dict):
+            return False
+        parts = []
+        for key in (
+            "title", "name", "original_title", "original_name",
+            "description", "overview",
+            "year", "releaseInfo", "released", "release_date", "first_air_date", "air_date", "date",
+            "genres", "genre",
+        ):
+            val = item.get(key)
+            if isinstance(val, (list, tuple, set)):
+                parts.append(" ".join(str(x.get("name", "")) if isinstance(x, dict) else str(x) for x in val if x))
+            elif val:
+                parts.append(str(val))
+        return text in " ".join(parts).casefold()
+
+    def _on_discover_quick_filter_changed(self, entry):
+        has_text = bool(entry.get_text()) if hasattr(entry, "get_text") else False
+        if hasattr(entry, "set_icon_from_icon_name"):
+            entry.set_icon_from_icon_name(
+                Gtk.EntryIconPosition.SECONDARY, "edit-clear-symbolic" if has_text else None
+            )
+        # Local only: re-run the visibility filter on the cards already loaded.
+        self._on_discover_results_search_changed()
+
+    def _on_discover_quick_filter_icon_release(self, entry, icon_pos):
+        if icon_pos == Gtk.EntryIconPosition.SECONDARY:
+            entry.set_text("")
+        elif icon_pos == Gtk.EntryIconPosition.PRIMARY:
+            # The filter icon inside the entry collapses it back to the button.
+            button = getattr(self, "discover_search_btn", None)
+            if button is not None and button.get_active():
+                button.set_active(False)
+
+    def _clear_discover_quick_filter(self):
+        entry = getattr(self, "discover_quick_filter_entry", None)
+        if entry is not None and hasattr(entry, "get_text") and entry.get_text():
+            entry.set_text("")
+
     def _discover_result_matches_item(self, item):
+        quick_q = PopcornBoxWindow._discover_quick_filter_text(self)
+        if quick_q and not PopcornBoxWindow._discover_quick_filter_matches(item, quick_q):
+            return False
         query = _extract_active_discover_query(self)
         if not query:
             return True
@@ -12015,6 +12169,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 unique_action.set_state(GLib.Variant.new_boolean(True))
         finally:
             self._syncing_unique_check = False
+        self._clear_discover_quick_filter()
         self._on_discover_filter_changed()
 
     def _restore_dropdown_selection(self, dropdown, items, target_str):
@@ -12824,7 +12979,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             for mt in types_to_search:
                 # Query each catalog independently, like SearchRepository does in
                 # NuvioDesktop. A slow addon then cannot hold up every other result.
-                avail = api.get_available_search_catalogs(mt, only_working=True)
+                avail = [
+                    sc for sc in api.get_available_search_catalogs(mt, only_working=True)
+                    # Plugin catalogs are searched only when picked in Discover.
+                    if not _is_plugin_catalog_url(sc.get("manifest_url"))
+                    or sc.get("manifest_url") == filter_addon
+                ]
+                avail += _selected_plugin_search_catalogs(filter_addon, section_scope, mt)
                 for sc in avail:
                     m_url = sc.get("manifest_url")
                     c_id = sc.get("catalog_id")
@@ -13269,6 +13430,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 offset=max(0, page - 1) * 50,
                                 title_only=bool(cat_info.get("title_only", False)),
                                 language=cat_info.get("language") or cur_lang,
+                                # Plugin titles only when that plugin is the picked catalog.
+                                exclude_plugins=True,
+                                allowed_manifest_url=(
+                                    getattr(self, "_current_discover_addon", None)
+                                    if _is_plugin_catalog_url(getattr(self, "_current_discover_addon", None))
+                                    else None
+                                ),
                             )
                             raw_count = len(items)
                             if cur_lang:
@@ -13502,6 +13670,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 media_type=m_type,
                                 query=query,
                                 catalog_id=c_id or "top",
+                                # Plugin catalogs are routed by their virtual URL.
+                                catalog_url=m_url if _is_plugin_catalog_url(m_url) else None,
                                 target_manifest_url=m_url,
                                 target_catalog_id=cat_info.get("target_catalog_id", c_id),
                                 genre=cur_genre or "",
@@ -13997,6 +14167,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         offset=(page_to_fetch - 1) * 80,
                         title_only=query_title_only,
                         language=cur_lang,
+                        # Plugin titles only while browsing that plugin's own catalog.
+                        exclude_plugins=True,
+                        allowed_manifest_url=cat_url if _is_plugin_catalog_url(cat_url) else None,
                     )
                     database.hydrate_items_from_metadata(search_items, media_type=media_type)
                     api.hydrate_missing_catalog_items(search_items, media_type=media_type)
@@ -15658,6 +15831,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 on_remove_clicked=self._on_remove_continue_watching,
                 on_play_clicked=self._on_continue_watching_clicked
             )
+            card._is_cw_card = True
             card.set_hexpand(False)
             self._fit_discover_row_card(card)
             card.set_visible(self._discover_result_matches_item(item))
@@ -15728,12 +15902,75 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         cur_sort = getattr(self, "current_sort", "Popular")
         if not isinstance(cur_sort, str):
             cur_sort = "Popular"
-        return f"{cat_btn}|{getattr(self, '_current_discover_type', 'all')}|{getattr(self, '_current_discover_addon', None) or 'all'}|{cur_genre or 'all'}|{cur_year or 'all'}|{cur_lang or 'all'}|{cur_country or 'all'}|{cur_network or 'all'}|{cur_sort}"
+        key = f"{cat_btn}|{getattr(self, '_current_discover_type', 'all')}|{getattr(self, '_current_discover_addon', None) or 'all'}|{cur_genre or 'all'}|{cur_year or 'all'}|{cur_lang or 'all'}|{cur_country or 'all'}|{cur_network or 'all'}|{cur_sort}"
+        if cat_btn == "home":
+            # Home searches in place, so each query is its own row view.
+            active_q = _extract_active_discover_query(self)
+            if active_q:
+                key += f"|q:{active_q}"
+        return key
+
+    def _is_home_category(self) -> bool:
+        stack = getattr(self, "category_btn_stack", None)
+        if stack is None or not hasattr(stack, "get_visible_child_name"):
+            return False
+        return stack.get_visible_child_name() == "home"
+
+    def _get_home_search_catalog_list(self, query):
+        """Rows for a Home search: TMDb title search, then every addon search
+        catalog, each kept as its own row (Home does not deduplicate)."""
+        from . import api
+        rows = [{
+            "_source": "tmdb_search",
+            "title": _("TMDb"),
+            "addon_name": "TMDb",
+            "media_type": "all",
+            "catalog_id": "tmdb_search",
+            "catalog_name": "TMDb Title Search",
+            "manifest_url": None,
+            "query": query,
+            "title_only": True,
+        }]
+        type_labels = {"movie": _("Movies"), "series": _("Series"), "anime": _("Anime")}
+        types_to_search = ["movie", "series"] + (["anime"] if getattr(self, "anime_supported", False) else [])
+        seen = set()
+        for mt in types_to_search:
+            try:
+                avail = api.get_available_search_catalogs(mt, only_working=True)
+            except Exception as e:
+                logger.error(f"Home search: could not list search catalogs for {mt}: {e}")
+                continue
+            for sc in avail or []:
+                m_url = sc.get("manifest_url")
+                c_id = sc.get("catalog_id")
+                if _is_plugin_catalog_url(m_url):
+                    # Plugins are searched only when picked in Discover's catalog list.
+                    continue
+                skey = (m_url, c_id, mt)
+                if skey in seen:
+                    continue
+                seen.add(skey)
+                addon_name = sc.get("addon_name") or ""
+                cat_name = sc.get("catalog_name") or c_id or ""
+                label = addon_name if not cat_name or cat_name == addon_name else f"{addon_name} · {cat_name}"
+                rows.append({
+                    "_source": "catalog_search",
+                    "title": f"{label} — {type_labels.get(mt, mt)}" if label else type_labels.get(mt, mt),
+                    "addon_name": addon_name,
+                    "manifest_url": m_url,
+                    "catalog_id": c_id,
+                    "target_catalog_id": c_id,
+                    "catalog_name": cat_name,
+                    "media_type": mt,
+                    "query": query,
+                    "title_only": True,
+                })
+        return rows
 
     def _refresh_discover_page(self, filter_media_type=None, filter_addon_url=None, custom_title=None, force_refresh=False):
         debug_log(f"_refresh_discover_page START (media_type={filter_media_type}, addon={filter_addon_url}, force={force_refresh})")
         active_q = _extract_active_discover_query(self)
-        if active_q:
+        if active_q and not PopcornBoxWindow._is_home_category(self):
             if hasattr(self, "library_stack"):
                 self.library_stack.set_visible_child_name("unique")
             self._refresh_unique_combined_view()
@@ -15878,7 +16115,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._update_continue_watching_section()
 
         # Setup Sequential Row Loading List
-        self._discover_catalog_list = self._get_discover_catalog_list(filter_media_type=filter_media_type, filter_addon_url=filter_addon_url, force_refresh=force_refresh, is_home=is_home)
+        if is_home and active_q:
+            self._discover_catalog_list = self._get_home_search_catalog_list(active_q)
+        else:
+            self._discover_catalog_list = self._get_discover_catalog_list(filter_media_type=filter_media_type, filter_addon_url=filter_addon_url, force_refresh=force_refresh, is_home=is_home)
         self._discover_next_row_index = 0
         self._discover_empty_batches = 0
         self._discover_auto_fill_count = 0
@@ -15973,6 +16213,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._set_discover_spinner_active(False)
             return
 
+        if "|q:" in view_key:
+            # Keep only the latest Home search view; every keystroke would
+            # otherwise leave a detached row box behind.
+            for old_key in [k for k in self._discover_views if "|q:" in k and k != view_key]:
+                self._discover_views.pop(old_key, None)
         self._discover_views[view_key] = {
             "box": new_box,
             "catalog_list": self._discover_catalog_list,
@@ -16110,6 +16355,52 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                                 f"TMDB reports {total_pages} pages",
                             )
                             return (row_info, items or [])
+
+                        if row_info.get("_source") == "tmdb_search":
+                            from . import tmdb_helper
+                            query = str(row_info.get("query") or "").strip()
+                            if not query:
+                                return (row_info, [])
+                            # Own key: the Unique view caches 50-item pages under the plain one.
+                            cache_key = f"tmdb-search:{query.casefold()}:{m_type}:title1:p1:row{DISCOVER_ROW_CARD_LIMIT}"
+                            items = database.get_cached_catalog(cache_key)
+                            if items is None:
+                                items, _total = tmdb_helper.fetch_title_search_page(
+                                    query=query, media_type=m_type, page=1, limit=DISCOVER_ROW_CARD_LIMIT)
+                                if items and not _is_event_set(abort_ev):
+                                    database.save_cached_catalog(cache_key, items)
+                            items = list(items or [])
+                            if database.is_adult_content_hidden():
+                                items = api.prefilter_kids_safe_items(items, media_type=m_type)
+                            debug_log(f"home search TMDb '{query}' -> {len(items)} items")
+                            return (row_info, items)
+
+                        if row_info.get("_source") == "catalog_search":
+                            query = str(row_info.get("query") or "").strip()
+                            if not query:
+                                return (row_info, [])
+                            raw_items = api.fetch_items(
+                                media_type=m_type,
+                                query=query,
+                                catalog_id=c_id or "top",
+                                target_manifest_url=m_url,
+                                target_catalog_id=row_info.get("target_catalog_id", c_id),
+                                page=1,
+                                limit=25,
+                                title_only=True,
+                                timeout=3.5,
+                                is_cancelled=(lambda: _is_event_set(abort_ev)),
+                            )
+                            if _is_event_set(abort_ev):
+                                return None
+                            items = list(raw_items or [])
+                            if database.is_adult_content_hidden():
+                                items = [it for it in items if not api.is_adult_item(it)]
+                            if items:
+                                database.hydrate_items_from_metadata(items, media_type=m_type)
+                                api.hydrate_missing_catalog_items(items, media_type=m_type)
+                            debug_log(f"home search '{row_title}': '{query}' -> {len(items)} items")
+                            return (row_info, items)
 
                         if row_info.get("_source") == "genre_cache":
                             current_l = getattr(self, "current_language", None)
@@ -16714,7 +17005,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         see_all_btn.set_halign(Gtk.Align.END)
         see_all_btn.set_valign(Gtk.Align.CENTER)
         see_all_btn.set_hexpand(True)
-        if row_info.get("_source") == "genre_cache":
+        if row_info.get("_source") in ("genre_cache", "tmdb_search", "catalog_search"):
             see_all_btn.set_visible(False)
 
         cat_obj = {
@@ -23110,8 +23401,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     if btn is not None and hasattr(btn, "set_active"):
                         btn.set_active(lib_page == "unique")
                 if lib_page == "search_results" and hasattr(self, "header_stack"):
-                    self.header_stack.set_visible_child_name("search_header")
-                    self._open_search()
+                    self._open_header_search()
             if hasattr(self, "category_btn_stack"):
                 self.category_btn_stack.set_visible_child_name(cat_name)
                 m_type = "movie" if cat_name == "movies" else ("series" if cat_name == "series" else ("anime" if cat_name == "anime" else "all"))
@@ -23408,6 +23698,82 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         dialog.open(self, None, on_open_response)
 
     def _open_search(self, *args):
+        """win.open-search: flip the header search toggle."""
+        button = getattr(self, "search_btn", None)
+        if button is not None and hasattr(button, "set_active"):
+            button.set_active(not button.get_active())
+        else:
+            self._enter_discover_search_mode()
+
+    def _set_header_search_active(self, active):
+        button = getattr(self, "search_btn", None)
+        if button is None or not hasattr(button, "get_active") or button.get_active() == bool(active):
+            return
+        self._syncing_header_search = True
+        try:
+            button.set_active(bool(active))
+        finally:
+            self._syncing_header_search = False
+
+    def _on_header_search_toggled(self, button):
+        if getattr(self, "_syncing_header_search", False):
+            return
+        if button.get_active():
+            self._enter_discover_search_mode()
+        else:
+            self._exit_discover_search_mode()
+
+    def _set_discover_search_layout(self, standalone):
+        """Discover: search row under the dropdowns, sharing their width.
+        Elsewhere: the search row alone, clamped to a comfortable width."""
+        self._discover_search_standalone = bool(standalone)
+        toolbar = getattr(self, "discover_toolbar", None)
+        if toolbar is not None and hasattr(toolbar, "set_visible"):
+            toolbar.set_visible(not standalone)
+        column = getattr(self, "discover_search_column", None)
+        if column is not None and hasattr(column, "set_halign"):
+            column.set_halign(Gtk.Align.FILL if standalone else Gtk.Align.CENTER)
+        box = getattr(self, "advanced_search_box", None)
+        if box is not None and hasattr(box, "set_margin_end"):
+            # In Discover the row stops under the last toolbar button, not the spinner.
+            box.set_margin_end(0 if standalone else 22)
+        clamp = getattr(self, "discover_search_clamp", None)
+        if clamp is not None and hasattr(clamp, "set_maximum_size"):
+            if standalone:
+                clamp.set_maximum_size(720)
+                clamp.set_tightening_threshold(560)
+            else:
+                clamp.set_maximum_size(10000)
+                clamp.set_tightening_threshold(10000)
+
+    def _enter_discover_search_mode(self):
+        """Show the search row in place: under the dropdowns in Discover, or
+        on its own on Home / Movies / Series / Anime."""
+        category = (
+            self.category_btn_stack.get_visible_child_name()
+            if hasattr(self, "category_btn_stack") else "home"
+        )
+        revealer = getattr(self, "discover_options_revealer", None)
+        self._discover_search_restore = {
+            "revealed": bool(revealer.get_reveal_child()) if revealer else False,
+        }
+        self._set_discover_search_layout(standalone=(category != "discover"))
+        self._set_header_search_active(True)
+        if revealer is not None:
+            revealer.set_reveal_child(True)
+        self.advanced_search_box.set_visible(True)
+        self.discover_search_entry.grab_focus()
+
+    def _exit_discover_search_mode(self):
+        """Clear search and filter, hide the row and return to the unsearched view."""
+        restore = getattr(self, "_discover_search_restore", None)
+        standalone = getattr(self, "_discover_search_standalone", False)
+        self._end_discover_search_query()
+        revealer = getattr(self, "discover_options_revealer", None)
+        if revealer is not None and isinstance(restore, dict) and not standalone:
+            revealer.set_reveal_child(bool(restore.get("revealed")))
+
+    def _open_header_search(self, *args):
         self.header_stack.set_visible_child_name("search_header")
         self.search_entry.grab_focus()
 
@@ -23506,34 +23872,52 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self.search_timeout_id = GLib.timeout_add(500, trigger_search)
 
     def _on_discover_search_mode_toggled(self, button):
+        """Filter button: show or hide the quick filter beside the search."""
+        if getattr(self, "_syncing_discover_filter_btn", False):
+            return
         active = button.get_active()
-        self.advanced_search_box.set_visible(active)
+        quick = getattr(self, "discover_quick_filter_entry", None)
+        if quick is not None:
+            quick.set_visible(active)
+            # The entry takes the button's place; its own filter icon turns it back.
+            button.set_visible(not active)
         if active:
-            self.discover_search_entry.grab_focus()
+            if quick is not None:
+                quick.grab_focus()
         else:
-            self.discover_search_entry.set_text("")
-            if getattr(self, "_discover_search_debounce_timer", None):
-                GLib.source_remove(self._discover_search_debounce_timer)
-                self._discover_search_debounce_timer = None
-            self.current_discover_search_query = ""
-            self._on_discover_results_search_changed()
-            if getattr(self, "_search_originated_from_discover", False) and not self._is_unique_mode_active():
-                self._search_originated_from_discover = False
-                if hasattr(self, "library_stack"):
-                    self.library_stack.set_visible_child_name("discover")
-                self._refresh_discover_page()
-            elif getattr(self, "_search_originated_from_content", False) and not self._is_unique_mode_active():
-                self._search_originated_from_content = False
-                if hasattr(self, "library_stack"):
-                    self.library_stack.set_visible_child_name("content")
+            self._clear_discover_quick_filter()
+
+    def _on_discover_search_stop(self, _entry):
+        # Escape in the search entry closes search mode like the header toggle.
+        button = getattr(self, "search_btn", None)
+        if button is not None and button.get_active():
+            button.set_active(False)
+
+    def _end_discover_search_query(self):
+        from_discover = getattr(self, "_search_originated_from_discover", False)
+        from_content = getattr(self, "_search_originated_from_content", False)
+        self._set_discover_results_search_visible(False)
+        self._on_discover_results_search_changed()
+        self._search_originated_from_discover = False
+        self._search_originated_from_content = False
+        if from_discover and not self._is_unique_mode_active():
+            if hasattr(self, "library_stack"):
+                self.library_stack.set_visible_child_name("discover")
+            self._refresh_discover_page()
+        elif from_content and not self._is_unique_mode_active():
+            if hasattr(self, "library_stack"):
+                self.library_stack.set_visible_child_name("content")
+            self._refresh_content()
+        else:
+            stack = getattr(self, "library_stack", None)
+            vis_page = stack.get_visible_child_name() if stack else ""
+            if vis_page == "unique":
+                self._refresh_unique_combined_view()
+            elif vis_page == "content":
                 self._refresh_content()
-            else:
-                stack = getattr(self, "library_stack", None)
-                vis_page = stack.get_visible_child_name() if stack else ""
-                if vis_page == "unique":
-                    self._refresh_unique_combined_view()
-                elif vis_page == "content":
-                    self._refresh_content()
+            elif vis_page == "discover" and PopcornBoxWindow._is_home_category(self):
+                # Swap the Home search rows back for the normal Home rows.
+                self._refresh_discover_page()
 
     def _on_discover_search_changed(self, _entry):
         # Keep current_discover_search_query synchronized with entry text
@@ -23551,6 +23935,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         stack = getattr(self, "library_stack", None)
         visible_page = stack.get_visible_child_name() if stack else ""
+        if visible_page == "discover" and PopcornBoxWindow._is_home_category(self):
+            # Home has Unique off: results stay in their own rows (search
+            # sources plus Continue Watching) instead of the Unique grid.
+            def _debounced_home_search():
+                self._discover_search_debounce_timer = None
+                self._refresh_discover_page()
+                return False
+            self._discover_search_debounce_timer = GLib.timeout_add(500, _debounced_home_search)
+            return
         if self.current_discover_search_query:
             if visible_page == "discover":
                 self._search_originated_from_discover = True
@@ -23612,6 +24005,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._on_discover_results_search_changed()
         stack = getattr(self, "library_stack", None)
         visible_page = stack.get_visible_child_name() if stack else ""
+        if visible_page == "discover" and PopcornBoxWindow._is_home_category(self):
+            self._refresh_discover_page()
+            return
         if self.current_discover_search_query:
             if visible_page == "discover":
                 self._search_originated_from_discover = True

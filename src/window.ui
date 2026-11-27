@@ -362,10 +362,9 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                       </object>
                                     </child>
                                     <child type="end">
-                                      <object class="GtkButton" id="search_btn">
+                                      <object class="GtkToggleButton" id="search_btn">
                                         <property name="icon-name">system-search-symbolic</property>
                                         <property name="tooltip-text" translatable="yes">Search</property>
-                                        <property name="action-name">win.open-search</property>
                                         <style>
                                           <class name="flat"/>
                                           <class name="circular"/>
@@ -462,137 +461,151 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                   <class name="discover-toolbar-scroll"/>
                                 </style>
                                 <child>
-                                  <object class="GtkBox" id="discover_toolbar">
-                                    <property name="orientation">0</property>
-                                    <property name="spacing">6</property>
-                                    <property name="margin-top">6</property>
-                                    <property name="margin-bottom">6</property>
-                                    <property name="margin-start">12</property>
-                                    <property name="margin-end">12</property>
-                                    <property name="halign">3</property>
+                                  <object class="AdwClamp" id="discover_search_clamp">
+                                    <property name="maximum-size">10000</property>
+                                    <property name="tightening-threshold">10000</property>
                                     <child>
-                                      <object class="GtkButton" id="discover_reset_btn">
-                                        <property name="icon-name">view-refresh-symbolic</property>
-                                        <property name="valign">3</property>
-                                        <property name="tooltip-text" translatable="yes">Reset all Discover filters</property>
-                                        <style>
-                                          <class name="flat"/>
-                                          <class name="circular"/>
-                                        </style>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkDropDown" id="type_dropdown">
-                                        <property name="valign">3</property>
-                                        <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Type</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkDropDown" id="catalog_dropdown">
-                                        <property name="valign">3</property>
-                                        <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Catalog</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkDropDown" id="section_dropdown">
-                                        <property name="valign">3</property>
-                                        <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Sort by</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkDropDown" id="genre_dropdown">
-                                        <property name="valign">3</property>
-                                        <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Genre</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkDropDown" id="year_dropdown">
-                                        <property name="valign">3</property>
-                                        <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Year</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkDropDown" id="language_dropdown">
-                                        <property name="valign">3</property>
-                                        <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Language</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkDropDown" id="country_dropdown">
-                                        <property name="valign">3</property>
-                                        <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Country</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkDropDown" id="network_dropdown">
-                                        <property name="valign">3</property>
-                                        <property name="enable-search">true</property>
-                                        <property name="tooltip-text" translatable="yes">Network</property>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkToggleButton" id="unique_check">
-                                        <property name="icon-name">view-grid-symbolic</property>
-                                        <property name="valign">3</property>
-                                        <property name="tooltip-text" translatable="yes">Unique View (Deduplicate media across multiple provider streams/catalogs)</property>
-                                        <style>
-                                          <class name="flat"/>
-                                          <class name="circular"/>
-                                        </style>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkToggleButton" id="discover_search_btn">
-                                        <property name="icon-name">filter-symbolic</property>
-                                        <property name="valign">3</property>
-                                        <property name="tooltip-text" translatable="yes">Filter loaded results</property>
-                                        <style>
-                                          <class name="flat"/>
-                                          <class name="circular"/>
-                                        </style>
-                                      </object>
-                                    </child>
-                                    <child>
-                                      <object class="GtkSpinner" id="discover_spinner">
-                                        <property name="valign">3</property>
-                                        <property name="spinning">false</property>
-                                        <property name="tooltip-text" translatable="yes">Loading...</property>
+                                      <object class="GtkBox" id="discover_search_column">
+                                        <property name="orientation">1</property>
+                                        <property name="spacing">6</property>
+                                        <property name="margin-top">6</property>
+                                        <property name="margin-bottom">6</property>
+                                        <property name="margin-start">12</property>
+                                        <property name="margin-end">12</property>
+                                        <property name="halign">3</property>
+                                        <child>
+                                          <object class="GtkBox" id="discover_toolbar">
+                                            <property name="orientation">0</property>
+                                            <property name="spacing">6</property>
+                                            <child>
+                                              <object class="GtkButton" id="discover_reset_btn">
+                                                <property name="icon-name">view-refresh-symbolic</property>
+                                                <property name="valign">3</property>
+                                                <property name="tooltip-text" translatable="yes">Reset all Discover filters</property>
+                                                <style>
+                                                  <class name="flat"/>
+                                                  <class name="circular"/>
+                                                </style>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkDropDown" id="type_dropdown">
+                                                <property name="valign">3</property>
+                                                <property name="enable-search">true</property>
+                                                <property name="tooltip-text" translatable="yes">Type</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkDropDown" id="catalog_dropdown">
+                                                <property name="valign">3</property>
+                                                <property name="enable-search">true</property>
+                                                <property name="tooltip-text" translatable="yes">Catalog</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkDropDown" id="section_dropdown">
+                                                <property name="valign">3</property>
+                                                <property name="enable-search">true</property>
+                                                <property name="tooltip-text" translatable="yes">Sort by</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkDropDown" id="genre_dropdown">
+                                                <property name="valign">3</property>
+                                                <property name="enable-search">true</property>
+                                                <property name="tooltip-text" translatable="yes">Genre</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkDropDown" id="year_dropdown">
+                                                <property name="valign">3</property>
+                                                <property name="enable-search">true</property>
+                                                <property name="tooltip-text" translatable="yes">Year</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkDropDown" id="language_dropdown">
+                                                <property name="valign">3</property>
+                                                <property name="enable-search">true</property>
+                                                <property name="tooltip-text" translatable="yes">Language</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkDropDown" id="country_dropdown">
+                                                <property name="valign">3</property>
+                                                <property name="enable-search">true</property>
+                                                <property name="tooltip-text" translatable="yes">Country</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkDropDown" id="network_dropdown">
+                                                <property name="valign">3</property>
+                                                <property name="enable-search">true</property>
+                                                <property name="tooltip-text" translatable="yes">Network</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkToggleButton" id="unique_check">
+                                                <property name="icon-name">view-grid-symbolic</property>
+                                                <property name="valign">3</property>
+                                                <property name="tooltip-text" translatable="yes">Unique View (Deduplicate media across multiple provider streams/catalogs)</property>
+                                                <style>
+                                                  <class name="flat"/>
+                                                  <class name="circular"/>
+                                                </style>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkSpinner" id="discover_spinner">
+                                                <property name="valign">3</property>
+                                                <property name="spinning">false</property>
+                                                <property name="tooltip-text" translatable="yes">Loading...</property>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkBox" id="advanced_search_box">
+                                            <property name="orientation">0</property>
+                                            <property name="spacing">6</property>
+                                            <property name="margin-end">22</property>
+                                            <property name="visible">false</property>
+                                            <child>
+                                              <object class="GtkSearchEntry" id="discover_search_entry">
+                                                <property name="hexpand">true</property>
+                                                <property name="width-request">180</property>
+                                                <property name="placeholder-text" translatable="yes">Search PopcornBox...</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkToggleButton" id="discover_search_btn">
+                                                <property name="icon-name">filter-symbolic</property>
+                                                <property name="valign">3</property>
+                                                <property name="tooltip-text" translatable="yes">Filter results</property>
+                                                <style>
+                                                  <class name="flat"/>
+                                                  <class name="circular"/>
+                                                </style>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkEntry" id="discover_quick_filter_entry">
+                                                <property name="visible">false</property>
+                                                <property name="width-request">220</property>
+                                                <property name="valign">3</property>
+                                                <property name="primary-icon-name">filter-symbolic</property>
+                                                <property name="primary-icon-activatable">true</property>
+                                                <property name="primary-icon-tooltip-text" translatable="yes">Close filter</property>
+                                                <property name="placeholder-text" translatable="yes">Filter results...</property>
+                                                <property name="tooltip-text" translatable="yes">Filter the shown results by title, description, date or genre</property>
+                                              </object>
+                                            </child>
+                                          </object>
+                                        </child>
                                       </object>
                                     </child>
                                   </object>
                                 </child>
-                              </object>
-                            </child>
-                          </object>
-                        </child>
-                        <child>
-                          <object class="GtkBox" id="advanced_search_box">
-                            <property name="orientation">0</property>
-                            <property name="spacing">8</property>
-                            <property name="margin-top">6</property>
-                            <property name="margin-bottom">2</property>
-                            <property name="margin-start">12</property>
-                            <property name="margin-end">12</property>
-                            <property name="halign">3</property>
-                            <property name="visible">false</property>
-                            <child>
-                              <object class="GtkSearchEntry" id="discover_search_entry">
-                                <property name="width-request">220</property>
-                                <property name="placeholder-text" translatable="yes">Filter loaded results...</property>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="GtkCheckButton" id="discover_title_only_check">
-                                <property name="label" translatable="yes">Title Only</property>
-                                <property name="valign">3</property>
-                                <property name="tooltip-text" translatable="yes">Filter by title only instead of genres or description</property>
                               </object>
                             </child>
                           </object>

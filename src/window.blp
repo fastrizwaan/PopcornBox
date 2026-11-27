@@ -254,10 +254,9 @@ template $PopcornBoxWindow: Adw.ApplicationWindow {
                 }
 
                 [end]
-                Button search_btn {
+                ToggleButton search_btn {
                   icon-name: "system-search-symbolic";
                   tooltip-text: _("Search");
-                  action-name: "win.open-search";
                   styles ["flat", "circular"]
                 }
 
@@ -306,114 +305,137 @@ template $PopcornBoxWindow: Adw.ApplicationWindow {
                 propagate-natural-height: true;
                 styles ["discover-toolbar-scroll"]
 
-                Box discover_toolbar {
-                  orientation: horizontal;
-                  spacing: 6;
-                  margin-top: 6;
-                  margin-bottom: 6;
-                  margin-start: 12;
-                  margin-end: 12;
-                  halign: center;
+                // The dropdown row and the search row share one column, so in
+                // Discover the search row spans the dropdown row. Outside
+                // Discover only the search row shows; the clamp keeps it from
+                // growing too wide (its limits are switched in code).
+                Adw.Clamp discover_search_clamp {
+                  maximum-size: 10000;
+                  tightening-threshold: 10000;
 
-                  Button discover_reset_btn {
-                    icon-name: "view-refresh-symbolic";
-                    valign: center;
-                    tooltip-text: _("Reset all Discover filters");
-                    styles ["flat", "circular"]
-                  }
+                  Box discover_search_column {
+                    orientation: vertical;
+                    spacing: 6;
+                    margin-top: 6;
+                    margin-bottom: 6;
+                    margin-start: 12;
+                    margin-end: 12;
+                    halign: center;
 
-                  DropDown type_dropdown {
-                    valign: center;
-                    enable-search: true;
-                    tooltip-text: _("Type");
-                  }
+                    Box discover_toolbar {
+                      orientation: horizontal;
+                      spacing: 6;
 
-                  DropDown catalog_dropdown {
-                    valign: center;
-                    enable-search: true;
-                    tooltip-text: _("Catalog");
-                  }
+                      Button discover_reset_btn {
+                        icon-name: "view-refresh-symbolic";
+                        valign: center;
+                        tooltip-text: _("Reset all Discover filters");
+                        styles ["flat", "circular"]
+                      }
 
-                  DropDown section_dropdown {
-                    valign: center;
-                    enable-search: true;
-                    tooltip-text: _("Sort by");
-                  }
+                      DropDown type_dropdown {
+                        valign: center;
+                        enable-search: true;
+                        tooltip-text: _("Type");
+                      }
 
-                  DropDown genre_dropdown {
-                    valign: center;
-                    enable-search: true;
-                    tooltip-text: _("Genre");
-                  }
+                      DropDown catalog_dropdown {
+                        valign: center;
+                        enable-search: true;
+                        tooltip-text: _("Catalog");
+                      }
 
-                  DropDown year_dropdown {
-                    valign: center;
-                    enable-search: true;
-                    tooltip-text: _("Year");
-                  }
+                      DropDown section_dropdown {
+                        valign: center;
+                        enable-search: true;
+                        tooltip-text: _("Sort by");
+                      }
 
-                  DropDown language_dropdown {
-                    valign: center;
-                    enable-search: true;
-                    tooltip-text: _("Language");
-                  }
+                      DropDown genre_dropdown {
+                        valign: center;
+                        enable-search: true;
+                        tooltip-text: _("Genre");
+                      }
 
-                  DropDown country_dropdown {
-                    valign: center;
-                    enable-search: true;
-                    tooltip-text: _("Country");
-                  }
+                      DropDown year_dropdown {
+                        valign: center;
+                        enable-search: true;
+                        tooltip-text: _("Year");
+                      }
 
-                  DropDown network_dropdown {
-                    valign: center;
-                    enable-search: true;
-                    tooltip-text: _("Network");
-                  }
+                      DropDown language_dropdown {
+                        valign: center;
+                        enable-search: true;
+                        tooltip-text: _("Language");
+                      }
 
-                  ToggleButton unique_check {
-                    icon-name: "view-grid-symbolic";
-                    valign: center;
-                    tooltip-text: _("Unique View (Deduplicate media across multiple provider streams/catalogs)");
-                    styles ["flat", "circular"]
-                  }
+                      DropDown country_dropdown {
+                        valign: center;
+                        enable-search: true;
+                        tooltip-text: _("Country");
+                      }
 
-                  ToggleButton discover_search_btn {
-                    icon-name: "filter-symbolic";
-                    valign: center;
-                    tooltip-text: _("Filter loaded results");
-                    styles ["flat", "circular"]
-                  }
+                      DropDown network_dropdown {
+                        valign: center;
+                        enable-search: true;
+                        tooltip-text: _("Network");
+                      }
 
-                  // Always allocated so the toolbar never reflows; it only
-                  // animates while a discover or unique page is loading.
-                  Spinner discover_spinner {
-                    valign: center;
-                    spinning: false;
-                    tooltip-text: _("Loading...");
+                      ToggleButton unique_check {
+                        icon-name: "view-grid-symbolic";
+                        valign: center;
+                        tooltip-text: _("Unique View (Deduplicate media across multiple provider streams/catalogs)");
+                        styles ["flat", "circular"]
+                      }
+
+                      // Always allocated so the toolbar never reflows; it only
+                      // animates while a discover or unique page is loading.
+                      Spinner discover_spinner {
+                        valign: center;
+                        spinning: false;
+                        tooltip-text: _("Loading...");
+                      }
+                    }
+
+                    Box advanced_search_box {
+                      orientation: horizontal;
+                      spacing: 6;
+                      // Spinner width (16) + toolbar spacing (6): in Discover the
+                      // row ends under the last button, not under the spinner.
+                      margin-end: 22;
+                      visible: false;
+
+                      // Global title search across the cache and every addon's
+                      // search catalogs, narrowed by the Discover dropdowns.
+                      SearchEntry discover_search_entry {
+                        hexpand: true;
+                        width-request: 180;
+                        placeholder-text: _("Search PopcornBox...");
+                      }
+
+                      ToggleButton discover_search_btn {
+                        icon-name: "filter-symbolic";
+                        valign: center;
+                        tooltip-text: _("Filter results");
+                        styles ["flat", "circular"]
+                      }
+
+                      // Quick local filter, shown by the filter button: it only
+                      // hides already loaded cards (title, description, date,
+                      // genre) and never starts a search.
+                      Entry discover_quick_filter_entry {
+                        visible: false;
+                        width-request: 220;
+                        valign: center;
+                        primary-icon-name: "filter-symbolic";
+                        primary-icon-activatable: true;
+                        primary-icon-tooltip-text: _("Close filter");
+                        placeholder-text: _("Filter results...");
+                        tooltip-text: _("Filter the shown results by title, description, date or genre");
+                      }
+                    }
                   }
                 }
-              }
-            }
-
-            Box advanced_search_box {
-              orientation: horizontal;
-              spacing: 8;
-              margin-top: 6;
-              margin-bottom: 2;
-              margin-start: 12;
-              margin-end: 12;
-              halign: center;
-              visible: false;
-
-              SearchEntry discover_search_entry {
-                width-request: 220;
-                placeholder-text: _("Filter loaded results...");
-              }
-
-              CheckButton discover_title_only_check {
-                label: _("Title Only");
-                valign: center;
-                tooltip-text: _("Filter by title only instead of genres or description");
               }
             }
 

@@ -4374,8 +4374,15 @@ def _escape_like(value):
     return str(value or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def get_cached_items_by_search(query, media_type=None, genre=None, year=None, sort_mode=None, limit=60, offset=0, title_only=False, language=None, country=None):
-    """Retrieve catalog item dicts from SQLite cache matching a search keyword and optional media_type/genre/year/language/country."""
+# Virtual catalog URLs of plugin sources (custom/Nuvio plugins, legacy CloudStream).
+PLUGIN_CATALOG_URL_PREFIXES = ("custom://", "nuvio://", "cloudstream://")
+
+
+def get_cached_items_by_search(query, media_type=None, genre=None, year=None, sort_mode=None, limit=60, offset=0, title_only=False, language=None, country=None, exclude_plugins=False, allowed_manifest_url=None):
+    """Retrieve catalog item dicts from SQLite cache matching a search keyword and optional media_type/genre/year/language/country.
+
+    With exclude_plugins, items cached from plugin catalogs are left out, except
+    those of allowed_manifest_url (the plugin catalog the user picked)."""
     if not query or not str(query).strip():
         return []
     q_str = _normalized_search_text(str(query).strip())
@@ -4464,6 +4471,19 @@ def get_cached_items_by_search(query, media_type=None, genre=None, year=None, so
                 yr_str = str(year).strip()
                 sql += " AND (json_extract(m.data, '$.year') LIKE ?)"
                 params.append(f"{yr_str}%")
+
+            if exclude_plugins:
+                plugin_cond = " OR ".join(
+                    ["COALESCE(json_extract(m.data, '$.is_custom_plugin'), 0) = 1"]
+                    + ["COALESCE(json_extract(m.data, '$.manifest_url'), '') LIKE ?"] * len(PLUGIN_CATALOG_URL_PREFIXES)
+                )
+                plugin_params = [f"{prefix}%" for prefix in PLUGIN_CATALOG_URL_PREFIXES]
+                if allowed_manifest_url:
+                    sql += f" AND (NOT ({plugin_cond}) OR json_extract(m.data, '$.manifest_url') = ?)"
+                    params.extend(plugin_params + [str(allowed_manifest_url)])
+                else:
+                    sql += f" AND NOT ({plugin_cond})"
+                    params.extend(plugin_params)
 
             if sort_mode == "Recent":
                 sql += """
