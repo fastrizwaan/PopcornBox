@@ -5014,37 +5014,6 @@ def is_valid_meta(res):
     return True
 
 
-def is_cloudstream_description_usable(description, title=""):
-    """Reject provider placeholders and release filenames used as fake synopses."""
-    desc = str(description or "").strip()
-    if not desc:
-        return False
-    desc_lower = desc.casefold()
-    if desc_lower in {
-        "hdhub4u video",
-        "no synopsis available.",
-        "synopsis temporarily unavailable.",
-        "no description available.",
-        "description not available",
-    }:
-        return False
-
-    def _normalized(value):
-        value = re.sub(r"\b(?:18|19|20)\d{2}\b", "", str(value or "").casefold())
-        return re.sub(r"[^a-z0-9]+", "", value)
-
-    desc_norm = _normalized(desc)
-    title_norm = _normalized(title)
-    if desc_norm and title_norm and desc_norm == title_norm:
-        return False
-
-    release_tags = re.compile(
-        r"\b(?:unrated|uncut|web[ .-]?dl|webrip|blu[ .-]?ray|brrip|hdrip|hdtv|dvdrip|"
-        r"x26[45]|(?:2160|1080|720|480)p|4k|dual audio|full movie|10bit|hevc|ddp\d*(?:\.\d)?)\b",
-        re.IGNORECASE,
-    )
-    return not bool(release_tags.search(desc))
-
 def merge_metadata(base, extra):
     """Merge metadata from multiple providers (e.g. Cinemeta episodes + Addon synopsis/poster/genres)."""
     if not base:
@@ -5320,7 +5289,9 @@ def _save_and_return_meta(res, imdb_id, media_type="movie", title=None, poster=N
 
 _NON_CUSTOM_ROUTE_PREFIXES = (
     "tt", "tmdb:", "ctmdb.", "http://", "https://", "tpb_ctl:",
-    "cloudstream:", "yt_id:", "kitsu:", "imdb:", "tvdb:", "local.",
+    # Legacy IDs saved by the removed CloudStream support; never custom routes.
+    "cloudstream:",
+    "yt_id:", "kitsu:", "imdb:", "tvdb:", "local.",
     "mal:", "anilist:",
 )
 
@@ -5387,6 +5358,7 @@ def fetch_movie_details(imdb_id, media_type="movie", title=None, use_cache=True,
         else:
             primary_id = next((i for i in imdb_id if str(i).startswith('tt')), imdb_id[0])
         return fetch_movie_details(primary_id, media_type, title, use_cache, poster, prefer_tmdb, expected_year)
+
 
     # Custom plugin route IDs (e.g. "vegamovies:https://...", "moviesdrive:https://...", "custom.scraper:...")
     str_custom_id = str(imdb_id or "").strip()
@@ -7283,6 +7255,9 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
             "bitrate": bitrate,
             "seeders": seeders,
             "title": s.get("name") or "",
+            # Preserve the raw display/provider label so title matching can
+            # ignore it when stream_title combines it with the actual release.
+            "name": name_str,
             "stream_title": full_title,
             "file_index": s.get("fileIdx"),
             "filename": filename,
@@ -7297,8 +7272,6 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
             "plugin_scraper_id": s.get("plugin_scraper_id"),
             # Preserved so the cache-filter can evict results for a different item.
             "plugin_scraper_tmdb_id": s.get("plugin_scraper_tmdb_id"),
-            "is_cloudstream": bool(s.get("is_cloudstream")),
-            "cloudstream_provider_id": s.get("cloudstream_provider_id"),
             "is_custom_plugin": bool(s.get("is_custom_plugin")),
             "custom_plugin_id": s.get("custom_plugin_id"),
             "is_youtube": bool(s.get("is_youtube") or is_youtube_stream(s) or yt_id or ("youtube.com" in stream_url_lower or "youtu.be" in stream_url_lower or "googlevideo.com" in stream_url_lower)),
@@ -7762,6 +7735,7 @@ def get_torrents(imdb_id, media_type="movie", season=None, episode=None, use_cac
             "title": item_title,
             "behaviorHints": {"filename": "stream.mp3"}
         }]
+
         
     cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
     if use_cache:
@@ -8212,7 +8186,7 @@ def _merge_parsed_streams(primary, secondary):
     return merged
 
 
-def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None, known_tmdb_id=None, expected_year=None, cloudstream_route_id=None, catalog_title=None, custom_plugin_route_id=None):
+def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None, known_tmdb_id=None, expected_year=None, catalog_title=None, custom_plugin_route_id=None):
     if database.is_adult_content_hidden():
         check_item = {"id": imdb_id, "title": title}
         if is_adult_item(check_item):
@@ -8544,8 +8518,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     if not plugins.is_plugins_enabled():
         cached = [s for s in cached if not s.get("is_nuvio_plugin")]
         cache_candidates = [s for s in cache_candidates if not s.get("is_nuvio_plugin")]
-    cached = [s for s in cached if not s.get("is_cloudstream")]
-    cache_candidates = [s for s in cache_candidates if not s.get("is_cloudstream")]
 
     # Drop cached Nuvio plugin streams that were fetched for a different TMDB
     # item.  This can happen when two movies share an IMDb ID in the cache (a
@@ -8711,9 +8683,10 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             or getattr(s, "id", "").strip().casefold() == provider_scope.casefold()
         ]
 
+
     has_cached_plugins = any(s.get("is_nuvio_plugin") for s in (cache_candidates or []))
     has_cached_addons = any(
-        not s.get("is_nuvio_plugin") and not s.get("is_cloudstream") and not s.get("is_custom_plugin")
+        not s.get("is_nuvio_plugin") and not s.get("is_custom_plugin")
         for s in (cache_candidates or [])
     )
     has_cached_custom = any(s.get("is_custom_plugin") for s in (cache_candidates or []))

@@ -50,7 +50,7 @@ class TestResumeAudioSubtitle(unittest.TestCase):
         cw_item = {
             "id": "tmdb:12345",
             "imdb_id": "tt9876543",
-            "alias_ids": ["cloudstream:abc", "slug:the-movie"],
+            "alias_ids": ["alt:abc", "slug:the-movie"],
             "title": "The Movie",
             "position": 1500.0,
             "duration": 6000.0,
@@ -73,7 +73,7 @@ class TestResumeAudioSubtitle(unittest.TestCase):
         self.assertEqual(found2["title"], "The Movie")
 
         # Lookup by alias
-        found3 = database.get_continue_watching_item("cloudstream:abc")
+        found3 = database.get_continue_watching_item("alt:abc")
         self.assertIsNotNone(found3)
         self.assertEqual(found3["position"], 1500.0)
 
@@ -354,7 +354,7 @@ class TestResumeAudioSubtitle(unittest.TestCase):
         self.assertEqual(res, api.MATCH_UNKNOWN)
 
     def test_match_stream_to_movie_accepts_tuner_and_various_stream_formats(self):
-        """Streams for Tuner (torrents, international titles, YTS badges, cloudstream) must be accepted."""
+        """Streams for Tuner (torrents, international titles, YTS badges) must be accepted."""
         from src import api
         test_streams = [
             # Standard scene torrent

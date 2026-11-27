@@ -37,7 +37,7 @@ if res_file.exists():
     except Exception:
         pass
 
-from src import window, cloudstream, api
+from src import window, api
 
 
 class TestStreamSelectionAndFailover(unittest.TestCase):
@@ -116,54 +116,6 @@ class TestStreamSelectionAndFailover(unittest.TestCase):
         self.assertEqual(len(mock_win.stream_queue), 2)
         self.assertIn("magnet", mock_win.stream_queue[1])
         self.assertEqual(mock_win.stream_queue[1]["magnet"], "magnet:?xt=urn:btih:3333333333333333333333333333333333333333")
-
-    def test_gdflix_extracts_instant_download_googleusercontent(self):
-        """GDFlix extractor must extract video-downloads.googleusercontent.com links with expiring credentials flag."""
-        html_page = """
-        <html>
-        <head><title>File</title></head>
-        <body>
-        Name : Ramayana Rise Of A Legend (2026) 1080p
-        <a href="https://dl.example.com/short">Instant Download</a>
-        </body>
-        </html>
-        """
-        with patch("src.cloudstream._http_get_text", return_value=html_page), \
-             patch("src.cloudstream._resolve_short_link", return_value="https://fastdl-one.pages.dev/?url=https://video-downloads.googleusercontent.com/ADGPM2mTfRZIvQQb4QHiwAb0j9fZyJg5E1NmGaMzeCXurNIDaJf3Er"):
-            sources = cloudstream._extract_gdflix_sources("https://gdflix.dev/file/abc")
-            self.assertEqual(len(sources), 1)
-            self.assertEqual(sources[0]["url"], "https://video-downloads.googleusercontent.com/ADGPM2mTfRZIvQQb4QHiwAb0j9fZyJg5E1NmGaMzeCXurNIDaJf3Er")
-            self.assertTrue(sources[0].get("has_expiring_credentials"))
-
-    def test_gdflix_extracts_cflare_direct_streams(self):
-        """GDFlix extractor must extract Cloud Resume and Quick Download links from /cflare/ subpages."""
-        main_page = """
-        <html>
-        <body>
-        Name : Ramayana Rise Of A Legend (2026) 1080p
-        <a href="/cflare/123/file">FAST CLOUD / ZIPDISK</a>
-        </body>
-        </html>
-        """
-        cf_page = """
-        <html>
-        <body>
-        <a href="https://cloud-dl.workers.dev/stream123">Cloud Resume Download</a>
-        <a href="https://quick.cloudpaglu.site/stream456">Quick Download (Ready)</a>
-        </body>
-        </html>
-        """
-        def fake_http_get(url, **kwargs):
-            if "/cflare/" in url:
-                return cf_page
-            return main_page
-
-        with patch("src.cloudstream._http_get_text", side_effect=fake_http_get):
-            sources = cloudstream._extract_gdflix_sources("https://gdflix.dev/file/abc")
-            self.assertEqual(len(sources), 2)
-            self.assertTrue(any("Cloud Resume" in s["name"] for s in sources))
-            self.assertTrue(any("Quick Download" in s["name"] for s in sources))
-            self.assertTrue(any("workers.dev" in s["url"] for s in sources))
 
     def test_play_stream_with_failover_sanitizes_queue_for_direct_stream(self):
         """play_stream_with_failover must purge all torrents from queue when a direct stream is played."""

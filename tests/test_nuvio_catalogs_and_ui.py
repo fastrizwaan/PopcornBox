@@ -64,6 +64,20 @@ class TestNuvioCatalogsRobustnessAndUI(unittest.TestCase):
                 "supported_types": ["movie", "tv"],
                 "content_language": ["en", "ja"],
                 "enabled": True,
+                "code": (
+                    "async function getCatalog(catalogId, type, page) {"
+                    " const r = await fetch('https://api.test/' + catalogId + '?p=' + page);"
+                    " return (await r.json()).items; }"
+                    " module.exports = { getCatalog, getStreams: async () => [] };"
+                ),
+            },
+            {
+                "id": "https://repo.test/manifest.json:streams_only",
+                "raw_id": "streams_only",
+                "name": "StreamsOnly",
+                "repository_url": "https://repo.test/manifest.json",
+                "supported_types": ["movie"],
+                "enabled": True,
                 "code": "module.exports = { getStreams: async () => [] };",
             },
             {
@@ -81,6 +95,8 @@ class TestNuvioCatalogsRobustnessAndUI(unittest.TestCase):
             cats = plugins.get_catalogs("movie")
             names = {c["addon_name"] for c in cats}
             self.assertIn("AllAnime", names)
+            # Stream-only scrapers have no catalog handler to browse.
+            self.assertNotIn("StreamsOnly", names)
             self.assertNotIn("DisabledProv", names)
             self.assertTrue(all(c["manifest_url"].startswith("nuvio://catalog/") for c in cats))
             self.assertEqual(
@@ -88,7 +104,8 @@ class TestNuvioCatalogsRobustnessAndUI(unittest.TestCase):
                 "https://repo.test/manifest.json:allanime",
             )
 
-    def test_nuvio_fetch_catalog_items_legal_tmdb_fallback(self):
+    def test_nuvio_fetch_catalog_items_never_synthesizes_tmdb_rows(self):
+        """A stream-only plugin has no catalog: Discover must not invent TMDb rows for it."""
         scraper = {
             "id": "https://repo.test/manifest.json:desiflix",
             "name": "DesiFlix",
@@ -97,31 +114,15 @@ class TestNuvioCatalogsRobustnessAndUI(unittest.TestCase):
             "enabled": True,
             "code": "module.exports = { getStreams: async () => [] };",
         }
-        fake_tmdb_resp = {
-            "results": [
-                {
-                    "id": 12345,
-                    "title": "Sample Hindi Film",
-                    "poster_path": "/poster.jpg",
-                    "backdrop_path": "/bg.jpg",
-                    "release_date": "2024-05-01",
-                    "vote_average": 7.8,
-                    "vote_count": 200,
-                    "popularity": 99.0,
-                    "overview": "A great movie.",
-                    "genre_ids": [18],
-                    "original_language": "hi",
-                }
-            ]
-        }
         seen_urls = []
 
         def fake_get(url, **kwargs):
             seen_urls.append(url)
-            return fake_tmdb_resp
+            return {"results": [{"id": 12345, "title": "Sample Hindi Film"}]}
 
         with patch.object(plugins, "is_plugins_enabled", return_value=True), \
              patch.object(plugins, "get_scraper", return_value=scraper), \
+             patch.object(plugins, "execute_scraper_catalog") as run_catalog, \
              patch.object(tmdb_helper, "_get_cached_request", side_effect=fake_get):
             items = api.fetch_items(
                 media_type="movie",
@@ -130,10 +131,9 @@ class TestNuvioCatalogsRobustnessAndUI(unittest.TestCase):
                 page=1,
                 limit=20,
             )
-            self.assertEqual(len(items), 1)
-            self.assertEqual(items[0]["id"], "tmdb:12345")
-            self.assertEqual(items[0]["nuvio_provider_name"], "DesiFlix")
-            self.assertTrue(any("with_original_language=hi%7Cta" in u for u in seen_urls))
+        self.assertEqual(items, [])
+        self.assertEqual(seen_urls, [])
+        run_catalog.assert_not_called()
 
     def test_nuvio_fetch_catalog_items_declared_sandbox_catalog(self):
         scraper = {
@@ -142,7 +142,11 @@ class TestNuvioCatalogsRobustnessAndUI(unittest.TestCase):
             "supported_types": ["movie"],
             "enabled": True,
             "catalogs": [{"id": "featured", "name": "Featured", "type": "movie"}],
-            "code": "module.exports = { getCatalog: async () => [], getStreams: async () => [] };",
+            "code": (
+                "async function getCatalog(id) { const r = await fetch('https://api.test/' + id);"
+                " return (await r.json()).metas; }"
+                " module.exports = { getCatalog, getStreams: async () => [] };"
+            ),
         }
         with patch.object(plugins, "is_plugins_enabled", return_value=True), \
              patch.object(plugins, "get_scraper", return_value=scraper), \
@@ -269,7 +273,7 @@ class TestNuvioCatalogsRobustnessAndUI(unittest.TestCase):
             self.assertEqual(len(scrapers), 1)
             self.assertIn("https://example.com/repo/providers/prov1.js", requested)
 
-    def test_merged_addons_plugins_ui_and_removed_cloudstream(self):
+    def test_merged_addons_plugins_ui_without_cloudstream_tab(self):
         import xml.etree.ElementTree as ET
 
         win_tree = ET.parse("src/window.ui")
@@ -280,6 +284,7 @@ class TestNuvioCatalogsRobustnessAndUI(unittest.TestCase):
         self.assertIn("page_nuvio_sub", win_ids)
         self.assertIn("page_custom_sub", win_ids)
         self.assertNotIn("page_cloudstream_sub", win_ids)
+        self.assertFalse(any(i and "cloudstream" in i for i in win_ids))
 
         def _page_title(root, page_id):
             for obj in root.iter("object"):
@@ -301,6 +306,7 @@ class TestNuvioCatalogsRobustnessAndUI(unittest.TestCase):
                 if attr.attrib.get("name") == "label":
                     menu_labels.append(attr.text)
         self.assertIn("Addons/Plugins", menu_labels)
+        self.assertFalse(any("CloudStream" in (label or "") for label in menu_labels))
         self.assertNotIn("Addons", menu_labels)
         self.assertNotIn("Plugins", menu_labels)
 
@@ -308,7 +314,7 @@ class TestNuvioCatalogsRobustnessAndUI(unittest.TestCase):
         prefs_ids = {el.attrib.get("id") for el in prefs_tree.getroot().iter("object") if "id" in el.attrib}
         self.assertIn("prefs_nuvio_plugins_row", prefs_ids)
         self.assertIn("prefs_custom_plugins_row", prefs_ids)
-        self.assertNotIn("prefs_cloudstream_plugins_row", prefs_ids)
+        self.assertFalse(any("cloudstream" in (i or "") for i in prefs_ids))
 
     def test_discover_catalog_dropdown_includes_nuvio_providers(self):
         fake_win = MagicMock()

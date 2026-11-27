@@ -48,6 +48,12 @@ Key Source Files (`src/`):
   Preferences dialog for addon management, scrapers, players, and download dirs.
 - `src/tmdb_helper.py`:
   TMDB metadata enrichment (posters, backdrops, episode descriptions, cast/crew).
+- `src/plugins.py` & `src/nuvio_runner.bundle.js`:
+  Nuvio plugin repositories and scrapers. Scraper JS runs out-of-process in
+  Deno through the runner bundle (`getStreams`, `getCatalog`/`getHome`,
+  `search`, `onSettings`), with per-scraper network host allow-lists.
+- `src/custom_plugins.py` & `src/custom_plugins_runner.py`:
+  Drop-in Python scrapers, isolated in a separate process.
 
 --------------------------------------------------------------------------------
 2. UI STRUCTURE & VIEW HIERARCHY
@@ -89,7 +95,7 @@ Search and plugin retrieval:
   release slugs by extracting an embedded year before title matching. When a
   custom catalog route supplies its own title and year, use those values for
   stream matching instead of a potentially ambiguous metadata-provider title.
-- For direct streams from Nuvio, CloudStream, Stremio, and custom providers,
+- For direct streams from Nuvio, Stremio, and custom providers,
   validate any informative title or filename against the complete requested
   title-token sequence, in order and at the start of the title after recognized
   provider, CDN, and release labels are removed. Normalize case, accents, punctuation,
@@ -98,6 +104,22 @@ Search and plugin retrieval:
   streams. Generic provider labels and opaque URLs provide no title evidence, so
   they remain subject to the existing checks. Keep torrent results on their
   existing matching path; do not apply this stricter direct-stream check to them.
+
+Nuvio plugins (reference: NuvioDesktop/ `features/plugins`):
+- Calls match Nuvio's runtime: `getStreams(tmdbId, mediaType, season, episode)`
+  with the bare TMDb ID (`plugin_content_id()` strips `tmdb:` and `:S:E`),
+  `mediaType` normalized to `movie`/`tv`, restored to `series` when the
+  scraper declares `series` (`js_plugin_media_type()`). Results accept a
+  string or `{url}` object URL, headers, subtitles, torrent fields.
+- Manifest `enabled: false` scrapers start disabled; `supportedPlatforms` /
+  `disabledPlatforms` are honoured; user toggles survive a refresh.
+- Installed repositories refresh automatically when older than 6 h
+  (`plugins.refresh_due_repositories()`, as Nuvio's
+  `PLUGIN_REPOSITORY_REFRESH_INTERVAL_MS`). The window starts the first pass
+  45 s after launch and rechecks hourly, one repository at a time on a
+  background thread.
+- A stream-only scraper has no Discover rows. Do not synthesize TMDb rows
+  for it; tests assert this.
 
 Stack Homogeneity & Layout Integrity:
 - Both `main_stack` and `library_stack` must have `hhomogeneous: false` and

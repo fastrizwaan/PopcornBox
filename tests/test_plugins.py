@@ -182,9 +182,12 @@ class TestNuvioPlugins(unittest.TestCase):
         plugins.set_plugins_enabled(True)
         self.assertTrue(api.has_stream_addons("movie"))
 
-        # Plugins disabled
+        # Plugins disabled. Custom drop-in plugins are a separate stream
+        # source, so isolate them from this check.
         plugins.set_plugins_enabled(False)
-        with patch.object(api, "get_stream_addons", return_value=[]):
+        from src import custom_plugins
+        with patch.object(api, "get_stream_addons", return_value=[]), \
+             patch.object(custom_plugins, "is_custom_plugins_enabled", return_value=False):
             self.assertFalse(api.has_stream_addons("movie"))
 
         plugins.set_plugins_enabled(True)
@@ -321,6 +324,31 @@ class TestNuvioPlugins(unittest.TestCase):
                 scraper, "4229", "tv", season=1, episode=1, expected_title="Dexter's Laboratory"
             )
         self.assertEqual(streams, [])
+
+
+    def test_refresh_due_repositories_uses_six_hour_interval(self):
+        import time as _time
+        now = _time.time()
+        fresh = {"manifest_url": "https://example.com/fresh/manifest.json", "last_updated": now - 60}
+        stale = {"manifest_url": "https://example.com/stale/manifest.json", "last_updated": now - 7 * 3600}
+        never = {"manifest_url": "https://example.com/never/manifest.json"}
+        self.assertFalse(plugins.is_repository_refresh_due(fresh, now))
+        self.assertTrue(plugins.is_repository_refresh_due(stale, now))
+        self.assertTrue(plugins.is_repository_refresh_due(never, now))
+
+        with patch.object(plugins, "is_plugins_enabled", return_value=True), \
+             patch.object(plugins, "get_installed_repositories", return_value=[fresh, stale, never]), \
+             patch.object(plugins, "refresh_repository", return_value=(True, "ok", {})) as refresh:
+            self.assertEqual(plugins.refresh_due_repositories(), 2)
+        self.assertEqual(
+            [c.args[0] for c in refresh.call_args_list],
+            [stale["manifest_url"], never["manifest_url"]],
+        )
+
+        with patch.object(plugins, "is_plugins_enabled", return_value=False), \
+             patch.object(plugins, "refresh_repository") as refresh:
+            self.assertEqual(plugins.refresh_due_repositories(), 0)
+        refresh.assert_not_called()
 
 
 if __name__ == "__main__":

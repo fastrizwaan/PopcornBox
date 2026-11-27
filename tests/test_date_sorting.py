@@ -30,7 +30,7 @@ if res_file.exists():
         pass
 
 from src.window import PopcornBoxWindow, _discover_item_release_sort_key
-from src import cloudstream, api
+from src import api
 
 
 class TestDateSorting(unittest.TestCase):
@@ -123,7 +123,7 @@ class TestDateSorting(unittest.TestCase):
             "type": "movie",
             "catalog_id": "hindi-movies",
             "section": "Hindi Movies",
-            "addon_url": "cloudstream://catalog/fake",
+            "addon_url": "https://example.com/catalog/fake",
         }
         self.win.reload_catalog_grid(filters_hindi)
         self.assertEqual(self.win.current_sort, "Popular")
@@ -133,7 +133,7 @@ class TestDateSorting(unittest.TestCase):
             "type": "movie",
             "catalog_id": "english-movies",
             "section": "English Movies",
-            "addon_url": "cloudstream://catalog/fake",
+            "addon_url": "https://example.com/catalog/fake",
         }
         self.win.reload_catalog_grid(filters_english)
         self.assertEqual(self.win.current_sort, "Popular")
@@ -143,7 +143,7 @@ class TestDateSorting(unittest.TestCase):
             "type": "movie",
             "catalog_id": "latest-movies",
             "section": "Latest Movies",
-            "addon_url": "cloudstream://catalog/fake",
+            "addon_url": "https://example.com/catalog/fake",
         }
         self.win.reload_catalog_grid(filters_latest)
         self.assertEqual(self.win.current_sort, "Recent")
@@ -157,25 +157,6 @@ class TestDateSorting(unittest.TestCase):
         }
         self.win.reload_catalog_grid(filters_new)
         self.assertEqual(self.win.current_sort, "Recent")
-
-    def test_fourkhdhub_hindi_and_english_sections(self):
-        provider = cloudstream.FourKHDHubCloudStreamProvider()
-        mock_html = """
-        <html>
-            <a href="/hindi-film-1/" class="movie-card">
-                <img src="/img1.jpg" alt="Hindi Film">
-                <div class="card-title">Hindi Film (2024)</div>
-            </a>
-        </html>
-        """
-        with patch("src.cloudstream._http_get_text", return_value=mock_html):
-            sections = provider.get_main_page(page=1)
-            sec_dict = dict(sections)
-            self.assertIn("Hindi Movies", sec_dict)
-            self.assertIn("English Movies", sec_dict)
-            self.assertEqual(len(sec_dict["Hindi Movies"]), 1)
-            self.assertEqual(len(sec_dict["English Movies"]), 1)
-
 
 if __name__ == "__main__":
     unittest.main()

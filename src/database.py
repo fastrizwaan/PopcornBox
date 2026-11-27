@@ -224,6 +224,15 @@ def _read_db():
                 data["plugin_repositories"] = []
             if "plugin_scrapers" not in data:
                 data["plugin_scrapers"] = []
+            # CloudStream support was removed; drop its leftover keys.
+            for stale_key in ("cloudstream_repositories", "cloudstream_plugins"):
+                if stale_key in data:
+                    data.pop(stale_key)
+                    migrated = True
+            if isinstance(data.get("settings"), dict):
+                for stale_key in [k for k in data["settings"] if str(k).startswith("cloudstream_")]:
+                    data["settings"].pop(stale_key)
+                    migrated = True
             if "settings" not in data:
                 data["settings"] = {}
             if "hide_adult_content" not in data["settings"]:
@@ -1781,7 +1790,7 @@ def _normalize_stream_for_storage(stream):
         "externalUrl", "addon_names", "addon_name", "behaviorHints", "subtitles",
         "saved_at", "binge_group", "expires_at", "has_expiring_credentials",
         "is_nuvio_plugin", "plugin_scraper_id", "plugin_scraper_tmdb_id",
-        "headers", "is_cloudstream", "cloudstream_provider_id",
+        "headers",
         "is_custom_plugin", "custom_plugin_id", "is_hls", "is_dash",
         "audio_track_id", "audio_track_lang", "audio_track_title", "audio_disabled",
         "sub_track_id", "sub_track_lang", "sub_track_title", "sub_visibility", "sub_disabled", "sub_is_external"

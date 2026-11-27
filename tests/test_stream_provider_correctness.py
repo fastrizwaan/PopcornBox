@@ -554,7 +554,8 @@ class TestWrongYearFilter(unittest.TestCase):
     def test_correct_year_in_title_kept(self):
         good = self._make_stream("Movie (2015) 1080p", url="https://correct.test/m.mp4")
         result = self._run_filter([good], expected_year="2015")
-        self.assertEqual(len(result), 1)
+        # The cached batch and the completion batch both deliver the card.
+        self.assertEqual({s.get("url") for s in result}, {"https://correct.test/m.mp4"})
 
     def test_tv_series_not_filtered_by_year(self):
         """Year filter must be a no-op for TV series."""

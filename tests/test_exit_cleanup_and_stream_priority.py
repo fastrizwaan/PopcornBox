@@ -346,7 +346,6 @@ class TestExitCleanupAndStreamPriority(unittest.TestCase):
         with patch("src.api.database.get_addons", return_value=[direct_addon, torrent_addon]), \
              patch("src.api.database.get_cached_streams", return_value=None), \
              patch("src.plugins.is_plugins_enabled", return_value=False), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
              patch("src.tmdb_helper.resolve_all_provider_ids", return_value=[]), \
              patch("src.api.database.save_cached_streams_full", side_effect=lambda *args, **kwargs: args[3]), \
              patch.object(api, "fetch_items", return_value=[]):
@@ -392,7 +391,6 @@ class TestExitCleanupAndStreamPriority(unittest.TestCase):
         with patch("src.api.database.get_addons", return_value=[direct_addon, torrent_addon]), \
              patch("src.api.database.get_cached_streams", return_value=None), \
              patch("src.plugins.is_plugins_enabled", return_value=False), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
              patch("src.tmdb_helper.resolve_all_provider_ids", return_value=[]), \
              patch("src.api.database.save_cached_streams_full", side_effect=lambda *args, **kwargs: args[3]), \
              patch("src.api.database.save_cached_streams_partial", side_effect=lambda *args, **kwargs: args[2]), \
@@ -414,7 +412,6 @@ class TestExitCleanupAndStreamPriority(unittest.TestCase):
         with patch("src.api.database.get_addons", return_value=[direct_addon, torrent_addon]), \
              patch("src.api.database.get_cached_streams", return_value=None), \
              patch("src.plugins.is_plugins_enabled", return_value=False), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
              patch("src.tmdb_helper.resolve_all_provider_ids", return_value=[]), \
              patch("src.api.database.save_cached_streams_full", side_effect=lambda *args, **kwargs: args[3]), \
              patch("src.api.database.save_cached_streams_partial", side_effect=lambda *args, **kwargs: args[2]), \

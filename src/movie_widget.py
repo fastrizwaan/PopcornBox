@@ -1040,7 +1040,7 @@ class MovieWidget(Gtk.Box):
         
         item_id = movie_data.get("imdb_id") or movie_data.get("id")
         if not (isinstance(item_id, str) and re.fullmatch(r"tt\d{7,8}", item_id)):
-            # CloudStream catalog cards keep their provider route as the click
+            # Provider catalog cards keep their provider route as the click
             # ID, but some (notably YTS) also provide an IMDb alias. Use that
             # alias for poster recovery so Cinemeta/TMDB can replace an
             # unreachable provider image without changing the card's route.

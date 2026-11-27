@@ -84,7 +84,6 @@ class TestStreamProvidersWidgetVisibility(unittest.TestCase):
         with patch("src.database.get_addons", return_value=list(self.catalog_addons)), \
              patch("src.plugins.is_plugins_enabled", return_value=False), \
              patch("src.custom_plugins.is_custom_plugins_enabled", return_value=False), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
              patch("src.window.MovieDetailsPage.load_details_async"), \
              patch("src.window.MovieDetailsPage.fetch_torrents_async") as mock_fetch:
             page = MovieDetailsPage(movie_stub, on_back=lambda: None)
@@ -103,7 +102,6 @@ class TestStreamProvidersWidgetVisibility(unittest.TestCase):
         with patch("src.database.get_addons", return_value=addons_with_stream), \
              patch("src.plugins.is_plugins_enabled", return_value=False), \
              patch("src.custom_plugins.is_custom_plugins_enabled", return_value=False), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
              patch("src.window.MovieDetailsPage.load_details_async"), \
              patch("src.window.MovieDetailsPage.fetch_torrents_async") as mock_fetch:
             page = MovieDetailsPage(movie_stub, on_back=lambda: None)
@@ -122,23 +120,6 @@ class TestStreamProvidersWidgetVisibility(unittest.TestCase):
              patch("src.plugins.is_plugins_enabled", return_value=False), \
              patch("src.custom_plugins.is_custom_plugins_enabled", return_value=True), \
              patch("src.custom_plugins.get_enabled_scrapers_for_type", return_value=[MagicMock()]), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
-             patch("src.window.MovieDetailsPage.load_details_async"), \
-             patch("src.window.MovieDetailsPage.fetch_torrents_async"):
-            page = MovieDetailsPage(movie_stub, on_back=lambda: None)
-            self.assertTrue(page.sidebar_box.get_visible())
-
-    def test_movie_details_shows_stream_providers_widget_when_cloudstream_installed(self):
-        """When runnable CloudStream providers are installed, the widget is shown."""
-        from src.window import MovieDetailsPage
-
-        movie_stub = {"id": "tt0106179", "title": "Iron Man", "type": "movie"}
-        with patch("src.database.get_addons", return_value=list(self.catalog_addons)), \
-             patch("src.plugins.is_plugins_enabled", return_value=False), \
-             patch("src.custom_plugins.is_custom_plugins_enabled", return_value=False), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=True), \
-             patch("src.cloudstream.get_all_plugins", return_value=[{"enabled": True}]), \
-             patch("src.cloudstream.is_provider_runnable", return_value=True), \
              patch("src.window.MovieDetailsPage.load_details_async"), \
              patch("src.window.MovieDetailsPage.fetch_torrents_async"):
             page = MovieDetailsPage(movie_stub, on_back=lambda: None)
@@ -157,7 +138,6 @@ class TestStreamProvidersWidgetVisibility(unittest.TestCase):
         with patch("src.database.get_addons", return_value=list(self.catalog_addons)), \
              patch("src.plugins.is_plugins_enabled", return_value=False), \
              patch("src.custom_plugins.is_custom_plugins_enabled", return_value=False), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
              patch("src.window.MovieDetailsPage.load_details_async"), \
              patch("src.window.MovieDetailsPage.fetch_torrents_async"):
             page = MovieDetailsPage(movie_stub, on_back=lambda: None)
@@ -173,7 +153,6 @@ class TestStreamProvidersWidgetVisibility(unittest.TestCase):
         with patch("src.database.get_addons", side_effect=lambda: current_addons), \
              patch("src.plugins.is_plugins_enabled", return_value=False), \
              patch("src.custom_plugins.is_custom_plugins_enabled", return_value=False), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
              patch("src.window.MovieDetailsPage.load_details_async"), \
              patch("src.window.MovieDetailsPage.fetch_torrents_async"):
             page = MovieDetailsPage(movie_stub, on_back=lambda: None)
@@ -204,7 +183,6 @@ class TestStreamProvidersWidgetVisibility(unittest.TestCase):
         with patch("src.database.get_addons", return_value=list(self.catalog_addons)), \
              patch("src.plugins.is_plugins_enabled", return_value=False), \
              patch("src.custom_plugins.is_custom_plugins_enabled", return_value=False), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
              patch("src.window.MovieDetailsPage.load_details_async"), \
              patch("src.window.MovieDetailsPage.fetch_torrents_async"):
             page = MovieDetailsPage(series_stub, on_back=lambda: None)
@@ -257,7 +235,6 @@ class TestStreamProvidersWidgetVisibility(unittest.TestCase):
         with patch("src.database.get_addons", return_value=list(self.catalog_addons)), \
              patch("src.plugins.is_plugins_enabled", return_value=False), \
              patch("src.custom_plugins.is_custom_plugins_enabled", return_value=False), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=False), \
              patch("src.window.MovieDetailsPage.load_details_async"), \
              patch("src.window.MovieDetailsPage.fetch_torrents_async"):
             page = MovieDetailsPage(movie_stub, on_back=lambda: None)

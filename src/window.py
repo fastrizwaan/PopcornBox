@@ -5336,6 +5336,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     plugin_provider_search_entry: Gtk.SearchEntry = Gtk.Template.Child()
     plugin_providers_listbox: Gtk.ListBox = Gtk.Template.Child()
 
+
     plugins_sub_stack: Adw.ViewStack = Gtk.Template.Child()
     plugins_switcher_title: Adw.ViewSwitcher = Gtk.Template.Child()
 
@@ -5428,7 +5429,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self.offload: Gtk.GraphicsOffload = Gtk.GraphicsOffload(child=self.gl_area)
         self.offload.set_black_background(True)
 
+        debug_log("GPU vendor probe START")
         vendor: str | None = get_gpu_vendor(libgl)
+        debug_log("GPU vendor probe DONE", vendor or "unavailable")
         if vendor and "nvidia" in vendor:
             self.offload.set_enabled(Gtk.GraphicsOffloadEnabled.DISABLED)
 
@@ -5609,6 +5612,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._youtube_safe_mode_video_url: str | None = None
         self.mpv_ctx: mpv.MpvRenderContext
 
+        debug_log("libmpv core initialization START")
         self.mpv = mpv.MPV(
             # terminal=True,
             # log_handler=print,
@@ -5656,6 +5660,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             save_watch_history=True,
             watch_history_path=WATCH_HISTORY_JSONL,
         )
+        debug_log("libmpv core initialization DONE")
 
         try:
             from . import doh
@@ -5680,9 +5685,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self.mpv.command("change-list", "watch-later-options", "remove", "volume")
         self.mpv.command("change-list", "watch-later-options", "remove", "sub-scale")
 
+        debug_log("window action setup START")
         self._setup_actions()
+        debug_log("window action setup DONE")
+        debug_log("window widget setup START")
         self._setup_widgets()
+        debug_log("window widget setup DONE")
+        debug_log("window observer setup START")
         self._setup_observers()
+        debug_log("window observer setup DONE")
 
         try:
             self.mpv.command("load-input-conf", f"memory://{INTERNAL_BINDINGS}")
@@ -9843,6 +9854,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         # Trigger background Stremio sync once on startup (deferred 3s to keep startup instantaneous)
         GLib.timeout_add(3000, lambda: (self._trigger_background_stremio_sync(), False)[1])
 
+        # Refresh Nuvio plugin repositories older than 6 h, as Nuvio does.
+        # Deferred well past startup, then rechecked hourly.
+        GLib.timeout_add_seconds(45, lambda: (self._trigger_plugin_repository_refresh(), False)[1])
+        GLib.timeout_add_seconds(3600, lambda: (self._trigger_plugin_repository_refresh(), True)[1])
+
         debug_log("PopcornBoxWindow.__init__ ALL DONE")
         settings.connect("changed::show-movies-button", lambda *a: self.update_category_buttons_visibility())
         settings.connect("changed::show-series-button", lambda *a: self.update_category_buttons_visibility())
@@ -9861,6 +9877,30 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             api.check_addons_health_background(callback=on_health_checked, live=live)
         except Exception as e:
             logger.debug(f"Failed to start background addon health check: {e}")
+
+    def _trigger_plugin_repository_refresh(self):
+        def worker():
+            from . import plugins
+            try:
+                refreshed = plugins.refresh_due_repositories()
+            except Exception as e:
+                logger.debug(f"Background plugin repository refresh failed: {e}")
+                return
+            if not refreshed:
+                return
+
+            def apply():
+                from . import api
+                api.invalidate_catalogs_cache()
+                if hasattr(self, "_discover_catalog_list_cache") and isinstance(self._discover_catalog_list_cache, dict):
+                    self._discover_catalog_list_cache.clear()
+                if self.main_stack.get_visible_child_name() == "plugins":
+                    self._populate_plugins()
+                return False
+
+            GLib.idle_add(apply)
+
+        threading.Thread(target=worker, daemon=True, name="PluginRepoAutoRefresh").start()
 
     def _hourly_addon_health_check(self):
         self._trigger_background_addon_health_check(live=True)
@@ -16372,6 +16412,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     def _populate_discover_row_slot(self, slot, row_info, items, target_box):
         if not items or not slot:
             return
+        debug_log(
+            f"_populate_discover_row_slot START: '{row_info.get('title', 'Catalog')}'",
+            f"{len(items)} cards",
+        )
         from .movie_widget import MovieWidget
         from . import database, api
 

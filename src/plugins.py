@@ -1093,6 +1093,47 @@ def refresh_repository(manifest_url):
     return True, f"Refreshed {repo_info['name']}", repo_info
 
 
+# Nuvio refreshes installed repositories every 6 h so scraper code fixes reach
+# users without a manual refresh (PLUGIN_REPOSITORY_REFRESH_INTERVAL_MS).
+REPOSITORY_REFRESH_INTERVAL_SECONDS = 6 * 60 * 60
+_AUTO_REFRESH_LOCK = threading.Lock()
+
+
+def is_repository_refresh_due(repo, now=None):
+    try:
+        last = float((repo or {}).get("last_updated") or 0)
+    except (TypeError, ValueError):
+        last = 0.0
+    now = time.time() if now is None else now
+    return last <= 0 or now - last >= REPOSITORY_REFRESH_INTERVAL_SECONDS
+
+
+def refresh_due_repositories(is_cancelled=None):
+    """
+    Refresh installed repositories whose last update is older than 6 h.
+    Runs one repository at a time on the calling (background) thread so the
+    request pacing in `_http_get_text` is respected. Returns refreshed count.
+    """
+    if not is_plugins_enabled():
+        return 0
+    if not _AUTO_REFRESH_LOCK.acquire(blocking=False):
+        return 0  # a refresh pass is already running
+    refreshed = 0
+    try:
+        for repo in get_installed_repositories():
+            if is_cancelled and is_cancelled():
+                break
+            manifest_url = (repo or {}).get("manifest_url")
+            if not manifest_url or not is_repository_refresh_due(repo):
+                continue
+            ok, _msg, _info = refresh_repository(manifest_url)
+            if ok:
+                refreshed += 1
+    finally:
+        _AUTO_REFRESH_LOCK.release()
+    return refreshed
+
+
 # --- Scraper Execution ---
 
 

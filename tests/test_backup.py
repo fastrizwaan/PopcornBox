@@ -8,7 +8,7 @@ from pathlib import Path
 # Ensure testing flag is set before imports
 os.environ["POPCORN_TEST"] = "1"
 
-from src import database, cloudstream, backup
+from src import database, backup
 
 
 class TestBackupRestore(unittest.TestCase):
@@ -16,7 +16,7 @@ class TestBackupRestore(unittest.TestCase):
         database.reset_json_cache()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
-        # Point database and cloudstream to temp directory
+        # Point database to temp directory
         self.orig_config_dir = database.CONFIG_DIR
         self.orig_db_file = database.DB_FILE
         self.temp_config_dir = Path(self.temp_dir.name) / "config"
@@ -25,17 +25,11 @@ class TestBackupRestore(unittest.TestCase):
         database.DB_FILE = self.temp_config_dir / "data.json"
         database.reset_json_cache()
 
-        # Point packages dir to temp
-        self.temp_pkg_dir = Path(self.temp_dir.name) / "packages"
-        self.temp_pkg_dir.mkdir(parents=True, exist_ok=True)
-        self.orig_pkg_dir_func = cloudstream.get_packages_dir
-        cloudstream.get_packages_dir = lambda: self.temp_pkg_dir
 
     def tearDown(self):
         database.reset_json_cache()
         database.CONFIG_DIR = self.orig_config_dir
         database.DB_FILE = self.orig_db_file
-        cloudstream.get_packages_dir = self.orig_pkg_dir_func
         database.reset_json_cache()
 
     def test_backup_and_restore_zip(self):
@@ -67,29 +61,6 @@ class TestBackupRestore(unittest.TestCase):
         database.save_plugin_scrapers([sample_scraper])
         database.set_setting("plugins_scraper_settings", {"scraper1": {"api_key": "secret123"}})
 
-        sample_cs_repo = {
-            "name": "CS Repo",
-            "manifest_url": "https://cs.example.com/repo.json",
-            "url": "https://cs.example.com/repo.json"
-        }
-        database.save_cloudstream_repository(sample_cs_repo)
-
-        sample_cs_plugin = {
-            "id": "cs_provider_1",
-            "name": "CS Provider 1",
-            "storage_key": "test_cs_pkg_123",
-            "repository_manifest_url": "https://cs.example.com/repo.json",
-            "is_installed": True,
-            "enabled": True,
-            "version": 10,
-            "installed_version": 10,
-        }
-        database.save_cloudstream_plugins([sample_cs_plugin])
-
-        # Create dummy .cs3 file
-        dummy_pkg_file = self.temp_pkg_dir / "test_cs_pkg_123.cs3"
-        dummy_pkg_file.write_bytes(b"DUMMY_CS3_CONTENT_FOR_BACKUP")
-
         # 2. Create ZIP backup
         backup_zip = Path(self.temp_dir.name) / "test_backup.zip"
         success, msg, summary = backup.create_backup(backup_zip)
@@ -97,33 +68,22 @@ class TestBackupRestore(unittest.TestCase):
         self.assertTrue(backup_zip.is_file())
         self.assertEqual(summary["addons_count"], len(database.get_addons()))
         self.assertEqual(summary["nuvio_repos_count"], 1)
-        self.assertEqual(summary["cloudstream_repos_count"], 1)
-        self.assertEqual(summary["cloudstream_installed_count"], 1)
+        self.assertNotIn("cloudstream_repos_count", summary)
 
         # Inspect zip contents
         with zipfile.ZipFile(backup_zip, "r") as zf:
             self.assertIn("backup.json", zf.namelist())
-            self.assertIn("cloudstream_packages/test_cs_pkg_123.cs3", zf.namelist())
-            self.assertEqual(zf.read("cloudstream_packages/test_cs_pkg_123.cs3"), b"DUMMY_CS3_CONTENT_FOR_BACKUP")
 
-        # 3. Clear database & packages to simulate fresh install
+        # 3. Clear database to simulate fresh install
         database.set_setting("plugins_scraper_settings", {})
         database.remove_plugin_repository("https://nuvio.example.com/manifest.json")
-        database.remove_cloudstream_repository("https://cs.example.com/repo.json")
-        if dummy_pkg_file.exists():
-            dummy_pkg_file.unlink()
 
         self.assertEqual(len(database.get_plugin_repositories()), 0)
-        self.assertEqual(len(database.get_cloudstream_repositories()), 0)
-        self.assertFalse(dummy_pkg_file.exists())
 
         # 4. Restore ZIP backup
         res_success, res_msg, res_summary = backup.restore_backup(backup_zip)
         self.assertTrue(res_success, res_msg)
         self.assertEqual(res_summary["nuvio_repos_count"], 1)
-        self.assertEqual(res_summary["cloudstream_repos_count"], 1)
-        self.assertEqual(res_summary["cloudstream_installed_count"], 1)
-        self.assertEqual(res_summary["extracted_packages_count"], 1)
 
         # 5. Verify restored state
         restored_addons = [a for a in database.get_addons() if a.get("id") == "community.testaddon"]
@@ -136,18 +96,6 @@ class TestBackupRestore(unittest.TestCase):
         restored_scraper_settings = database.get_setting("plugins_scraper_settings", {})
         self.assertEqual(restored_scraper_settings.get("scraper1", {}).get("api_key"), "secret123")
 
-        restored_cs_repos = database.get_cloudstream_repositories()
-        self.assertEqual(len(restored_cs_repos), 1)
-        self.assertEqual(restored_cs_repos[0]["manifest_url"], "https://cs.example.com/repo.json")
-
-        restored_cs_plugins = database.get_cloudstream_plugins()
-        self.assertEqual(len(restored_cs_plugins), 1)
-        self.assertTrue(restored_cs_plugins[0].get("is_installed"))
-        self.assertTrue(restored_cs_plugins[0].get("enabled"))
-
-        # Verify .cs3 package was extracted
-        self.assertTrue(dummy_pkg_file.is_file())
-        self.assertEqual(dummy_pkg_file.read_bytes(), b"DUMMY_CS3_CONTENT_FOR_BACKUP")
 
     def test_backup_and_restore_json(self):
         sample_addon = {
@@ -382,6 +330,25 @@ class TestBackupRestore(unittest.TestCase):
         self.assertEqual(summary["continue_watching_count"], 0)
         self.assertEqual(database.get_setting("stream_provider_timeout"), 30)
 
+
+    def test_restore_ignores_legacy_cloudstream_backup_data(self):
+        """Backups made before CloudStream support was removed still restore; their CloudStream data is skipped."""
+        legacy_payload = {
+            "addons": [],
+            "cloudstream": {
+                "repositories": [{"name": "CS Repo", "manifest_url": "https://cs.example.com/repo.json"}],
+                "plugins": [{"id": "cs_provider_1", "storage_key": "cs_pkg", "is_installed": True}],
+            },
+        }
+        legacy_zip = Path(self.temp_dir.name) / "legacy_backup.zip"
+        with zipfile.ZipFile(legacy_zip, "w") as zf:
+            zf.writestr("backup.json", json.dumps(legacy_payload))
+            zf.writestr("cloudstream_packages/cs_pkg.cs3", b"LEGACY_PACKAGE")
+
+        success, msg, summary = backup.restore_backup(legacy_zip)
+        self.assertTrue(success, msg)
+        self.assertNotIn("cloudstream_repos_count", summary)
+        self.assertFalse(hasattr(database, "get_cloudstream_repositories"))
 
 if __name__ == "__main__":
     unittest.main()

@@ -171,8 +171,7 @@ class TestAllTabAndProviders(unittest.TestCase):
 
         # Call get_torrents_streamed with source_scope=None (All)
         with patch("src.api.plugins.is_plugins_enabled", return_value=False), \
-             patch("src.api.database.get_addons", return_value=[]), \
-             patch("src.cloudstream.is_cloudstream_enabled", return_value=False):
+             patch("src.api.database.get_addons", return_value=[]):
             res = api.get_torrents_streamed("tt_test_movie", media_type="movie", source_scope=None)
 
         self.assertEqual(len(res), 2)

@@ -28,7 +28,7 @@ def get_default_backup_filename():
 
 def create_backup_data():
     """
-    Gather all addons, plugins, library data (favorites,
+    Gather all addons, Nuvio plugins, library data (favorites,
     watched, history, continue watching), downloads, and settings into a clean dictionary.
     """
     from . import database
@@ -214,7 +214,7 @@ def restore_backup(input_path):
             if "group_by_repository" in nuvio:
                 database.set_setting("plugins_group_by_repository", bool(nuvio["group_by_repository"]))
 
-        # 3. Restore settings
+        # 4. Restore settings
         settings = payload.get("settings", {})
         if isinstance(settings, dict):
             safe_settings = {k: v for k, v in settings.items() if k != "stremio_auth_key"}

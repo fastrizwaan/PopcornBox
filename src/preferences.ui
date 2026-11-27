@@ -530,11 +530,11 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
             <child>
               <object class="AdwPreferencesGroup">
                 <property name="title" translatable="yes">Backup &amp;amp; Restore</property>
-                <property name="description" translatable="yes">Backup or restore addons, plugins, CloudStream repositories, and library data</property>
+                <property name="description" translatable="yes">Backup or restore addons, plugins, and library data</property>
                 <child>
                   <object class="AdwActionRow" id="backup_config_row">
                     <property name="title" translatable="yes">Backup Configuration</property>
-                    <property name="subtitle" translatable="yes">Save addons, plugins, CloudStream repositories, history, and favorites to a backup file</property>
+                    <property name="subtitle" translatable="yes">Save addons, plugins, history, and favorites to a backup file</property>
                     <property name="activatable-widget">backup_config_btn</property>
                     <child type="suffix">
                       <object class="GtkButton" id="backup_config_btn">
@@ -548,7 +548,7 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                 <child>
                   <object class="AdwActionRow" id="restore_config_row">
                     <property name="title" translatable="yes">Restore Configuration</property>
-                    <property name="subtitle" translatable="yes">Restore addons, plugins, CloudStream repositories, history, and favorites from a backup file</property>
+                    <property name="subtitle" translatable="yes">Restore addons, plugins, history, and favorites from a backup file</property>
                     <property name="activatable-widget">restore_config_btn</property>
                     <child type="suffix">
                       <object class="GtkButton" id="restore_config_btn">
