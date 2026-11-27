@@ -6719,7 +6719,14 @@ def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None,
     # Check scene release / dated / episode-tagged / video filename title prefix
     lower_raw = raw_str.lower()
     has_video_ext = any(lower_raw.endswith(ext) for ext in _VIDEO_FILE_EXTS)
-    scene_match = _RE_SCENE_BOUNDARY.search(fn)
+    # The first year/quality/language tag ends the release title, unless that
+    # tag is itself part of the requested title ("Blade Runner 2049", "1917").
+    scene_match = None
+    for boundary in _RE_SCENE_BOUNDARY.finditer(fn):
+        if re.sub(r"[^a-z0-9]", "", boundary.group(0).lower()) in title_word_set:
+            continue
+        scene_match = boundary
+        break
 
     if scene_match or has_video_ext or not require_scene_boundary:
         prefix = (
@@ -6732,6 +6739,11 @@ def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None,
             prefix_tokens = _tokenize_clean_words(prefix)
             prefix_core = []
             for w in prefix_tokens:
+                # Numbers count as noise ("2.0" audio, years), but not when they are
+                # part of the requested title itself ("Iron Man 2", "M3GAN 2.0").
+                if w in title_word_set:
+                    prefix_core.append(w)
+                    continue
                 if _is_title_noise_token(w, ignored_words):
                     continue
                 if _matches_joined_target(w):
@@ -6772,16 +6784,68 @@ def check_movie_title_mismatch(target_title, filename, extra_ignored_words=None,
     return False
 
 
+_RE_RELEASE_YEAR = re.compile(r"(?<![0-9])((?:19|20)[0-9]{2})(?![0-9])")
+
+
+def _release_name_year(text, title_words=()):
+    """First year stated in a release name, ignoring numbers that belong to the title ("2049", "1917")."""
+    for m in _RE_RELEASE_YEAR.finditer(str(text or "")):
+        if m.group(1) in title_words:
+            continue
+        return int(m.group(1))
+    return None
+
+
+def stream_year_mismatch(stream, expected_year, target_title=None):
+    """True when a stream's release name states a year that is clearly not the requested one.
+
+    Only explicit evidence counts: names without a year are never rejected, and
+    +-1 is allowed for release-date vs. listing differences. This catches same-name
+    films from other years ("Love (2008)" for "Love" 2015) and longer titles from
+    other years ("Love Aaj Kal (2009)" for "Love" 2015).
+    """
+    try:
+        expected = int(str(expected_year or "")[:4])
+    except ValueError:
+        return False
+    if not isinstance(stream, dict) or expected < 1880:
+        return False
+    title_words = set(_tokenize_clean_words(target_title or ""))
+    candidates = []
+    url = stream.get("url") or stream.get("externalUrl") or stream.get("magnet")
+    url_fn = get_stream_url_filename(url)
+    if url_fn and not is_opaque_identifier(url_fn):
+        candidates.append(url_fn)
+    bh = stream.get("behaviorHints") or {}
+    if isinstance(bh, dict):
+        candidates.extend(v for v in (bh.get("filename"), bh.get("videoFilename")) if isinstance(v, str))
+    if isinstance(stream.get("filename"), str):
+        candidates.append(stream["filename"])
+    for field_name in ("stream_title", "title"):
+        val = stream.get(field_name)
+        if isinstance(val, str) and val.strip():
+            candidates.append(val.strip().splitlines()[0])
+    for text in candidates:
+        if is_opaque_identifier(text):
+            continue
+        year = _release_name_year(text, title_words)
+        if year is not None and abs(year - expected) > 1:
+            return True
+    return False
+
+
 def match_stream_to_movie(stream, target_title=None, expected_year=None, extra_ignored_words=None):
     """
-    Evaluates whether a stream corresponds to the requested movie/series title.
-    Does NOT evaluate release year (title word matching only).
+    Evaluates whether a stream corresponds to the requested movie title.
+    With expected_year (from TMDB), a release name stating a different year (+-1 allowed) is a mismatch.
     Returns:
         MATCH_UNKNOWN (0): Stream appears compatible or is ambiguous.
         MATCH_MISMATCH (-1): Explicit indicator of a different title.
     """
     if not isinstance(stream, dict) or not target_title:
         return MATCH_UNKNOWN
+    if expected_year and stream_year_mismatch(stream, expected_year, target_title):
+        return MATCH_MISMATCH
 
     provider_words = set()
     for p_src in (stream.get("addon_name"), stream.get("name"), *(stream.get("addon_names") or [])):
@@ -6877,6 +6941,11 @@ def strict_stream_title_mismatch(stream, target_title):
     unchanged.
     """
     if not isinstance(stream, dict) or not target_title or is_torrent_stream(stream):
+        return MATCH_UNKNOWN
+    if stream.get("id_lookup"):
+        # Found by IMDb/TMDB ID: the ID proves the film, so a label without the
+        # title (e.g. "Auto | Cinejoy") is not evidence of a different one.
+        # match_stream_to_movie still rejects explicitly different titles/years.
         return MATCH_UNKNOWN
 
     provider_words = set()
@@ -7026,12 +7095,47 @@ def is_torrent_addon(addon):
 
 
 
-def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, title=None, expected_year=None):
+_STREAM_ADULT_MARKERS_RE = re.compile(
+    r"(?<![a-z0-9])(18\+|xxx+|porn\w*|erotic\w*|softcore|hentai|brazzers|bangbros|onlyfans|"
+    r"ullu|hotshots?|primeshots|kooku|nuefliks|hotx|besharams|triflicks|neonx|voovi|"
+    r"hot\s+web\s*series|uncut\s+(?:web\s*series|short\s*film)|adult\s+(?:movie|film|video|web\s*series))(?![a-z0-9])",
+    re.I,
+)
+
+
+def stream_has_adult_markers(stream):
+    """True when a stream's own name, release title, filename or link marks it as adult content."""
+    if not isinstance(stream, dict):
+        return False
+    bh = stream.get("behaviorHints") if isinstance(stream.get("behaviorHints"), dict) else {}
+    texts = (
+        stream.get("name"), stream.get("title"), stream.get("stream_title"), stream.get("description"),
+        stream.get("filename"), bh.get("filename"), bh.get("videoFilename"),
+        get_stream_url_filename(stream.get("url") or stream.get("externalUrl") or stream.get("magnet")),
+    )
+    return any(
+        isinstance(t, str) and _STREAM_ADULT_MARKERS_RE.search(t.replace(".", " ").replace("_", " ").replace("-", " "))
+        for t in texts
+    )
+
+
+def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, title=None, expected_year=None, preferred_provider=None):
     if not all_streams:
         return []
     valid_streams = []
     seen_keys = {}  # {dedup_key: index in valid_streams} for O(1) duplicate lookup
+    # An adult-marked stream for a non-adult title is a wrong match, never shown.
+    # Exceptions: the title itself is adult, or the stream comes from the catalog
+    # provider whose card was opened (e.g. a deliberately browsed adult catalog).
+    title_is_adult = bool(title and (_STREAM_ADULT_MARKERS_RE.search(str(title)) or ADULT_KEYWORD_REGEX.search(str(title))))
     for s in all_streams:
+        if (
+            not title_is_adult
+            and stream_has_adult_markers(s)
+            and not (preferred_provider and stream_matches_provider(s, preferred_provider))
+        ):
+            print(f"[STREAM DEBUG] dropped adult-marked stream for non-adult title={title!r} name={str(s.get('name') or s.get('title') or '')[:60]!r}")
+            continue
         if check_stream_rate_limit_warning(s):
             continue
         yt_id = str(s.get("ytId") or "").strip()
@@ -7153,6 +7257,8 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
                             existing_subs.append(sub)
                 if s.get("is_nuvio_plugin"):
                     vs["is_nuvio_plugin"] = True
+                if s.get("id_lookup"):
+                    vs["id_lookup"] = True
                 if s.get("plugin_scraper_id") and not vs.get("plugin_scraper_id"):
                     vs["plugin_scraper_id"] = s["plugin_scraper_id"]
                 if s.get("plugin_scraper_tmdb_id") and not vs.get("plugin_scraper_tmdb_id"):
@@ -7274,6 +7380,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
             "plugin_scraper_tmdb_id": s.get("plugin_scraper_tmdb_id"),
             "is_custom_plugin": bool(s.get("is_custom_plugin")),
             "custom_plugin_id": s.get("custom_plugin_id"),
+            "id_lookup": bool(s.get("id_lookup")),
             "is_youtube": bool(s.get("is_youtube") or is_youtube_stream(s) or yt_id or ("youtube.com" in stream_url_lower or "youtu.be" in stream_url_lower or "googlevideo.com" in stream_url_lower)),
             "stream_type": "torrent" if is_torrent else (s.get("stream_type") or ("direct" if is_http else "")),
             "headers": s.get("headers"),
@@ -7289,7 +7396,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
             stream_entry["ep_match"] = ep_match
         else:
             if title:
-                movie_match = match_stream_to_movie(stream_entry, target_title=title)
+                movie_match = match_stream_to_movie(stream_entry, target_title=title, expected_year=expected_year)
                 if movie_match == MATCH_MISMATCH:
                     seen_keys[dedup_key] = None
                     continue
@@ -7361,8 +7468,16 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
 
         size_gb = float(x.get("size_gb") or 0.0)
         seeders = seeds if not is_http else (1 if is_yt else 100)
-        return (not_yt, has_seeds, ep_m, tier, seeders, size_gb)
+        # Order of trust: the provider whose catalog card was opened, then plugins
+        # that look up strictly by IMDb/TMDB ID, then everything else (Stremio
+        # addons, Nuvio plugins, ...), so a mismatched result sinks to the bottom.
+        preferred = 1 if x.get("from_opened_catalog") else 0
+        id_based = 1 if x.get("id_lookup") else 0
+        return (preferred, id_based, not_yt, has_seeds, ep_m, tier, seeders, size_gb)
 
+    # Marked on the stream itself so the details page keeps this order when it re-sorts.
+    for entry in valid_streams:
+        entry["from_opened_catalog"] = bool(preferred_provider and stream_matches_provider(entry, preferred_provider))
     valid_streams.sort(key=_rank_key, reverse=True)
     return valid_streams
 
@@ -8246,7 +8361,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 if match_stream_to_episode(stream, season, episode, ep_title=ep_title, series_title=title) == MATCH_MISMATCH:
                     print(f"[STREAM DEBUG] discarded episode/movie-mismatched stream title={title!r} url={(stream.get('url') or '')[:80]}")
                     continue
-            elif match_stream_to_movie(stream, target_title=title) == MATCH_MISMATCH:
+            elif match_stream_to_movie(stream, target_title=title, expected_year=expected_year) == MATCH_MISMATCH:
                 print(f"[STREAM DEBUG] discarded mismatched stream title={title!r} url={(stream.get('url') or '')[:80]}")
                 continue
             accepted.append(stream)
@@ -8304,6 +8419,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
     from . import custom_plugins
     matching_custom_route_scraper = None
+    route_provider_name = None
     if target_custom_route:
         if target_custom_route.lstrip().startswith("{") and "movieid" in target_custom_route.lower():
             route_provider_prefix = "castletv"
@@ -8324,11 +8440,36 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             ):
                 matching_custom_route_scraper = scraper
                 break
-        if str(source_scope or "").strip().lower() != "torrent":
-            provider_scope = (
-                getattr(matching_custom_route_scraper, "name", None)
-                or route_provider_prefix
-            )
+        # Ask every source, not just the catalog's plugin: rank that plugin's
+        # streams first instead, and give the others a real IMDb ID to work with.
+        route_provider_name = (
+            getattr(matching_custom_route_scraper, "name", None)
+            or route_provider_prefix
+        )
+        if not (isinstance(imdb_id, str) and imdb_id.startswith("tt")):
+            route_tmdb_id = known_tmdb_id
+            resolved_route_imdb = None
+            try:
+                if not route_tmdb_id and title:
+                    route_tmdb_id = tmdb_helper.resolve_to_tmdb_id(None, media_type, title, year=expected_year)
+                if route_tmdb_id:
+                    is_tv_route = str(media_type or "").lower() in ("series", "tv", "show", "anime")
+                    for _attempt in range(2):  # the TMDB lookup has a short timeout; retry once
+                        resolved_route_imdb = tmdb_helper._tmdb_id_to_imdb(route_tmdb_id, "tv" if is_tv_route else "movie")
+                        if resolved_route_imdb:
+                            break
+                    if not resolved_route_imdb:
+                        print(f"[STREAM DEBUG] custom route has TMDB {route_tmdb_id!r} but no IMDb ID; providers get tmdb:{route_tmdb_id}")
+            except Exception as e:
+                print(f"[STREAM DEBUG] custom route IMDb resolution failed route={target_custom_route[:80]!r}: {e}")
+            if route_tmdb_id and not known_tmdb_id:
+                known_tmdb_id = str(route_tmdb_id)
+            if resolved_route_imdb:
+                print(
+                    f"[STREAM DEBUG] custom route resolved for all providers "
+                    f"route={target_custom_route[:80]!r} imdb={resolved_route_imdb!r} tmdb={known_tmdb_id!r}"
+                )
+                imdb_id = resolved_route_imdb
 
     initial_custom_streams = []
     clean_source_scope_pre = str(source_scope).strip().lower() if source_scope else None
@@ -8356,14 +8497,11 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 if c_streams:
                     print(f"[STREAM DEBUG] Custom plugin immediate route lookup returned {len(c_streams)} stream(s)")
                     initial_custom_streams = list(c_streams)
-                    parsed_initial = process_raw_streams(c_streams, season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year)
+                    parsed_initial = process_raw_streams(c_streams, season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year, preferred_provider=route_provider_name)
+                    # Show the catalog provider's streams at once, then keep
+                    # collecting from every other source (these are reused there).
                     if parsed_initial and callback:
-                        callback(parsed_initial, is_cached=False, is_complete=True)
-                    if len(parsed_initial) >= 1:
-                        cache_key = get_stream_cache_key(imdb_id, media_type, season, episode)
-                        if cache_key:
-                            database.save_cached_streams(cache_key, parsed_initial)
-                        return parsed_initial
+                        callback(parsed_initial, is_cached=False, is_complete=False)
             except Exception as e:
                 print(f"[STREAM DEBUG] Custom plugin immediate route lookup failed: {e}")
 
@@ -8940,6 +9078,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 "plugin_scraper_tmdb_id": c.get("plugin_scraper_tmdb_id"),
                 "is_custom_plugin": bool(c.get("is_custom_plugin")),
                 "custom_plugin_id": c.get("custom_plugin_id"),
+                "id_lookup": bool(c.get("id_lookup")),
                 "is_youtube": bool(c.get("is_youtube") or is_youtube_stream(c)),
             }
             all_raw_streams.append(raw)
@@ -9250,7 +9389,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     now_mono = time.monotonic()
                     if last_incremental_cb_at == 0.0 or (now_mono - last_incremental_cb_at) >= 0.35:
                         last_incremental_cb_at = now_mono
-                        current_parsed = process_raw_streams(list(all_raw_streams), season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year)
+                        current_parsed = process_raw_streams(list(all_raw_streams), season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year, preferred_provider=route_provider_name)
                         print(f"[STREAM DEBUG] incremental results addon={batch_last_addon!r} raw_total={len(all_raw_streams)} parsed_cards={len(current_parsed)}")
                         if source_scope:
                             current_scope = [s for s in current_parsed if _stream_matches_source_scope(s, source_scope)]
@@ -9275,7 +9414,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         print(f"[STREAM DEBUG] cache write skipped: request cancelled id={imdb_id!r}")
         return []
 
-    parsed_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year)
+    parsed_streams = process_raw_streams(all_raw_streams, season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year, preferred_provider=route_provider_name)
     selected_scope_streams = None
     other_scope_streams = []
     if source_scope:

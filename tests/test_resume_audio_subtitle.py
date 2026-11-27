@@ -343,15 +343,52 @@ class TestResumeAudioSubtitle(unittest.TestCase):
         res = api.match_stream_to_movie(stream, target_title="Musk", expected_year=2026)
         self.assertEqual(res, api.MATCH_UNKNOWN)
 
-    def test_match_stream_to_movie_does_not_reject_different_year(self):
-        """Year matching is removed from stream searches; streams are not discarded."""
+    def test_match_stream_to_movie_rejects_release_stating_other_year(self):
+        """A release name stating a different year (beyond +-1 of TMDB's) is another film."""
         from src import api
         stream = {
             "title": "Avatar.The.Way.of.Water.2022.1080p.mkv",
             "url": "https://example.com/Avatar.The.Way.of.Water.2022.1080p.mkv",
         }
         res = api.match_stream_to_movie(stream, target_title="Avatar", expected_year=2009)
-        self.assertEqual(res, api.MATCH_UNKNOWN)
+        self.assertEqual(res, api.MATCH_MISMATCH)
+        same_name_other_film = {"title": "Love (2008) Hindi 1080p", "url": "https://example.com/a.mkv"}
+        self.assertEqual(api.match_stream_to_movie(same_name_other_film, target_title="Love", expected_year=2015), api.MATCH_MISMATCH)
+
+    def test_match_stream_to_movie_keeps_streams_without_year_or_within_one(self):
+        """No stated year, or a year within +-1, is not evidence of another film."""
+        from src import api
+        for title in ("Love.2014.1080p.WEB", "Love.2015.UNRATED.1080p", "Torrentio 1080p"):
+            stream = {"title": title, "url": "https://example.com/a.mkv"}
+            self.assertEqual(api.match_stream_to_movie(stream, target_title="Love", expected_year=2015), api.MATCH_UNKNOWN, title)
+
+    def test_adult_marked_streams_dropped_for_non_adult_title(self):
+        """An adult-marked stream for a normal title is a wrong match and must never be listed."""
+        from src import api
+        streams = [
+            {"name": "Torrentio", "title": "Love.2015.1080p.BluRay", "infoHash": "a" * 40, "addon_names": ["Torrentio"]},
+            {"name": "Addon", "title": "Love (2015) Hindi ULLU Web Series 1080p", "url": "https://x/a.mp4", "addon_names": ["Addon"]},
+            {"name": "Addon", "title": "Love 2015", "url": "https://x/c.mp4",
+             "behaviorHints": {"filename": "Love.2015.HotShots.Original.mp4"}, "addon_names": ["Addon"]},
+        ]
+        kept = api.process_raw_streams(streams, title="Love", expected_year="2015")
+        self.assertEqual([k.get("addon_names") for k in kept], [["Torrentio"]])
+
+    def test_adult_marked_stream_kept_from_opened_catalog_provider(self):
+        """Streams from the catalog provider whose card was opened are the user's own choice."""
+        from src import api
+        stream = {"name": "Cinedoze", "title": "Cinedoze 1080p", "url": "https://x/Love.2015.Ullu.Original.mp4", "addon_names": ["Cinedoze"]}
+        self.assertEqual(len(api.process_raw_streams([stream], title="Love", expected_year="2015", preferred_provider="Cinedoze")), 1)
+        self.assertEqual(len(api.process_raw_streams([stream], title="Love", expected_year="2015", preferred_provider="9kMovies")), 0)
+
+    def test_numbered_titles_match_their_own_releases(self):
+        """Numbers in the title ("Iron Man 2", "Blade Runner 2049", "M3GAN 2.0") are title words, not noise."""
+        from src import api
+        for target, name in (("Iron Man 2", "Iron Man 2 (2010)"), ("Blade Runner 2049", "Blade Runner 2049 (2017)"),
+                             ("M3GAN 2.0", "M3GAN 2.0 (2025)"), ("Toy Story 4", "Toy Story 4 (2019)"), ("1917", "1917 (2019)")):
+            self.assertFalse(api.check_movie_title_mismatch(target, name), name)
+        for target, name in (("Iron Man 2", "Iron Man 3 (2013)"), ("Toy Story 4", "Toy Story 3 (2010)"), ("M3GAN 2.0", "M3GAN (2022)")):
+            self.assertTrue(api.check_movie_title_mismatch(target, name), name)
 
     def test_match_stream_to_movie_accepts_tuner_and_various_stream_formats(self):
         """Streams for Tuner (torrents, international titles, YTS badges) must be accepted."""

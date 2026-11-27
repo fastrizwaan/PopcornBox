@@ -55,39 +55,190 @@ def get_runner_path() -> str:
 
 README_CONTENT = """# PopcornBox Custom Plugins Directory
 
-You can place standalone Python (.py) scraper files in this directory.
-PopcornBox will automatically discover, load, and run them when searching for streams.
+Put standalone Python (.py) scraper files in this folder. PopcornBox discovers
+them automatically and uses them for streams and/or browsable catalogs.
+Files whose names start with "_" or "." are ignored.
 
-### Plugin Format:
-Every plugin file must be fully self-contained: it may import only the Python
-standard library, never sibling files in this folder.
+Each plugin can be switched on/off in Preferences > Custom Plugins, and its
+Stream and Catalog roles can be toggled separately.
 
-Every plugin file should define a class with an `id`, `name`, `media_types`, and `get_streams(...)` method.
-Plugins that only provide streams (or only catalogs) can say so with
-`capabilities = ["stream"]` (or `["catalog"]`); each role can be switched on or
-off separately in Preferences.
 
-Example:
-```python
+## 1. Rules every plugin must follow
+
+- ONE FILE, FULLY STANDALONE. Import only the Python standard library.
+  Never import sibling files in this folder, PopcornBox modules (src, api,
+  tmdb_helper, ...) or third-party packages. Copy any helper you need into
+  the file itself.
+- Define a class named `Scraper` (shown below).
+- Never call sys.exit(), never block forever: every network call needs a
+  timeout (5-15 s). Plugins run in a separate process with a time limit.
+- No side effects at import time other than defining constants/classes
+  (no network requests while the file is being imported).
+- Never ask for, store or send user credentials.
+
+
+## 2. The plugin contract
+
 class Scraper:
-    id = "custom.my_scraper"
-    name = "My Scraper"
+    id = "custom.example"          # unique, starts with "custom."
+    name = "Example"               # shown in the UI
     version = "1.0.0"
-    description = "Scrapes streams for movies and series"
+    description = "Movies and series from example.com"
+    author = "Your name"
     media_types = ["movie", "series"]
+    capabilities = ["stream", "catalog"]   # or just ["stream"] / ["catalog"]
+    lookup = "id"        # ONLY if get_streams looks titles up strictly by
+                         # IMDb/TMDB ID. Such streams are listed right after
+                         # the opened catalog's own streams, above Stremio
+                         # addons / Nuvio plugins. Leave it out otherwise.
 
-    def get_streams(self, imdb_id, media_type="movie", season=None, episode=None, title=None, year=None, tmdb_id=None):
-        streams = []
-        # Query your provider API...
-        # streams.append({
-        #     "name": "Provider 1080p",
-        #     "title": "1080p | 👤 150 | 2.1 GB",
-        #     "infoHash": "0123456789abcdef0123456789abcdef01234567",
-        #     # or "magnet": "magnet:?xt=urn:btih:...",
-        #     # or "url": "https://..."
-        # })
-        return streams
-```
+    # Browsable sections (only if "catalog" is a capability). Mirror the
+    # website's real navigation menu. Offer "genres"/"years" ONLY for
+    # sections where the site really has genre/year pages; list the site's
+    # own values. Leave them out otherwise.
+    catalog_sections = [
+        {"id": "latest-movies", "name": "All Movies", "type": "movie",
+         "genres": ["Action", "Comedy"], "years": ["2026", "2025", "2011-2015"],
+         "supports_pagination": True},
+        {"id": "netflix", "name": "Netflix", "type": "series"},
+        {"id": "adult", "name": "18+", "type": "movie", "is_adult": True},
+    ]
+
+    def get_catalog_items(self, catalog_id, media_type="movie", genre=None,
+                          page=1, query=None, limit=50, year=None,
+                          extra_filters=None, **kwargs):
+        # Return a list of catalog items (format in section 3).
+        # query = search text (search the site); page starts at 1.
+        # genre / year come from the section's own lists; ignore values the
+        # section does not offer instead of guessing.
+        return []
+
+    def get_streams(self, imdb_id, media_type="movie", season=None,
+                    episode=None, title=None, year=None, tmdb_id=None,
+                    **kwargs):
+        # imdb_id is EITHER a real IMDb ID ("tt1234567") OR one of this
+        # plugin's own catalog IDs ("example:https://example.com/post/").
+        # For series, season and episode are integers.
+        # Return a list of streams (format in section 3).
+        return []
+
+
+## 3. Data formats
+
+Catalog item (from get_catalog_items):
+    {
+        "id": "example:https://example.com/some-movie-2025/",
+        "title": "Some Movie",            # clean title, no release tags
+        "year": "2025",
+        "type": "movie",                  # or "series"
+        "medium_cover_image": "https://.../poster.jpg",
+        "background": "https://.../backdrop.jpg",   # optional
+        "genres": ["Action"],                       # optional
+        "rating": "7.1",                            # optional
+    }
+  The "id" MUST be "<prefix>:<page url>" where <prefix> is the plugin id
+  without "custom." (or the plugin name, lowercase, no spaces). That is how
+  PopcornBox sends the card back to this plugin's get_streams().
+
+Stream (from get_streams):
+    {
+        "name": "Example 1080p HubCloud",       # provider + quality + server
+        "title": "Some Movie (2025) 1080p | 2.1 GB",
+        "url": "https://cdn.example.com/file.mkv",   # direct HTTP/HLS link
+        # or "infoHash": "<40 hex chars>"  /  "magnet": "magnet:?xt=..."
+        "quality": "1080p",                # 2160p / 1080p / 720p / 480p
+        "size": "2.1 GB",                  # optional
+        "headers": {"Referer": "https://example.com/"},  # if the CDN needs them
+        "is_hls": False,                   # True for .m3u8
+        "subtitles": [],                   # optional
+    }
+  Always set "quality" from the site's own label for THAT file (the button
+  text or the heading above it, e.g. "720p Download Links [1.4GB]"). Never
+  default every link to one quality.
+
+
+## 4. Accuracy and safety (most important)
+
+A wrong match can play an unrelated or even adult film in front of a family.
+When in doubt, return NOTHING rather than a guess.
+
+- IDs ONLY. A plugin may serve streams for a title that is not its own
+  catalog card only when it can PROVE the match by IMDb/TMDB ID: e.g. the
+  post page links imdb.com/title/<the requested imdb_id>. Reject pages that
+  list several different IMDb IDs (collections).
+- Never pick a stream source by title text, title + year, or title + season.
+  Real example: "Love" (2016 series) matched "Love" (2015), an explicit film,
+  because title and year looked close. Many films share a name.
+- If the website has no IMDb/TMDB IDs, the plugin serves ONLY its own catalog
+  cards (ids "<prefix>:<url>") and returns [] for everything else.
+- Stream list order in PopcornBox: (1) the opened catalog card's own plugin,
+  (2) plugins with lookup = "id", (3) Stremio addons, Nuvio plugins and the
+  rest. A wrong match from a title-searching source therefore sinks down.
+- Exact title matching is still useful for the catalog SEARCH box, never for
+  choosing which film's streams to play.
+- Adult content: never return adult pages (18+, Ullu, HotShots, erotic,
+  XXX, ...) for a normal title. Check the post name, URL and the post's own
+  category tags, not the site menu. Mark adult catalog sections with
+  "is_adult": True.
+- Sites change domains often. Keep the base URL in one constant and follow
+  redirects; if the site publishes its current domain somewhere, read it.
+
+
+## 5. Testing
+
+- In PopcornBox: Preferences > Custom Plugins > Refresh, then press "Test"
+  on your plugin. Open one of its catalog cards and check the streams.
+- From a terminal (inside this folder):
+      python3 -c "import importlib.util as u; s=u.spec_from_file_location('p','example_scraper.py'); m=u.module_from_spec(s); s.loader.exec_module(m); sc=m.Scraper(); print(sc.get_catalog_items(sc.catalog_sections[0]['id'])[:2]); print(sc.get_streams('tt1375666', 'movie', title='Inception', year='2010'))"
+- Check: correct qualities, no wrong films (try a short common title such as
+  "Love" with a year), no adult results for normal titles, page 2 works.
+
+
+## 6. AI prompt: create a plugin for a website
+
+Copy everything between the lines into an AI assistant, replacing the
+<...> placeholders. Paste this whole README above it so the AI has the
+contract, or attach the file.
+
+------------------------------------------------------------------------
+You are writing a PopcornBox custom scraper plugin: one standalone Python 3
+file that follows the "PopcornBox Custom Plugins" README I pasted above,
+exactly (class Scraper, attributes, method signatures, data formats).
+
+Website: <https://example.com>
+Plugin id / name: <custom.example> / <Example>
+Capabilities wanted: <stream and catalog | stream only | catalog only>
+Content: <movies / series / both>, language(s): <e.g. Hindi, English>
+
+Do this:
+1. Study the website first: its navigation menu (categories, OTT platforms,
+   languages, quality/size lists), genre and year pages, the search URL, the
+   listing-page markup, the post-page markup and where the download/watch
+   links are. Fetch real pages; do not guess URLs.
+2. catalog_sections: mirror the real menu. Add "genres"/"years" only to
+   sections that have real genre/year pages, using the site's own values.
+   Support pagination (/page/N/ or the site's scheme) and search.
+3. get_catalog_items: return items in the documented format with clean
+   titles, years, posters, type, and id = "<prefix>:<post url>".
+4. get_streams:
+   - If imdb_id is this plugin's own "<prefix>:<url>", open that post.
+   - Otherwise (imdb_id is "tt..."), search the site by title and accept a
+     result ONLY if the post's own IMDb link equals imdb_id. Never accept a
+     result by title, year or season text alone. If the site shows no
+     IMDb/TMDB IDs at all, return [] for anything that is not this plugin's
+     own catalog id.
+   - Follow the post's download/watch buttons through any link lockers or
+     redirectors to the final file hosts, and extract direct playable
+     URLs (HTTP, HLS) or torrents. Implement only hosts that work without
+     a captcha or login; skip the rest quietly.
+   - Label every stream with the quality and size shown for THAT file.
+5. Robustness: stdlib only (urllib, re, json, html, ...), a browser-like
+   User-Agent, timeouts on every request, try/except around each source so
+   one broken mirror does not break the rest, and the base URL in a single
+   constant.
+6. Give me the complete file, then a short list of the site URLs you
+   verified and anything that could not be supported.
+------------------------------------------------------------------------
 """
 
 
@@ -99,7 +250,13 @@ class BaseCustomScraper:
     description: str = ""
     author: str = ""
     media_types: list = ["movie", "series"]
-    catalog_sections: list = []  # Optional list of dicts: [{"id": "...", "name": "...", "type": "movie", "genres": [...]}]
+    # Optional browsable sections. Each dict: {"id", "name", "type": "movie"|"series",
+    # "genres": [...], "years": [...], "supports_pagination": bool}. Genre/year
+    # filters are only offered for sections that list their options.
+    catalog_sections: list = []
+    # Optional: "id" if get_streams looks titles up strictly by IMDb/TMDB ID (never by
+    # title text). Such streams are listed above title-searched sources.
+    lookup: str = None
     # Optional: restrict what the plugin is used for, e.g. ["stream"] or ["catalog"].
     # When omitted, capabilities are detected from get_streams / catalog_sections.
     capabilities: list = None
@@ -285,6 +442,16 @@ _LOADER_PENDING_FORCE = None  # None: no request queued; False: load; True: forc
 _LOADER_CALLBACKS = []
 
 
+_LOAD_LISTENERS = []
+
+
+def add_load_listener(listener):
+    """Call `listener(scrapers)` after every background (re)load, e.g. so the UI can
+    rebuild catalog lists that were built before plugins finished loading."""
+    if listener not in _LOAD_LISTENERS:
+        _LOAD_LISTENERS.append(listener)
+
+
 def _loader_worker():
     """Serve queued (re)load requests one at a time on the single loader thread."""
     global _LOADER_THREAD, _LOADER_PENDING_FORCE, _PRELOAD_INFLIGHT
@@ -304,7 +471,7 @@ def _loader_worker():
             logger.info(f"Custom plugins {'reloaded' if force else 'loaded'}: {len(scrapers)} scraper(s)")
         except Exception as e:
             logger.warning(f"Background custom plugin {'reload' if force else 'load'} failed: {e}")
-        for callback in callbacks:
+        for callback in callbacks + list(_LOAD_LISTENERS):
             try:
                 callback(scrapers)
             except Exception as e:
@@ -676,6 +843,9 @@ def execute_custom_scraper(
             "addon_names": [scraper_name],
             "is_custom_plugin": True,
             "custom_plugin_id": scraper_id,
+            # Plugins that look titles up strictly by IMDb/TMDB ID declare lookup = "id";
+            # their streams are ranked above title-searched sources.
+            "id_lookup": str(getattr(scraper, "lookup", "") or "").lower() == "id",
             "quality": s.get("quality"),
             "size": s.get("size"),
             "seeders": s.get("seeders", s.get("seeds", 0)),
@@ -871,10 +1041,22 @@ def get_catalogs(media_type: str = "all") -> list[dict]:
                 continue
             seen.add(key)
 
-            genres = list(sec.get("genres") or [])
-            if not genres:
-                from . import database
-                genres = database.get_available_genres(sec_type if sec_type != "all" else "movie")
+            # Only advertise the filters a section actually declares, with the
+            # plugin's own option values (e.g. the site's genre/year menus).
+            genres = [str(g) for g in (sec.get("genres") or []) if str(g).strip()]
+            years = [str(y) for y in (sec.get("years") or []) if str(y).strip()]
+            extra = []
+            extra_supported = []
+            if genres:
+                extra.append({"name": "genre", "isRequired": False, "options": genres})
+                extra_supported.append("genre")
+            if years:
+                extra.append({"name": "year", "isRequired": False, "options": years})
+                extra_supported.append("year")
+            if sec.get("supports_pagination", True):
+                extra_supported.append("skip")
+            if sec.get("supports_search", True):
+                extra_supported.append("search")
             catalogs.append({
                 "addon_name": s_name,
                 "manifest_url": catalog_url(s_id),
@@ -883,11 +1065,9 @@ def get_catalogs(media_type: str = "all") -> list[dict]:
                 "catalog_name": sec_name,
                 "display_name": f"{s_name} - {sec_name}",
                 "genres": genres,
-                "extra": [
-                    {"name": "genre", "isRequired": False, "options": genres},
-                    {"name": "year", "isRequired": False},
-                ],
-                "extraSupported": ["genre", "year", "skip", "search"],
+                "years": years,
+                "extra": extra,
+                "extraSupported": extra_supported,
                 "type": sec_type,
                 "supports_pagination": bool(sec.get("supports_pagination", True)),
                 "_source": "custom_plugin",

@@ -611,7 +611,12 @@ def stream_sort_key_all(t, sel_s=None, sel_e=None, ep_t=None, pref_prov=None, re
     is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
     size = float(t.get('size_gb') or 0.0)
     is_under_4gb = 1 if ((0 < size < 4.0) or (size == 0.0)) else 0
-    return (is_remembered, not_yt, has_seeds, ep_m, tier, ping_ok, is_pref, is_under_4gb, seeds, size)
+    # Trust order: the opened catalog's own provider, then plugins that look up
+    # strictly by IMDb/TMDB ID; Stremio addons / Nuvio plugins / others follow,
+    # so a mismatched result from a title search sinks to the bottom.
+    from_catalog = 1 if t.get('from_opened_catalog') else 0
+    id_based = 1 if t.get('id_lookup') else 0
+    return (is_remembered, from_catalog, id_based, not_yt, has_seeds, ep_m, tier, ping_ok, is_pref, is_under_4gb, seeds, size)
 
 
 
@@ -11825,6 +11830,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         cats = capability_catalogs
         supports_year = False
+        declared_years = []
+        for c in cats:
+            if isinstance(c, dict):
+                for ex in (c.get("extra") or []):
+                    if isinstance(ex, dict) and str(ex.get("name") or "").strip().lower() == "year":
+                        for opt in ex.get("options") or []:
+                            if str(opt) not in declared_years:
+                                declared_years.append(str(opt))
         for c in cats:
             if not isinstance(c, dict):
                 if isinstance(addon, dict) and isinstance(addon.get("catalogs"), list):
@@ -11848,7 +11861,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         if hasattr(self, "year_dropdown") and self.year_dropdown:
             if supports_year:
-                years = database.get_available_years(chosen_type)
+                years = declared_years or database.get_available_years(chosen_type)
                 self._discover_year_items = ["Year"] + years
                 self.year_dropdown.set_model(Gtk.StringList.new(self._discover_year_items))
                 self.year_dropdown.set_selected(0)
@@ -22432,6 +22445,29 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._refresh_nuvio_catalog_views()
         self._show_toast(_("Removed '%s'") % repo_name)
 
+    def _on_custom_plugins_loaded(self):
+        """Rebuild the Discover catalog dropdown after a background plugin load,
+        keeping the catalog the user had selected if it still exists."""
+        try:
+            prev_items = list(getattr(self, "_discover_catalog_items", None) or [])
+            dropdown = getattr(self, "catalog_dropdown", None)
+            sel = dropdown.get_selected() if dropdown is not None else 0
+            prev_url = prev_items[sel].get("manifest_url") if 0 <= sel < len(prev_items) else None
+            self._refresh_nuvio_catalog_views()
+            new_items = list(getattr(self, "_discover_catalog_items", None) or [])
+            if dropdown is not None and prev_url:
+                idx = next((i for i, it in enumerate(new_items) if it.get("manifest_url") == prev_url), None)
+                if idx:
+                    prior_sync = getattr(self, "_syncing_discover_toolbar", False)
+                    self._syncing_discover_toolbar = True
+                    try:
+                        dropdown.set_selected(idx)
+                    finally:
+                        self._syncing_discover_toolbar = prior_sync
+        except Exception as e:
+            logger.debug(f"Refreshing catalogs after plugin load failed: {e}")
+        return False
+
     def _refresh_nuvio_catalog_views(self):
         self._addons_dirty = True
         if hasattr(self, "_discover_catalog_list_cache") and isinstance(self._discover_catalog_list_cache, dict):
@@ -22697,6 +22733,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self.custom_plugin_open_folder_row.connect("activated", lambda *a: custom_plugins.open_plugins_directory(self))
         self.custom_plugin_import_row.connect("activated", self._on_custom_plugin_import_clicked)
         self.custom_plugin_refresh_btn.connect("clicked", self._on_custom_plugin_refresh_clicked)
+        # Plugins load in the background at startup; rebuild catalog lists once they are ready.
+        custom_plugins.add_load_listener(lambda _scrapers: GLib.idle_add(self._on_custom_plugins_loaded))
 
     def _populate_custom_plugins(self):
         if not hasattr(self, "custom_plugin_listbox") or not self.custom_plugin_listbox:

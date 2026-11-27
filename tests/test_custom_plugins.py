@@ -198,6 +198,29 @@ class Scraper:
             {"custom.both", "custom.streamonly"},
         )
 
+    def test_load_listener_called_after_background_load(self):
+        """UI listeners hear about background loads so catalog lists built too early get rebuilt."""
+        import threading
+        p_dir = custom_plugins.get_custom_plugins_dir()
+        (p_dir / "cat.py").write_text('''
+class Scraper:
+    id = "custom.cat"
+    catalog_sections = [{"id": "latest", "name": "Latest", "type": "movie"}]
+    def get_streams(self, *a, **k): return []
+    def get_catalog_items(self, *a, **k): return []
+''', encoding="utf-8")
+        seen = []
+        done = threading.Event()
+        def listener(scrapers):
+            seen.append([s.id for s in scrapers]); done.set()
+        custom_plugins.add_load_listener(listener)
+        try:
+            custom_plugins.reload_custom_scrapers_async(force=True)
+            self.assertTrue(done.wait(20))
+            self.assertIn("custom.cat", seen[-1])
+        finally:
+            custom_plugins._LOAD_LISTENERS.remove(listener)
+
     def test_plugins_cannot_import_sibling_helpers(self):
         p_dir = custom_plugins.get_custom_plugins_dir()
         (p_dir / "_helper.py").write_text("VALUE = 1\n", encoding="utf-8")
