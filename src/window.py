@@ -87,6 +87,7 @@ from . import database
 from . import api
 from . import player
 from . import plugins
+from . import seek_proxy
 from .api import fetch_items, fetch_movie_details, get_torrents_streamed
 from .movie_widget import (
     MovieWidget,
@@ -5609,6 +5610,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._audio_configured_for_file = False
         self._user_selected_subtitle = False
         self._user_selected_audio = False
+        # Set per file by the on_preloaded hook for non-seekable multi-audio streams.
+        self._audio_graph = None
+        self._seek_proxy_candidate = None
         self._youtube_safe_mode_active: bool = False
         self._youtube_safe_mode_url: str | None = None
         self._youtube_safe_mode_video_url: str | None = None
@@ -5695,6 +5699,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         debug_log("window widget setup DONE")
         debug_log("window observer setup START")
         self._setup_observers()
+        self._install_audio_switch_hook()
         debug_log("window observer setup DONE")
 
         try:
@@ -6349,8 +6354,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 return True
             if t.get("selected"):
                 return True
-            cur_aid = getattr(self.mpv, "aid", None)
-            if cur_aid and cur_aid not in ("no", False) and int(t.get("id", 0)) == int(cur_aid):
+            cur_aid = self._current_audio_track_id()
+            if cur_aid and int(t.get("id", 0)) == cur_aid:
                 return True
             t_lang = (t.get("lang") or "").strip()
             if not t_lang:
@@ -7437,7 +7442,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             if not tracks:
                 return
             audio_tracks = [t for t in tracks if t.get("type") == "audio"]
-            cur_aid = getattr(self.mpv, "aid", None)
+            graph = getattr(self, "_audio_graph", None)
+            if graph:
+                cur_aid = "no" if graph.get("muted") else graph.get("selected")
+            else:
+                cur_aid = getattr(self.mpv, "aid", None)
             if audio_tracks and cur_aid is not False and cur_aid is not None:
                 if cur_aid == "no":
                     item["audio_track_id"] = 0
@@ -7518,7 +7527,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             audio_tracks = [t for t in tracks if t.get("type") == "audio"]
             if audio_pref and audio_pref.get("disabled"):
                 try:
-                    self.mpv.aid = "no"
+                    self._set_audio_track(0)
                 except Exception:
                     pass
             elif audio_tracks:
@@ -7550,9 +7559,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 if matched_track:
                     t_id = int(matched_track.get("id", 0))
                     try:
-                        cur_aid = getattr(self.mpv, "aid", None)
-                        if cur_aid != t_id:
-                            self.mpv.aid = t_id
+                        if self._current_audio_track_id() != t_id:
+                            self._set_audio_track(t_id)
                             logger.info(f"[AUDIO] Set audio track: id={t_id}, lang={matched_track.get('lang')}, title={matched_track.get('title')}")
                     except Exception as e:
                         logger.debug(f"[AUDIO] Error setting aid {t_id}: {e}")
@@ -7742,12 +7750,215 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 pass
         action.set_state(parameter)
 
+    # --- Audio track switching on non-seekable streams ---
+    #
+    # mpv demuxes only the selected audio track, so selecting another one
+    # needs a "refresh seek" to fetch that track's packets at the current
+    # position. Hosts that ignore HTTP Range requests (for example
+    # video-downloads.googleusercontent.com) are not seekable: the new track
+    # then starts at the demuxer's read-ahead position and stays silent until
+    # playback catches up, often for minutes. For those streams every audio
+    # track is routed through lavfi-complex (astreamselect) so all of them keep
+    # flowing and a switch only changes the map. The graph has to exist before
+    # decoding starts, which is what the on_preloaded hook is for.
+
+    def _install_audio_switch_hook(self):
+        self._audio_graph = None
+        try:
+            backend = mpv.backend
+            backend.mpv_hook_add.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_int]
+            backend.mpv_hook_add.restype = ctypes.c_int
+            backend.mpv_hook_continue.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+            backend.mpv_hook_continue.restype = ctypes.c_int
+            event_handle = self.mpv._event_handle
+            hook_event_id = mpv.MpvEventID.HOOK
+        except Exception as e:
+            logger.warning(f"[AUDIO] on_preloaded hook unavailable, audio switching uses aid: {e}")
+            return
+
+        def on_event(event):
+            if event.event_id.value != hook_event_id:
+                return
+            hook = event.data
+            hook_id = hook.id
+            handed_off = False
+            try:
+                name = hook.name.decode("utf-8", "replace") if isinstance(hook.name, bytes) else str(hook.name)
+                if name == "on_preloaded":
+                    handed_off = self._maybe_reload_through_seek_proxy(
+                        lambda: backend.mpv_hook_continue(event_handle, hook_id))
+                    if not handed_off:
+                        self._on_audio_preloaded_hook()
+            except Exception as e:
+                logger.debug(f"[AUDIO] on_preloaded hook failed: {e}")
+            finally:
+                # mpv waits for this before it continues loading the file.
+                if not handed_off:
+                    backend.mpv_hook_continue(event_handle, hook_id)
+
+        # Register the callback before the hook so a hook event is never missed.
+        self.mpv.register_event_callback(on_event)
+        rc = backend.mpv_hook_add(event_handle, 0, b"on_preloaded", 50)
+        if rc < 0:
+            logger.warning(f"[AUDIO] mpv_hook_add(on_preloaded) failed: {rc}")
+
+    def _maybe_reload_through_seek_proxy(self, continue_hook):
+        """Called inside on_preloaded. When the stream mpv just opened is not
+        seekable, reload it through the local caching proxy (seek_proxy) so
+        seeking works.
+
+        The reload is issued while mpv still waits in the hook, so the
+        original file never reaches file-loaded and subtitle/track setup runs
+        only for the proxied file. Returns True when it took over the hook;
+        continue_hook() is then called from the worker thread.
+        """
+        cand = getattr(self, "_seek_proxy_candidate", None)
+        if not cand or cand.get("tried"):
+            return False
+        try:
+            if self.mpv.path != cand["url"] or self.mpv.seekable is not False:
+                return False
+        except Exception:
+            return False
+        cand["tried"] = True
+
+        def is_current():
+            try:
+                return (getattr(self, "_seek_proxy_candidate", None) is cand
+                        and getattr(self, "stream_request_id", 0) == cand["request_id"]
+                        and self.mpv.path == cand["url"])
+            except Exception:
+                return False
+
+        def worker():
+            try:
+                result, proxy_url = seek_proxy.prepare(cand["url"], cand["headers"])
+                if result == seek_proxy.RESULT_PROXIED and is_current():
+                    # localhost needs no proxy, and a seek past the cached
+                    # part waits for the download instead of timing out.
+                    self.mpv["http-proxy"] = ""
+                    self.mpv["network-timeout"] = 0
+                    start = cand.get("start")
+                    if start:
+                        self.mpv.command("loadfile", proxy_url, "replace", -1, f"start={start:.2f}")
+                    else:
+                        self.mpv.command("loadfile", proxy_url, "replace")
+                    logger.info("[STREAM] Host ignores Range; playing through the local caching proxy for seeking")
+                    return
+                if result == seek_proxy.RESULT_PROXIED:
+                    seek_proxy.close_all()  # playback moved on meanwhile
+                self._on_audio_preloaded_hook()
+            except Exception as e:
+                logger.warning(f"[STREAM] Seek proxy reload failed, playing directly: {e}")
+                try:
+                    self._on_audio_preloaded_hook()
+                except Exception:
+                    pass
+            finally:
+                continue_hook()
+
+        threading.Thread(target=worker, daemon=True, name="SeekProxyReload").start()
+        return True
+
+    def _on_audio_preloaded_hook(self):
+        """Runs on the mpv event thread after a file opens, before decoding."""
+        graph = None
+        try:
+            tracks = self.mpv.track_list or []
+            audio_tracks = [t for t in tracks if t.get("type") == "audio"]
+            # Through the seek proxy an MKV may still lack its index (Cues sit
+            # at the end of the file), and an aid switch needs an indexed
+            # refresh seek, so keep the graph there too.
+            needs_graph = self.mpv.seekable is False or seek_proxy.is_proxy_url(self.mpv.path)
+            if len(audio_tracks) > 1 and needs_graph:
+                ids = [int(t.get("id", 0)) for t in audio_tracks]
+                initial = None
+                try:
+                    best = api.find_best_audio_track(audio_tracks)
+                    if best:
+                        initial = int(best.get("id", 0))
+                except Exception:
+                    pass
+                if initial not in ids:
+                    initial = next((int(t.get("id", 0)) for t in audio_tracks if t.get("default")), ids[0])
+                graph = {"ids": ids, "selected": initial, "muted": False}
+        except Exception as e:
+            logger.debug(f"[AUDIO] could not inspect tracks for audio graph: {e}")
+            graph = None
+
+        self._audio_graph = graph
+        try:
+            # lavfi-complex is global: always reset it so a previous file's
+            # graph never applies to this one.
+            self.mpv["lavfi-complex"] = self._build_audio_graph(graph) if graph else ""
+        except Exception as e:
+            logger.warning(f"[AUDIO] could not set audio graph, falling back to aid: {e}")
+            self._audio_graph = None
+            try:
+                self.mpv["lavfi-complex"] = ""
+            except Exception:
+                pass
+        if self._audio_graph:
+            logger.info(f"[AUDIO] Non-seekable or proxied stream with {len(graph['ids'])} audio tracks; "
+                        f"using audio graph (selected aid={graph['selected']})")
+        idle_add_once(self._sync_audio_track_ui)
+
+    @staticmethod
+    def _build_audio_graph(graph):
+        ids = graph["ids"]
+        idx = ids.index(graph["selected"]) if graph["selected"] in ids else 0
+        inputs = " ".join(f"[aid{i}]" for i in ids)
+        mute = ",volume=0" if graph.get("muted") else ""
+        return f"{inputs} astreamselect=inputs={len(ids)}:map={idx}{mute} [ao]"
+
+    def _current_audio_track_id(self):
+        """Selected audio track id, 0 when audio is off."""
+        graph = getattr(self, "_audio_graph", None)
+        if graph:
+            return 0 if graph.get("muted") else int(graph.get("selected") or 0)
+        aid = getattr(self.mpv, "aid", None)
+        if isinstance(aid, bool) or aid in (None, "no", "auto"):
+            return 0
+        try:
+            return int(aid)
+        except (TypeError, ValueError):
+            return 0
+
+    def _set_audio_track(self, track_id):
+        """Select an audio track (0 = off). Call on the GTK main thread."""
+        graph = getattr(self, "_audio_graph", None)
+        if not graph:
+            self.mpv.aid = track_id if track_id > 0 else "no"
+            return
+        if track_id > 0:
+            if track_id not in graph["ids"]:
+                logger.warning(f"[AUDIO] aid={track_id} is not part of the audio graph {graph['ids']}")
+                return
+            graph["selected"] = track_id
+            graph["muted"] = False
+        else:
+            graph["muted"] = True
+        self.mpv["lavfi-complex"] = self._build_audio_graph(graph)
+        self._sync_audio_track_ui()
+
+    def _sync_audio_track_ui(self):
+        graph = getattr(self, "_audio_graph", None)
+        if not graph:
+            return
+        val = self._current_audio_track_id()
+        if action := self.lookup_action("select-audio"):
+            action.set_state(GLib.Variant("i", val))  # pyright: ignore[reportAttributeAccessIssue]
+        if hasattr(self, "audio_tracks_menu_btn"):
+            self.audio_tracks_menu_btn.props.icon_name = (
+                "popcornbox-audio-symbolic" if val else "popcornbox-audio-off-symbolic"
+            )
+
     def _on_audio_selected(self, action, parameter):
         track_id = parameter.get_int32()
         self._audio_configured_for_file = True
         self._user_selected_audio = True
         if track_id > 0:
-            self.mpv.aid = track_id
+            self._set_audio_track(track_id)
             tracks = getattr(self.mpv, "track_list", []) or []
             selected_track = next((track for track in tracks if track.get("type") == "audio" and int(track.get("id", 0)) == track_id), None)
             lang = selected_track.get("lang") if selected_track else None
@@ -7773,7 +7984,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 pass
         else:
             try:
-                self.mpv.aid = "no"
+                self._set_audio_track(0)
             except Exception:
                 pass
             pref = {
@@ -8511,6 +8722,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             logger.debug(f"Stremio sync on close error: {e}")
 
         try:
+            seek_proxy.close_all()
+        except Exception:
+            pass
+
+        try:
             if getattr(self, "preview_player", None):
                 self.preview_player.terminate()
                 self.preview_player = None
@@ -8915,6 +9131,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     tracks = getattr(self.mpv, "track_list", []) or []
                     sel = next((t for t in tracks if t.get("type") == track_type and t.get("selected")), None)
                     val = int(sel.get("id", 0)) if sel else 0
+                if name == "aid" and getattr(self, "_audio_graph", None):
+                    # With the audio graph active mpv reports aid=no; the
+                    # graph holds the real selection.
+                    val = self._current_audio_track_id()
                 if action := self.lookup_action(action_name):
                     action.set_state(  # pyright: ignore[reportAttributeAccessIssue]
                         GLib.Variant("i", val)
@@ -9056,7 +9276,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         @self.mpv.property_observer("aid")
         def on_aid_change(_name, value):
             def set_icon():
-                audio_on = value == "auto" or value
+                graph = getattr(self, "_audio_graph", None)
+                audio_on = (not graph.get("muted")) if graph else (value == "auto" or value)
                 self.audio_tracks_menu_btn.props.icon_name = (
                     "popcornbox-audio-symbolic" if audio_on else "popcornbox-audio-off-symbolic"
                 )
@@ -17559,6 +17780,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._pending_seek_position = None
             self._request_seek_position = None
             self._stream_media_started = False
+        self._seek_proxy_candidate = None
+        seek_proxy.close_all()
         if getattr(self, "_is_hls_proxy_active", False):
             old_sess = getattr(self, "_hls_session_id", None)
             if old_sess:
@@ -17772,6 +17995,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         user_agent = None
         referrer = None
         custom_header_fields = []
+        proxy_headers = {}
 
         is_hakuna = isinstance(url, str) and "hakunaymatata.com" in url.lower()
 
@@ -17840,6 +18064,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self.mpv["user-agent"] = user_agent or ""
             self.mpv["referrer"] = referrer or ""
             self.mpv["http-header-fields"] = custom_header_fields
+            # The same headers for the seek proxy's upstream request. An empty
+            # value means the header is not sent.
+            proxy_headers = {"User-Agent": user_agent or "", "Referer": referrer or ""}
+            for field in custom_header_fields:
+                h_name, _sep, h_value = field.partition(":")
+                proxy_headers[h_name.strip()] = h_value.strip()
 
             try:
                 self.mpv["network-timeout"] = 10.0
@@ -18077,6 +18307,16 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if sub_file:
             self._pending_local_subtitle = (str(url), str(sub_file))
         self._subtitles_configured_for_file = False
+        if (not is_trailer and not is_web_media_url and isinstance(url, str)
+                and url.startswith(("http://", "https://")) and not seek_proxy.is_proxy_url(url)):
+            # If mpv finds this stream unseekable, the on_preloaded hook
+            # reloads it through the seek proxy.
+            self._seek_proxy_candidate = {
+                "url": url,
+                "headers": proxy_headers,
+                "request_id": getattr(self, "stream_request_id", 0),
+                "start": float(seek_target) if seek_target and float(seek_target) > 5.0 else None,
+            }
         playback_trace("loadfile issue", str(url)[:100])
         if seek_target and float(seek_target) > 5.0 and not is_trailer:
             self._seek_after_loaded = float(seek_target)
@@ -20642,6 +20882,11 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             try: self.mpv.stop()
             except Exception: pass
 
+        self._seek_proxy_candidate = None
+        try:
+            seek_proxy.close_all()
+        except Exception:
+            pass
         if getattr(self, "_is_hls_proxy_active", False):
             old_sess = getattr(self, "_hls_session_id", None)
             if old_sess:
