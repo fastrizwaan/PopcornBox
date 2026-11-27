@@ -23,6 +23,7 @@ class TestCustomPlugins(unittest.TestCase):
         custom_plugins._LOADED_MODULES.clear()
         custom_plugins.set_custom_plugins_enabled(True)
         database.set_setting("disabled_custom_scrapers", [])
+        database.set_setting("disabled_custom_scraper_capabilities", {})
 
     def tearDown(self):
         database.BASE_DIR = self.orig_base_dir
@@ -108,6 +109,68 @@ class Scraper:
         custom_plugins.toggle_scraper("custom.movie", True)
         self.assertTrue(custom_plugins.is_scraper_enabled("custom.movie"))
         self.assertEqual(len(custom_plugins.get_enabled_scrapers_for_type("movie")), 1)
+
+    def test_stream_and_catalog_capabilities(self):
+        p_dir = custom_plugins.get_custom_plugins_dir()
+        both_code = '''
+class Scraper:
+    id = "custom.both"
+    name = "Both"
+    media_types = ["movie"]
+    catalog_sections = [{"id": "latest", "name": "Latest", "type": "movie"}]
+    def get_streams(self, *a, **k): return []
+    def get_catalog_items(self, *a, **k): return []
+'''
+        stream_only_code = '''
+class Scraper:
+    id = "custom.streamonly"
+    name = "Stream Only"
+    media_types = ["movie"]
+    capabilities = ["stream"]
+    catalog_sections = [{"id": "latest", "name": "Latest", "type": "movie"}]
+    def get_streams(self, *a, **k): return []
+    def get_catalog_items(self, *a, **k): return []
+'''
+        (p_dir / "both.py").write_text(both_code, encoding="utf-8")
+        (p_dir / "streamonly.py").write_text(stream_only_code, encoding="utf-8")
+        custom_plugins.load_all_custom_scrapers(force_reload=True)
+
+        info = {s["id"]: s for s in custom_plugins.get_all_custom_scrapers()}
+        self.assertEqual(info["custom.both"]["capabilities"], ["stream", "catalog"])
+        self.assertEqual(info["custom.streamonly"]["capabilities"], ["stream"])
+
+        def catalog_ids():
+            return {c["custom_plugin_id"] for c in custom_plugins.get_catalogs("all")}
+
+        def stream_ids():
+            return {s.id for s in custom_plugins.get_enabled_scrapers_for_type("movie")}
+
+        self.assertEqual(catalog_ids(), {"custom.both"})
+        self.assertEqual(stream_ids(), {"custom.both", "custom.streamonly"})
+
+        custom_plugins.toggle_capability("custom.both", "catalog", False)
+        self.assertEqual(catalog_ids(), set())
+        self.assertIn("custom.both", stream_ids())
+
+        custom_plugins.toggle_capability("custom.both", "stream", False)
+        self.assertEqual(stream_ids(), {"custom.streamonly"})
+
+        custom_plugins.toggle_capability("custom.both", "catalog", True)
+        custom_plugins.toggle_capability("custom.both", "stream", True)
+        self.assertEqual(catalog_ids(), {"custom.both"})
+        self.assertEqual(stream_ids(), {"custom.both", "custom.streamonly"})
+
+    def test_plugins_cannot_import_sibling_helpers(self):
+        p_dir = custom_plugins.get_custom_plugins_dir()
+        (p_dir / "_helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (p_dir / "needs_helper.py").write_text('''
+import _helper
+class Scraper:
+    id = "custom.needs_helper"
+    def get_streams(self, *a, **k): return []
+''', encoding="utf-8")
+        scrapers = custom_plugins.load_all_custom_scrapers(force_reload=True)
+        self.assertNotIn("custom.needs_helper", [s.id for s in scrapers])
 
     def test_global_disable(self):
         p_dir = custom_plugins.get_custom_plugins_dir()

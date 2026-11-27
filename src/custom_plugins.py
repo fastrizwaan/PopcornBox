@@ -59,7 +59,13 @@ You can place standalone Python (.py) scraper files in this directory.
 PopcornBox will automatically discover, load, and run them when searching for streams.
 
 ### Plugin Format:
+Every plugin file must be fully self-contained: it may import only the Python
+standard library, never sibling files in this folder.
+
 Every plugin file should define a class with an `id`, `name`, `media_types`, and `get_streams(...)` method.
+Plugins that only provide streams (or only catalogs) can say so with
+`capabilities = ["stream"]` (or `["catalog"]`); each role can be switched on or
+off separately in Preferences.
 
 Example:
 ```python
@@ -94,6 +100,9 @@ class BaseCustomScraper:
     author: str = ""
     media_types: list = ["movie", "series"]
     catalog_sections: list = []  # Optional list of dicts: [{"id": "...", "name": "...", "type": "movie", "genres": [...]}]
+    # Optional: restrict what the plugin is used for, e.g. ["stream"] or ["catalog"].
+    # When omitted, capabilities are detected from get_streams / catalog_sections.
+    capabilities: list = None
 
     def get_streams(self, imdb_id, media_type="movie", season=None, episode=None, title=None, year=None, tmdb_id=None):
         """
@@ -155,6 +164,73 @@ def is_scraper_enabled(scraper_id: str) -> bool:
     if not isinstance(disabled, list):
         disabled = []
     return str(scraper_id) not in disabled
+
+
+CAPABILITY_STREAM = "stream"
+CAPABILITY_CATALOG = "catalog"
+ALL_CAPABILITIES = (CAPABILITY_STREAM, CAPABILITY_CATALOG)
+
+
+def get_scraper_capabilities(scraper) -> list[str]:
+    """Return the capabilities ("stream", "catalog") a loaded scraper provides.
+
+    An explicit `capabilities` attribute wins; otherwise a plugin is a stream
+    source when it implements get_streams, and a catalog source when it declares
+    non-empty catalog_sections and implements get_catalog_items.
+    """
+    declared = getattr(scraper, "capabilities", None)
+    if isinstance(declared, str):
+        declared = [declared]
+    if isinstance(declared, (list, tuple, set)):
+        wanted = {str(c).strip().lower() for c in declared}
+        return [c for c in ALL_CAPABILITIES if c in wanted]
+
+    caps = []
+    get_streams = getattr(type(scraper), "get_streams", None)
+    if callable(get_streams) and get_streams is not BaseCustomScraper.get_streams:
+        caps.append(CAPABILITY_STREAM)
+    sections = getattr(scraper, "catalog_sections", None)
+    if sections and isinstance(sections, (list, tuple)) and callable(getattr(scraper, "get_catalog_items", None)):
+        caps.append(CAPABILITY_CATALOG)
+    return caps
+
+
+def _disabled_capabilities() -> dict:
+    value = database.get_setting("disabled_custom_scraper_capabilities", {})
+    return value if isinstance(value, dict) else {}
+
+
+def is_capability_enabled(scraper_id: str, capability: str) -> bool:
+    """Check whether a scraper's stream or catalog role is switched on."""
+    return capability not in (_disabled_capabilities().get(str(scraper_id)) or [])
+
+
+def toggle_capability(scraper_id: str, capability: str, enabled: bool):
+    """Enable or disable a scraper's stream or catalog role independently."""
+    if capability not in ALL_CAPABILITIES:
+        raise ValueError(f"Unknown plugin capability: {capability}")
+    all_disabled = dict(_disabled_capabilities())
+    disabled = set(all_disabled.get(str(scraper_id)) or [])
+    if enabled:
+        disabled.discard(capability)
+    else:
+        disabled.add(capability)
+    if disabled:
+        all_disabled[str(scraper_id)] = sorted(disabled)
+    else:
+        all_disabled.pop(str(scraper_id), None)
+    database.set_setting("disabled_custom_scraper_capabilities", all_disabled)
+    if capability == CAPABILITY_STREAM:
+        database.clear_all_cached_streams_async()
+
+
+def _scraper_serves(scraper, capability: str) -> bool:
+    s_id = str(getattr(scraper, "id", ""))
+    return (
+        is_scraper_enabled(s_id)
+        and capability in get_scraper_capabilities(scraper)
+        and is_capability_enabled(s_id, capability)
+    )
 
 
 def toggle_scraper(scraper_id: str, enabled: bool):
@@ -290,19 +366,6 @@ def load_all_custom_scrapers(force_reload: bool = False):
             _LOADED_COUNT = 0
             return []
 
-        # Auto-provision companion helper files like _common.py if present in ~/plugins
-        if not (plugins_dir / "_common.py").is_file():
-            user_common = Path.home() / "plugins" / "_common.py"
-            if user_common.is_file():
-                try:
-                    shutil.copy2(user_common, plugins_dir / "_common.py")
-                except Exception:
-                    pass
-
-        p_dir_str = str(plugins_dir)
-        if p_dir_str not in sys.path:
-            sys.path.insert(0, p_dir_str)
-
         new_scrapers = {}
         new_modules = {}
 
@@ -409,6 +472,9 @@ def get_all_custom_scrapers() -> list[dict]:
             "author": getattr(s, "author", ""),
             "media_types": list(getattr(s, "media_types", ["movie", "series"])),
             "enabled": is_scraper_enabled(s_id),
+            "capabilities": get_scraper_capabilities(s),
+            "stream_enabled": is_capability_enabled(s_id, CAPABILITY_STREAM),
+            "catalog_enabled": is_capability_enabled(s_id, CAPABILITY_CATALOG),
             "filename": getattr(s, "_filename", ""),
             "file_path": getattr(s, "_file_path", ""),
         })
@@ -424,7 +490,7 @@ def get_enabled_scrapers_for_type(media_type: str = "movie") -> list:
     all_scrapers = _get_scrapers_for_caller()
     enabled = []
     for s in all_scrapers:
-        if not is_scraper_enabled(s.id):
+        if not _scraper_serves(s, CAPABILITY_STREAM):
             continue
         m_types = [t.lower() for t in getattr(s, "media_types", ["movie", "series"])]
         if norm_type in m_types or "all" in m_types or media_type in m_types:
@@ -660,14 +726,6 @@ def import_plugin_file(src_path: str) -> tuple[bool, str]:
 
     try:
         shutil.copy2(src, target_path)
-        # Also copy companion helper files (_*.py) if present in the same directory
-        try:
-            for helper in src.parent.glob("_*.py"):
-                dest_helper = target_dir / helper.name
-                if not dest_helper.exists():
-                    shutil.copy2(helper, dest_helper)
-        except Exception:
-            pass
         load_all_custom_scrapers(force_reload=True)
         return True, f"Successfully imported '{src.name}'"
     except Exception as e:
@@ -754,7 +812,7 @@ def get_catalogs(media_type: str = "all") -> list[dict]:
     seen = set()
 
     for scraper in _get_scrapers_for_caller():
-        if not is_scraper_enabled(scraper.id):
+        if not _scraper_serves(scraper, CAPABILITY_CATALOG):
             continue
 
         sections = getattr(scraper, "catalog_sections", None)
@@ -835,6 +893,8 @@ def fetch_catalog_items(
     scrapers = {s.id: s for s in load_all_custom_scrapers()}
     scraper = scrapers.get(plugin_id)
     if not scraper or not hasattr(scraper, "get_catalog_items"):
+        return []
+    if not _scraper_serves(scraper, CAPABILITY_CATALOG):
         return []
 
     if is_cancelled and is_cancelled():

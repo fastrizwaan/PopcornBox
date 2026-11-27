@@ -22787,9 +22787,31 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             del_btn.connect("clicked", lambda b, fn=filename, sid=s_id: self._on_delete_custom_scraper_clicked(fn or sid))
             sfx.append(del_btn)
 
+            caps = scraper.get("capabilities") or []
+            cap_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0, valign=Gtk.Align.CENTER)
+            cap_box.add_css_class("linked")
+            cap_labels = {"stream": _("Stream"), "catalog": _("Catalog")}
+            cap_tips = {
+                "stream": _("Use this plugin to find playable streams"),
+                "catalog": _("Show this plugin's catalogs for browsing"),
+            }
+            for cap in ("stream", "catalog"):
+                if cap not in caps:
+                    continue
+                tb = Gtk.ToggleButton(label=cap_labels[cap], valign=Gtk.Align.CENTER)
+                tb.add_css_class("caption")
+                tb.set_tooltip_text(cap_tips[cap])
+                tb.set_active(bool(scraper.get(f"{cap}_enabled", True)))
+                tb.connect("toggled", lambda b, sid=s_id, c=cap: self._on_custom_scraper_capability_toggled(b, sid, c))
+                cap_box.append(tb)
+            if cap_box.get_first_child() is not None:
+                cap_box.set_sensitive(bool(scraper.get("enabled", True)))
+                sfx.append(cap_box)
+
             sw = Gtk.Switch(valign=Gtk.Align.CENTER)
             sw.set_active(bool(scraper.get("enabled", True)))
             sw.connect("notify::active", lambda s, p, sid=s_id: self._on_custom_scraper_switch_toggled(s, sid))
+            sw.connect("notify::active", lambda s, p, box=cap_box: box.set_sensitive(s.get_active()))
             sfx.append(sw)
 
             row.add_suffix(sfx)
@@ -22869,6 +22891,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         scrapers = custom_plugins.get_all_custom_scrapers()
         active_count = len([s for s in scrapers if s.get("enabled")])
         self.custom_plugin_badge_active.set_label(f"{active_count} active")
+
+    def _on_custom_scraper_capability_toggled(self, button, scraper_id, capability):
+        from . import custom_plugins
+        custom_plugins.toggle_capability(scraper_id, capability, button.get_active())
 
     def _on_delete_custom_scraper_clicked(self, filename_or_id):
         from . import custom_plugins

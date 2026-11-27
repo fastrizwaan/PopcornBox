@@ -40,11 +40,6 @@ def _load_module(file_path: str):
     if not path.is_file():
         raise FileNotFoundError(f"Plugin file not found: {file_path}")
 
-    # Add directory to sys.path temporarily to allow relative helper imports
-    parent_dir = str(path.parent)
-    if parent_dir not in sys.path:
-        sys.path.insert(0, parent_dir)
-
     module_name = f"popcornbox_isolated_plugin_{path.stem}"
     spec = importlib.util.spec_from_file_location(module_name, str(path))
     if not spec or not spec.loader:
