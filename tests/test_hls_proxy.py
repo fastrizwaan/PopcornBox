@@ -374,6 +374,21 @@ class TestHlsVariantCorrection(unittest.TestCase):
         # Unrelated fragments are left alone
         self.assertEqual(hls_proxy.split_variant_pin(url + "#t=10"), (url + "#t=10", None))
 
+    def test_keep_only_variant_with_same_named_variants(self):
+        master = "\n".join([
+            "#EXTM3U",
+            '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="EN",DEFAULT=YES,URI="audio-en/playlist.m3u8"',
+            '#EXT-X-STREAM-INF:BANDWIDTH=853000,RESOLUTION=640x360,AUDIO="audio"', "360p/playlist.m3u8",
+            '#EXT-X-STREAM-INF:BANDWIDTH=8128000,RESOLUTION=1920x1080,AUDIO="audio"', "1080p/playlist.m3u8",
+            '#EXT-X-STREAM-INF:BANDWIDTH=23328000,RESOLUTION=3840x2160,AUDIO="audio"', "2160p/playlist.m3u8",
+        ])
+        text = hls_proxy._keep_only_variant(master, "1080p/playlist.m3u8")
+        self.assertIsNotNone(text)
+        self.assertIn("1080p/playlist.m3u8", text)
+        self.assertNotIn("360p/playlist.m3u8", text)
+        self.assertNotIn("2160p/playlist.m3u8", text)
+        self.assertIn("audio-en/playlist.m3u8", text)  # audio rendition kept
+
     def test_keep_only_variant(self):
         text = hls_proxy._keep_only_variant(DECOY_MASTER, "video_720p.m3u8")
         variants = hls_proxy._parse_master_variants(text)

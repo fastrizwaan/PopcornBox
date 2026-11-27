@@ -307,11 +307,14 @@ def _keep_only_variant(master_text: str, variant_pin: str) -> str | None:
         return None
     pin = variant_pin.split("?", 1)[0]
 
-    def _matches(uri):
-        path = uri.split("?", 1)[0]
-        return path == pin or path.rsplit("/", 1)[-1] == pin.rsplit("/", 1)[-1]
+    def _path(uri):
+        return uri.split("?", 1)[0]
 
-    keep = [v for v in variants if _matches(v["uri"])]
+    # An exact path match wins: many masters name every variant "playlist.m3u8"
+    # inside per-quality folders (720p/playlist.m3u8, 1080p/playlist.m3u8, ...).
+    keep = [v for v in variants if _path(v["uri"]) == pin]
+    if not keep:
+        keep = [v for v in variants if _path(v["uri"]).rsplit("/", 1)[-1] == pin.rsplit("/", 1)[-1]]
     if len(keep) != 1:
         return None
     lines = master_text.splitlines()
