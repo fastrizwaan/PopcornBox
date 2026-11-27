@@ -834,9 +834,9 @@ class MovieDetailsPage(Gtk.Overlay):
         self.main_box.append(self.header_bar)
 
         # Split Layout Container (Left: Overview, Right: Fixed Sidebar)
-        self.split_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.split_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         self.split_hbox.set_margin_start(16)
-        self.split_hbox.set_margin_end(14)
+        self.split_hbox.set_margin_end(0)
         self.split_hbox.set_margin_top(8)
         self.split_hbox.set_margin_bottom(14)
         self.split_hbox.set_vexpand(True)
@@ -1084,6 +1084,7 @@ class MovieDetailsPage(Gtk.Overlay):
         # Right Column (Fixed Glassmorphism Sidebar)
         self.sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.sidebar_box.set_size_request(420, -1)
+        self.sidebar_box.set_margin_end(14)
         self.sidebar_box.set_hexpand(False)
         self.sidebar_box.set_vexpand(True)
         self.sidebar_box.add_css_class("details-sidebar")
@@ -1345,7 +1346,8 @@ class MovieDetailsPage(Gtk.Overlay):
         self.streams_list_box.set_margin_top(4)
         self.streams_list_box.set_margin_bottom(4)
         self.streams_list_box.set_margin_start(4)
-        self.streams_list_box.set_margin_end(2)
+        # Keep the revealed overlay scrollbar clear of the play/download buttons.
+        self.streams_list_box.set_margin_end(16)
         streams_scroll.set_child(self.streams_list_box)
         self.streams_page_vbox.append(streams_scroll)
 

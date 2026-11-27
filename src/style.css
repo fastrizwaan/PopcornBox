@@ -789,10 +789,10 @@ button.category-filter-btn:checked {
 
 /* Details Interactive Sidebar & Panels */
 .details-sidebar {
-  background: rgba(15, 15, 20, 0.38);
+  background: rgba(15, 15, 20, 0.2);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
-  backdrop-filter: blur(24px);
+  backdrop-filter: blur(6px);
   padding: 10px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
 }
