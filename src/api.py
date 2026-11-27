@@ -6181,6 +6181,45 @@ def _extract_quality(text):
     if "720p" in t or re.search(r'\b720\b', t): return "720p", 2
     if "480p" in t or re.search(r'\b480\b', t): return "480p", 1
     if "360p" in t or re.search(r'\b360\b', t): return "360p", 0
+    # Non-standard labels: an explicit "WIDTHxHEIGHT", or a cropped height such
+    # as "1600p"/"800p"/"534p" from widescreen (2.4:1) HLS variants.
+    m = _RE_RESOLUTION_WXH.search(t)
+    if m:
+        return quality_from_resolution(int(m.group(1)), int(m.group(2)))
+    m = _RE_ODD_HEIGHT_P.search(t)
+    if m:
+        return quality_from_resolution(0, int(m.group(1)))
+    return None, 0
+
+
+_RE_RESOLUTION_WXH = re.compile(r'(?<!\d)([1-9]\d{2,3})\s*[x×]\s*([1-9]\d{2,3})(?!\d)')
+_RE_ODD_HEIGHT_P = re.compile(r'(?<![\d.])([1-9]\d{2,3})p\b')
+_STANDARD_HEIGHTS = {2160: ("4K", 4), 1440: ("1440p", 3), 1080: ("1080p", 3), 720: ("720p", 2),
+                     576: ("480p", 1), 480: ("480p", 1), 360: ("360p", 0), 240: ("360p", 0)}
+
+
+def quality_from_resolution(width, height):
+    """Map a video size to a standard quality tier.
+
+    Widescreen films are cropped vertically (3840x1600, 1920x800, 1280x534),
+    so the width decides the tier. With only a non-standard height, assume a
+    2.4:1 frame to recover the width.
+    """
+    width, height = int(width or 0), int(height or 0)
+    if not width and height in _STANDARD_HEIGHTS:
+        return _STANDARD_HEIGHTS[height]
+    if not width:
+        width = int(round(height * 2.4))
+    if width >= 3200 or height >= 1800:
+        return "4K", 4
+    if width >= 1700 or height >= 1000:
+        return "1080p", 3
+    if width >= 1100 or height >= 650:
+        return "720p", 2
+    if width >= 700 or height >= 420:
+        return "480p", 1
+    if width > 0 or height > 0:
+        return "360p", 0
     return None, 0
 
 _RE_SIZE = re.compile(
@@ -6933,6 +6972,120 @@ def is_direct_stream(stream):
     return False
 
 
+_CANONICAL_ID_PATTERNS = (
+    ("imdb", re.compile(r"^(?:imdb:)?tt\d+", re.IGNORECASE)),
+    ("tmdb", re.compile(r"^tmdb:\d+", re.IGNORECASE)),
+    ("tvdb", re.compile(r"^tvdb:\d+", re.IGNORECASE)),
+    ("kitsu", re.compile(r"^kitsu:\d+", re.IGNORECASE)),
+    ("mal", re.compile(r"^mal:\d+", re.IGNORECASE)),
+    ("anilist", re.compile(r"^anilist:\d+", re.IGNORECASE)),
+    ("anidb", re.compile(r"^anidb:\d+", re.IGNORECASE)),
+)
+
+
+def canonical_id_kind(item_id):
+    """Return the metadata database an ID belongs to ("imdb", "tmdb", ...), or "".
+
+    Provider-encoded IDs (e.g. "bolly:m:...", "dsx:...") are not canonical: they
+    name a page on one site, not a title in a shared database.
+    """
+    value = str(item_id or "").strip()
+    for kind, pattern in _CANONICAL_ID_PATTERNS:
+        if pattern.match(value):
+            return kind
+    return ""
+
+
+def _catalog_requires_search(catalog):
+    required = catalog.get("extraRequired") or []
+    if "search" in required:
+        return True
+    for extra in catalog.get("extra") or []:
+        if isinstance(extra, dict) and extra.get("name") == "search" and extra.get("isRequired"):
+            return True
+    return False
+
+
+def addon_has_id_backed_catalog(addon):
+    """True when a Stremio addon browses a catalog keyed by IMDb/TMDB IDs.
+
+    Such an addon indexes titles by the same ID we request streams with, so its
+    streams are tied to that exact title rather than to a name search.
+    """
+    if not isinstance(addon, dict):
+        return False
+    catalogs = [
+        c for c in (addon.get("catalogs") or [])
+        if isinstance(c, dict) and not _catalog_requires_search(c)
+    ]
+    if not catalogs:
+        return False
+    prefixes = list(addon.get("idPrefixes") or [])
+    for resource in addon.get("resources") or []:
+        if isinstance(resource, dict) and resource.get("name") in ("catalog", "meta", "stream"):
+            prefixes.extend(resource.get("idPrefixes") or [])
+    return any(
+        str(p).lower().startswith(("tt", "tmdb")) for p in prefixes if p
+    )
+
+
+def stream_full_title_match(stream, target_title):
+    """True when the stream's release text names the full requested title."""
+    if not isinstance(stream, dict) or not target_title:
+        return False
+    candidates = []
+    url = stream.get("url") or stream.get("externalUrl") or stream.get("magnet")
+    url_filename = get_stream_url_filename(url)
+    if url_filename and not is_opaque_identifier(url_filename):
+        candidates.append(url_filename)
+    hints = stream.get("behaviorHints") or {}
+    if isinstance(hints, dict):
+        candidates.extend(hints.get(k) for k in ("filename", "videoFilename"))
+    for field_name in ("filename", "stream_title", "title", "description", "name"):
+        candidates.append(stream.get(field_name))
+    provider_words = [n for n in (stream.get("addon_names") or []) if isinstance(n, str)]
+    if isinstance(stream.get("addon_name"), str):
+        provider_words.append(stream["addon_name"])
+    seen = set()
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate.strip() or candidate in seen:
+            continue
+        seen.add(candidate)
+        for line in [ln.strip() for ln in candidate.splitlines() if ln.strip()] or [candidate]:
+            for part in re.split(r"\s+[-–]\s+|\s*•\s*", line):
+                if part and strict_stream_title_matches(target_title, part, extra_ignored_words=provider_words):
+                    return True
+    return False
+
+
+def stream_trust_key(stream):
+    """Rank how safely a stream is tied to the requested title, best first.
+
+    1. The provider whose catalog card was opened (its own card, no guessing).
+    2. Custom plugins that look titles up strictly by IMDb/TMDB ID.
+    3. Providers whose catalog is keyed by IMDb/TMDB IDs, queried by that ID.
+    4. Any other result looked up by IMDb/TMDB/other database ID.
+    5. Results whose release text names the full title.
+    6. Everything else (title-searched sources with no title evidence).
+    Title-searching custom plugins are never raised above ID-based results:
+    a name search can return a different film with the same name. They only
+    lead within their own tier (5 or 6). Each later criterion only breaks
+    ties of the earlier ones.
+    """
+    if not isinstance(stream, dict):
+        return (0, 0, 0, 0, 0, 0)
+    is_custom = bool(stream.get("is_custom_plugin"))
+    id_based = bool(stream.get("id_lookup") or stream.get("id_source"))
+    return (
+        1 if stream.get("from_opened_catalog") else 0,
+        1 if (is_custom and stream.get("id_lookup")) else 0,
+        1 if (stream.get("catalog_backed") and id_based) else 0,
+        1 if id_based else 0,
+        1 if stream.get("title_match") else 0,
+        1 if is_custom else 0,
+    )
+
+
 def strict_stream_title_mismatch(stream, target_title):
     """Return MATCH_MISMATCH when a direct stream exposes a different title.
 
@@ -7259,6 +7412,12 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
                     vs["is_nuvio_plugin"] = True
                 if s.get("id_lookup"):
                     vs["id_lookup"] = True
+                # The same file found by an ID lookup is confirmed by that ID,
+                # even when a title-searched source also returned it.
+                if s.get("id_source") and not vs.get("id_source"):
+                    vs["id_source"] = s["id_source"]
+                if s.get("catalog_backed"):
+                    vs["catalog_backed"] = True
                 if s.get("plugin_scraper_id") and not vs.get("plugin_scraper_id"):
                     vs["plugin_scraper_id"] = s["plugin_scraper_id"]
                 if s.get("plugin_scraper_tmdb_id") and not vs.get("plugin_scraper_tmdb_id"):
@@ -7381,6 +7540,8 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
             "is_custom_plugin": bool(s.get("is_custom_plugin")),
             "custom_plugin_id": s.get("custom_plugin_id"),
             "id_lookup": bool(s.get("id_lookup")),
+            "id_source": str(s.get("id_source") or ""),
+            "catalog_backed": bool(s.get("catalog_backed")),
             "is_youtube": bool(s.get("is_youtube") or is_youtube_stream(s) or yt_id or ("youtube.com" in stream_url_lower or "youtu.be" in stream_url_lower or "googlevideo.com" in stream_url_lower)),
             "stream_type": "torrent" if is_torrent else (s.get("stream_type") or ("direct" if is_http else "")),
             "headers": s.get("headers"),
@@ -7401,6 +7562,7 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
                     seen_keys[dedup_key] = None
                     continue
             stream_entry["ep_match"] = MATCH_UNKNOWN
+        stream_entry["title_match"] = bool(title and stream_full_title_match(stream_entry, title))
 
         seen_keys[dedup_key] = len(valid_streams)
         valid_streams.append(stream_entry)
@@ -7468,12 +7630,10 @@ def process_raw_streams(all_streams, season=None, episode=None, ep_title=None, t
 
         size_gb = float(x.get("size_gb") or 0.0)
         seeders = seeds if not is_http else (1 if is_yt else 100)
-        # Order of trust: the provider whose catalog card was opened, then plugins
-        # that look up strictly by IMDb/TMDB ID, then everything else (Stremio
-        # addons, Nuvio plugins, ...), so a mismatched result sinks to the bottom.
-        preferred = 1 if x.get("from_opened_catalog") else 0
-        id_based = 1 if x.get("id_lookup") else 0
-        return (preferred, id_based, not_yt, has_seeds, ep_m, tier, seeders, size_gb)
+        # Trust order first (opened catalog, ID-based custom plugins, ID-backed
+        # catalogs, ID lookups, full-title matches), so a mismatched result sinks to the
+        # bottom; quality and seeds only order streams of equal trust.
+        return (*stream_trust_key(x), not_yt, has_seeds, ep_m, tier, seeders, size_gb)
 
     # Marked on the stream itself so the details page keeps this order when it re-sorts.
     for entry in valid_streams:
@@ -8301,7 +8461,36 @@ def _merge_parsed_streams(primary, secondary):
     return merged
 
 
-def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None, known_tmdb_id=None, expected_year=None, catalog_title=None, custom_plugin_route_id=None):
+# Runs the opened catalog's own plugin ahead of the main provider pool.
+_CATALOG_FIRST_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="catalog-first")
+# How long other sources wait for the opened catalog's plugin before starting.
+CATALOG_FIRST_HEAD_START = 4.0
+
+
+def _mark_opened_catalog(streams, provider_name):
+    """Copy streams with from_opened_catalog set for the current card.
+
+    Cached cards keep the flag from whichever card was opened when they were
+    saved; recompute it so a stale flag never reorders another card's list.
+    """
+    marked = []
+    for stream in streams or []:
+        if isinstance(stream, dict):
+            wanted = bool(provider_name and stream_matches_provider(stream, provider_name))
+            if bool(stream.get("from_opened_catalog")) != wanted:
+                stream = dict(stream, from_opened_catalog=wanted)
+        marked.append(stream)
+    return marked
+
+
+def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None, callback=None, title=None, abort_event=None, ep_title=None, force_refresh=False, provider_scope=None, source_scope=None, known_tmdb_id=None, expected_year=None, catalog_title=None, custom_plugin_route_id=None, catalog_plugin_id=None):
+    """Collect streams for one title from every enabled source.
+
+    catalog_plugin_id names the custom plugin whose catalog card was opened
+    (cards may carry plain IMDb IDs, e.g. a Cinemeta-backed catalog). That
+    plugin, or the plugin owning a custom route ID, is asked first and its
+    streams are shown and ranked before every other source.
+    """
     if database.is_adult_content_hidden():
         check_item = {"id": imdb_id, "title": title}
         if is_adult_item(check_item):
@@ -8446,6 +8635,57 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             getattr(matching_custom_route_scraper, "name", None)
             or route_provider_prefix
         )
+    elif catalog_plugin_id and custom_plugins.is_custom_plugins_enabled():
+        # A card from a custom catalog that carries a plain IMDb/TMDB ID.
+        wanted = str(catalog_plugin_id).strip().casefold()
+        for scraper in custom_plugins.get_enabled_scrapers_for_type(media_type):
+            if str(getattr(scraper, "id", "")).strip().casefold() == wanted:
+                matching_custom_route_scraper = scraper
+                route_provider_name = getattr(scraper, "name", None) or catalog_plugin_id
+                break
+
+    # Ask the opened catalog's own plugin first, in the background, before the
+    # ID resolution and cache work below. Its streams are shown as soon as
+    # they arrive and other sources get a short head start budget after it.
+    catalog_scraper = matching_custom_route_scraper
+    catalog_future = None
+    catalog_started_at = time.monotonic()
+    clean_source_scope_pre = str(source_scope).strip().lower() if source_scope else None
+    if (
+        catalog_scraper is not None
+        and clean_source_scope_pre != "torrent"
+        and not (abort_event and abort_event.is_set())
+    ):
+        catalog_lookup_id = target_custom_route or imdb_id
+        catalog_title_for_lookup = title
+        catalog_year_for_lookup = expected_year
+        catalog_tmdb_for_lookup = known_tmdb_id
+
+        def _run_catalog_plugin():
+            print(f"[STREAM DEBUG] catalog plugin first lookup starting plugin={getattr(catalog_scraper, 'name', '')!r} id={str(catalog_lookup_id)[:120]!r} s={season} e={episode}")
+            c_streams = custom_plugins.execute_custom_scraper(
+                catalog_scraper,
+                imdb_id=catalog_lookup_id,
+                media_type=media_type,
+                season=season,
+                episode=episode,
+                title=catalog_title_for_lookup,
+                year=catalog_year_for_lookup,
+                tmdb_id=catalog_tmdb_for_lookup,
+                timeout=12.0,
+            ) or []
+            # The card is this plugin's own, but still drop streams that name
+            # a different title outright.
+            c_streams = [
+                stream for stream in c_streams
+                if strict_stream_title_mismatch(stream, catalog_title_for_lookup) != MATCH_MISMATCH
+            ]
+            print(f"[STREAM DEBUG] catalog plugin first lookup returned {len(c_streams)} stream(s)")
+            return c_streams
+
+        catalog_future = _CATALOG_FIRST_EXECUTOR.submit(_run_catalog_plugin)
+
+    if target_custom_route:
         if not (isinstance(imdb_id, str) and imdb_id.startswith("tt")):
             route_tmdb_id = known_tmdb_id
             resolved_route_imdb = None
@@ -8472,38 +8712,23 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 imdb_id = resolved_route_imdb
 
     initial_custom_streams = []
-    clean_source_scope_pre = str(source_scope).strip().lower() if source_scope else None
-    if target_custom_route and clean_source_scope_pre == "direct":
-        print(f"[STREAM DEBUG] Custom plugin immediate route lookup starting: {target_custom_route!r} s={season} e={episode}")
-        matching_scraper = matching_custom_route_scraper
-        if matching_scraper:
-            try:
-                c_streams = custom_plugins.execute_custom_scraper(
-                    matching_scraper,
-                    imdb_id=target_custom_route,
-                    media_type=media_type,
-                    season=season,
-                    episode=episode,
-                    title=title,
-                    year=expected_year,
-                    tmdb_id=known_tmdb_id,
-                    timeout=12.0
-                )
-                if c_streams:
-                    c_streams = [
-                        stream for stream in c_streams
-                        if strict_stream_title_mismatch(stream, title) != MATCH_MISMATCH
-                    ]
-                if c_streams:
-                    print(f"[STREAM DEBUG] Custom plugin immediate route lookup returned {len(c_streams)} stream(s)")
-                    initial_custom_streams = list(c_streams)
-                    parsed_initial = process_raw_streams(c_streams, season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year, preferred_provider=route_provider_name)
-                    # Show the catalog provider's streams at once, then keep
-                    # collecting from every other source (these are reused there).
-                    if parsed_initial and callback:
-                        callback(parsed_initial, is_cached=False, is_complete=False)
-            except Exception as e:
-                print(f"[STREAM DEBUG] Custom plugin immediate route lookup failed: {e}")
+    catalog_first_done = False
+
+    def _collect_catalog_first(wait_budget):
+        """Wait up to wait_budget seconds for the catalog plugin's streams."""
+        nonlocal initial_custom_streams, catalog_first_done
+        if catalog_future is None or catalog_first_done:
+            return initial_custom_streams
+        try:
+            c_streams = catalog_future.result(timeout=max(0.0, wait_budget))
+        except concurrent.futures.TimeoutError:
+            return initial_custom_streams
+        except Exception as e:
+            print(f"[STREAM DEBUG] catalog plugin first lookup failed: {e}")
+            c_streams = []
+        catalog_first_done = True
+        initial_custom_streams = list(c_streams or [])
+        return initial_custom_streams
 
     if is_custom_plugin_route_id(str(imdb_id)):
         canonical_id = f"tmdb:{known_tmdb_id}" if known_tmdb_id else None
@@ -8858,6 +9083,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         and cache_age < max_fresh_age
     )
 
+    usable_cached = _mark_opened_catalog(usable_cached, route_provider_name)
     if is_fresh:
         print(f"[STREAM DEBUG] cache hit: returning {len(cached or [])} fresh cards without provider requests")
         if callback: callback(usable_cached, is_cached=True, is_complete=True)
@@ -8866,6 +9092,23 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     if usable_cached and callback:
         print(f"[STREAM DEBUG] delivering {len(usable_cached)} usable cached cards while provider refresh runs")
         callback(usable_cached, is_cached=True, is_complete=False)
+
+    # Give the opened catalog's plugin a head start: show its streams on top
+    # before the other providers are asked, so they are never buried or late.
+    if catalog_future is not None:
+        head_start_left = CATALOG_FIRST_HEAD_START - (time.monotonic() - catalog_started_at)
+        first_streams = _collect_catalog_first(head_start_left)
+        if abort_event and abort_event.is_set():
+            return []
+        if first_streams and callback:
+            parsed_first = process_raw_streams(list(first_streams), season=season, episode=episode, ep_title=ep_title, title=title, expected_year=expected_year, preferred_provider=route_provider_name)
+            first_keys = {(s.get("hash"), s.get("file_index")) for s in parsed_first}
+            merged_first = parsed_first + [
+                s for s in usable_cached
+                if isinstance(s, dict) and (s.get("hash"), s.get("file_index")) not in first_keys
+            ]
+            print(f"[STREAM DEBUG] delivering {len(parsed_first)} catalog plugin card(s) before other providers")
+            callback(merged_first, is_cached=False, is_complete=False)
 
     print(
         f"[STREAM DEBUG] stream-capable addons={len(all_stream_addons)} "
@@ -8990,6 +9233,24 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             bypass_url_cache=force_refresh,
         )
         print(f"[STREAM DEBUG] addon request done addon={addon.get('name')!r} id={cur_id!r} raw_cards={len(streams or [])}")
+        # Streams requested by a database ID (tt..., tmdb:...) are tied to that
+        # title; mark them so they rank above title-searched sources. Copy the
+        # dicts: _request_addon_streams may hand back cached objects.
+        id_kind = canonical_id_kind(clean_cur_id)
+        if id_kind and streams:
+            if "catalogs" not in addon and manifest_url:
+                try:
+                    manifest_data = _get_cached_request(manifest_url, max_age_hours=168) or {}
+                    addon["catalogs"] = manifest_data.get("catalogs") or []
+                    if addon.get("idPrefixes") is None:
+                        addon["idPrefixes"] = manifest_data.get("idPrefixes")
+                except Exception:
+                    pass
+            catalog_backed = id_kind in ("imdb", "tmdb") and addon_has_id_backed_catalog(addon)
+            streams = [
+                dict(s, id_source=id_kind, catalog_backed=catalog_backed) if isinstance(s, dict) else s
+                for s in streams
+            ]
         return addon.get("name", "Unknown"), streams
 
     def fetch_from_plugin(scraper_obj, target_tmdb_id):
@@ -9016,7 +9277,12 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         scraper_name = getattr(scraper_obj, "name", "Custom Plugin")
         scraper_id = getattr(scraper_obj, "id", "")
 
-        # If already fetched during immediate custom route lookup, reuse
+        # The opened catalog's plugin was already asked first: reuse its result.
+        if catalog_future is not None and str(getattr(scraper_obj, "id", "")) == str(getattr(catalog_scraper, "id", "")):
+            if catalog_seeded:
+                return scraper_name, []  # already in all_raw_streams
+            remaining = 20.0 - (time.monotonic() - catalog_started_at)
+            return scraper_name, list(_collect_catalog_first(remaining))
         plugin_imdb_id = imdb_id
         if target_custom_route:
             if target_custom_route.lstrip().startswith("{") and "movieid" in target_custom_route.lower():
@@ -9050,6 +9316,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             return scraper_name, []
 
     all_raw_streams = list(initial_custom_streams)
+    catalog_seeded = catalog_first_done
     if cached and not force_refresh:
         cache_seed_streams = usable_cache_candidates if source_scope else usable_cached
         for c in cache_seed_streams:
@@ -9079,6 +9346,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 "is_custom_plugin": bool(c.get("is_custom_plugin")),
                 "custom_plugin_id": c.get("custom_plugin_id"),
                 "id_lookup": bool(c.get("id_lookup")),
+                "id_source": c.get("id_source") or "",
+                "catalog_backed": bool(c.get("catalog_backed")),
                 "is_youtube": bool(c.get("is_youtube") or is_youtube_stream(c)),
             }
             all_raw_streams.append(raw)
@@ -9090,7 +9359,6 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
     # provider.
     alias_cache_ids = []
 
-    import concurrent.futures
     total_providers = len(all_stream_addons) + len(plugin_scrapers) + len(enabled_custom_scrapers)
     max_workers_limit = 24
     num_workers = min(max(total_providers, 4), max_workers_limit) if total_providers > 0 else 1

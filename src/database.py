@@ -1792,6 +1792,7 @@ def _normalize_stream_for_storage(stream):
         "is_nuvio_plugin", "plugin_scraper_id", "plugin_scraper_tmdb_id",
         "headers",
         "is_custom_plugin", "custom_plugin_id", "is_hls", "is_dash",
+        "id_lookup", "id_source", "catalog_backed",
         "audio_track_id", "audio_track_lang", "audio_track_title", "audio_disabled",
         "sub_track_id", "sub_track_lang", "sub_track_title", "sub_visibility", "sub_disabled", "sub_is_external"
     ]

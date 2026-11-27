@@ -172,8 +172,12 @@ When in doubt, return NOTHING rather than a guess.
 - If the website has no IMDb/TMDB IDs, the plugin serves ONLY its own catalog
   cards (ids "<prefix>:<url>") and returns [] for everything else.
 - Stream list order in PopcornBox: (1) the opened catalog card's own plugin,
-  (2) plugins with lookup = "id", (3) Stremio addons, Nuvio plugins and the
-  rest. A wrong match from a title-searching source therefore sinks down.
+  (2) custom plugins with lookup = "id", (3) providers whose catalog is keyed
+  by IMDb/TMDB IDs and were queried by that ID, (4) other results looked up by
+  IMDb/TMDB ID, (5) results whose release name contains the full title,
+  (6) the rest. Title-searching custom plugins never rank above ID-based
+  results; they only lead within tiers 5 and 6. A wrong match from a
+  title-searching source therefore sinks down.
 - Exact title matching is still useful for the catalog SEARCH box, never for
   choosing which film's streams to play.
 - Adult content: never return adult pages (18+, Ullu, HotShots, erotic,
@@ -1222,6 +1226,11 @@ def fetch_catalog_items(
             "type": it.get("type", "movie"),
             "genres": it.get("genres", []),
             "rating": str(it.get("rating", "")),
+            # Which plugin's catalog the card came from: its streams are asked
+            # for first and listed on top, even when the card carries a plain
+            # IMDb/TMDB ID instead of a "<prefix>:<url>" route.
+            "catalog_plugin_id": str(plugin_id),
+            "addon_name": str(getattr(scraper, "name", "") or plugin_id),
         })
 
     return formatted_items

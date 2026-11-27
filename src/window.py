@@ -547,6 +547,12 @@ def _normalize_stream_quality(stream):
         return "More"
     elif isinstance(stream, str) and stream in ["All", "4K", "1080p", "720p", "More"]:
         return stream
+    # Non-standard labels ("1600p", "3840x1600", "1440p") from cropped widescreen
+    # variants: map to the nearest standard tier instead of leaving them unknown.
+    from . import api
+    _label, q_val = api._extract_quality(raw)
+    if _label:
+        return {4: "4K", 3: "1080p", 2: "720p"}.get(q_val, "More")
     return None
 
 
@@ -647,12 +653,10 @@ def stream_sort_key_all(t, sel_s=None, sel_e=None, ep_t=None, pref_prov=None, re
     is_pref = 1 if (pref_prov and is_http and _stream_matches_provider(t, pref_prov)) else 0
     size = float(t.get('size_gb') or 0.0)
     is_under_4gb = 1 if ((0 < size < 4.0) or (size == 0.0)) else 0
-    # Trust order: the opened catalog's own provider, then plugins that look up
-    # strictly by IMDb/TMDB ID; Stremio addons / Nuvio plugins / others follow,
+    # Trust order (see api.stream_trust_key): the opened catalog's provider,
+    # ID-based custom plugins, ID-backed catalogs, ID lookups, full-title matches,
     # so a mismatched result from a title search sinks to the bottom.
-    from_catalog = 1 if t.get('from_opened_catalog') else 0
-    id_based = 1 if t.get('id_lookup') else 0
-    return (is_remembered, from_catalog, id_based, not_yt, has_seeds, ep_m, tier, ping_ok, is_pref, is_under_4gb, seeds, size)
+    return (is_remembered, *api.stream_trust_key(t), not_yt, has_seeds, ep_m, tier, ping_ok, is_pref, is_under_4gb, seeds, size)
 
 
 
@@ -3587,6 +3591,7 @@ class MovieDetailsPage(Gtk.Overlay):
         known_tmdb_id = movie_details.get("tmdb_id")
         expected_year = movie_details.get("year")
         custom_plugin_route_id = movie_details.get("custom_plugin_route_id")
+        catalog_plugin_id = self.movie_stub.get("catalog_plugin_id") or movie_details.get("catalog_plugin_id")
         if not custom_plugin_route_id:
             stub_route_id = self.movie_stub.get("id")
             if api.is_custom_plugin_route_id(stub_route_id):
@@ -4004,6 +4009,7 @@ class MovieDetailsPage(Gtk.Overlay):
                     expected_year=expected_year,
                     catalog_title=catalog_title,
                     custom_plugin_route_id=custom_plugin_route_id,
+                    catalog_plugin_id=catalog_plugin_id,
                 )
                 print(f"[STREAM DEBUG] worker API returned generation={current_gen}")
             except RuntimeError as e:
