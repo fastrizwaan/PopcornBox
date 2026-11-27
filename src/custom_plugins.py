@@ -205,23 +205,45 @@ def is_capability_enabled(scraper_id: str, capability: str) -> bool:
     return capability not in (_disabled_capabilities().get(str(scraper_id)) or [])
 
 
-def toggle_capability(scraper_id: str, capability: str, enabled: bool):
-    """Enable or disable a scraper's stream or catalog role independently."""
-    if capability not in ALL_CAPABILITIES:
-        raise ValueError(f"Unknown plugin capability: {capability}")
+def _supported_capabilities(scraper_id: str) -> list[str]:
+    scraper = _LOADED_SCRAPERS.get(str(scraper_id))
+    return get_scraper_capabilities(scraper) if scraper is not None else list(ALL_CAPABILITIES)
+
+
+def _set_disabled_capabilities(scraper_id: str, disabled: set):
     all_disabled = dict(_disabled_capabilities())
-    disabled = set(all_disabled.get(str(scraper_id)) or [])
-    if enabled:
-        disabled.discard(capability)
-    else:
-        disabled.add(capability)
     if disabled:
         all_disabled[str(scraper_id)] = sorted(disabled)
     else:
         all_disabled.pop(str(scraper_id), None)
     database.set_setting("disabled_custom_scraper_capabilities", all_disabled)
+
+
+def toggle_capability(scraper_id: str, capability: str, enabled: bool) -> bool:
+    """Enable or disable a scraper's stream or catalog role independently.
+
+    Switching off the last capability a plugin supports disables the whole
+    plugin instead (its capabilities are reset, so re-enabling the plugin
+    brings every role back). Returns whether the plugin is still enabled.
+    """
+    if capability not in ALL_CAPABILITIES:
+        raise ValueError(f"Unknown plugin capability: {capability}")
+    disabled = set(_disabled_capabilities().get(str(scraper_id)) or [])
+    if enabled:
+        disabled.discard(capability)
+    else:
+        disabled.add(capability)
+
+    supported = set(_supported_capabilities(scraper_id))
+    if supported and supported <= disabled:
+        _set_disabled_capabilities(scraper_id, set())
+        toggle_scraper(scraper_id, False)
+        return False
+
+    _set_disabled_capabilities(scraper_id, disabled)
     if capability == CAPABILITY_STREAM:
         database.clear_all_cached_streams_async()
+    return is_scraper_enabled(scraper_id)
 
 
 def _scraper_serves(scraper, capability: str) -> bool:
@@ -238,6 +260,10 @@ def toggle_scraper(scraper_id: str, enabled: bool):
     disabled = set(database.get_setting("disabled_custom_scrapers", []))
     if enabled:
         disabled.discard(str(scraper_id))
+        # A plugin switched on with every role off would do nothing; restore them.
+        supported = set(_supported_capabilities(scraper_id))
+        if supported and supported <= set(_disabled_capabilities().get(str(scraper_id)) or []):
+            _set_disabled_capabilities(scraper_id, set())
     else:
         disabled.add(str(scraper_id))
     database.set_setting("disabled_custom_scrapers", list(disabled))

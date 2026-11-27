@@ -22795,6 +22795,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 "stream": _("Use this plugin to find playable streams"),
                 "catalog": _("Show this plugin's catalogs for browsing"),
             }
+            sw = Gtk.Switch(valign=Gtk.Align.CENTER)
+            sw.set_active(bool(scraper.get("enabled", True)))
+            row_ctl = {"switch": sw, "cap_box": cap_box, "pills": {}, "syncing": False}
             for cap in ("stream", "catalog"):
                 if cap not in caps:
                     continue
@@ -22802,16 +22805,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 tb.add_css_class("caption")
                 tb.set_tooltip_text(cap_tips[cap])
                 tb.set_active(bool(scraper.get(f"{cap}_enabled", True)))
-                tb.connect("toggled", lambda b, sid=s_id, c=cap: self._on_custom_scraper_capability_toggled(b, sid, c))
+                tb.connect("toggled", lambda b, sid=s_id, c=cap, ctl=row_ctl: self._on_custom_scraper_capability_toggled(b, sid, c, ctl))
+                row_ctl["pills"][cap] = tb
                 cap_box.append(tb)
-            if cap_box.get_first_child() is not None:
-                cap_box.set_sensitive(bool(scraper.get("enabled", True)))
+            if row_ctl["pills"]:
+                cap_box.set_sensitive(sw.get_active())
                 sfx.append(cap_box)
 
-            sw = Gtk.Switch(valign=Gtk.Align.CENTER)
-            sw.set_active(bool(scraper.get("enabled", True)))
-            sw.connect("notify::active", lambda s, p, sid=s_id: self._on_custom_scraper_switch_toggled(s, sid))
-            sw.connect("notify::active", lambda s, p, box=cap_box: box.set_sensitive(s.get_active()))
+            sw.connect("notify::active", lambda s, p, sid=s_id, ctl=row_ctl: self._on_custom_scraper_switch_toggled(s, sid, ctl))
             sfx.append(sw)
 
             row.add_suffix(sfx)
@@ -22823,6 +22824,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         active = row.get_active()
         from . import custom_plugins
         custom_plugins.set_custom_plugins_enabled(active)
+        self._refresh_nuvio_catalog_views()
         if active:
             self.custom_plugin_badge_status.set_label(_("Custom plugins enabled"))
             self.custom_plugin_badge_status.remove_css_class("plugin-disabled")
@@ -22885,16 +22887,44 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         dialog.open(self, None, on_open_response)
 
-    def _on_custom_scraper_switch_toggled(self, switch, scraper_id):
+    def _on_custom_scraper_switch_toggled(self, switch, scraper_id, row_ctl=None):
+        if row_ctl and row_ctl.get("syncing"):
+            return
         from . import custom_plugins
         custom_plugins.toggle_scraper(scraper_id, switch.get_active())
+        if row_ctl:
+            self._sync_custom_scraper_row(scraper_id, row_ctl)
+        self._after_custom_plugin_toggle()
+
+    def _sync_custom_scraper_row(self, scraper_id, row_ctl):
+        """Reflect the stored plugin/capability state in one plugin row's widgets."""
+        from . import custom_plugins
+        enabled = custom_plugins.is_scraper_enabled(scraper_id)
+        row_ctl["syncing"] = True
+        try:
+            row_ctl["switch"].set_active(enabled)
+            for cap, pill in row_ctl["pills"].items():
+                pill.set_active(custom_plugins.is_capability_enabled(scraper_id, cap))
+            row_ctl["cap_box"].set_sensitive(enabled)
+        finally:
+            row_ctl["syncing"] = False
+
+    def _after_custom_plugin_toggle(self):
+        from . import custom_plugins
         scrapers = custom_plugins.get_all_custom_scrapers()
         active_count = len([s for s in scrapers if s.get("enabled")])
         self.custom_plugin_badge_active.set_label(f"{active_count} active")
+        self._refresh_nuvio_catalog_views()
 
-    def _on_custom_scraper_capability_toggled(self, button, scraper_id, capability):
+    def _on_custom_scraper_capability_toggled(self, button, scraper_id, capability, row_ctl):
+        if row_ctl.get("syncing"):
+            return
         from . import custom_plugins
-        custom_plugins.toggle_capability(scraper_id, capability, button.get_active())
+        still_enabled = custom_plugins.toggle_capability(scraper_id, capability, button.get_active())
+        self._sync_custom_scraper_row(scraper_id, row_ctl)
+        if not still_enabled:
+            self._show_toast(_("Stream and catalog are both off, so the plugin was disabled"))
+        self._after_custom_plugin_toggle()
 
     def _on_delete_custom_scraper_clicked(self, filename_or_id):
         from . import custom_plugins

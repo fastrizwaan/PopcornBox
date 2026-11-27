@@ -152,13 +152,51 @@ class Scraper:
         self.assertEqual(catalog_ids(), set())
         self.assertIn("custom.both", stream_ids())
 
+        custom_plugins.toggle_capability("custom.both", "catalog", True)
         custom_plugins.toggle_capability("custom.both", "stream", False)
         self.assertEqual(stream_ids(), {"custom.streamonly"})
+        self.assertEqual(catalog_ids(), {"custom.both"})
 
-        custom_plugins.toggle_capability("custom.both", "catalog", True)
         custom_plugins.toggle_capability("custom.both", "stream", True)
         self.assertEqual(catalog_ids(), {"custom.both"})
         self.assertEqual(stream_ids(), {"custom.both", "custom.streamonly"})
+
+    def test_disabling_every_capability_disables_plugin(self):
+        p_dir = custom_plugins.get_custom_plugins_dir()
+        (p_dir / "both.py").write_text('''
+class Scraper:
+    id = "custom.both"
+    media_types = ["movie"]
+    catalog_sections = [{"id": "latest", "name": "Latest", "type": "movie"}]
+    def get_streams(self, *a, **k): return []
+    def get_catalog_items(self, *a, **k): return []
+''', encoding="utf-8")
+        (p_dir / "streamonly.py").write_text('''
+class Scraper:
+    id = "custom.streamonly"
+    media_types = ["movie"]
+    capabilities = ["stream"]
+    def get_streams(self, *a, **k): return []
+''', encoding="utf-8")
+        custom_plugins.load_all_custom_scrapers(force_reload=True)
+
+        self.assertTrue(custom_plugins.toggle_capability("custom.both", "stream", False))
+        self.assertFalse(custom_plugins.toggle_capability("custom.both", "catalog", False))
+        self.assertFalse(custom_plugins.is_scraper_enabled("custom.both"))
+
+        # Re-enabling the plugin brings both roles back.
+        custom_plugins.toggle_scraper("custom.both", True)
+        self.assertTrue(custom_plugins.is_capability_enabled("custom.both", "stream"))
+        self.assertTrue(custom_plugins.is_capability_enabled("custom.both", "catalog"))
+
+        # A single-capability plugin is disabled as soon as that one role goes off.
+        self.assertFalse(custom_plugins.toggle_capability("custom.streamonly", "stream", False))
+        self.assertFalse(custom_plugins.is_scraper_enabled("custom.streamonly"))
+        custom_plugins.toggle_scraper("custom.streamonly", True)
+        self.assertEqual(
+            {s.id for s in custom_plugins.get_enabled_scrapers_for_type("movie")},
+            {"custom.both", "custom.streamonly"},
+        )
 
     def test_plugins_cannot_import_sibling_helpers(self):
         p_dir = custom_plugins.get_custom_plugins_dir()
