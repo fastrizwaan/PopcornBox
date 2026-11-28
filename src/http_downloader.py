@@ -155,6 +155,11 @@ def start_http_download(url, torrent=None, headers=None, clean_title=None, item_
     url = sanitize_stream_url(url)
     if not url:
         return None
+    # Stream URLs come from addons and scrapers; urllib and FFmpeg would also
+    # read file:// and other local schemes, so only remote HTTP(S) downloads.
+    if not api._is_remote_http_url(url):
+        logger.warning("Refusing to download non-HTTP stream URL")
+        return None
 
     if not clean_title:
         clean_title = "video"
@@ -290,6 +295,7 @@ def _start_worker_thread(info_hash, url, dest_path, headers=None, torrent=None, 
                     headers_arg = "".join(f"{k}: {v}\r\n" for k, v in req_headers.items() if k.lower() != "range")
                     cmd = [
                         "ffmpeg", "-y",
+                        "-protocol_whitelist", "http,https,tcp,tls,crypto",
                         "-headers", headers_arg,
                         "-i", final_url,
                         "-c", "copy",
@@ -441,6 +447,8 @@ def resume_http_download(download_dict, window=None):
     url = download_dict.get("url")
     dest_path = download_dict.get("file_path")
     if not info_hash or not url or not dest_path:
+        return False
+    if not api._is_remote_http_url(url):
         return False
 
     with _downloads_lock:

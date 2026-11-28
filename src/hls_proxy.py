@@ -102,6 +102,21 @@ def _sanitize_url(url: str) -> str:
         return url.replace(" ", "%20")
 
 
+def _remote_request(url: str, headers=None) -> urllib.request.Request:
+    """Build a request for a URL taken from a remote manifest.
+
+    Manifest URIs are untrusted. urllib also opens file://, ftp:// and data:
+    URLs, so anything other than http(s) with a host is refused here.
+    """
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+    except ValueError as e:
+        raise urllib.error.URLError(f"invalid manifest URL: {e}") from e
+    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+        raise urllib.error.URLError(f"refusing non-HTTP manifest URL scheme {parts.scheme!r}")
+    return urllib.request.Request(url, headers=headers or {})
+
+
 def _resolve_relative_url(base_url: str, relative_url: str) -> str:
     """Resolve a relative URL against a base URL, preserving query parameters/tokens when appropriate."""
     full_url = urllib.parse.urljoin(base_url, relative_url)
@@ -370,7 +385,7 @@ class HlsSession:
         current_url = self.url
         for attempt in range(2):
             try:
-                req = urllib.request.Request(current_url, headers=req_headers)
+                req = _remote_request(current_url, headers=req_headers)
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     text = _read_playlist_text(resp)
                 break
@@ -452,7 +467,7 @@ class HlsSession:
                 current_url = variant_url
                 self.variant_url = variant_url
                 self.url = current_url
-                req = urllib.request.Request(current_url, headers=req_headers)
+                req = _remote_request(current_url, headers=req_headers)
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     text = _read_playlist_text(resp)
 
@@ -551,7 +566,7 @@ class HlsSession:
         probe_headers = dict(req_headers)
         probe_headers["Range"] = "bytes=0-1023"
         try:
-            req = urllib.request.Request(first_url, headers=probe_headers)
+            req = _remote_request(first_url, headers=probe_headers)
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 sample = resp.read(1024)
             offset = _find_mpegts_sync_offset(sample)
@@ -571,7 +586,7 @@ class HlsSession:
             return False
         try:
             variant_url = _resolve_relative_url(base_url, variants[0]["uri"])
-            req = urllib.request.Request(variant_url, headers=req_headers)
+            req = _remote_request(variant_url, headers=req_headers)
             with urllib.request.urlopen(req, timeout=_VARIANT_PROBE_TIMEOUT) as resp:
                 playlist = _read_playlist_text(resp)
             if "#EXT-X-MAP" in playlist:
@@ -581,7 +596,7 @@ class HlsSession:
                 return False
             probe_headers = dict(req_headers)
             probe_headers["Range"] = "bytes=0-1023"
-            req = urllib.request.Request(_resolve_relative_url(variant_url, first_seg), headers=probe_headers)
+            req = _remote_request(_resolve_relative_url(variant_url, first_seg), headers=probe_headers)
             with urllib.request.urlopen(req, timeout=_VARIANT_PROBE_TIMEOUT) as resp:
                 sample = resp.read(1024)
             return _find_mpegts_sync_offset(sample) > 0
@@ -631,7 +646,7 @@ class HlsSession:
 
     def _probe_variant_height(self, variant_url: str, req_headers: dict) -> int:
         """Return the real video height of a variant's first MPEG-TS segment, or 0 if unknown."""
-        req = urllib.request.Request(variant_url, headers=req_headers)
+        req = _remote_request(variant_url, headers=req_headers)
         with urllib.request.urlopen(req, timeout=_VARIANT_PROBE_TIMEOUT) as resp:
             playlist = _read_playlist_text(resp)
         if "#EXT-X-MAP" in playlist or re.search(r"#EXT-X-KEY:(?![^\n]*METHOD=NONE)", playlist):
@@ -644,7 +659,7 @@ class HlsSession:
         seg_url = _resolve_relative_url(variant_url, first_seg)
         seg_headers = dict(req_headers)
         seg_headers["Range"] = f"bytes=0-{_VARIANT_PROBE_BYTES - 1}"
-        req = urllib.request.Request(seg_url, headers=seg_headers)
+        req = _remote_request(seg_url, headers=seg_headers)
         with urllib.request.urlopen(req, timeout=_VARIANT_PROBE_TIMEOUT) as resp:
             data = resp.read(_VARIANT_PROBE_BYTES)
         return _mpegts_video_height(data)
@@ -736,7 +751,7 @@ class HlsSession:
             clean_path = sub_uri.split("?", 1)[0].lower()
             if clean_path.endswith(".m3u8") or ".m3u8" in sub_uri.lower():
                 try:
-                    s_req = urllib.request.Request(sub_uri, headers=req_headers)
+                    s_req = _remote_request(sub_uri, headers=req_headers)
                     with urllib.request.urlopen(s_req, timeout=5.0) as resp:
                         s_text = _read_playlist_text(resp)
                     for s_line in s_text.splitlines():
@@ -748,6 +763,10 @@ class HlsSession:
                 except Exception as e:
                     logger.warning(f"[HLSProxy] Could not fetch inner subtitle playlist {sub_uri}: {e}")
                     resolved_vtt = sub_uri
+
+            # These URLs are handed to mpv's sub-add; keep local files out.
+            if not str(resolved_vtt).lower().startswith(("http://", "https://")):
+                continue
 
             subtitles.append({
                 "type": "sub",
@@ -859,7 +878,7 @@ class _HlsProxyHandler(BaseHTTPRequestHandler):
 
         seg_url = session.segments[seg_idx][2]
         req_headers = _build_request_headers(session.headers)
-        req = urllib.request.Request(seg_url, headers=req_headers)
+        req = _remote_request(seg_url, headers=req_headers)
         try:
             with urllib.request.urlopen(req, timeout=20.0) as resp:
                 first_chunk = bytearray()

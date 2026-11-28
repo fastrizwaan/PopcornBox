@@ -10476,53 +10476,90 @@ def search_subtitles_online(query="", imdb_id=None, media_type="movie", season=N
 
     return results
 
+_SUBTITLE_MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
+_SUBTITLE_MAX_DECODED_BYTES = 32 * 1024 * 1024
+
+
+def _is_remote_http_url(url):
+    """True for an http(s) URL with a host. Addon-supplied URLs are untrusted:
+    urllib would otherwise also open file://, ftp:// and data: URLs."""
+    try:
+        parts = urllib.parse.urlsplit(str(url or ""))
+    except ValueError:
+        return False
+    return parts.scheme.lower() in ("http", "https") and bool(parts.hostname)
+
+
+def _decompress_capped(data, wbits, limit):
+    """Decompress *data* but never produce more than *limit* bytes."""
+    decoder = zlib.decompressobj(wbits)
+    out = decoder.decompress(data, limit)
+    if decoder.unconsumed_tail or len(out) > limit:
+        raise ValueError("decompressed subtitle exceeds size limit")
+    return out
+
+
+def _fetch_subtitle_bytes(sub_url):
+    """Download a subtitle body with scheme and size limits. Raises on error."""
+    if not _is_remote_http_url(sub_url):
+        raise ValueError("subtitle URL must be http(s)")
+    req = urllib.request.Request(
+        sub_url,
+        headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Encoding': 'gzip, deflate'
+        }
+    )
+    with urllib.request.urlopen(req, timeout=10, context=_SSL_CONTEXT) as response:
+        data = response.read(_SUBTITLE_MAX_DOWNLOAD_BYTES + 1)
+        if len(data) > _SUBTITLE_MAX_DOWNLOAD_BYTES:
+            raise ValueError("subtitle download exceeds size limit")
+        encoding = response.headers.get("Content-Encoding", "").lower()
+    if encoding == "gzip" or data.startswith(b"\x1f\x8b"):
+        try:
+            data = _decompress_capped(data, 16 + zlib.MAX_WBITS, _SUBTITLE_MAX_DECODED_BYTES)
+        except zlib.error as ge:
+            logging.debug(f"Gzip decompression error: {ge}")
+    elif encoding == "deflate":
+        try:
+            data = _decompress_capped(data, zlib.MAX_WBITS, _SUBTITLE_MAX_DECODED_BYTES)
+        except zlib.error:
+            try:
+                data = _decompress_capped(data, -zlib.MAX_WBITS, _SUBTITLE_MAX_DECODED_BYTES)
+            except zlib.error:
+                pass
+    return data
+
+
+def _write_file_atomically(file_path, data):
+    # Write via temp file + rename so a crash never leaves a partial
+    # .srt that a later playback would load as a valid subtitle.
+    temp_path = f"{file_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(temp_path, 'wb') as f:
+            f.write(data)
+        os.replace(temp_path, file_path)
+    except Exception:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+        raise
+
+
 def download_subtitle(sub_url, filename):
     sub_dir = os.path.join(database.CONFIG_DIR, "subtitles")
     os.makedirs(sub_dir, exist_ok=True)
-        
+
     if not filename.endswith('.srt') and not filename.endswith('.vtt'):
         filename += '.srt'
-        
+
     filename = "".join([c for c in filename if c.isalpha() or c.isdigit() or c in (' ', '-', '_', '.')]).rstrip()
     file_path = os.path.join(sub_dir, filename)
-    
+
     try:
-        req = urllib.request.Request(
-            sub_url,
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Encoding': 'gzip, deflate'
-            }
-        )
-        with urllib.request.urlopen(req, timeout=10, context=_SSL_CONTEXT) as response:
-            data = response.read()
-            encoding = response.headers.get("Content-Encoding", "").lower()
-            if encoding == "gzip" or data.startswith(b"\x1f\x8b"):
-                import gzip
-                try:
-                    data = gzip.decompress(data)
-                except Exception as ge:
-                    logging.debug(f"Gzip decompression error: {ge}")
-            elif encoding == "deflate":
-                import zlib
-                try:
-                    data = zlib.decompress(data)
-                except Exception:
-                    pass
-            # Write via temp file + rename so a crash never leaves a partial
-            # .srt that a later playback would load as a valid subtitle.
-            temp_path = f"{file_path}.{os.getpid()}.{threading.get_ident()}.tmp"
-            try:
-                with open(temp_path, 'wb') as f:
-                    f.write(data)
-                os.replace(temp_path, file_path)
-            except Exception:
-                try:
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-                except Exception:
-                    pass
-                raise
+        _write_file_atomically(file_path, _fetch_subtitle_bytes(sub_url))
         return file_path
     except urllib.error.HTTPError as e:
         logging.debug(f"HTTP Error {e.code} downloading subtitle")
@@ -10539,53 +10576,22 @@ def download_subtitle_to_path(sub_url, file_path):
     dir_name = os.path.dirname(file_path)
     base_name = os.path.basename(file_path)
     base_name = "".join([c for c in base_name if c.isalpha() or c.isdigit() or c in (' ', '-', '_', '.', '(', ')', '[', ']')]).rstrip()
-    
+
     file_path = os.path.join(dir_name, base_name)
     os.makedirs(dir_name, exist_ok=True)
-    
+
     try:
-        req = urllib.request.Request(
-            sub_url,
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Encoding': 'gzip, deflate'
-            }
-        )
-        with urllib.request.urlopen(req, timeout=10, context=_SSL_CONTEXT) as response:
-            payload = response.read()
-            encoding = response.headers.get("Content-Encoding", "").lower()
-            if encoding == "gzip" or payload.startswith(b"\x1f\x8b"):
-                try:
-                    payload = gzip.decompress(payload)
-                except Exception as ge:
-                    logging.debug(f"Gzip decompression error: {ge}")
-            elif encoding == "deflate":
-                try:
-                    payload = zlib.decompress(payload)
-                except Exception:
-                    pass
-        temp_path = f"{file_path}.{os.getpid()}.{threading.get_ident()}.tmp"
-        try:
-            with open(temp_path, 'wb') as f:
-                f.write(payload)
-            os.replace(temp_path, file_path)
-        except Exception:
-            try:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-            except Exception:
-                pass
-            raise
+        _write_file_atomically(file_path, _fetch_subtitle_bytes(sub_url))
         return file_path
     except urllib.error.HTTPError as e:
-        print(f"HTTP Error {e.code} downloading subtitle")
+        logging.debug(f"HTTP Error {e.code} downloading subtitle")
         try:
             e.close()
         except Exception:
             pass
         return None
     except Exception as e:
-        print(f"Error downloading subtitle: {e}")
+        logging.debug(f"Error downloading subtitle: {e}")
         return None
 
 def build_magnet(hash_string, title, sources=None):
