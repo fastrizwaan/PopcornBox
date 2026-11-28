@@ -295,7 +295,7 @@ def _start_worker_thread(info_hash, url, dest_path, headers=None, torrent=None, 
                     headers_arg = "".join(f"{k}: {v}\r\n" for k, v in req_headers.items() if k.lower() != "range")
                     cmd = [
                         "ffmpeg", "-y",
-                        "-protocol_whitelist", "http,https,tcp,tls,crypto",
+                        "-protocol_whitelist", "http,https,httpproxy,tcp,tls,crypto",
                         "-headers", headers_arg,
                         "-i", final_url,
                         "-c", "copy",
