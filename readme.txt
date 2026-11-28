@@ -210,7 +210,7 @@ Discover data sources and filters:
 --------------------------------------------------------------------------------
 Our primary build, test, and runtime target is Flatpak:
 App ID: `io.github.fastrizwaan.PopcornBox`
-Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
+Runtime: `org.gnome.Platform//51` | SDK: `org.gnome.Sdk//51`
 
 - Host OS vs Flatpak Runtime:
   Native dependencies (such as `libmpv`, `libtorrent`, and `blueprint-compiler`)
@@ -233,7 +233,7 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   Whenever modifying `src/window.blp` or any `.blp` file, always recompile to
   the corresponding `.ui` XML file so both stay in sync:
   ```bash
-  flatpak run --filesystem=$(pwd) --command=blueprint-compiler org.gnome.Sdk//50 compile src/window.blp --output src/window.ui
+  flatpak run --filesystem=$(pwd) --command=blueprint-compiler org.gnome.Sdk//51 compile src/window.blp --output src/window.ui
   ```
 
 --------------------------------------------------------------------------------
@@ -441,7 +441,43 @@ Runtime: `org.gnome.Platform//50` | SDK: `org.gnome.Sdk//50`
   endpoint with recorded request times.
 
 --------------------------------------------------------------------------------
-10. TESTING & VERIFICATION
+10. SECURITY BOUNDARIES (DO NOT WEAKEN)
+--------------------------------------------------------------------------------
+- UNTRUSTED URLS ARE HTTP(S) ONLY. Addon, scraper, plugin, manifest and
+  subtitle URLs are untrusted, and urllib/FFmpeg/libmpv also open `file://`,
+  `ftp://` and `data:` URLs. The checks live at each sink:
+  `api.process_raw_streams()` (streams to libmpv; magnet also allowed),
+  `api._is_remote_http_url()` (subtitle downloads, `http_downloader`
+  start/resume), and `hls_proxy._remote_request()` (every URI resolved from a
+  remote HLS manifest; extracted subtitle tracks for `sub-add` are http(s)
+  only). FFmpeg HLS downloads pass
+  `-protocol_whitelist http,https,httpproxy,tcp,tls,crypto`.
+  Extend `tests/test_stream_url_scheme_boundary.py` when adding a new sink.
+- BOUNDED DECOMPRESSION. Never call `gzip.decompress`/`zlib.decompress` on a
+  remote body. Use `api._decompress_capped()` with an explicit limit
+  (`_SUBTITLE_MAX_*`, `_MAX_DECODED_RESPONSE_BYTES`) and read remote bodies with
+  `response.read(limit + 1)`.
+- LOOPBACK SERVERS. The HLS proxy, seek proxy and torrent stream server bind
+  127.0.0.1 and must call `local_server.reject_foreign_host(self)` first in
+  every `do_*` handler (blocks DNS rebinding), mint session IDs with
+  `local_server.new_session_id()`, register their port with
+  `local_server.register_port()`, and must not send
+  `Access-Control-Allow-Origin`. mpv does not need CORS.
+- SCRAPER NETWORK SANDBOX. `plugins.build_scraper_command()` adds
+  `--deny-net` for loopback. Deno applies `--deny-net` to the HTTP proxy hop
+  too, so while the DoH proxy (127.0.0.1:<port>) is active only the registered
+  app-server ports are denied on 127.0.0.1; `localhost`, `[::1]` and `0.0.0.0`
+  stay denied. Do not add a blanket `--deny-net=127.0.0.1` in DoH mode: it
+  silently breaks every scraper fetch. LAN addresses are not denied (Deno has
+  no CIDR deny); do not grant `--allow-read`, `--allow-env` or `--allow-run`.
+- TLS VERIFICATION STAYS ON for app-side fetches: urllib uses
+  `api._SSL_CONTEXT` (CA store + hostname checks) and yt-dlp runs without
+  `--no-check-certificates`; the GNOME runtime CA store works for both.
+  libmpv/FFmpeg playback still uses their default (`tls-verify=no`); enabling
+  it is an open item because some stream providers may break.
+
+--------------------------------------------------------------------------------
+11. TESTING & VERIFICATION
 --------------------------------------------------------------------------------
 - DO NOT RUN ALL UNIT TESTS AT ONCE (`unittest discover` or bulk test runners):
   PopcornBox tests initialize GTK4, Libadwaita, image loaders, thread pools,

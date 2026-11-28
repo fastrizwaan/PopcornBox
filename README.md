@@ -36,9 +36,16 @@ A Linux media client for discovering and playing movies, series, anime, and othe
 - Resume playback and optionally play the next episode automatically.
 - Integrate with desktop media controls through MPRIS.
 
+### Safety
+
+- Nuvio scrapers run in a Deno sandbox with network access only: no file system, environment, or subprocess access. They cannot reach PopcornBox's own stream servers, and with DNS-over-HTTPS off they cannot reach any service on `127.0.0.1`/`localhost`.
+- Custom Python plugins run with your user privileges inside the Flatpak sandbox, so PopcornBox asks before installing one. Only install plugins you trust.
+- Stream, subtitle, and download URLs from addons and plugins must be `http(s)://` (or magnet links); local `file://` paths from addons are ignored. Local files open through the app's own file and playlist dialogs.
+- The local servers that feed the player listen only on `127.0.0.1`, reject requests addressed to any other host name, and use random session tokens, so web pages cannot read your streams.
+
 ## Install or build
 
-PopcornBox is packaged as a Flatpak. To build and install the current source locally, use a Linux system with Flatpak, Flatpak Builder, and the GNOME 50 runtime/SDK available:
+PopcornBox is packaged as a Flatpak. To build and install the current source locally, use a Linux system with Flatpak, Flatpak Builder, and the GNOME 51 runtime/SDK available:
 
 ```bash
 git clone https://github.com/fastrizwaan/PopcornBox.git
