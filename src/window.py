@@ -5443,6 +5443,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     next_ep_label: Gtk.Label = Gtk.Template.Child()
     next_ep_play_btn: Gtk.Button = Gtk.Template.Child()
     next_ep_dismiss_btn: Gtk.Button = Gtk.Template.Child()
+    skip_segment_revealer: Gtk.Revealer = Gtk.Template.Child()
+    skip_segment_btn: Gtk.Button = Gtk.Template.Child()
+    skip_segment_label: Gtk.Label = Gtk.Template.Child()
     context_popover_menu: Gtk.PopoverMenu = Gtk.Template.Child()
     primary_menu_btn: Gtk.MenuButton = Gtk.Template.Child()
     previous_btn: Gtk.Button = Gtk.Template.Child()
@@ -5747,6 +5750,12 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self.is_inactive: bool = False
         self.next_ep_dismissed: bool = False
         self.next_ep_auto_triggered: bool = False
+        # Skip Intro / Recap / Outro state (see _update_skip_segment_button).
+        self._skip_api_segments: list = []
+        self._skip_lookup_token = 0
+        self._skip_dismissed: set = set()
+        self._skip_active = None
+        self._skip_chapter_cache = (None, [])
         self._next_episode_transition_in_progress: bool = False
         self._pending_seek_position = None
         self._request_seek_position = None
@@ -7372,6 +7381,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     self._try_play_next_episode()
             else:
                 self._set_next_episode_banner_visible(False)
+
+            self._update_skip_segment_button(curr_time, duration, is_trailer or media_loading)
 
             # Track Continue Watching progress and mark verified working stream
             if curr_time >= 0.1 and not media_loading and getattr(self, "stream_queue", None) and not is_trailer:
@@ -9183,6 +9194,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     self._mpv_file_loaded = True
                     self._next_episode_transition_in_progress = False
                     self.hide_player_loading()
+                    self._start_skip_segment_lookup()
                     self.spinner.set_visible(False)
                     if hasattr(self, "gl_area"):
                         self.gl_area.queue_render()
@@ -18835,6 +18847,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self.next_ep_dismissed = is_playing_tr
         self.next_ep_auto_triggered = is_playing_tr
         self._set_next_episode_banner_visible(False)
+        self._reset_skip_segments()
 
         try:
             if audio_url:
@@ -20788,6 +20801,154 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self.next_ep_dismissed = True
         self._set_next_episode_banner_visible(False)
 
+    # --- Skip Intro / Recap / Outro ---------------------------------------
+
+    def _skip_segments_enabled(self):
+        # GSettings aborts on unknown keys, so check an older compiled schema first.
+        try:
+            if not settings.props.settings_schema.has_key("show-skip-segments"):
+                return True
+            return bool(settings.get_boolean("show-skip-segments"))
+        except Exception:
+            return True
+
+    def _set_skip_segment_visible(self, visible):
+        revealer = getattr(self, "skip_segment_revealer", None)
+        if not callable(getattr(revealer, "set_reveal_child", None)):
+            return
+        try:
+            if revealer.get_reveal_child() != bool(visible):
+                revealer.set_reveal_child(bool(visible))
+        except Exception:
+            pass
+
+    def _reset_skip_segments(self):
+        self._skip_lookup_token = getattr(self, "_skip_lookup_token", 0) + 1
+        self._skip_api_segments = []
+        self._skip_dismissed = set()
+        self._skip_active = None
+        self._skip_chapter_cache = (None, [])
+        self._set_skip_segment_visible(False)
+
+    def _start_skip_segment_lookup(self):
+        """Fetch IntroDB / TheIntroDB / AniSkip segments for the loaded file."""
+        if self._is_playing_trailer() or not self._skip_segments_enabled():
+            return
+        item = getattr(self, "_current_playing_item", None) or {}
+        if item.get("is_trailer"):
+            return
+        candidates = [item.get("imdb_id"), item.get("id")]
+        if not any(candidates):
+            return
+        media_type = item.get("type")
+        season = item.get("season")
+        episode = item.get("episode")
+        key = (tuple(candidates), media_type, season, episode)
+        if key == getattr(self, "_skip_lookup_key", None) and self._skip_api_segments:
+            return
+        self._skip_lookup_key = key
+        self._skip_lookup_token = getattr(self, "_skip_lookup_token", 0) + 1
+        token = self._skip_lookup_token
+
+        def worker():
+            from . import skip_segments
+            try:
+                segs = skip_segments.fetch_segments(candidates, media_type, season, episode)
+            except Exception as e:
+                logger.debug(f"[Skip] Segment lookup failed: {e}")
+                segs = []
+
+            def apply():
+                if token != getattr(self, "_skip_lookup_token", 0):
+                    return
+                self._skip_api_segments = segs
+                if segs:
+                    logger.info(f"[Skip] {len(segs)} segment(s): " + ", ".join(
+                        f"{s['type']} {s['start']:.0f}-{(s['end'] if s['end'] is not None else -1):.0f} [{s['provider']}]" for s in segs))
+            GLib.idle_add(apply)
+
+        threading.Thread(target=worker, daemon=True, name="SkipSegmentLookup").start()
+
+    def _current_skip_segments(self, duration):
+        from . import skip_segments
+        chapters = getattr(self, "chapters", None) or []
+        sig = (tuple((c.get("time"), c.get("title")) for c in chapters if isinstance(c, dict)), round(duration or 0))
+        cached_sig, chapter_segs = getattr(self, "_skip_chapter_cache", (None, []))
+        if cached_sig != sig:
+            chapter_segs = skip_segments.from_chapters(chapters, duration)
+            self._skip_chapter_cache = (sig, chapter_segs)
+        if not chapter_segs:
+            return self._skip_api_segments
+        return skip_segments.merge_by_priority(chapter_segs, self._skip_api_segments)
+
+    def _update_skip_segment_button(self, curr_time, duration, suppressed=False):
+        try:
+            next_ep_revealer = self._next_episode_revealer()
+            next_ep_showing = bool(next_ep_revealer and next_ep_revealer.get_reveal_child())
+            if suppressed or next_ep_showing or not self._skip_segments_enabled():
+                self._skip_active = None
+                self._set_skip_segment_visible(False)
+                return
+            from . import skip_segments
+            seg = skip_segments.active_segment(self._current_skip_segments(duration), float(curr_time or 0.0), duration or None)
+            # A skipped segment stays hidden only until playback leaves it
+            # (the async seek can report a few old positions first). Seeking
+            # back into it later shows the button again.
+            seg_key = (skip_segments.segment_category(seg["type"]), seg["start"]) if seg is not None else None
+            self._skip_dismissed = {k for k in self._skip_dismissed if k == seg_key}
+            if seg_key is not None and seg_key in self._skip_dismissed:
+                seg = None
+            self._skip_active = seg
+            if seg is None:
+                self._set_skip_segment_visible(False)
+                return
+            category = skip_segments.segment_category(seg["type"])
+            if category == "opening":
+                text = _("Skip Intro")
+            elif category == "recap":
+                text = _("Skip Recap")
+            elif self._has_next_episode():
+                text = _("Next Episode")
+            else:
+                text = _("Skip Credits")
+            label = getattr(self, "skip_segment_label", None)
+            if callable(getattr(label, "get_text", None)) and label.get_text() != text:
+                label.set_text(text)
+            self._set_skip_segment_visible(True)
+        except Exception as e:
+            logger.debug(f"[Skip] Button update failed: {e}")
+
+    @Gtk.Template.Callback()
+    def _on_skip_segment_clicked(self, *args):
+        seg = getattr(self, "_skip_active", None)
+        if not seg:
+            return
+        from . import skip_segments
+        category = skip_segments.segment_category(seg["type"])
+        self._skip_dismissed.add((category, seg["start"]))
+        self._skip_active = None
+        self._set_skip_segment_visible(False)
+
+        if category == "ending" and self._has_next_episode():
+            self._on_next_ep_play_clicked()
+            return
+
+        duration = float(getattr(self.mpv, "duration", 0) or 0)
+        if getattr(self, "_is_hls_proxy_active", False):
+            duration = float(getattr(self, "_hls_total_duration", None) or duration)
+        target = seg["end"] if seg["end"] is not None else duration
+        if duration > 0:
+            # Land just short of the end so mpv's keep-open does not stall on EOF.
+            target = min(target, max(0.0, duration - 1.0))
+        logger.info(f"[Skip] Skipping {seg['type']} to {target:.1f}s ({seg['provider']})")
+        if getattr(self, "_is_hls_proxy_active", False):
+            self._seek_hls_proxy(target)
+        else:
+            try:
+                self.mpv.command_async("seek", target, "absolute")
+            except Exception as e:
+                logger.debug(f"[Skip] Seek failed: {e}")
+
     def _advance_continue_watching_for_item(self, item):
         from . import database
         item_id = item.get("id") or item.get("imdb_id")
@@ -21527,6 +21688,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._youtube_safe_mode_video_url = None
         self.hide_player_loading()
         self._clear_stream_failover()
+        self._reset_skip_segments()
         self._cancel_next_episode_prefetch()
         self._show_ui()
         if hasattr(self, "revealer_ui"):

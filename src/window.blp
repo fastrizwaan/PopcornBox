@@ -1960,6 +1960,41 @@ template $PopcornBoxWindow: Adw.ApplicationWindow {
         }
 
         [overlay]
+        Revealer skip_segment_revealer {
+          transition-duration: 250;
+          transition-type: crossfade;
+          reveal-child: false;
+          halign: end;
+          valign: end;
+          margin-bottom: 90;
+          margin-end: 24;
+
+          Button skip_segment_btn {
+            styles [
+              "pill",
+              "osd",
+              "skip-segment-btn",
+            ]
+
+            child: Box {
+              orientation: horizontal;
+              spacing: 8;
+              valign: center;
+
+              Label skip_segment_label {
+                label: _("Skip Intro");
+              }
+
+              Image {
+                icon-name: "popcornbox-skip-forward-symbolic";
+              }
+            };
+
+            clicked => $_on_skip_segment_clicked();
+          }
+        }
+
+        [overlay]
         Revealer revealer_drop_indicator {
           transition-duration: 200;
           transition-type: crossfade;

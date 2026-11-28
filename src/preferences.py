@@ -214,6 +214,7 @@ class Preferences(Adw.Dialog):
     hide_adult_content_row: Adw.SwitchRow = Gtk.Template.Child()
     kids_mode_row: Adw.SwitchRow = Gtk.Template.Child()
     auto_play_next_row: Adw.SwitchRow = Gtk.Template.Child()
+    skip_segments_row: Adw.SwitchRow = Gtk.Template.Child()
     thumb_preview_row: Adw.SwitchRow = Gtk.Template.Child()
     hwdec_row: Adw.SwitchRow = Gtk.Template.Child()
     normalize_volume_row: Adw.SwitchRow = Gtk.Template.Child()
@@ -357,6 +358,7 @@ class Preferences(Adw.Dialog):
             ("hide-adult-content", self.hide_adult_content_row, "active"),
             ("kids-safe-mode", self.kids_mode_row, "active"),
             ("auto-play-next", self.auto_play_next_row, "active"),
+            ("show-skip-segments", self.skip_segments_row, "active"),
             ("thumbnail-preview", self.thumb_preview_row, "active"),
             ("normalize-volume", self.normalize_volume_row, "active"),
             ("hwdec", self.hwdec_row, "active"),
@@ -375,7 +377,12 @@ class Preferences(Adw.Dialog):
             ("stream-provider-retries", self.stream_provider_retries_row, "value"),
         ]
 
+        schema = settings.props.settings_schema
         for key, widget, property in bindings:
+            if schema is not None and not schema.has_key(key):
+                logger.warning(f"Setting {key} missing from installed schema; skipping binding")
+                widget.set_visible(False)
+                continue
             try:
                 settings.bind(key, widget, property, Gio.SettingsBindFlags.DEFAULT)
             except Exception as e:

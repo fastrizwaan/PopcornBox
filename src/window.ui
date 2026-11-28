@@ -3060,6 +3060,44 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                           </object>
                         </child>
                         <child type="overlay">
+                          <object class="GtkRevealer" id="skip_segment_revealer">
+                            <property name="transition-duration">250</property>
+                            <property name="transition-type">1</property>
+                            <property name="reveal-child">false</property>
+                            <property name="halign">2</property>
+                            <property name="valign">2</property>
+                            <property name="margin-bottom">90</property>
+                            <property name="margin-end">24</property>
+                            <child>
+                              <object class="GtkButton" id="skip_segment_btn">
+                                <style>
+                                  <class name="pill"/>
+                                  <class name="osd"/>
+                                  <class name="skip-segment-btn"/>
+                                </style>
+                                <property name="child">
+                                  <object class="GtkBox">
+                                    <property name="orientation">0</property>
+                                    <property name="spacing">8</property>
+                                    <property name="valign">3</property>
+                                    <child>
+                                      <object class="GtkLabel" id="skip_segment_label">
+                                        <property name="label" translatable="yes">Skip Intro</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkImage">
+                                        <property name="icon-name">popcornbox-skip-forward-symbolic</property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </property>
+                                <signal name="clicked" handler="_on_skip_segment_clicked"/>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child type="overlay">
                           <object class="GtkRevealer" id="revealer_drop_indicator">
                             <property name="transition-duration">200</property>
                             <property name="transition-type">1</property>

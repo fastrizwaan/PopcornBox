@@ -110,6 +110,12 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                   </object>
                 </child>
                 <child>
+                  <object class="AdwSwitchRow" id="skip_segments_row">
+                    <property name="title" translatable="yes">Skip Intro &amp;amp; Credits Button</property>
+                    <property name="subtitle" translatable="yes">Offer to skip intros, recaps and end credits using IntroDB, TheIntroDB, AniSkip and file chapters</property>
+                  </object>
+                </child>
+                <child>
                   <object class="AdwSwitchRow" id="thumb_preview_row">
                     <property name="title" translatable="yes">Progress Bar Thumbnail</property>
                   </object>

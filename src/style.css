@@ -787,6 +787,18 @@ button.category-filter-btn:checked {
   backdrop-filter: blur(12px);
 }
 
+/* Skip Intro / Recap / Credits button */
+button.skip-segment-btn {
+  background: rgba(20, 20, 24, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  padding: 10px 20px;
+  font-weight: bold;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+button.skip-segment-btn:hover {
+  background: rgba(45, 45, 52, 0.92);
+}
+
 /* Details Interactive Sidebar & Panels */
 .details-sidebar {
   background: rgba(15, 15, 20, 0.2);

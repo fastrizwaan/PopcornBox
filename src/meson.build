@@ -51,6 +51,7 @@ popcornbox_sources = [
   'history.py',
   'hls_proxy.py',
   'seek_proxy.py',
+  'skip_segments.py',
   'http_downloader.py',
   'libtorrent_stream.py',
   'main.py',
