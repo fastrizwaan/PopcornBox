@@ -86,6 +86,16 @@ class TestStreamUrlSchemeBoundary(unittest.TestCase):
         self.assertEqual([s["title"] for s in subs], ["Remote"])
         self.assertTrue(subs[0]["url"].startswith("https://cdn.example/"))
 
+    def test_capped_decompression(self):
+        import zlib
+        small = gzip.compress(b"x" * 1000)
+        self.assertEqual(api._decompress_capped(small, 16 + zlib.MAX_WBITS, 1000), b"x" * 1000)
+        with self.assertRaises(ValueError):
+            api._decompress_capped(small, 16 + zlib.MAX_WBITS, 999)
+        raw = zlib.compress(b"y" * 5000)
+        with self.assertRaises(ValueError):
+            api._decompress_capped(raw, zlib.MAX_WBITS, 4096)
+
 
 if __name__ == "__main__":
     unittest.main()

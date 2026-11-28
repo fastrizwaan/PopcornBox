@@ -36,6 +36,12 @@ def _create_ssl_context():
 
 _SSL_CONTEXT = _create_ssl_context()
 
+# Upper bounds for remote bodies that are decompressed in memory, so a small
+# compressed response cannot expand into gigabytes (a "gzip bomb").
+_SUBTITLE_MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
+_SUBTITLE_MAX_DECODED_BYTES = 32 * 1024 * 1024
+_MAX_DECODED_RESPONSE_BYTES = 64 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # DNS-over-HTTPS (DoH) bypass for ISP-poisoned domains
@@ -245,16 +251,14 @@ def _doh_fetch(url, headers=None, timeout=5.0, max_redirects=5, method="GET", da
                 # Handle compression if server ignored Accept-Encoding: identity
                 lower_headers = header_block.lower()
                 if "content-encoding: gzip" in lower_headers:
-                    import gzip
                     try:
-                        body = gzip.decompress(body)
-                    except Exception:
+                        body = _decompress_capped(body, 16 + zlib.MAX_WBITS, _MAX_DECODED_RESPONSE_BYTES)
+                    except zlib.error:
                         pass
                 elif "content-encoding: deflate" in lower_headers:
-                    import zlib
                     try:
-                        body = zlib.decompress(body)
-                    except Exception:
+                        body = _decompress_capped(body, zlib.MAX_WBITS, _MAX_DECODED_RESPONSE_BYTES)
+                    except zlib.error:
                         pass
 
                 return body
@@ -10110,13 +10114,14 @@ def get_subtitles(imdb_id, media_type="movie", season=None, episode=None, stream
                     }
                 )
                 with urllib.request.urlopen(req, timeout=3.5, context=_SSL_CONTEXT) as response:
-                    raw_data = response.read()
+                    raw_data = response.read(_SUBTITLE_MAX_DOWNLOAD_BYTES + 1)
+                    if len(raw_data) > _SUBTITLE_MAX_DOWNLOAD_BYTES:
+                        return []
                     encoding = response.headers.get("Content-Encoding", "").lower()
                     if encoding == "gzip" or raw_data.startswith(b"\x1f\x8b"):
-                        import gzip
                         try:
-                            raw_data = gzip.decompress(raw_data)
-                        except Exception:
+                            raw_data = _decompress_capped(raw_data, 16 + zlib.MAX_WBITS, _SUBTITLE_MAX_DECODED_BYTES)
+                        except zlib.error:
                             pass
                     data = json.loads(raw_data.decode('utf-8'))
                     return data.get("subtitles", [])
@@ -10476,8 +10481,6 @@ def search_subtitles_online(query="", imdb_id=None, media_type="movie", season=N
 
     return results
 
-_SUBTITLE_MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
-_SUBTITLE_MAX_DECODED_BYTES = 32 * 1024 * 1024
 
 
 def _is_remote_http_url(url):
@@ -10495,7 +10498,7 @@ def _decompress_capped(data, wbits, limit):
     decoder = zlib.decompressobj(wbits)
     out = decoder.decompress(data, limit)
     if decoder.unconsumed_tail or len(out) > limit:
-        raise ValueError("decompressed subtitle exceeds size limit")
+        raise ValueError("decompressed response exceeds size limit")
     return out
 
 
