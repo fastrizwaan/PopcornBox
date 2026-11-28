@@ -4837,6 +4837,52 @@ def save_cached_streams(cache_key, streams, updated_at=None):
         print(f"Error saving stream cache: {e}")
 
 
+def _stream_gaps_key(cache_key):
+    return f"{cache_key}:gaps"
+
+
+def save_stream_cache_gaps(cache_key, provider_names, started_at):
+    """Record which providers a stream lookup gave up on (timed out), or clear
+    the record with an empty list. An older lookup that finishes late never
+    replaces the record of a newer one."""
+    if not cache_key:
+        return
+    try:
+        names = sorted({str(n) for n in (provider_names or []) if n})
+        started_at = float(started_at if started_at is not None else time.time())
+        with _cache_db_lock:
+            conn = _get_cache_db()
+            cursor = conn.cursor()
+            key = _stream_gaps_key(cache_key)
+            cursor.execute("SELECT updated_at FROM stream_cache WHERE cache_key = ?", (key,))
+            row = cursor.fetchone()
+            if row and float(row[0] or 0) > started_at:
+                return
+            cursor.execute(
+                "INSERT OR REPLACE INTO stream_cache (cache_key, data, updated_at) VALUES (?, ?, ?)",
+                (key, json.dumps(names), started_at),
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"Error saving stream cache gaps: {e}")
+
+
+def get_stream_cache_gaps(cache_key):
+    """Providers the last saved lookup for this key gave up on ([] if none)."""
+    if not cache_key:
+        return []
+    try:
+        with _cache_db_lock:
+            cursor = _get_cache_db().cursor()
+            cursor.execute("SELECT data FROM stream_cache WHERE cache_key = ?", (_stream_gaps_key(cache_key),))
+            row = cursor.fetchone()
+        names = json.loads(row[0]) if row and row[0] else []
+        return [str(n) for n in names] if isinstance(names, list) else []
+    except Exception as e:
+        print(f"Error reading stream cache gaps: {e}")
+        return []
+
+
 def _is_torrent_stream(stream):
     if not isinstance(stream, dict):
         return False

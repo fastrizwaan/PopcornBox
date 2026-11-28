@@ -2003,11 +2003,16 @@ def fetch_default_tmdb_catalog_page(
     return items[:limit], total_pages
 
 
-def fetch_title_search_page(query, media_type="all", page=1, limit=50):
+def fetch_title_search_page(query, media_type="all", page=1, limit=50, resolve_runtimes=True):
     """Fetch one cache-first TMDb title-search page for movies and/or series.
 
     Search results are converted to the app's regular card shape. The caller
     controls paging so network requests happen only as the user scrolls.
+
+    Movie runtimes (used to drop shorts) cost one paced detail request per
+    movie. With ``resolve_runtimes=False`` only cached runtimes are used, so the
+    page returns as soon as the search itself answers; movies left without a
+    "runtime" can then be checked with ``resolve_movie_runtimes``.
     """
     query = str(query or "").strip()
     if not query:
@@ -2111,7 +2116,10 @@ def fetch_title_search_page(query, media_type="all", page=1, limit=50):
         def _fetch_movie_runtime(tmdb_id):
             url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={api_key}"
             try:
-                detail = _get_cached_request(url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0) or {}
+                detail = _get_cached_request(
+                    url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0,
+                    cache_only=not resolve_runtimes,
+                ) or {}
                 return tmdb_id, _runtime_minutes(detail.get("runtime"))
             except Exception:
                 return tmdb_id, None
@@ -2193,6 +2201,50 @@ def fetch_title_search_page(query, media_type="all", page=1, limit=50):
 
     items.sort(key=_tmdb_search_rank)
     return items[:limit], min(total_pages, _MAX_TITLE_SEARCH_PAGES)
+
+def resolve_movie_runtimes(tmdb_ids, is_cancelled=None):
+    """Fetch movie runtimes (minutes) by TMDb id through the polite window.
+
+    Meant for a background thread: requests stay paced per host, and the
+    remaining ones are skipped once ``is_cancelled()`` turns true. Returns
+    ``(runtimes, complete)``, where ``runtimes`` maps each id string to its
+    runtime or None when TMDb has none, and ``complete`` says every id was tried.
+    """
+    ids = [str(i) for i in dict.fromkeys(tmdb_ids or []) if i]
+    api_key = get_tmdb_api_key()
+    if not ids or not api_key:
+        return {}, not ids
+
+    def _cancelled():
+        return bool(is_cancelled and is_cancelled())
+
+    def _one(tmdb_id):
+        if _cancelled():
+            return tmdb_id, None, False
+        url = f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={api_key}"
+        try:
+            detail = _get_cached_request(
+                url, max_age_hours=METADATA_CACHE_HOURS, timeout=5.0,
+                is_cancelled=is_cancelled,
+            ) or {}
+        except Exception:
+            return tmdb_id, None, True
+        return tmdb_id, _runtime_minutes(detail.get("runtime")), True
+
+    runtimes, complete = {}, True
+    try:
+        # The catalog window admits three requests per host at a time, so more
+        # workers would only queue inside it.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(ids))) as executor:
+            for tmdb_id, runtime, tried in executor.map(_one, ids):
+                if tried:
+                    runtimes[tmdb_id] = runtime
+                else:
+                    complete = False
+    except RuntimeError:
+        complete = False
+    return runtimes, complete and not _cancelled()
+
 
 TMDB_GENRES = {
     28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",

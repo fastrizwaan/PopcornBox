@@ -9073,9 +9073,15 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         and not has_cached_addons
         and not provider_scope
     )
+    # A lookup that ran out of time before every provider answered was saved
+    # without those providers; ask them again rather than serving it as fresh.
+    cache_gaps = database.get_stream_cache_gaps(cache_key) if not provider_scope else []
+    if cache_gaps:
+        print(f"[STREAM DEBUG] cached result is missing timed-out providers={cache_gaps!r}; refreshing")
     is_fresh = bool(
         cache_candidates and len(usable_cache_candidates) == len(cache_candidates)
         and not force_refresh
+        and not cache_gaps
         and not missing_plugin_streams
         and not missing_custom_streams
         and not missing_addon_streams
@@ -9123,6 +9129,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
         return usable_cached
 
     refresh_started_at = time.time()
+    timed_out_providers = []
 
     provider_timeout, provider_retries = _get_stream_provider_options()
     retry_backoff_budget = sum(min(1.5 * (2 ** attempt), 4.0) for attempt in range(provider_retries))
@@ -9507,6 +9514,7 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
 
             first_stream_at = None
             last_incremental_cb_at = 0.0
+            timed_out_providers = []
             while futures:
                 if abort_event and abort_event.is_set():
                     return []
@@ -9544,7 +9552,11 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     if not torrent_addons_submitted and torrent_stream_addons:
                         _submit_torrent_addons()
                         continue
-                    print(f"[STREAM DEBUG] provider collection timed out pending={len(futures)}")
+                    timed_out_providers = sorted({
+                        str((future_to_addon[f][0] or {}).get("name") or "Unknown")
+                        for f in futures if f in future_to_addon
+                    })
+                    print(f"[STREAM DEBUG] provider collection timed out pending={len(futures)} providers={timed_out_providers!r}")
                     break
 
                 batch_new_streams = False
@@ -9756,6 +9768,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
             if _is_cached_torrent_stream(stream)
             or not database.is_stream_stale(stream, max_age_seconds=1800)
         ]
+        if not provider_scope and not (abort_event and abort_event.is_set()):
+            database.save_stream_cache_gaps(cache_key, timed_out_providers, refresh_started_at)
         print(f"[STREAM DEBUG] saved {len(final_streams)} cards to cache key={cache_key!r} aliases={alias_cache_ids[:1]!r}")
 
     result_to_deliver = final_streams if final_streams else usable_cached

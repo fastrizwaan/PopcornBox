@@ -407,17 +407,27 @@ template $PopcornBoxWindow: Adw.ApplicationWindow {
 
                       // Global title search across the cache and every addon's
                       // search catalogs, narrowed by the Discover dropdowns.
-                      SearchEntry discover_search_entry {
+                      // The filter toggle sits inside the search entry, after
+                      // its clear icon; the entry's end padding makes room.
+                      Overlay {
                         hexpand: true;
-                        width-request: 180;
-                        placeholder-text: _("Search PopcornBox...");
-                      }
 
-                      ToggleButton discover_search_btn {
-                        icon-name: "filter-symbolic";
-                        valign: center;
-                        tooltip-text: _("Filter results");
-                        styles ["flat", "circular"]
+                        child: SearchEntry discover_search_entry {
+                          hexpand: true;
+                          width-request: 180;
+                          placeholder-text: _("Search PopcornBox...");
+                          styles ["search-with-filter"]
+                        };
+
+                        [overlay]
+                        ToggleButton discover_search_btn {
+                          icon-name: "filter-symbolic";
+                          halign: end;
+                          valign: center;
+                          margin-end: 3;
+                          tooltip-text: _("Filter results");
+                          styles ["flat", "circular", "entry-filter-btn"]
+                        }
                       }
 
                       // Quick local filter, shown by the filter button: it only
@@ -432,6 +442,15 @@ template $PopcornBoxWindow: Adw.ApplicationWindow {
                         primary-icon-tooltip-text: _("Close filter");
                         placeholder-text: _("Filter results...");
                         tooltip-text: _("Filter the shown results by title, description, date or genre");
+                      }
+
+                      // Outside Discover the toolbar (and its spinner) is hidden,
+                      // so the search row carries its own loading indicator.
+                      Spinner search_spinner {
+                        valign: center;
+                        spinning: false;
+                        visible: false;
+                        tooltip-text: _("Searching...");
                       }
                     }
                   }

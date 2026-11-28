@@ -571,21 +571,32 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                             <property name="margin-end">22</property>
                                             <property name="visible">false</property>
                                             <child>
-                                              <object class="GtkSearchEntry" id="discover_search_entry">
+                                              <object class="GtkOverlay">
                                                 <property name="hexpand">true</property>
-                                                <property name="width-request">180</property>
-                                                <property name="placeholder-text" translatable="yes">Search PopcornBox...</property>
-                                              </object>
-                                            </child>
-                                            <child>
-                                              <object class="GtkToggleButton" id="discover_search_btn">
-                                                <property name="icon-name">filter-symbolic</property>
-                                                <property name="valign">3</property>
-                                                <property name="tooltip-text" translatable="yes">Filter results</property>
-                                                <style>
-                                                  <class name="flat"/>
-                                                  <class name="circular"/>
-                                                </style>
+                                                <property name="child">
+                                                  <object class="GtkSearchEntry" id="discover_search_entry">
+                                                    <property name="hexpand">true</property>
+                                                    <property name="width-request">180</property>
+                                                    <property name="placeholder-text" translatable="yes">Search PopcornBox...</property>
+                                                    <style>
+                                                      <class name="search-with-filter"/>
+                                                    </style>
+                                                  </object>
+                                                </property>
+                                                <child type="overlay">
+                                                  <object class="GtkToggleButton" id="discover_search_btn">
+                                                    <property name="icon-name">filter-symbolic</property>
+                                                    <property name="halign">2</property>
+                                                    <property name="valign">3</property>
+                                                    <property name="margin-end">3</property>
+                                                    <property name="tooltip-text" translatable="yes">Filter results</property>
+                                                    <style>
+                                                      <class name="flat"/>
+                                                      <class name="circular"/>
+                                                      <class name="entry-filter-btn"/>
+                                                    </style>
+                                                  </object>
+                                                </child>
                                               </object>
                                             </child>
                                             <child>
@@ -598,6 +609,14 @@ corresponding .blp file and regenerate this file with blueprint-compiler.
                                                 <property name="primary-icon-tooltip-text" translatable="yes">Close filter</property>
                                                 <property name="placeholder-text" translatable="yes">Filter results...</property>
                                                 <property name="tooltip-text" translatable="yes">Filter the shown results by title, description, date or genre</property>
+                                              </object>
+                                            </child>
+                                            <child>
+                                              <object class="GtkSpinner" id="search_spinner">
+                                                <property name="valign">3</property>
+                                                <property name="spinning">false</property>
+                                                <property name="visible">false</property>
+                                                <property name="tooltip-text" translatable="yes">Searching...</property>
                                               </object>
                                             </child>
                                           </object>

@@ -5338,6 +5338,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     discover_reset_btn: Gtk.Button = Gtk.Template.Child()
     unique_check: Gtk.ToggleButton = Gtk.Template.Child()
     discover_spinner: Gtk.Spinner = Gtk.Template.Child()
+    search_spinner: Gtk.Spinner = Gtk.Template.Child()
     filter_toggle_btn: Gtk.ToggleButton = Gtk.Template.Child()
     unique_scrolled: Gtk.ScrolledWindow = Gtk.Template.Child()
     unique_flowbox: Gtk.FlowBox = Gtk.Template.Child()
@@ -5472,6 +5473,98 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     video_progress_adj: Gtk.Adjustment = Gtk.Template.Child()
     time_total_label: Gtk.Label = Gtk.Template.Child()
 
+    APP_ICON_NAME = "io.github.fastrizwaan.PopcornBox"
+
+    @staticmethod
+    def _app_icon_data_dirs():
+        dirs = []
+        data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        dirs.append(data_home)
+        xdg_dirs = os.environ.get("XDG_DATA_DIRS", "")
+        dirs.extend(d for d in xdg_dirs.split(":") if d)
+        for d in ("/app/share", "/usr/local/share", "/usr/share"):
+            if d not in dirs:
+                dirs.append(d)
+        return dirs
+
+    def _new_app_icon_image(self):
+        """Build the header bar app icon: icon theme first, then a file fallback (like WineCharm)."""
+        icon_name = self.APP_ICON_NAME
+        display = Gdk.Display.get_default()
+        icon_theme = Gtk.IconTheme.get_for_display(display) if display else None
+        data_dirs = self._app_icon_data_dirs()
+
+        if icon_theme is not None and not icon_theme.has_icon(icon_name):
+            for data_dir in data_dirs:
+                icons_root = os.path.join(data_dir, "icons")
+                if os.path.isdir(icons_root) and icons_root not in icon_theme.get_search_path():
+                    icon_theme.add_search_path(icons_root)
+
+        if icon_theme is not None and icon_theme.has_icon(icon_name):
+            image = Gtk.Image.new_from_icon_name(icon_name)
+        else:
+            candidates = [
+                f"icons/hicolor/scalable/apps/{icon_name}.svg",
+                f"icons/hicolor/128x128/apps/{icon_name}.png",
+                f"icons/hicolor/64x64/apps/{icon_name}.png",
+                f"icons/hicolor/48x48/apps/{icon_name}.png",
+                f"icons/hicolor/32x32/apps/{icon_name}.png",
+            ]
+            icon_path = next(
+                (os.path.join(d, rel) for d in data_dirs for rel in candidates
+                 if os.path.exists(os.path.join(d, rel))),
+                None,
+            )
+            image = Gtk.Image.new_from_file(icon_path) if icon_path else Gtk.Image()
+
+        image.set_pixel_size(16)
+        image.set_valign(Gtk.Align.CENTER)
+        return image
+
+    def _add_headerbar_app_icons(self):
+        """Prefix every "PopcornBox" header bar title with the app icon."""
+        app_title = _("PopcornBox")
+        player_title = getattr(self, "title_widget", None)
+
+        def walk(widget):
+            child = widget.get_first_child()
+            while child is not None:
+                yield child
+                yield from walk(child)
+                child = child.get_next_sibling()
+
+        titles = [
+            w for w in walk(self)
+            if isinstance(w, Adw.WindowTitle)
+            and w is not player_title
+            and w.get_title() == app_title
+        ]
+        for title in titles:
+            # Use a plain bold label (like WineCharm): AdwWindowTitle carries its own
+            # side margins, which leaves a wide gap after the icon.
+            label = Gtk.Label()
+            label.set_markup(f"<b>{GLib.markup_escape_text(app_title)}</b>")
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+
+            parent = title.get_parent()
+            header = title.get_ancestor(Adw.HeaderBar)
+            if header is None:
+                continue
+            if isinstance(parent, Gtk.Box) and header.get_title_widget() is parent:
+                # Title already sits in a custom box (library header): put icon + label first.
+                title.set_visible(False)
+                icon = self._new_app_icon_image()
+                parent.insert_child_after(icon, None)
+                parent.insert_child_after(label, icon)
+                continue
+            if header.get_title_widget() is not title:
+                continue
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            box.set_halign(Gtk.Align.CENTER)
+            box.append(self._new_app_icon_image())
+            box.append(label)
+            header.set_title_widget(box)
+
     def __init__(self, is_activate=False, **kwargs):
         debug_log("PopcornBoxWindow.__init__ BEGIN")
         super().__init__(**kwargs)
@@ -5497,6 +5590,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 fb.set_valign(Gtk.Align.START)
                 fb.set_row_spacing(12)
                 fb.set_column_spacing(10)
+
+        self._add_headerbar_app_icons()
 
         self.gl_area: Gtk.GLArea = Gtk.GLArea()
         self.offload: Gtk.GraphicsOffload = Gtk.GraphicsOffload(child=self.gl_area)
@@ -6408,7 +6503,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         )
         audio_tracks_section.append_item(item_none_audio)
 
-        audio_tracks = [t for t in (track_list or []) if t.get("type") == "audio"]
+        audio_tracks = self._collapse_hls_variant_audio(track_list or [])
         audio_lang_counts = Counter()
         for t in audio_tracks:
             lang = (t.get("lang") or "").strip()
@@ -7988,6 +8083,52 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         inputs = " ".join(f"[aid{i}]" for i in ids)
         mute = ",volume=0" if graph.get("muted") else ""
         return f"{inputs} astreamselect=inputs={len(ids)}:map={idx}{mute} [ao]"
+
+    def _collapse_hls_variant_audio(self, track_list):
+        """Audio tracks for the menu, without HLS quality-variant duplicates.
+
+        When MPV opens a master playlist whose variants each mux their own audio,
+        every variant's copy is listed as a separate track (one per HLS program),
+        although they are the same soundtrack. Tracks that live in a program with
+        a video track and share language, title, codec and layout are shown once:
+        the copy in the playing video's program, else the selected one."""
+        audio = [t for t in track_list if t.get("type") == "audio"]
+        video_programs = {
+            t.get("program-id") for t in track_list
+            if t.get("type") == "video" and t.get("program-id") is not None
+        }
+        selected_video_program = next(
+            (t.get("program-id") for t in track_list if t.get("type") == "video" and t.get("selected")),
+            None,
+        )
+        cur_aid = self._current_audio_track_id()
+
+        def variant_key(t):
+            if t.get("external") or t.get("hls-bitrate") is None or t.get("program-id") not in video_programs:
+                return None
+            return (
+                (t.get("lang") or "").strip().lower(), (t.get("title") or "").strip(),
+                t.get("codec"), t.get("demux-channel-count"), t.get("demux-samplerate"),
+            )
+
+        groups = {}
+        for t in audio:
+            key = variant_key(t)
+            if key is not None:
+                groups.setdefault(key, []).append(t)
+
+        keep = set()
+        for members in groups.values():
+            if len({m.get("program-id") for m in members}) < 2:
+                keep.update(id(m) for m in members)
+                continue
+            best = (
+                next((m for m in members if m.get("program-id") == selected_video_program), None)
+                or next((m for m in members if m.get("selected") or int(m.get("id", 0)) == cur_aid), None)
+                or members[0]
+            )
+            keep.add(id(best))
+        return [t for t in audio if variant_key(t) is None or id(t) in keep]
 
     def _current_audio_track_id(self):
         """Selected audio track id, 0 when audio is off."""
@@ -10134,6 +10275,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         
         self.search_entry.connect("search-changed", self._on_search_changed)
         self.discover_search_btn.connect("toggled", self._on_discover_search_mode_toggled)
+        # The filter toggle overlays the search entry's end; drop the entry's
+        # reserved end padding whenever the toggle is hidden.
+        def _sync_search_filter_padding(*_args):
+            if self.discover_search_btn.get_visible():
+                self.discover_search_entry.add_css_class("search-with-filter")
+            else:
+                self.discover_search_entry.remove_css_class("search-with-filter")
+        self.discover_search_btn.connect("notify::visible", _sync_search_filter_padding)
+        _sync_search_filter_padding()
         self.search_btn.connect("toggled", self._on_header_search_toggled)
         search_key_ctrl = Gtk.EventControllerKey()
         def on_search_key_pressed(controller, keyval, keycode, state):
@@ -11186,14 +11336,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._discover_spinner_active = is_act
 
         def _apply():
-            spinner = getattr(self, "discover_spinner", None)
-            if spinner is not None and hasattr(spinner, "start"):
-                # The widget stays visible so its toolbar slot never grows or
-                # shrinks; only the animation turns on and off.
-                if is_act:
-                    spinner.start()
-                else:
-                    spinner.stop()
+            # The widgets stay visible so their slots never grow or shrink;
+            # only the animation turns on and off.
+            for name in ("discover_spinner", "search_spinner"):
+                spinner = getattr(self, name, None)
+                if spinner is not None and hasattr(spinner, "start"):
+                    if is_act:
+                        spinner.start()
+                    else:
+                        spinner.stop()
             return False
         if threading.current_thread() is threading.main_thread():
             _apply()
@@ -11565,6 +11716,14 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             if getattr(widget, "_is_empty_box", False) or (hasattr(widget, "has_css_class") and widget.has_css_class("dim-label")):
                 return True
         item = getattr(widget, "movie_data", None)
+        if item is None:
+            item = getattr(widget, "item_data", None)
+        if (
+            isinstance(item, dict)
+            and flowbox_child.get_parent() is getattr(self, "unique_flowbox", None)
+            and item.get("id") in getattr(self, "_unique_hidden_ids", ())
+        ):
+            return False
         return self._discover_result_matches_item(item)
 
     def _get_current_discover_type(self):
@@ -12647,6 +12806,15 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 return True
         return False
 
+    def _is_home_search_active(self):
+        return bool(_extract_active_discover_query(self)) and PopcornBoxWindow._is_home_category(self)
+
+    def _unique_dedupe_enabled(self):
+        """Whether the Unique grid drops duplicates across sources. Home search
+        always does (it also leads with Continue Watching cards), whatever the
+        Unique toggle says; elsewhere the toggle decides."""
+        return self._is_home_search_active() or self._is_unique_mode_active()
+
     def _cancel_unique_background(self):
         """Cancel only unique-view background fetching (threads + pools), without touching discover/content/search."""
         self.unique_request_id = getattr(self, "unique_request_id", 0) + 1
@@ -12914,7 +13082,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._unique_active_pool = None
 
         self._unique_auto_fill_count = 0
-        self._current_unique_mode_enabled = self._is_unique_mode_active()
+        self._unique_hidden_ids = set()
+        home_search = self._is_home_search_active()
+        self._current_unique_mode_enabled = self._unique_dedupe_enabled()
         with self._unique_lock:
             self.has_more_unique = True
             self.unique_seen_ids.clear()
@@ -13182,6 +13352,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 # waiting on metadata hydration for each provider page.
                 catalogs = network_catalogs
 
+        if home_search:
+            self._add_continue_watching_search_cards()
+
         self.unique_catalogs = catalogs
         self.unique_catalogs_by_key = {
             (c.get("manifest_url"), c.get("catalog_id"), c.get("media_type")): c
@@ -13196,6 +13369,36 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             return
 
         self._load_next_unique_batch()
+
+    def _add_continue_watching_search_cards(self):
+        """Put Continue Watching items matching the Home search first in the Unique
+        grid, as Continue Watching cards with their play button. They are
+        registered as seen so the same title is not repeated by search results."""
+        from . import api, database
+        from .movie_widget import ContinueWatchingWidget
+        if not hasattr(self, "unique_flowbox"):
+            return
+        cw_items = _filter_items_from_available_addons(database.get_continue_watching())
+        hide_adult = database.is_adult_content_hidden()
+        for item in cw_items:
+            if hide_adult and (api.is_adult_item(item) or api.is_content_filtered(item)):
+                continue
+            if not self._discover_result_matches_item(item):
+                continue
+            with self._unique_lock:
+                if not self._is_unique_item(item):
+                    continue
+            card = ContinueWatchingWidget(
+                item,
+                self._on_movie_clicked,
+                on_remove_clicked=self._on_remove_continue_watching,
+                on_play_clicked=self._on_continue_watching_clicked,
+            )
+            card._is_cw_card = True
+            # Stay ahead of streamed search results in both sort orders.
+            card._load_index = -1
+            card._discover_release_sort_key = "\uffff"
+            self.unique_flowbox.append(card)
 
     def _append_unique_slice_to_ui(self, items, req_id):
         """Append streamed unique cards to flowbox in idle slices without prematurely resetting is_fetching_unique."""
@@ -13313,6 +13516,55 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         GLib.idle_add(_deliver_next_slice, 0)
 
+    def _resolve_tmdb_search_runtimes(self, items, cache_key, req_id, abort_ev):
+        """Resolve runtimes for TMDb search movies already shown in the Unique grid.
+
+        Runs off the main thread. Shorts are handed to the main thread, which
+        hides them through the grid filter, so cards still arriving are hidden
+        too. The page is cached only once every runtime was looked up, without
+        the shorts; the shown item dicts are never modified here."""
+        from . import tmdb_helper, database
+        pending_ids = [
+            str(it.get("raw_id")) for it in items
+            if it.get("type") == "movie" and not it.get("runtime") and it.get("raw_id")
+        ]
+        if not pending_ids:
+            database.save_cached_catalog(cache_key, items)
+            return
+
+        def _cancelled():
+            return _is_event_set(abort_ev) or req_id != getattr(self, "unique_request_id", 0)
+
+        def _worker():
+            runtimes, complete = tmdb_helper.resolve_movie_runtimes(pending_ids, is_cancelled=_cancelled)
+            min_minutes = tmdb_helper.MIN_TMDB_MOVIE_RUNTIME_MINUTES
+            short_ids = set()
+            kept = []
+            for it in items:
+                runtime = runtimes.get(str(it.get("raw_id"))) if it.get("type") == "movie" else None
+                if runtime is not None and runtime < min_minutes:
+                    short_ids.add(it.get("id"))
+                    continue
+                kept.append(dict(it, runtime=f"{int(runtime)} min") if runtime is not None else it)
+            if complete and kept:
+                database.save_cached_catalog(cache_key, kept)
+            if short_ids and not _cancelled():
+                GLib.idle_add(self._hide_unique_items, short_ids, req_id)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _hide_unique_items(self, item_ids, req_id):
+        """Main thread: hide these ids in the current Unique grid, including
+        cards from the same request that have not been appended yet."""
+        if req_id != getattr(self, "unique_request_id", 0):
+            return False
+        self._unique_hidden_ids.update(item_ids)
+        flowbox = getattr(self, "unique_flowbox", None)
+        if flowbox is not None:
+            flowbox.invalidate_filter()
+            self._update_flowbox_empty_state(flowbox)
+        return False
+
     def _load_next_unique_batch(self):
         if getattr(self, "is_fetching_unique", False) or not getattr(self, "has_more_unique", True):
             return
@@ -13321,7 +13573,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         self.is_fetching_unique = True
         self._set_discover_spinner_active(True)
-        self._current_unique_mode_enabled = self._is_unique_mode_active()
+        self._current_unique_mode_enabled = self._unique_dedupe_enabled()
         req_id = self.unique_request_id
         abort_ev = getattr(self, "_unique_abort_event", None)
         cur_genre = getattr(self, "current_genre", None)
@@ -13553,11 +13805,16 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                             )
                             items = database.get_cached_catalog(cache_key)
                             if items is None:
+                                # Cards go out as soon as the search answers. Movie
+                                # runtimes (to drop shorts) are paced detail requests,
+                                # so they resolve in the background, which hides any
+                                # shorts and caches the page once it is complete.
                                 items, total_pages = tmdb_helper.fetch_title_search_page(
-                                    query=query, media_type=m_type, page=page, limit=50)
+                                    query=query, media_type=m_type, page=page, limit=50,
+                                    resolve_runtimes=False)
                                 cat_info["tmdb_total_pages"] = total_pages
                                 if items and not _is_event_set(abort_ev):
-                                    database.save_cached_catalog(cache_key, items)
+                                    self._resolve_tmdb_search_runtimes(items, cache_key, req_id, abort_ev)
                             if _is_event_set(abort_ev):
                                 return None
                             items = items or []
@@ -15930,11 +16187,6 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if not isinstance(cur_sort, str):
             cur_sort = "Popular"
         key = f"{cat_btn}|{getattr(self, '_current_discover_type', 'all')}|{getattr(self, '_current_discover_addon', None) or 'all'}|{cur_genre or 'all'}|{cur_year or 'all'}|{cur_lang or 'all'}|{cur_country or 'all'}|{cur_network or 'all'}|{cur_sort}"
-        if cat_btn == "home":
-            # Home searches in place, so each query is its own row view.
-            active_q = _extract_active_discover_query(self)
-            if active_q:
-                key += f"|q:{active_q}"
         return key
 
     def _is_home_category(self) -> bool:
@@ -15943,61 +16195,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             return False
         return stack.get_visible_child_name() == "home"
 
-    def _get_home_search_catalog_list(self, query):
-        """Rows for a Home search: TMDb title search, then every addon search
-        catalog, each kept as its own row (Home does not deduplicate)."""
-        from . import api
-        rows = [{
-            "_source": "tmdb_search",
-            "title": _("TMDb"),
-            "addon_name": "TMDb",
-            "media_type": "all",
-            "catalog_id": "tmdb_search",
-            "catalog_name": "TMDb Title Search",
-            "manifest_url": None,
-            "query": query,
-            "title_only": True,
-        }]
-        type_labels = {"movie": _("Movies"), "series": _("Series"), "anime": _("Anime")}
-        types_to_search = ["movie", "series"] + (["anime"] if getattr(self, "anime_supported", False) else [])
-        seen = set()
-        for mt in types_to_search:
-            try:
-                avail = api.get_available_search_catalogs(mt, only_working=True)
-            except Exception as e:
-                logger.error(f"Home search: could not list search catalogs for {mt}: {e}")
-                continue
-            for sc in avail or []:
-                m_url = sc.get("manifest_url")
-                c_id = sc.get("catalog_id")
-                if _is_plugin_catalog_url(m_url):
-                    # Plugins are searched only when picked in Discover's catalog list.
-                    continue
-                skey = (m_url, c_id, mt)
-                if skey in seen:
-                    continue
-                seen.add(skey)
-                addon_name = sc.get("addon_name") or ""
-                cat_name = sc.get("catalog_name") or c_id or ""
-                label = addon_name if not cat_name or cat_name == addon_name else f"{addon_name} · {cat_name}"
-                rows.append({
-                    "_source": "catalog_search",
-                    "title": f"{label} — {type_labels.get(mt, mt)}" if label else type_labels.get(mt, mt),
-                    "addon_name": addon_name,
-                    "manifest_url": m_url,
-                    "catalog_id": c_id,
-                    "target_catalog_id": c_id,
-                    "catalog_name": cat_name,
-                    "media_type": mt,
-                    "query": query,
-                    "title_only": True,
-                })
-        return rows
-
     def _refresh_discover_page(self, filter_media_type=None, filter_addon_url=None, custom_title=None, force_refresh=False):
         debug_log(f"_refresh_discover_page START (media_type={filter_media_type}, addon={filter_addon_url}, force={force_refresh})")
         active_q = _extract_active_discover_query(self)
-        if active_q and not PopcornBoxWindow._is_home_category(self):
+        if active_q:
+            if PopcornBoxWindow._is_home_category(self):
+                self._search_originated_from_discover = True
+                self._search_originated_from_home = True
             if hasattr(self, "library_stack"):
                 self.library_stack.set_visible_child_name("unique")
             self._refresh_unique_combined_view()
@@ -16142,10 +16346,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             self._update_continue_watching_section()
 
         # Setup Sequential Row Loading List
-        if is_home and active_q:
-            self._discover_catalog_list = self._get_home_search_catalog_list(active_q)
-        else:
-            self._discover_catalog_list = self._get_discover_catalog_list(filter_media_type=filter_media_type, filter_addon_url=filter_addon_url, force_refresh=force_refresh, is_home=is_home)
+        self._discover_catalog_list = self._get_discover_catalog_list(filter_media_type=filter_media_type, filter_addon_url=filter_addon_url, force_refresh=force_refresh, is_home=is_home)
         self._discover_next_row_index = 0
         self._discover_empty_batches = 0
         self._discover_auto_fill_count = 0
@@ -23826,6 +24027,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         toolbar = getattr(self, "discover_toolbar", None)
         if toolbar is not None and hasattr(toolbar, "set_visible"):
             toolbar.set_visible(not standalone)
+        # The toolbar spinner is hidden with the toolbar; show the row's own.
+        search_spinner = getattr(self, "search_spinner", None)
+        if search_spinner is not None:
+            search_spinner.set_visible(bool(standalone))
         column = getattr(self, "discover_search_column", None)
         if column is not None and hasattr(column, "set_halign"):
             column.set_halign(Gtk.Align.FILL if standalone else Gtk.Align.CENTER)
@@ -23992,11 +24197,13 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
     def _end_discover_search_query(self):
         from_discover = getattr(self, "_search_originated_from_discover", False)
         from_content = getattr(self, "_search_originated_from_content", False)
+        from_home = getattr(self, "_search_originated_from_home", False)
         self._set_discover_results_search_visible(False)
         self._on_discover_results_search_changed()
         self._search_originated_from_discover = False
+        self._search_originated_from_home = False
         self._search_originated_from_content = False
-        if from_discover and not self._is_unique_mode_active():
+        if from_discover and (from_home or not self._is_unique_mode_active()):
             if hasattr(self, "library_stack"):
                 self.library_stack.set_visible_child_name("discover")
             self._refresh_discover_page()
@@ -24026,23 +24233,18 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         if getattr(self, "_clearing_search_for_filter", False):
             self._search_originated_from_discover = False
+            self._search_originated_from_home = False
             self._search_originated_from_content = False
             return
 
         stack = getattr(self, "library_stack", None)
         visible_page = stack.get_visible_child_name() if stack else ""
-        if visible_page == "discover" and PopcornBoxWindow._is_home_category(self):
-            # Home has Unique off: results stay in their own rows (search
-            # sources plus Continue Watching) instead of the Unique grid.
-            def _debounced_home_search():
-                self._discover_search_debounce_timer = None
-                self._refresh_discover_page()
-                return False
-            self._discover_search_debounce_timer = GLib.timeout_add(500, _debounced_home_search)
-            return
         if self.current_discover_search_query:
             if visible_page == "discover":
+                # Home searches too land in the Unique grid, with matching
+                # Continue Watching cards first.
                 self._search_originated_from_discover = True
+                self._search_originated_from_home = PopcornBoxWindow._is_home_category(self)
                 self.library_stack.set_visible_child_name("unique")
                 visible_page = "unique"
             elif visible_page == "content":
@@ -24050,7 +24252,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 self.library_stack.set_visible_child_name("unique")
                 visible_page = "unique"
         elif not self.current_discover_search_query and visible_page == "unique":
-            if not self._is_unique_mode_active():
+            # Home always returns to its rows; Home search is Unique-only.
+            if not self._is_unique_mode_active() or getattr(self, "_search_originated_from_home", False):
                 if getattr(self, "_search_originated_from_content", False):
                     self._search_originated_from_content = False
                     self.library_stack.set_visible_child_name("content")
@@ -24058,6 +24261,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     return
                 else:
                     self._search_originated_from_discover = False
+                    self._search_originated_from_home = False
                     self.library_stack.set_visible_child_name("discover")
                     self._refresh_discover_page()
                     return
@@ -24081,6 +24285,9 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
 
         # Debounce DB and catalog searches while keeping the visible cards filtered immediately.
         if visible_page in ("unique", "content"):
+            # Show activity from the first keystroke, not only once the
+            # debounced query starts; the refresh then owns the spinner.
+            self._set_discover_spinner_active(True)
             def _debounced_refresh():
                 self._discover_search_debounce_timer = None
                 cur_page = self.library_stack.get_visible_child_name() if hasattr(self, "library_stack") else ""
@@ -24101,12 +24308,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         self._on_discover_results_search_changed()
         stack = getattr(self, "library_stack", None)
         visible_page = stack.get_visible_child_name() if stack else ""
-        if visible_page == "discover" and PopcornBoxWindow._is_home_category(self):
-            self._refresh_discover_page()
-            return
         if self.current_discover_search_query:
             if visible_page == "discover":
                 self._search_originated_from_discover = True
+                self._search_originated_from_home = PopcornBoxWindow._is_home_category(self)
                 self.library_stack.set_visible_child_name("unique")
                 visible_page = "unique"
             elif visible_page == "content":
