@@ -12,6 +12,7 @@ Session paths are additionally keyed by unguessable tokens.
 """
 
 import secrets
+import threading
 
 _LOOPBACK_NAMES = frozenset({"127.0.0.1", "localhost", "[::1]", "::1"})
 
@@ -76,3 +77,25 @@ def reject_foreign_host(handler) -> bool:
 def new_session_id() -> str:
     """Return an unguessable, URL-safe session identifier."""
     return secrets.token_hex(16)
+
+
+_ports_lock = threading.Lock()
+_active_ports = set()
+
+
+def register_port(port) -> None:
+    """Record a loopback server port so sandboxed scrapers can be denied it."""
+    if port:
+        with _ports_lock:
+            _active_ports.add(int(port))
+
+
+def unregister_port(port) -> None:
+    if port:
+        with _ports_lock:
+            _active_ports.discard(int(port))
+
+
+def active_ports() -> list:
+    with _ports_lock:
+        return sorted(_active_ports)

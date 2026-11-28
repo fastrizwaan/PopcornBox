@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from gi.repository import GLib
 
-from .local_server import new_session_id, reject_foreign_host
+from .local_server import new_session_id, register_port, reject_foreign_host
 
 logger = logging.getLogger("PopcornBox.HLSProxy")
 
@@ -1008,6 +1008,7 @@ def start_proxy_server() -> int:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _HlsProxyHandler)
         _proxy_port = server.server_address[1]
         _proxy_server = server
+        register_port(_proxy_port)
         threading.Thread(target=server.serve_forever, daemon=True, name="HlsProxyServer").start()
         logger.info(f"[HLSProxy] Slicing proxy listening on 127.0.0.1:{_proxy_port}")
         return _proxy_port

@@ -181,18 +181,20 @@ def build_scraper_command(scraper):
     cmd = list(base_cmd)
     allowed_hosts = resolve_scraper_allowed_hosts(scraper)
 
+    proxy_netloc = ""
+    try:
+        from . import doh
+        doh_env = doh.get_doh_env()
+        proxy_url = (doh_env or {}).get("HTTP_PROXY") or ""
+        if proxy_url:
+            proxy_netloc = urllib.parse.urlparse(proxy_url).netloc
+    except Exception:
+        proxy_netloc = ""
+
     if allowed_hosts:
         hosts_for_flag = list(allowed_hosts)
-        try:
-            from . import doh
-            doh_env = doh.get_doh_env()
-            proxy_url = (doh_env or {}).get("HTTP_PROXY") or ""
-            if proxy_url:
-                proxy_netloc = urllib.parse.urlparse(proxy_url).netloc
-                if proxy_netloc and proxy_netloc not in hosts_for_flag:
-                    hosts_for_flag.append(proxy_netloc)
-        except Exception:
-            pass
+        if proxy_netloc and proxy_netloc not in hosts_for_flag:
+            hosts_for_flag.append(proxy_netloc)
         scoped_net_flag = f"--allow-net={','.join(hosts_for_flag)}"
         if "--allow-net" in cmd:
             idx = cmd.index("--allow-net")
@@ -207,7 +209,35 @@ def build_scraper_command(scraper):
             f"Executing scraper {scraper.get('name')!r} with unconstrained network permissions (--allow-net)"
         )
 
+    deny = _scraper_loopback_deny_list(proxy_netloc)
+    if deny and not any(isinstance(arg, str) and arg.startswith("--deny-net") for arg in cmd):
+        cmd.insert(-1, f"--deny-net={','.join(deny)}")
     return cmd
+
+
+_LOOPBACK_DENY_HOSTS = ("127.0.0.1", "localhost", "[::1]", "0.0.0.0")
+
+
+def _scraper_loopback_deny_list(proxy_netloc=""):
+    """Loopback targets a third-party scraper must not reach.
+
+    Scrapers only need the public internet. Without a deny list they could
+    reach PopcornBox's own stream servers and other services on loopback.
+    Deno applies --deny-net to the HTTP proxy hop as well, so while the local
+    DoH proxy is in use its host (127.0.0.1) is denied only on the ports of
+    the app's own loopback servers.
+    """
+    if not proxy_netloc:
+        return list(_LOOPBACK_DENY_HOSTS)
+    proxy_host = urllib.parse.urlsplit(f"//{proxy_netloc}").hostname or ""
+    deny = [h for h in _LOOPBACK_DENY_HOSTS if h.strip("[]") != proxy_host]
+    try:
+        from .local_server import active_ports
+        ports = active_ports()
+    except Exception:
+        ports = []
+    deny.extend(f"{proxy_host}:{int(port)}" for port in ports if proxy_host)
+    return deny
 
 
 # --- URL Normalization ---

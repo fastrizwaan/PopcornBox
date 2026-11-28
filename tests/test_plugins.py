@@ -249,6 +249,37 @@ class TestNuvioPlugins(unittest.TestCase):
             self.assertTrue(any("api.themoviedb.org" in arg for arg in cmd_scoped))
             self.assertIn("--no-prompt", cmd_scoped)
 
+    def test_scrapers_cannot_reach_loopback(self):
+        mock_deno_cmd = ["/app/bin/deno", "run", "--no-config", "--no-prompt", "--allow-net", "/app/runner.js"]
+        with patch.object(plugins, "find_js_runtime", return_value=mock_deno_cmd), \
+                patch("src.doh.get_doh_env", return_value={}):
+            for scraper in ({"id": "repo:dyn", "name": "Dyn"},
+                            {"id": "repo:s", "name": "S", "allowed_hosts": ["localhost", "stream.org"]}):
+                cmd = plugins.build_scraper_command(scraper)
+                deny = [a for a in cmd if a.startswith("--deny-net=")]
+                self.assertEqual(len(deny), 1, cmd)
+                for host in ("127.0.0.1", "localhost", "[::1]"):
+                    self.assertIn(host, deny[0].split("=", 1)[1].split(","))
+                self.assertEqual(cmd[-1], "/app/runner.js")
+
+    def test_doh_proxy_hop_stays_reachable_for_scrapers(self):
+        # Deno applies --deny-net to the proxy connection too, so with the
+        # DoH proxy active only the app's own stream-server ports are denied.
+        from src import local_server
+        mock_deno_cmd = ["/app/bin/deno", "run", "--no-config", "--no-prompt", "--allow-net", "/app/runner.js"]
+        doh_env = {"HTTP_PROXY": "http://127.0.0.1:41000"}
+        with patch.object(plugins, "find_js_runtime", return_value=mock_deno_cmd), \
+                patch("src.doh.get_doh_env", return_value=doh_env), \
+                patch.object(local_server, "_active_ports", {41001, 41002}):
+            cmd = plugins.build_scraper_command({"id": "repo:dyn", "name": "Dyn"})
+        deny = next(a for a in cmd if a.startswith("--deny-net=")).split("=", 1)[1].split(",")
+        self.assertIn("127.0.0.1:41001", deny)
+        self.assertIn("127.0.0.1:41002", deny)
+        self.assertIn("localhost", deny)
+        self.assertIn("[::1]", deny)
+        self.assertNotIn("127.0.0.1", deny)
+        self.assertFalse(any(d.endswith(":41000") for d in deny))
+
     def test_nuvio_desktop_content_id_and_media_type_parity(self):
         self.assertEqual(plugins.plugin_content_id("tmdb:1421:1:1", 1, 1), "1421")
         self.assertEqual(plugins.plugin_content_id("tmdb/999/1/2", 1, 2), "999")

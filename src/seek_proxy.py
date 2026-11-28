@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from gi.repository import GLib
 
-from .local_server import new_session_id, reject_foreign_host
+from .local_server import new_session_id, register_port, reject_foreign_host
 
 logger = logging.getLogger("PopcornBox.SeekProxy")
 
@@ -302,6 +302,7 @@ def _ensure_server() -> int:
             server.daemon_threads = True
             _port = server.server_address[1]
             _server = server
+            register_port(_port)
             threading.Thread(target=server.serve_forever, daemon=True, name="SeekProxyServer").start()
             logger.info(f"[SeekProxy] listening on 127.0.0.1:{_port}")
         return _port

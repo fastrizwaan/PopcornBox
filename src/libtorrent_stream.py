@@ -9,7 +9,7 @@ import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import database
-from .local_server import reject_foreign_host
+from .local_server import register_port, reject_foreign_host, unregister_port
 from . import api
 
 EXTRA_TRACKERS = api.DEFAULT_TRACKERS
@@ -109,6 +109,10 @@ class TorrentStreamEngine:
         self.stopped.set()
         self._save_resume_data(timeout=save_timeout)
         if self.httpd:
+            try:
+                unregister_port(self.httpd.server_address[1])
+            except Exception:
+                pass
             try:
                 self.httpd.shutdown()
                 self.httpd.server_close()
@@ -404,6 +408,7 @@ class TorrentStreamEngine:
 
         self.httpd = StreamHTTPServer(("127.0.0.1", 0), Handler)
         port = self.httpd.server_address[1]
+        register_port(port)
         self.stream_url = f"http://127.0.0.1:{port}"
         self.http_thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.http_thread.start()
