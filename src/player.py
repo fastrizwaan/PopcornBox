@@ -953,11 +953,99 @@ def extract_youtube_id(url_or_id):
     return s
 
 
+# YouTube clients tried by safe mode, in order. "visionos" serves 1080p DASH
+# without needing PO tokens or the JS challenge solver; "default" is
+# yt-dlp's own client set; "android" only offers 360p muxed streams, so it
+# is the last resort.
+YOUTUBE_SAFE_MODE_CLIENTS = ("visionos", "default", "android")
+
+# Prefer plain https DASH (direct googlevideo URLs mpv opens without the
+# HLS proxy), then any 1080p pair, then whatever muxed stream exists.
+YOUTUBE_SAFE_MODE_FORMAT = (
+    "bestvideo[height<=1080][protocol=https]+bestaudio[protocol=https]"
+    "/bestvideo[height<=1080]+bestaudio"
+    "/best[height<=1080]/best"
+)
+
+
+def youtube_safe_mode_ytdl_raw_options():
+    """ytdl-raw-options for MPV's ytdl_hook in safe mode.
+
+    The client list contains commas, which would split the key-value list,
+    so the value uses MPV's %len% quoting.
+    """
+    value = "youtube:player_client=" + ",".join(YOUTUBE_SAFE_MODE_CLIENTS)
+    return f"no-playlist=,extractor-args=%{len(value)}%{value}"
+
+
+def _find_yt_dlp():
+    yt_dlp_bin = shutil.which("yt-dlp")
+    if not yt_dlp_bin:
+        for p in ["/app/bin/yt-dlp", "/usr/bin/yt-dlp", "/usr/local/bin/yt-dlp", os.path.expanduser("~/.local/bin/yt-dlp")]:
+            if os.path.exists(p):
+                return p
+    return yt_dlp_bin or shutil.which("youtube-dl")
+
+
+def _run_yt_dlp_json(yt_dlp_bin, watch_url, client, timeout):
+    """Run yt-dlp for one player client; returns the info dict or None."""
+    import json
+    cmd = [
+        yt_dlp_bin,
+        "-j",
+        "--no-warnings",
+        "--no-playlist",
+        "--no-check-certificates",
+        "--no-cache-dir",
+        "--no-update",
+        "--socket-timeout", "6",
+    ]
+    if client and client != "default":
+        cmd += ["--extractor-args", f"youtube:player_client={client}"]
+    cmd += ["-f", YOUTUBE_SAFE_MODE_FORMAT, watch_url]
+    run_env = dict(os.environ)
+    try:
+        from . import doh
+        run_env.update(doh.get_doh_env())
+    except Exception:
+        pass
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=run_env)
+    except Exception as e:
+        print(f"[Trailer] yt-dlp ({client}) execution error: {e}")
+        return None
+    if res.returncode != 0 or not res.stdout.strip():
+        err = (res.stderr or "").strip().splitlines()
+        print(f"[Trailer] yt-dlp ({client}) failed: {err[-1] if err else res.returncode}")
+        return None
+    try:
+        return json.loads(res.stdout.strip().splitlines()[0])
+    except Exception as e:
+        print(f"[Trailer] yt-dlp ({client}) JSON parse error: {e}")
+        return None
+
+
+def _streams_from_info(info):
+    """Returns (video_url, audio_url, user_agent) from a yt-dlp info dict."""
+    ua = (info.get("http_headers") or {}).get("User-Agent", "")
+    req_formats = info.get("requested_formats") or []
+    if req_formats:
+        v_url = req_formats[0].get("url", "")
+        a_url = req_formats[1].get("url", "") if len(req_formats) > 1 else ""
+        ua = (req_formats[0].get("http_headers") or {}).get("User-Agent", "") or ua
+        if v_url:
+            return (v_url, a_url or None, ua)
+    direct_url = info.get("url", "")
+    if direct_url:
+        return (direct_url, None, ua)
+    return (None, None, "")
+
+
 def resolve_youtube_url(clean_id_or_url, watch_url=None):
     """
     Multi-tier resolution for YouTube streams:
     1. SQLite trailer_stream_cache (up to 4 hours TTL)
-    2. Local yt-dlp binary with robust extractor-args
+    2. Local yt-dlp binary, trying YOUTUBE_SAFE_MODE_CLIENTS in order
     Returns (video_url, audio_url, user_agent) or (None, None, "").
     """
     clean_id = extract_youtube_id(clean_id_or_url)
@@ -973,66 +1061,28 @@ def resolve_youtube_url(clean_id_or_url, watch_url=None):
             return (None, None, "")
 
     from . import database
+    cacheable = bool(clean_id) and not clean_id.startswith("http")
     # 1. Check SQLite trailer stream cache
-    if clean_id and not clean_id.startswith("http"):
+    if cacheable:
         cached = database.get_cached_trailer_stream(clean_id, max_age_hours=4)
         if cached:
-            cached_url, cached_ua = cached
-            if cached_url:
-                return (cached_url, None, cached_ua or "")
+            cached_video, cached_audio, cached_ua = cached
+            if cached_video:
+                return (cached_video, cached_audio, cached_ua or "")
 
     # 2. Try yt-dlp binary if available
-    yt_dlp_bin = shutil.which("yt-dlp")
-    if not yt_dlp_bin:
-        for p in ["/app/bin/yt-dlp", "/usr/bin/yt-dlp", "/usr/local/bin/yt-dlp", os.path.expanduser("~/.local/bin/yt-dlp")]:
-            if os.path.exists(p):
-                yt_dlp_bin = p
-                break
-    if not yt_dlp_bin:
-        yt_dlp_bin = shutil.which("youtube-dl")
-
+    yt_dlp_bin = _find_yt_dlp()
     if yt_dlp_bin:
-        try:
-            cmd = [
-                yt_dlp_bin,
-                "-j",
-                "--no-warnings",
-                "--no-playlist",
-                "--no-check-certificates",
-                "--no-cache-dir",
-                "--no-update",
-                "--socket-timeout", "6",
-                "--extractor-args", "youtube:player_client=android",
-                "-f", "best[height<=1080]/bestvideo[height<=1080]+bestaudio/best",
-                watch_url
-            ]
-            run_env = dict(os.environ)
-            try:
-                from . import doh
-                run_env.update(doh.get_doh_env())
-            except Exception:
-                pass
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=12, env=run_env)
-            if res.returncode == 0 and res.stdout.strip():
-                import json
-                try:
-                    info = json.loads(res.stdout.strip().splitlines()[0])
-                    ua = info.get("http_headers", {}).get("User-Agent", "")
-                    direct_url = info.get("url", "")
-                    req_formats = info.get("requested_formats") or []
-                    if direct_url:
-                        if clean_id and not clean_id.startswith("http"):
-                            database.save_cached_trailer_stream(clean_id, direct_url, ua)
-                        return (direct_url, None, ua)
-                    elif req_formats:
-                        v_url = req_formats[0].get("url", "")
-                        a_url = req_formats[1].get("url", "") if len(req_formats) > 1 else None
-                        if v_url:
-                            return (v_url, a_url, ua)
-                except Exception as e:
-                    print(f"[Trailer] yt-dlp JSON parse error: {e}")
-        except Exception as e:
-            print(f"[Trailer] yt-dlp execution error: {e}")
+        for client in YOUTUBE_SAFE_MODE_CLIENTS:
+            info = _run_yt_dlp_json(yt_dlp_bin, watch_url, client, timeout=12)
+            if not info:
+                continue
+            v_url, a_url, ua = _streams_from_info(info)
+            if v_url:
+                print(f"[Trailer] yt-dlp ({client}) resolved {info.get('format_id', '')} {info.get('resolution', '')}")
+                if cacheable:
+                    database.save_cached_trailer_stream(clean_id, v_url, ua, audio_url=a_url)
+                return (v_url, a_url, ua)
 
     return (None, None, "")
 

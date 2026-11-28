@@ -18745,7 +18745,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
             try:
                 self.mpv["ytdl"] = True
                 if getattr(self, "_youtube_safe_mode_active", False):
-                    self.mpv["ytdl-raw-options"] = "no-playlist=,extractor-args=youtube:player_client=android"
+                    from . import player
+                    self.mpv["ytdl-raw-options"] = player.youtube_safe_mode_ytdl_raw_options()
                 else:
                     self.mpv["ytdl-raw-options"] = "no-playlist="
                 self.mpv["user-agent"] = ""
@@ -19111,10 +19112,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     headers = {"User-Agent": ua} if ua else None
                     self._play_stream(video_url, title=title, headers=headers, audio_url=audio_url, preserve_queue=True)
                 else:
-                    logger.warning(f"[YouTube SafeMode] Direct URL extraction failed, attempting MPV android client fallback for {watch_url}")
+                    logger.warning(f"[YouTube SafeMode] Direct URL extraction failed, attempting MPV safe-mode client fallback for {watch_url}")
                     try:
                         self.mpv["ytdl"] = True
-                        self.mpv["ytdl-raw-options"] = "no-playlist=,extractor-args=youtube:player_client=android"
+                        self.mpv["ytdl-raw-options"] = player.youtube_safe_mode_ytdl_raw_options()
                         self.mpv.loadfile(watch_url, "replace")
                     except Exception as e:
                         logger.error(f"[YouTube SafeMode] Fallback load failed: {e}")

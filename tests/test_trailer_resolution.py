@@ -63,63 +63,82 @@ class TestTrailerResolution(unittest.TestCase):
         self.assertEqual(res, "7gCitSBXW6w")
 
     def test_database_cached_trailer_stream_expiry(self):
-        # Test that non-android googlevideo URLs or expired URLs are rejected
         now = time.time()
-        # Non-android URL
-        url_non_android = "https://rr7---sn-5jucgv5qc5oq-itqe7.googlevideo.com/videoplayback?expire=9999999999&cver=web"
-        with database._cache_db_lock:
-            conn = database._get_cache_db()
-            cur = conn.cursor()
-            cur.execute("INSERT OR REPLACE INTO trailer_stream_cache (youtube_id, stream_url, user_agent, updated_at) VALUES (?, ?, ?, ?)",
-                        ("test_non_android", url_non_android, "Mozilla", now))
-            conn.commit()
 
-        self.assertIsNone(database.get_cached_trailer_stream("test_non_android"))
+        def put(key, stored, ua="Mozilla"):
+            with database._cache_db_lock:
+                conn = database._get_cache_db()
+                conn.execute("INSERT OR REPLACE INTO trailer_stream_cache (youtube_id, stream_url, user_agent, updated_at) VALUES (?, ?, ?, ?)",
+                             (key, stored, ua, now))
+                conn.commit()
 
-        # Expired android URL
-        url_expired_android = f"https://rr7---sn-5jucgv5qc5oq-itqe7.googlevideo.com/videoplayback?expire={int(now - 100)}&cver=android"
-        with database._cache_db_lock:
-            cur.execute("INSERT OR REPLACE INTO trailer_stream_cache (youtube_id, stream_url, user_agent, updated_at) VALUES (?, ?, ?, ?)",
-                        ("test_expired", url_expired_android, "Mozilla", now))
-            conn.commit()
+        # Legacy (unversioned) entries were low-resolution android streams
+        put("test_legacy", f"https://rr7---sn-x.googlevideo.com/videoplayback?expire={int(now + 10000)}&cver=android")
+        self.assertIsNone(database.get_cached_trailer_stream("test_legacy"))
 
+        # Expired video URL
+        database.save_cached_trailer_stream(
+            "test_expired", f"https://rr7---sn-x.googlevideo.com/videoplayback?expire={int(now - 100)}", "Mozilla")
         self.assertIsNone(database.get_cached_trailer_stream("test_expired"))
 
-        # Valid android URL
-        url_valid_android = f"https://rr7---sn-5jucgv5qc5oq-itqe7.googlevideo.com/videoplayback?expire={int(now + 10000)}&cver=android"
-        with database._cache_db_lock:
-            cur.execute("INSERT OR REPLACE INTO trailer_stream_cache (youtube_id, stream_url, user_agent, updated_at) VALUES (?, ?, ?, ?)",
-                        ("test_valid", url_valid_android, "Mozilla", now))
-            conn.commit()
+        # Expired audio URL
+        database.save_cached_trailer_stream(
+            "test_expired_audio", f"https://rr7---sn-x.googlevideo.com/videoplayback?expire={int(now + 10000)}", "Mozilla",
+            audio_url=f"https://rr7---sn-x.googlevideo.com/videoplayback?expire={int(now - 100)}")
+        self.assertIsNone(database.get_cached_trailer_stream("test_expired_audio"))
 
-        cached = database.get_cached_trailer_stream("test_valid")
-        self.assertIsNotNone(cached)
-        self.assertEqual(cached[0], url_valid_android)
+        # Valid separate video + audio
+        v = f"https://rr7---sn-x.googlevideo.com/videoplayback?expire={int(now + 10000)}&itag=137"
+        a = f"https://rr7---sn-x.googlevideo.com/videoplayback?expire={int(now + 10000)}&itag=140"
+        database.save_cached_trailer_stream("test_valid", v, "Mozilla", audio_url=a)
+        self.assertEqual(database.get_cached_trailer_stream("test_valid"), (v, a, "Mozilla"))
 
+    @patch("src.database.save_cached_trailer_stream")
     @patch("src.database.get_cached_trailer_stream", return_value=None)
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_player_resolve_youtube_url_cmd_args(self, mock_which, mock_run, mock_get_cached):
+    def test_player_resolve_youtube_url_cmd_args(self, mock_which, mock_run, mock_get_cached, mock_save):
         mock_which.return_value = "/usr/bin/yt-dlp"
         mock_res = MagicMock()
         mock_res.returncode = 0
-        mock_res.stdout = '{"url": "https://example.com/stream.mp4", "http_headers": {"User-Agent": "UA"}}'
+        mock_res.stdout = (
+            '{"format_id": "137+140", "http_headers": {"User-Agent": "UA"}, "requested_formats": ['
+            '{"url": "https://example.com/v.mp4", "http_headers": {"User-Agent": "UA"}},'
+            '{"url": "https://example.com/a.m4a"}]}'
+        )
         mock_run.return_value = mock_res
 
         v_url, a_url, ua = player.resolve_youtube_url("uncached_test_id")
-        self.assertEqual(v_url, "https://example.com/stream.mp4")
-        self.assertIsNone(a_url)
-        self.assertEqual(ua, "UA")
+        self.assertEqual((v_url, a_url, ua), ("https://example.com/v.mp4", "https://example.com/a.m4a", "UA"))
+        mock_save.assert_called_once_with("uncached_test_id", v_url, "UA", audio_url=a_url)
 
-        # Verify command arguments passed to yt-dlp
-        args, kwargs = mock_run.call_args
-        cmd = args[0]
-        self.assertIn("--extractor-args", cmd)
+        # First attempt uses the HD-capable client and prefers separate DASH streams
+        cmd = mock_run.call_args_list[0][0][0]
         ext_idx = cmd.index("--extractor-args")
-        self.assertEqual(cmd[ext_idx + 1], "youtube:player_client=android")
-        self.assertIn("-f", cmd)
+        self.assertEqual(cmd[ext_idx + 1], "youtube:player_client=visionos")
         f_idx = cmd.index("-f")
-        self.assertEqual(cmd[f_idx + 1], "best[height<=1080]/bestvideo[height<=1080]+bestaudio/best")
+        self.assertTrue(cmd[f_idx + 1].startswith("bestvideo[height<=1080]"))
+
+    @patch("src.database.save_cached_trailer_stream")
+    @patch("src.database.get_cached_trailer_stream", return_value=None)
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_player_resolve_youtube_url_falls_back_through_clients(self, mock_which, mock_run, mock_get_cached, mock_save):
+        mock_which.return_value = "/usr/bin/yt-dlp"
+        fail = MagicMock(returncode=1, stdout="", stderr="ERROR: blocked")
+        ok = MagicMock(returncode=0, stdout='{"url": "https://example.com/s.mp4", "http_headers": {"User-Agent": "UA"}}', stderr="")
+        mock_run.side_effect = [fail, fail, ok]
+
+        self.assertEqual(player.resolve_youtube_url("fallback_id"), ("https://example.com/s.mp4", None, "UA"))
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        self.assertIn("youtube:player_client=visionos", cmds[0])
+        self.assertNotIn("--extractor-args", cmds[1])  # yt-dlp default clients
+        self.assertIn("youtube:player_client=android", cmds[2])
+
+    def test_safe_mode_ytdl_raw_options_quotes_client_list(self):
+        opts = player.youtube_safe_mode_ytdl_raw_options()
+        value = "youtube:player_client=visionos,default,android"
+        self.assertEqual(opts, f"no-playlist=,extractor-args=%{len(value)}%{value}")
 
     @patch("gi.repository.GLib.idle_add")
     def test_play_trailer_direct_mpv_first(self, mock_idle_add):

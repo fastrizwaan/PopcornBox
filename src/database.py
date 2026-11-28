@@ -5065,8 +5065,23 @@ def delete_cached_streams(cache_key):
     except Exception as e:
         print(f"Error deleting cached streams: {e}")
 
+_TRAILER_CACHE_PREFIX = "v2:"
+
+
+def _googlevideo_url_expired(url):
+    if "googlevideo.com" not in str(url).lower():
+        return False
+    try:
+        import urllib.parse
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        exp = qs.get("expire", [None])[0]
+        return bool(exp) and float(exp) <= time.time()
+    except Exception:
+        return False
+
+
 def get_cached_trailer_stream(youtube_id, max_age_hours=24):
-    """Returns (stream_url, user_agent) tuple or None."""
+    """Returns (video_url, audio_url, user_agent) tuple or None."""
     if not youtube_id:
         return None
     try:
@@ -5075,41 +5090,37 @@ def get_cached_trailer_stream(youtube_id, max_age_hours=24):
             cursor = conn.cursor()
             cursor.execute("SELECT stream_url, user_agent, updated_at FROM trailer_stream_cache WHERE youtube_id = ?", (str(youtube_id),))
             row = cursor.fetchone()
-            if row and row[0]:
-                updated_at = row[2]
-                ua = row[1] or ""
-                # Invalidate stale entries without user_agent or non-android/expired googlevideo streams
-                if "googlevideo.com" in row[0].lower():
-                    if not ua:
-                        return None
-                    try:
-                        import urllib.parse
-                        parsed = urllib.parse.urlparse(row[0])
-                        qs = urllib.parse.parse_qs(parsed.query)
-                        exp = qs.get("expire", [None])[0]
-                        if exp and float(exp) <= time.time():
-                            return None
-                        cver = qs.get("cver", [""])[0]
-                        if "android" not in cver.lower():
-                            return None
-                    except Exception:
-                        pass
-                if (time.time() - updated_at) / 3600 < max_age_hours:
-                    return (row[0], ua)
+        if not row or not row[0]:
+            return None
+        stored, ua, updated_at = row[0], row[1] or "", row[2]
+        # Entries without the version prefix are the old low-resolution
+        # android muxed streams; re-resolve those.
+        if not stored.startswith(_TRAILER_CACHE_PREFIX):
+            return None
+        data = json.loads(stored[len(_TRAILER_CACHE_PREFIX):])
+        video_url = data.get("video") or ""
+        audio_url = data.get("audio") or None
+        if not video_url or not ua:
+            return None
+        if _googlevideo_url_expired(video_url) or (audio_url and _googlevideo_url_expired(audio_url)):
+            return None
+        if (time.time() - updated_at) / 3600 < max_age_hours:
+            return (video_url, audio_url, ua)
     except Exception as e:
         print(f"Error reading trailer stream cache: {e}")
     return None
 
-def save_cached_trailer_stream(youtube_id, stream_url, user_agent=""):
+def save_cached_trailer_stream(youtube_id, stream_url, user_agent="", audio_url=None):
     if not youtube_id or not stream_url:
         return
+    stored = _TRAILER_CACHE_PREFIX + json.dumps({"video": str(stream_url), "audio": str(audio_url) if audio_url else None})
     try:
         with _cache_db_lock:
             conn = _get_cache_db()
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT OR REPLACE INTO trailer_stream_cache (youtube_id, stream_url, user_agent, updated_at) VALUES (?, ?, ?, ?)",
-                (str(youtube_id), str(stream_url), str(user_agent or ""), time.time())
+                (str(youtube_id), stored, str(user_agent or ""), time.time())
             )
             conn.commit()
     except Exception as e:
