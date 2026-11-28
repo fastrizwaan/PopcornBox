@@ -13,7 +13,6 @@ position wait until the download gets there.
 """
 
 import atexit
-import hashlib
 import logging
 import os
 import re
@@ -26,6 +25,8 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from gi.repository import GLib
+
+from .local_server import new_session_id, reject_foreign_host
 
 logger = logging.getLogger("PopcornBox.SeekProxy")
 
@@ -239,6 +240,8 @@ class _SeekProxyHandler(BaseHTTPRequestHandler):
         return start, end
 
     def do_HEAD(self):
+        if reject_foreign_host(self):
+            return
         session = self._session()
         if not session or session.closed:
             self.send_error(404)
@@ -246,6 +249,8 @@ class _SeekProxyHandler(BaseHTTPRequestHandler):
         self._send_headers(session)
 
     def do_GET(self):
+        if reject_foreign_host(self):
+            return
         session = self._session()
         if not session or session.closed:
             self.send_error(404)
@@ -352,7 +357,7 @@ def prepare(url: str, headers: dict = None):
             return RESULT_UNSUPPORTED, None
 
         close_all()  # one stream at a time
-        session_id = hashlib.sha1(f"{url}|{time.time()}".encode()).hexdigest()[:16]
+        session_id = new_session_id()
         session = SeekSession(session_id, url, headers, size, resp.headers.get("Content-Type"),
                               os.path.join(cache_dir, f"{session_id}.part"))
         with _lock:

@@ -14,7 +14,6 @@ resuming and seeking in 1-2 seconds without freezing.
 """
 
 import bisect
-import hashlib
 import logging
 import re
 import threading
@@ -25,6 +24,8 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from gi.repository import GLib
+
+from .local_server import new_session_id, reject_foreign_host
 
 logger = logging.getLogger("PopcornBox.HLSProxy")
 
@@ -879,7 +880,6 @@ class _HlsProxyHandler(BaseHTTPRequestHandler):
                 if upstream_len and upstream_len.isdigit():
                     adj_len = max(len(payload), int(upstream_len) - strip_off)
                     self.send_header("Content-Length", str(adj_len))
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
 
                 if payload:
@@ -904,6 +904,8 @@ class _HlsProxyHandler(BaseHTTPRequestHandler):
                 pass
 
     def do_GET(self):
+        if reject_foreign_host(self):
+            return
         parsed = urllib.parse.urlparse(self.path)
         parts = parsed.path.strip("/").split("/")
         if len(parts) >= 2 and parts[0] == "hls":
@@ -934,7 +936,6 @@ class _HlsProxyHandler(BaseHTTPRequestHandler):
                     self.send_response(200)
                     self.send_header("Content-Type", "application/vnd.apple.mpegurl")
                     self.send_header("Content-Length", str(len(body)))
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
                     self.wfile.write(body)
                     return
@@ -944,7 +945,6 @@ class _HlsProxyHandler(BaseHTTPRequestHandler):
                     self.send_response(200)
                     self.send_header("Content-Type", "application/vnd.apple.mpegurl")
                     self.send_header("Content-Length", str(len(body)))
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
                     self.wfile.write(body)
                     return
@@ -961,7 +961,6 @@ class _HlsProxyHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("X-HLS-Total-Duration", str(session.total_duration))
                 self.send_header("X-HLS-Actual-Offset", str(actual_off))
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(body)
                 return
@@ -1077,7 +1076,7 @@ def prepare_hls_stream_async(url: str, headers: dict = None, seek_target: float 
                     GLib.idle_add(callback, False, None, None, None, 0.0, True, None)
                 return
 
-            session_id = hashlib.md5(f"{url}_{time.time()}".encode()).hexdigest()[:12]
+            session_id = new_session_id()
             session = HlsSession(session_id, url, headers=headers, variant_pin=variant_pin).fetch_and_parse(timeout=10.0)
             if session.is_master_proxy:
                 _sessions[session_id] = session

@@ -9,6 +9,7 @@ import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import database
+from .local_server import reject_foreign_host
 from . import api
 
 EXTRA_TRACKERS = api.DEFAULT_TRACKERS
@@ -372,6 +373,8 @@ class TorrentStreamEngine:
                 return
 
             def _handle_request(self, head_only=False):
+                if reject_foreign_host(self):
+                    return
                 parsed = urllib.parse.urlparse(self.path)
                 if parsed.path in ("/.json", "/_stats"):
                     self._send_json(engine.stats())
@@ -388,7 +391,6 @@ class TorrentStreamEngine:
             def _send_json(self, data):
                 payload = json.dumps(data).encode("utf-8")
                 self.send_response(200)
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
@@ -997,7 +999,6 @@ class TorrentStreamEngine:
                 headers["Content-Range"] = f"bytes {start}-{end}/{size}"
 
             request.send_response(status)
-            request.send_header("Access-Control-Allow-Origin", "*")
             for name, value in headers.items():
                 request.send_header(name, value)
             request.end_headers()

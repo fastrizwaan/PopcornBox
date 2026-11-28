@@ -54,6 +54,7 @@ popcornbox_sources = [
   'skip_segments.py',
   'http_downloader.py',
   'libtorrent_stream.py',
+  'local_server.py',
   'main.py',
   'movie_widget.py',
   'mpris.py',
