@@ -995,7 +995,6 @@ def _run_yt_dlp_json(yt_dlp_bin, watch_url, client, timeout):
         "-j",
         "--no-warnings",
         "--no-playlist",
-        "--no-check-certificates",
         "--no-cache-dir",
         "--no-update",
         "--socket-timeout", "6",

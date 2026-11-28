@@ -118,6 +118,8 @@ class TestTrailerResolution(unittest.TestCase):
         self.assertEqual(cmd[ext_idx + 1], "youtube:player_client=visionos")
         f_idx = cmd.index("-f")
         self.assertTrue(cmd[f_idx + 1].startswith("bestvideo[height<=1080]"))
+        # TLS verification stays on: the resolved URLs are handed to mpv.
+        self.assertNotIn("--no-check-certificates", cmd)
 
     @patch("src.database.save_cached_trailer_stream")
     @patch("src.database.get_cached_trailer_stream", return_value=None)
