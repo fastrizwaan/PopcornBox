@@ -63,8 +63,8 @@ shift+WHEEL_UP   seek 5 keyframes; show-text "⯈⯈"
 -                add video-zoom -0.05; show-text "{_("Zoom")}: ${{video-zoom}}" #{_("Zoom Out")}
 Ctrl+WHEEL_UP    script-binding positioning/cursor-centric-zoom 0.05
 Ctrl+WHEEL_DOWN  script-binding positioning/cursor-centric-zoom -0.05
-,                add sub-delay -0.1; show-text "{_("Subtitle Delay")}: ${{sub-delay}}" #{_("Decrease Subtitle Delay")}
-.                add sub-delay +0.1; show-text "{_("Subtitle Delay")}: ${{sub-delay}}" #{_("Increase Subtitle Delay")}
+,                script-message popcornbox-sub-delay -0.1 #{_("Decrease Subtitle Delay")}
+.                script-message popcornbox-sub-delay 0.1 #{_("Increase Subtitle Delay")}
 PGUP             add sub-pos -1; show-text "{_("Subtitle Position")}: ${{sub-pos}}" #{_("Move Subtitles Up")}
 PGDWN            add sub-pos +1; show-text "{_("Subtitle Position")}: ${{sub-pos}}" #{_("Move Subtitles Down")}
 G                add sub-scale +0.05; show-text "{_("Subtitle Scale")}: ${{sub-scale}}" #{_("Increase Subtitle Scale")}

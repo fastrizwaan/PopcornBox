@@ -9304,7 +9304,8 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                 plugin_imdb_id = target_custom_route
 
         try:
-            custom_timeout = min(20.0, max(12.0, float(provider_timeout or 15.0)))
+            # Honour the preference (5-30 s); scrapers need at least 12 s.
+            custom_timeout = max(12.0, float(provider_timeout or 15.0))
             streams = custom_plugins.execute_custom_scraper(
                 scraper_obj,
                 imdb_id=plugin_imdb_id,
@@ -9453,6 +9454,11 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     c_fut = executor.submit(fetch_from_custom_plugin, c_scraper)
                     future_to_addon[c_fut] = ({"name": c_name, "is_custom_plugin": True}, imdb_id)
                     futures.add(c_fut)
+                    # Custom plugins often scrape several backends and answer
+                    # well after the first stream (Peachify takes ~15-20 s), so,
+                    # like Nuvio plugins, they keep the full collection budget
+                    # instead of the 15 s grace that follows the first stream.
+                    plugin_futures.add(c_fut)
 
             # 2. Direct Stremio addons (if any)
             for addon in direct_stream_addons:
@@ -9538,7 +9544,10 @@ def get_torrents_streamed(imdb_id, media_type="movie", season=None, episode=None
                     and not plugin_pending
                     and (torrent_addons_submitted or not torrent_stream_addons)
                 ):
-                    active_deadline = min(collection_deadline, first_stream_at + 15.0)
+                    # After the first stream, the rest get the user's provider
+                    # timeout (Preferences → Provider Request Timeout), not a
+                    # fixed grace that could cut off slower providers.
+                    active_deadline = min(collection_deadline, first_stream_at + float(provider_timeout))
 
                 if not torrent_addons_submitted and torrent_stream_addons:
                     wait_timeout = max(0.0, min(direct_priority_deadline - time.monotonic(), active_deadline - time.monotonic()))

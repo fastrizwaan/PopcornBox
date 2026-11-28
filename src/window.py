@@ -7834,6 +7834,85 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         logger.info(f"[SUBS] Saved external subtitle preference for {keys[0]} -> {saved_path}")
         return saved_path
 
+    def _subtitle_content_key(self):
+        """(id, season, episode) of what is playing; None when unknown."""
+        item = getattr(self, "_current_playing_item", None) or {}
+        content_id = str(item.get("imdb_id") or item.get("id") or "").split(":")[0]
+        if not content_id:
+            return None
+        return (content_id, item.get("season"), item.get("episode"))
+
+    def _snapshot_external_subtitles(self):
+        """Remember the subtitle files added to the current file before MPV
+        replaces it. sub-add tracks belong to one file, so a sliced-HLS seek,
+        a fast-start switch or another stream of the same title would
+        otherwise drop every searched subtitle except the remembered one."""
+        try:
+            tracks = list(self.mpv.track_list or [])
+        except Exception:
+            return
+        subs = []
+        for t in tracks:
+            path = t.get("external-filename") or t.get("external_filename")
+            if t.get("type") != "sub" or not t.get("external") or not path:
+                continue
+            subs.append({
+                "path": path,
+                "title": t.get("title") or os.path.basename(str(path)),
+                "lang": t.get("lang") or "und",
+                "selected": bool(t.get("selected")),
+            })
+        # The key of the file these tracks belong to: callers often switch
+        # _current_playing_item to the next title before replacing the file.
+        key = getattr(self, "_loaded_subtitle_key", None)
+        if subs and key:
+            self._carried_subtitles = {"key": key, "tracks": subs}
+        # An empty list (e.g. a second reload before the first finished loading)
+        # keeps the snapshot that is still waiting to be restored.
+
+    def _restore_carried_subtitles(self):
+        """After file-loaded: add back the snapshot's subtitles that are missing,
+        when the new file is the same title/episode, and reselect the one that
+        was showing."""
+        current_key = self._subtitle_content_key()
+        self._loaded_subtitle_key = current_key
+        carry = getattr(self, "_carried_subtitles", None)
+        if not carry:
+            return
+        self._carried_subtitles = None
+        if not current_key or carry.get("key") != current_key:
+            return
+        try:
+            def sub_tracks():
+                return [t for t in (self.mpv.track_list or []) if t.get("type") == "sub"]
+            def same_sub(t, sub):
+                # The remembered subtitle comes back as a managed copy (another
+                # path), so the same title and language also count as present.
+                path = t.get("external-filename") or t.get("external_filename")
+                return bool(t.get("external")) and (
+                    path == sub["path"]
+                    or (t.get("title") == sub["title"] and (t.get("lang") or "und") == sub["lang"])
+                )
+
+            restored = 0
+            for sub in carry.get("tracks", []):
+                path = sub["path"]
+                if any(same_sub(t, sub) for t in sub_tracks()):
+                    continue
+                if not str(path).startswith(("http://", "https://")) and not os.path.isfile(path):
+                    continue
+                self.mpv.command("sub-add", path, "auto", sub["title"], sub["lang"])
+                restored += 1
+            selected = next((sub for sub in carry.get("tracks", []) if sub.get("selected")), None)
+            if selected:
+                match = next((t for t in sub_tracks() if same_sub(t, selected)), None)
+                if match and not match.get("selected"):
+                    self.mpv.sid = int(match.get("id"))
+            if restored:
+                logger.info(f"[SUBS] Restored {restored} added subtitle(s) after the stream was reloaded")
+        except Exception as e:
+            logger.warning(f"[SUBS] Could not restore added subtitles: {e}")
+
     def _apply_external_subtitle(self, path, lang=None, title=None, remember=True, copy_to_managed=False, item_context=None):
         if not path:
             return None
@@ -7845,6 +7924,52 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if remember:
             self._remember_external_subtitle(saved_path, lang=lang, title=track_title, item_context=item_context)
         return saved_path
+
+    # --- Sliced HLS playback and subtitle timing ---------------------------
+    # The HLS proxy can start a stream from a slice (resume or seek point); MPV's
+    # clock then starts at 0 there while subtitle files keep the full-length
+    # timeline. sub-delay therefore always holds -offset on top of the user's
+    # own delay; these helpers keep that split.
+
+    @property
+    def _hls_time_offset(self):
+        return self.__dict__.get("_hls_time_offset_value", 0.0)
+
+    @_hls_time_offset.setter
+    def _hls_time_offset(self, value):
+        old = self.__dict__.get("_hls_time_offset_value", 0.0)
+        new = float(value or 0.0)
+        self.__dict__["_hls_time_offset_value"] = new
+        if new == old:
+            return
+        player = self.__dict__.get("mpv")
+        if player is None:
+            return
+        try:
+            player["sub-delay"] = float(player["sub-delay"] or 0.0) - (new - old)
+            logger.info(f"[SUBS] stream sliced at {new:.2f}s: subtitle timeline shifted by {-(new - old):+.2f}s")
+        except Exception as e:
+            logger.debug(f"[SUBS] could not shift sub-delay for HLS offset: {e}")
+
+    def get_user_sub_delay(self):
+        """The subtitle delay the user chose, without the HLS slice offset."""
+        try:
+            return round(float(self.mpv["sub-delay"] or 0.0) + self._hls_time_offset, 4)
+        except Exception:
+            return 0.0
+
+    def set_user_sub_delay(self, value):
+        self.mpv["sub-delay"] = float(value) - self._hls_time_offset
+
+    def _on_sub_delay_step(self, delta):
+        """Shortcut: nudge the user's subtitle delay and show it (main thread)."""
+        try:
+            value = round(self.get_user_sub_delay() + float(delta), 4)
+            self.set_user_sub_delay(value)
+            self.mpv.command("show-text", _("Subtitle Delay") + f": {value:+.1f} s")
+        except Exception as e:
+            logger.debug(f"[SUBS] subtitle delay step failed: {e}")
+        return False
 
     def _on_subtitle_selected(self, action, parameter):
         track_id = parameter.get_int32()
@@ -8283,6 +8408,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         if not getattr(self, "_is_hls_proxy_active", False) or not getattr(self, "_hls_session_id", None):
             return
         from . import hls_proxy
+        self._snapshot_external_subtitles()
         self._hls_time_offset = target_val
         new_url = hls_proxy.get_sliced_url(self._hls_session_id, offset=target_val)
         self._mpv_file_loaded = False
@@ -9091,6 +9217,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                     if hasattr(self, "_try_add_pending_subtitles"):
                         self._try_add_pending_subtitles()
 
+                    self._restore_carried_subtitles()
+
                     if settings.get_boolean("thumbnail-preview"):
                         self.thumb_preview.props.visible = True
                         self.setup_preview_player()
@@ -9503,6 +9631,10 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                 )
 
             idle_add_once(set_icon)
+
+        @self.mpv.message_handler("popcornbox-sub-delay")
+        def on_sub_delay_step(delta="0"):
+            idle_add_once(self._on_sub_delay_step, delta)
 
         @self.mpv.property_observer("vid")
         def on_vid_change(_name, value):
@@ -18323,6 +18455,8 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
         )
         self._playback_trace_first_frame = False
         self._pending_local_subtitle = None
+        # Same title/episode on another stream keeps the subtitles added to it.
+        self._snapshot_external_subtitles()
         # A provider listing each HLS quality as its own stream marks the chosen
         # variant with a `#pb-variant=` fragment. Strip it here so MPV and every
         # network request see the real URL; the HLS proxy applies the pin.
@@ -18817,6 +18951,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         return
                     self._seek_after_loaded = None
                     playback_trace("loadfile issue (hls proxy)")
+                    self._snapshot_external_subtitles()
                     self._mpv_file_loaded = False
                     reloaded = True
                     try:
@@ -18855,6 +18990,7 @@ class PopcornBoxWindow(Adw.ApplicationWindow):
                         pass
                     else:
                         playback_trace("loadfile issue (hls)", str(target_url)[:100])
+                        self._snapshot_external_subtitles()
                         self._mpv_file_loaded = False
                         reloaded = True
                         try:

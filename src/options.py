@@ -172,7 +172,11 @@ class OptionsMenuButton(Gtk.MenuButton):
         ]
 
         for mpv_key, spin, reset_btn, default in controls:
-            val = cast(float, self.win.mpv[mpv_key])
+            if mpv_key == "sub-delay":
+                # Without the HLS slice offset the player adds on its own.
+                val = self.win.get_user_sub_delay()
+            else:
+                val = cast(float, self.win.mpv[mpv_key])
             set_open_val(spin, reset_btn, val, default_val=default)
 
         rotate_val = int(self.win.mpv["video-rotate"] or 0)
@@ -394,7 +398,7 @@ class OptionsMenuButton(Gtk.MenuButton):
     @Gtk.Template.Callback()
     def _on_sub_delay_changed(self, spin):
         val = round(spin.get_value(), 4)
-        self.win.mpv["sub-delay"] = val
+        self.win.set_user_sub_delay(val)
         self.sub_delay_reset_btn.set_sensitive(val != 0.0)
 
     @Gtk.Template.Callback()
